@@ -24,7 +24,6 @@ enum UrlForm {
 pub enum UrlError {
     EmptyInput,
     InvalidScheme,
-    MissingAuthority,
     EmptyHost,
     InvalidHost,
     InvalidPort,
@@ -35,7 +34,6 @@ impl fmt::Display for UrlError {
         match self {
             Self::EmptyInput => write!(f, "URL is empty"),
             Self::InvalidScheme => write!(f, "invalid URL scheme"),
-            Self::MissingAuthority => write!(f, "URL is missing an authority"),
             Self::EmptyHost => write!(f, "URL host is empty"),
             Self::InvalidHost => write!(f, "invalid URL host"),
             Self::InvalidPort => write!(f, "invalid URL port"),
@@ -65,6 +63,10 @@ impl Url {
         }
 
         let scheme = scheme.to_ascii_lowercase();
+
+        if scheme == "file" {
+            return parse_file_url(after_scheme, query, fragment);
+        }
 
         if is_special_scheme(&scheme) {
             let after_scheme = after_scheme.replace('\\', "/");
@@ -131,6 +133,10 @@ impl Url {
     pub fn join(&self, reference: &str) -> Result<Self, UrlError> {
         let reference = sanitize_url_input(reference);
 
+        if self.scheme == "file" {
+            return self.join_file_url(&reference);
+        }
+
         if reference.is_empty() {
             let mut resolved = self.clone();
             resolved.fragment = None;
@@ -176,6 +182,61 @@ impl Url {
 
         if reference_path.starts_with('/') {
             resolved.path = normalize_path(reference_path);
+        } else {
+            let directory = base_directory(&self.path);
+            resolved.path = normalize_path(&format!("{directory}{reference_path}"));
+        }
+
+        Ok(resolved)
+    }
+
+    fn join_file_url(&self, reference: &str) -> Result<Self, UrlError> {
+        let reference = sanitize_url_input(reference);
+
+        if reference.is_empty() {
+            let mut resolved = self.clone();
+            resolved.fragment = None;
+            return Ok(resolved);
+        }
+
+        let (without_fragment, fragment) = split_component(&reference, '#');
+        let (without_query, query) = split_component(&without_fragment, '?');
+
+        if has_scheme(without_query) {
+            let (scheme, after_scheme) = without_query
+                .split_once(':')
+                .expect("has_scheme guarantees ':'");
+
+            if scheme.eq_ignore_ascii_case("file") {
+                return parse_file_url(after_scheme, query, fragment);
+            }
+
+            return Self::parse(&reference);
+        }
+
+        let reference_path = without_query.replace('\\', "/");
+        let mut resolved = self.clone();
+        resolved.fragment = fragment.map(str::to_owned);
+
+        if reference_path.is_empty() {
+            if let Some(query) = query {
+                resolved.query = Some(query.to_owned());
+            }
+
+            return Ok(resolved);
+        }
+
+        resolved.query = query.map(str::to_owned);
+
+        if reference_path.starts_with("//") {
+            return parse_file_url(&reference_path, query, fragment);
+        }
+
+        if is_windows_drive_letter(reference_path.trim_start_matches('/')) {
+            resolved.host.clear();
+            resolved.path = normalize_file_path(&reference_path);
+        } else if reference_path.starts_with('/') {
+            resolved.path = normalize_file_path(&reference_path);
         } else {
             let directory = base_directory(&self.path);
             resolved.path = normalize_path(&format!("{directory}{reference_path}"));
@@ -320,7 +381,7 @@ fn is_valid_scheme(scheme: &str) -> bool {
 }
 
 fn is_special_scheme(scheme: &str) -> bool {
-    matches!(scheme, "ftp" | "http" | "https" | "ws" | "wss")
+    matches!(scheme, "file" | "ftp" | "http" | "https" | "ws" | "wss")
 }
 
 fn parse_authority(
@@ -570,6 +631,84 @@ fn adapt_punycode_bias(mut delta: u64, number_of_points: u64, first_time: bool) 
     }
 
     k + ((BASE - TMIN + 1) * delta) / (delta + SKEW)
+}
+
+fn parse_file_url(
+    after_scheme: &str,
+    query: Option<&str>,
+    fragment: Option<&str>,
+) -> Result<Url, UrlError> {
+    let after_scheme = after_scheme.replace('\\', "/");
+
+    let (host, raw_path) = if let Some(after_authority_marker) = after_scheme.strip_prefix("//") {
+        let authority_end = after_authority_marker
+            .find('/')
+            .unwrap_or(after_authority_marker.len());
+
+        let authority = &after_authority_marker[..authority_end];
+        let raw_path = &after_authority_marker[authority_end..];
+
+        if authority.contains('%') {
+            return Err(UrlError::InvalidHost);
+        }
+
+        if is_windows_drive_letter(authority) {
+            (String::new(), format!("/{authority}{raw_path}"))
+        } else {
+            let (username, password, mut host, port) = parse_authority("file", authority, false)?;
+
+            if !username.is_empty() || password.is_some() {
+                return Err(UrlError::InvalidHost);
+            }
+
+            if port.is_some() {
+                return Err(UrlError::InvalidHost);
+            }
+
+            if host.eq_ignore_ascii_case("localhost") {
+                host.clear();
+            }
+
+            (host, raw_path.to_owned())
+        }
+    } else {
+        (String::new(), after_scheme)
+    };
+
+    Ok(Url {
+        form: UrlForm::Special,
+        scheme: "file".to_owned(),
+        username: String::new(),
+        password: None,
+        host,
+        port: None,
+        path: normalize_file_path(&raw_path),
+        query: query.map(str::to_owned),
+        fragment: fragment.map(str::to_owned),
+    })
+}
+
+fn is_windows_drive_letter(input: &str) -> bool {
+    let bytes = input.as_bytes();
+
+    bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && matches!(bytes[1], b':' | b'|')
+        && (bytes.len() == 2 || matches!(bytes[2], b'/' | b'\\' | b'?' | b'#'))
+}
+
+fn normalize_file_path(raw_path: &str) -> String {
+    let mut path = raw_path.replace('\\', "/");
+
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
+
+    if is_windows_drive_letter(&path[1..]) {
+        path.replace_range(2..3, ":");
+    }
+
+    normalize_path(&path)
 }
 
 fn normalize_path(raw_path: &str) -> String {
@@ -825,5 +964,32 @@ mod tests {
             base.join("#β").unwrap().to_string(),
             "http://example.org/foo/bar#%CE%B2"
         );
+    }
+
+    #[test]
+    fn wpt_file_url_cases() {
+        assert_eq!(
+            Url::parse("file:/example.com/").unwrap().to_string(),
+            "file:///example.com/"
+        );
+        assert!(Url::parse("file://example:1/").is_err());
+        assert!(Url::parse("file://example%/").is_err());
+        assert!(Url::parse("file://[example]/").is_err());
+
+        let base = Url::parse("file:///tmp/mock/path").unwrap();
+
+        let cases = [
+            (r"file:c:\foo\bar.html", "file:///c:/foo/bar.html"),
+            (r"C|/foo/bar", "file:///C:/foo/bar"),
+            (r"/C|\foo\bar", "file:///C:/foo/bar"),
+            (r"//C|/foo/bar", "file:///C:/foo/bar"),
+            ("//", "file:///"),
+            ("file://test", "file://test/"),
+            ("file://localhost/test", "file:///test"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(base.join(input).unwrap().to_string(), expected);
+        }
     }
 }
