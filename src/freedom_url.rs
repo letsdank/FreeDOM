@@ -152,20 +152,23 @@ impl Url {
             return Ok(resolved);
         }
 
-        if self.form == UrlForm::Opaque && !reference.starts_with('#') {
-            return Err(UrlError::InvalidBase);
-        }
-
         if has_scheme(&reference) {
             let (scheme, after_scheme) = reference
                 .split_once(':')
                 .expect("has_scheme guarantees ':'");
 
-            if scheme.eq_ignore_ascii_case(&self.scheme) && !after_scheme.starts_with("//") {
+            if scheme.eq_ignore_ascii_case(&self.scheme)
+                && is_special_scheme(&self.scheme)
+                && !after_scheme.starts_with("//")
+            {
                 return self.join(after_scheme);
             }
 
             return Self::parse(&reference);
+        }
+
+        if self.form == UrlForm::Opaque && !reference.starts_with('#') {
+            return Err(UrlError::InvalidBase);
         }
 
         let (without_fragment, fragment) = split_component(&reference, '#');
@@ -301,7 +304,7 @@ impl fmt::Display for Url {
                 if self.form == UrlForm::Special {
                     write!(f, "{}", serialize_path_component(&self.path))?;
                 } else {
-                    write!(f, "{}", self.path)?;
+                    write!(f, "{}", serialize_path_component(&self.path))?;
                 }
             }
 
@@ -368,7 +371,8 @@ fn serialize_component(component: &str) -> String {
 
 fn serialize_path_component(component: &str) -> String {
     percent_encode(component, |byte| {
-        byte == b' '
+        byte <= 0x1F
+            || byte == b' '
             || byte >= 0x7F
             || matches!(byte, b'"' | b'<' | b'>' | b'?' | b'^' | b'`' | b'{' | b'}')
     })
@@ -376,7 +380,8 @@ fn serialize_path_component(component: &str) -> String {
 
 fn serialize_query_component(component: &str, is_special: bool) -> String {
     percent_encode(component, |byte| {
-        byte == b' '
+        byte <= 0x1F
+            || byte == b' '
             || byte >= 0x7F
             || matches!(byte, b'"' | b'#' | b'<' | b'>')
             || (is_special && byte == b'\'')
@@ -384,7 +389,7 @@ fn serialize_query_component(component: &str, is_special: bool) -> String {
 }
 
 fn serialize_opaque_path(path: &str, has_query_or_fragment: bool) -> String {
-    let mut serialized = percent_encode(path, |byte| byte >= 0x7F);
+    let mut serialized = percent_encode(path, |byte| byte <= 0x1F || byte >= 0x7F);
 
     if has_query_or_fragment && serialized.ends_with(' ') {
         serialized.truncate(serialized.len() - 1);
@@ -624,7 +629,7 @@ fn preprocess_special_host(host: &str) -> Result<String, UrlError> {
 
     for character in decoded.chars() {
         match character {
-            '\u{200B}' | '\u{2060}' | '\u{FEFF}' => {}
+            '\u{00AD}' | '\u{200B}' | '\u{2060}' | '\u{FEFF}' => {}
 
             '\u{3002}' | '\u{FF0E}' | '\u{FF61}' => mapped.push('.'),
 
@@ -632,6 +637,14 @@ fn preprocess_special_host(host: &str) -> Result<String, UrlError> {
                 let ascii = char::from_u32(character as u32 - 0xFEE0)
                     .expect("fullwidth ASCII always maps to ASCII");
                 mapped.push(ascii);
+            }
+
+            '\u{1D400}'..='\u{1D419}' => {
+                mapped.push((b'A' + (character as u32 - 0x1D400) as u8) as char);
+            }
+
+            '\u{1D41A}'..='\u{1D433}' => {
+                mapped.push((b'a' + (character as u32 - 0x1D41A) as u8) as char);
             }
 
             _ => mapped.push(character),
@@ -720,6 +733,10 @@ fn canonicalize_special_host(host: &str) -> Result<String, UrlError> {
     }
 
     let host = preprocess_special_host(host)?;
+
+    if host.is_empty() {
+        return Err(UrlError::InvalidHost);
+    }
 
     if host.contains('[') || host.contains(']') {
         return Err(UrlError::InvalidHost);
@@ -821,7 +838,7 @@ fn parse_ipv4_number(part: &str) -> Result<Option<u64>, UrlError> {
     };
 
     if !valid_digits {
-        return Err(UrlError::InvalidHost);
+        return Ok(None);
     }
 
     u64::from_str_radix(digits, radix)
@@ -1521,6 +1538,31 @@ mod tests {
                 .unwrap()
                 .to_string(),
             "non-special://[1:2:0:0:5::]/"
+        );
+    }
+
+    #[test]
+    fn encodes_controls_and_resolves_generic_schemes() {
+        assert_eq!(
+            Url::parse("http://0x7f.0.0.0x7g").unwrap().to_string(),
+            "http://0x7f.0.0.0x7g/"
+        );
+
+        assert_eq!(
+            Url::parse("file://a\u{00AD}b/p").unwrap().to_string(),
+            "file://ab/p"
+        );
+        assert!(Url::parse("file://\u{00AD}/p").is_err());
+
+        assert_eq!(
+            Url::parse("https://x/\0y").unwrap().to_string(),
+            "https://x/%00y"
+        );
+
+        let opaque_base = Url::parse("abc:path").unwrap();
+        assert_eq!(
+            opaque_base.join("abc:rootless").unwrap().to_string(),
+            "abc:rootless"
         );
     }
 }
