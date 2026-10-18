@@ -208,7 +208,18 @@ impl Url {
                 .expect("has_scheme guarantees ':'");
 
             if scheme.eq_ignore_ascii_case("file") {
-                return parse_file_url(after_scheme, query, fragment);
+                let absolute_file_reference = after_scheme.starts_with('/')
+                    || after_scheme.starts_with('\\')
+                    || is_windows_drive_letter(after_scheme);
+
+                if absolute_file_reference {
+                    return parse_file_url(after_scheme, query, fragment);
+                }
+
+                let mut resolved = self.join_file_url(after_scheme)?;
+                resolved.query = query.map(str::to_owned);
+                resolved.fragment = fragment.map(str::to_owned);
+                return Ok(resolved);
             }
 
             return Self::parse(&reference);
@@ -711,6 +722,17 @@ fn normalize_file_path(raw_path: &str) -> String {
     normalize_path(&path)
 }
 
+fn is_single_dot_segment(segment: &str) -> bool {
+    segment == "." || segment.eq_ignore_ascii_case("%2e")
+}
+
+fn is_double_dot_segment(segment: &str) -> bool {
+    matches!(segment, "..")
+        || segment.eq_ignore_ascii_case(".%2e")
+        || segment.eq_ignore_ascii_case("%2e.")
+        || segment.eq_ignore_ascii_case("%2e%2e")
+}
+
 fn normalize_path(raw_path: &str) -> String {
     let path = raw_path.replace('\\', "/");
 
@@ -728,22 +750,20 @@ fn normalize_path(raw_path: &str) -> String {
     let mut segments = Vec::new();
 
     for (index, segment) in raw_segments.iter().enumerate() {
-        match *segment {
-            "." => {
-                if index + 1 == raw_segments.len() {
-                    segments.push("");
-                }
+        let segment = *segment;
+
+        if is_single_dot_segment(segment) {
+            if index + 1 == raw_segments.len() {
+                segments.push("");
             }
+        } else if is_double_dot_segment(segment) {
+            segments.pop();
 
-            ".." => {
-                segments.pop();
-
-                if index + 1 == raw_segments.len() {
-                    segments.push("");
-                }
+            if index + 1 == raw_segments.len() {
+                segments.push("");
             }
-
-            _ => segments.push(*segment),
+        } else {
+            segments.push(segment);
         }
     }
 
@@ -991,5 +1011,22 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(base.join(input).unwrap().to_string(), expected);
         }
+    }
+
+    #[test]
+    fn wpt_percent_encoded_dot_segments() {
+        assert_eq!(
+            Url::parse("http://example.com/foo/%2e")
+                .unwrap()
+                .to_string(),
+            "http://example.com/foo/"
+        );
+
+        assert_eq!(
+            Url::parse("http://example.com/foo/%2e./%2e%2e/.%2e/%2e.bar")
+                .unwrap()
+                .to_string(),
+            "http://example.com/%2e.bar"
+        );
     }
 }
