@@ -1,4 +1,5 @@
-use std::{error::Error, fmt};
+use crate::freedom_url::Url;
+use std::{collections::HashMap, error::Error, fmt};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
@@ -373,9 +374,376 @@ fn is_identifier_continue(character: char) -> bool {
     is_identifier_start(character) || character.is_ascii_digit()
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Undefined,
+    Null,
+    Boolean(bool),
+    Number(f64),
+    String(String),
+    Url(Url),
+}
+
+impl Value {
+    fn to_js_string(&self) -> String {
+        match self {
+            Value::Undefined => "undefined".to_owned(),
+            Value::Null => "null".to_owned(),
+            Value::Boolean(value) => value.to_string(),
+            Value::Number(value) => value.to_string(),
+            Value::String(value) => value.clone(),
+            Value::Url(url) => url.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Statement {
+    Declaration { name: String, value: Expression },
+    Expression(Expression),
+}
+
+#[derive(Clone, Debug)]
+enum Expression {
+    Literal(Value),
+    Identifier(String),
+    New {
+        constructor: String,
+        arguments: Vec<Expression>,
+    },
+    Member {
+        object: Box<Expression>,
+        property: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsError {
+    pub offset: Option<usize>,
+    pub message: String,
+}
+
+impl JsError {
+    fn syntax(offset: usize, message: impl Into<String>) -> Self {
+        Self {
+            offset: Some(offset),
+            message: message.into(),
+        }
+    }
+
+    fn runtime(message: impl Into<String>) -> Self {
+        Self {
+            offset: None,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for JsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.offset {
+            Some(offset) => write!(f, "{} at byte {offset}", self.message),
+            None => write!(f, "{}", self.message),
+        }
+    }
+}
+
+impl Error for JsError {}
+
+pub fn evaluate(source: &str) -> Result<Value, JsError> {
+    let tokens = tokenize(source).map_err(|error| JsError {
+        offset: Some(error.offset),
+        message: error.message,
+    })?;
+
+    let program = Parser::new(tokens).parse_program()?;
+    Interpreter::new().execute(&program)
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    position: usize,
+}
+
+impl Parser {
+    fn new(tokens: Vec<Token>) -> Self {
+        Self {
+            tokens,
+            position: 0,
+        }
+    }
+
+    fn parse_program(&mut self) -> Result<Vec<Statement>, JsError> {
+        let mut statements = Vec::new();
+
+        while !self.check(&TokenKind::EndOfFile) {
+            statements.push(self.parse_statement()?);
+        }
+
+        Ok(statements)
+    }
+
+    fn parse_statement(&mut self) -> Result<Statement, JsError> {
+        if matches!(
+            self.peek().kind,
+            TokenKind::Let | TokenKind::Const | TokenKind::Var
+        ) {
+            self.advance();
+            return self.parse_declaration();
+        }
+
+        let expression = self.parse_expression()?;
+        self.consume_optional(&TokenKind::Semicolon);
+
+        Ok(Statement::Expression(expression))
+    }
+
+    fn parse_declaration(&mut self) -> Result<Statement, JsError> {
+        let (name, offset) = self.consume_identifier("expected a variable name")?;
+
+        let value = if self.consume_optional(&TokenKind::Assign) {
+            self.parse_expression()?
+        } else {
+            Expression::Literal(Value::Undefined)
+        };
+
+        self.consume_optional(&TokenKind::Semicolon);
+
+        if name.is_empty() {
+            return Err(JsError::syntax(offset, "variable name cannot be empty"));
+        }
+
+        Ok(Statement::Declaration { name, value })
+    }
+
+    fn parse_expression(&mut self) -> Result<Expression, JsError> {
+        self.parse_member_expression()
+    }
+
+    fn parse_member_expression(&mut self) -> Result<Expression, JsError> {
+        let mut expression = self.parse_primary()?;
+
+        while self.consume_optional(&TokenKind::Dot) {
+            let (property, _) = self.consume_identifier("expected a property name after '.'")?;
+
+            expression = Expression::Member {
+                object: Box::new(expression),
+                property,
+            };
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_primary(&mut self) -> Result<Expression, JsError> {
+        let token = self.advance();
+
+        match token.kind {
+            TokenKind::String(value) => Ok(Expression::Literal(Value::String(value))),
+            TokenKind::Number(value) => Ok(Expression::Literal(Value::Number(value))),
+            TokenKind::True => Ok(Expression::Literal(Value::Boolean(true))),
+            TokenKind::False => Ok(Expression::Literal(Value::Boolean(false))),
+            TokenKind::Null => Ok(Expression::Literal(Value::Null)),
+
+            TokenKind::Identifier(name) => Ok(Expression::Identifier(name)),
+
+            TokenKind::New => self.parse_new_expression(token.offset),
+
+            TokenKind::LeftParen => {
+                let expression = self.parse_expression()?;
+                self.consume(&TokenKind::RightParen, "expected ')' after expression")?;
+                Ok(expression)
+            }
+
+            TokenKind::EndOfFile => Err(JsError::syntax(
+                token.offset,
+                "unexpected end of JavaScript source",
+            )),
+
+            _ => Err(JsError::syntax(token.offset, "expected an expression")),
+        }
+    }
+
+    fn parse_new_expression(&mut self, offset: usize) -> Result<Expression, JsError> {
+        let (constructor, _) = self.consume_identifier("expected a constructor after 'new'")?;
+
+        self.consume(&TokenKind::LeftParen, "expected '(' after constructor name")?;
+
+        let arguments = self.parse_arguments()?;
+
+        if constructor.is_empty() {
+            return Err(JsError::syntax(offset, "constructor name cannot be empty"));
+        }
+
+        Ok(Expression::New {
+            constructor,
+            arguments,
+        })
+    }
+
+    fn parse_arguments(&mut self) -> Result<Vec<Expression>, JsError> {
+        let mut arguments = Vec::new();
+
+        if self.consume_optional(&TokenKind::RightParen) {
+            return Ok(arguments);
+        }
+
+        loop {
+            arguments.push(self.parse_expression()?);
+
+            if self.consume_optional(&TokenKind::Comma) {
+                continue;
+            }
+
+            self.consume(&TokenKind::RightParen, "expected ',' or ')' after argument")?;
+
+            return Ok(arguments);
+        }
+    }
+
+    fn consume_identifier(&mut self, message: &str) -> Result<(String, usize), JsError> {
+        let token = self.advance();
+
+        match token.kind {
+            TokenKind::Identifier(name) => Ok((name, token.offset)),
+            _ => Err(JsError::syntax(token.offset, message)),
+        }
+    }
+
+    fn consume(&mut self, expected: &TokenKind, message: &str) -> Result<(), JsError> {
+        if self.check(expected) {
+            self.advance();
+            Ok(())
+        } else {
+            Err(JsError::syntax(self.peek().offset, message))
+        }
+    }
+
+    fn consume_optional(&mut self, expected: &TokenKind) -> bool {
+        if self.check(expected) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn check(&self, expected: &TokenKind) -> bool {
+        self.peek().kind == *expected
+    }
+
+    fn peek(&self) -> &Token {
+        &self.tokens[self.position]
+    }
+
+    fn advance(&mut self) -> Token {
+        let token = self.tokens[self.position].clone();
+
+        if !matches!(token.kind, TokenKind::EndOfFile) {
+            self.position += 1;
+        }
+
+        token
+    }
+}
+
+struct Interpreter {
+    variables: HashMap<String, Value>,
+}
+
+impl Interpreter {
+    fn new() -> Self {
+        Self {
+            variables: HashMap::new(),
+        }
+    }
+
+    fn execute(&mut self, program: &[Statement]) -> Result<Value, JsError> {
+        let mut result = Value::Undefined;
+
+        for statement in program {
+            result = match statement {
+                Statement::Declaration { name, value } => {
+                    let value = self.evaluate_expression(value)?;
+                    self.variables.insert(name.clone(), value);
+                    Value::Undefined
+                }
+
+                Statement::Expression(expression) => self.evaluate_expression(expression)?,
+            };
+        }
+
+        Ok(result)
+    }
+
+    fn evaluate_expression(&mut self, expression: &Expression) -> Result<Value, JsError> {
+        match expression {
+            Expression::Literal(value) => Ok(value.clone()),
+
+            Expression::Identifier(name) => {
+                self.variables.get(name).cloned().ok_or_else(|| {
+                    JsError::runtime(format!("ReferenceError: ${name} is not defined"))
+                })
+            }
+
+            Expression::New {
+                constructor,
+                arguments,
+            } => self.construct(constructor, arguments),
+
+            Expression::Member { object, property } => {
+                let object = self.evaluate_expression(object)?;
+
+                match (object, property.as_str()) {
+                    (Value::Url(url), "href") => Ok(Value::String(url.to_string())),
+
+                    (Value::Url(url), "protocol") => {
+                        Ok(Value::String(format!("{}:", url.scheme())))
+                    }
+
+                    (Value::Url(_), property) => Err(JsError::runtime(format!(
+                        "URL.{property} is not implemented yet"
+                    ))),
+
+                    (_, property) => Err(JsError::runtime(format!(
+                        "cannot read property {property:?} from this value"
+                    ))),
+                }
+            }
+        }
+    }
+
+    fn construct(&mut self, constructor: &str, arguments: &[Expression]) -> Result<Value, JsError> {
+        if constructor != "URL" {
+            return Err(JsError::runtime(format!(
+                "ReferenceError: constructor {constructor} is not defined"
+            )));
+        }
+
+        if !(1..=2).contains(&arguments.len()) {
+            return Err(JsError::runtime(
+                "TypeError: URL constructor expects one or two arguments",
+            ));
+        }
+
+        let input = self.evaluate_expression(&arguments[0])?.to_js_string();
+
+        let url = if arguments.len() == 1 {
+            Url::parse(&input)
+        } else {
+            let base = self.evaluate_expression(&arguments[1])?.to_js_string();
+
+            Url::parse(&base).and_then(|base_url| base_url.join(&input))
+        }
+        .map_err(|error| JsError::runtime(format!("TypeError: invalid URL: {error}")))?;
+
+        Ok(Value::Url(url))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TokenKind, tokenize};
+    use super::{TokenKind, Value, evaluate, tokenize};
 
     #[test]
     fn tokenizes_url_constructor_syntax() {
@@ -437,5 +805,22 @@ let base = "https:\/\/example.test\u002Fdocs";
         let error = tokenize("/* unfinished").unwrap_err();
 
         assert_eq!(error.message, "unterminated block comment");
+    }
+
+    #[test]
+    fn evaluates_url_constructor_and_href() {
+        let result = evaluate(
+            r##"
+                const base = "http://example.org/foo/bar";
+                const url = new URL("#", base);
+                url.href;
+            "##,
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            Value::String("http://example.org/foo/bar#".to_owned())
+        );
     }
 }
