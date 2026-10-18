@@ -1,7 +1,5 @@
 mod freedom_url;
 
-use std::{num::NonZeroU32, rc::Rc, time::Duration};
-
 use crate::freedom_url::Url;
 use anyhow::{Context as _, Result, bail};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -9,10 +7,11 @@ use html5ever::{parse_document, tendril::TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use reqwest::{blocking::Client, redirect::Policy};
 use softbuffer::{Context as SoftbufferContext, Surface};
+use std::{num::NonZeroU32, rc::Rc, time::Duration};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{ElementState, KeyEvent, MouseButton, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
@@ -24,6 +23,8 @@ const ADDRESS_BAR: u32 = 0x00_38_40_4A;
 const TEXT: u32 = 0x00_18_1B_20;
 const LIGHT_TEXT: u32 = 0x00_F4_F6_F8;
 const LINK_TEXT: u32 = 0x00_00_00_EE;
+
+const CONTENT_TOP: i32 = 90;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Display {
@@ -52,6 +53,11 @@ struct LinkRegion {
     width: i32,
     height: i32,
     target: String,
+}
+
+struct PaintResult {
+    link_regions: Vec<LinkRegion>,
+    max_scroll_y: i32,
 }
 
 impl LinkRegion {
@@ -765,6 +771,8 @@ struct App {
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
     link_regions: Vec<LinkRegion>,
     cursor_position: Option<(i32, i32)>,
+    scroll_y: i32,
+    max_scroll_y: i32,
 }
 
 impl App {
@@ -782,6 +790,8 @@ impl App {
             surface: None,
             link_regions: Vec::new(),
             cursor_position: None,
+            scroll_y: 0,
+            max_scroll_y: 0,
         }
     }
 
@@ -865,6 +875,11 @@ impl App {
         }
     }
 
+    fn scroll_by(&mut self, amount: i32) {
+        self.scroll_y = next_scroll_offset(self.scroll_y, self.max_scroll_y, amount);
+        self.request_redraw();
+    }
+
     fn redraw(&mut self) -> Result<()> {
         let size = self
             .window
@@ -888,22 +903,40 @@ impl App {
             .buffer_mut()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-        let link_regions = paint(
+        let paint_result = paint(
             &mut buffer,
             width as usize,
             height as usize,
             &self.page,
             &self.address,
             &self.status,
+            self.scroll_y,
         );
 
         buffer
             .present()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-        self.link_regions = link_regions;
+        self.link_regions = paint_result.link_regions;
+        self.max_scroll_y = paint_result.max_scroll_y;
+
+        if self.scroll_y > self.max_scroll_y {
+            self.scroll_y = self.max_scroll_y;
+            self.request_redraw();
+        }
 
         Ok(())
+    }
+}
+
+fn next_scroll_offset(current: i32, maximum: i32, amount: i32) -> i32 {
+    current.saturating_add(amount).clamp(0, maximum.max(0))
+}
+
+fn scroll_amount(delta: MouseScrollDelta) -> i32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, lines) => (-lines * 48.0).round() as i32,
+        MouseScrollDelta::PixelDelta(position) => (-position.y).round() as i32,
     }
 }
 
@@ -969,6 +1002,9 @@ impl ApplicationHandler<AppEvent> for App {
                             window.set_title(&format!("FreeDOM - {}", page.title));
                         }
 
+                        self.scroll_y = 0;
+                        self.max_scroll_y = 0;
+                        self.link_regions.clear();
                         self.page = page;
                     }
 
@@ -1009,6 +1045,10 @@ impl ApplicationHandler<AppEvent> for App {
                 ..
             } => self.open_link_at_cursor(),
 
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.scroll_by(scroll_amount(delta));
+            }
+
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.redraw() {
                     eprintln!("ошибка отрисовки: {error}");
@@ -1028,7 +1068,8 @@ fn paint(
     page: &Page,
     address: &str,
     status: &str,
-) -> Vec<LinkRegion> {
+    scroll_y: i32,
+) -> PaintResult {
     pixels.fill(BACKGROUND);
 
     fill_rect(pixels, width, height, 0, 0, width as i32, 70, TOOLBAR);
@@ -1046,14 +1087,10 @@ fn paint(
     draw_text_line(pixels, width, height, 20, 18, address, 1, LIGHT_TEXT);
     draw_text_line(pixels, width, height, 16, 51, status, 1, LIGHT_TEXT);
 
-    let mut y = 90;
+    let mut y = CONTENT_TOP - scroll_y;
     let mut link_regions = Vec::new();
 
     for block in &page.blocks {
-        if y >= height as i32 {
-            break;
-        }
-
         y = draw_wrapped_text(
             pixels,
             width,
@@ -1071,7 +1108,12 @@ fn paint(
         y += block.style.margin_after;
     }
 
-    link_regions
+    let document_button = y + scroll_y;
+
+    PaintResult {
+        link_regions,
+        max_scroll_y: (document_button - height as i32).max(0),
+    }
 }
 
 fn draw_wrapped_text(
@@ -1088,6 +1130,7 @@ fn draw_wrapped_text(
     link_regions: &mut Vec<LinkRegion>,
 ) -> i32 {
     let character_width = (8 * scale) as i32;
+    let glyph_height = (8 * scale) as i32;
     let line_height = (10 * scale) as i32;
     let mut x = left;
 
@@ -1099,26 +1142,25 @@ fn draw_wrapped_text(
             y += line_height;
         }
 
-        if y + (8 * scale) as i32 >= height as i32 {
-            return y;
-        }
-
         if x != left {
             x += character_width;
         }
 
         let word_x = x;
+        let is_visible = y + glyph_height > CONTENT_TOP && y < height as i32;
 
-        draw_text_line(pixels, width, height, word_x, y, word, scale, color);
+        if is_visible {
+            draw_text_line(pixels, width, height, word_x, y, word, scale, color);
 
-        if let Some(target) = link_target {
-            link_regions.push(LinkRegion {
-                x: word_x,
-                y,
-                width: word_width,
-                height: (8 * scale) as i32,
-                target: target.to_owned(),
-            });
+            if let Some(target) = link_target {
+                link_regions.push(LinkRegion {
+                    x: word_x,
+                    y,
+                    width: word_width,
+                    height: glyph_height,
+                    target: target.to_owned(),
+                });
+            }
         }
 
         x += word_width;
@@ -1287,5 +1329,12 @@ mod tests {
             link.link.as_deref(),
             Some("https://example.test/docs/about.html")
         );
+    }
+
+    #[test]
+    fn clamps_scroll_to_document_bounds() {
+        assert_eq!(next_scroll_offset(0, 500, 48), 48);
+        assert_eq!(next_scroll_offset(48, 500, -100), 0);
+        assert_eq!(next_scroll_offset(490, 500, 100), 500);
     }
 }
