@@ -513,10 +513,104 @@ fn canonicalize_special_host(host: &str) -> Result<String, UrlError> {
         return Err(UrlError::InvalidHost);
     }
 
+    if let Some(address) = parse_ipv4_address(host)? {
+        return Ok(address);
+    }
+
     host.split('.')
         .map(domain_label_to_ascii)
         .collect::<Result<Vec<_>, _>>()
         .map(|labels| labels.join("."))
+}
+
+fn parse_ipv4_address(input: &str) -> Result<Option<String>, UrlError> {
+    let mut parts: Vec<&str> = input.split('.').collect();
+
+    if parts.len() > 1 && parts.last() == Some(&"") {
+        parts.pop();
+    }
+
+    let Some(last_part) = parts.last().copied() else {
+        return Ok(None);
+    };
+
+    if parse_ipv4_number(last_part)?.is_none() {
+        return Ok(None);
+    }
+
+    if parts.len() > 4 {
+        return Err(UrlError::InvalidHost);
+    }
+
+    let mut numbers = Vec::with_capacity(parts.len());
+
+    for part in parts {
+        let number = parse_ipv4_number(part)?.ok_or(UrlError::InvalidHost)?;
+        numbers.push(number);
+    }
+
+    let last_index = numbers.len() - 1;
+
+    if numbers[..last_index].iter().any(|number| *number > 255) {
+        return Err(UrlError::InvalidHost);
+    }
+
+    let maximum_last_part = 256_u64.pow((5 - numbers.len()) as u32);
+
+    if numbers[last_index] >= maximum_last_part {
+        return Err(UrlError::InvalidHost);
+    }
+
+    let mut address = numbers[last_index];
+
+    for (index, number) in numbers[..last_index].iter().enumerate() {
+        address += number * 256_u64.pow((3 - index) as u32);
+    }
+
+    Ok(Some(format!(
+        "{}.{}.{}.{}",
+        address >> 24,
+        (address >> 16) & 0xFF,
+        (address >> 8) & 0xFF,
+        address & 0xFF
+    )))
+}
+
+fn parse_ipv4_number(part: &str) -> Result<Option<u64>, UrlError> {
+    let Some(first) = part.as_bytes().first().copied() else {
+        return Ok(None);
+    };
+
+    if !first.is_ascii_digit() {
+        return Ok(None);
+    }
+
+    let (radix, digits) = if part.starts_with("0x") || part.starts_with("0X") {
+        (16, &part[2..])
+    } else if part.len() > 1 && part.starts_with('0') {
+        (8, &part[1..])
+    } else {
+        (10, part)
+    };
+
+    if digits.is_empty() {
+        return Err(UrlError::InvalidHost);
+    }
+
+    let valid_digits = match radix {
+        8 => digits.bytes().all(|byte| matches!(byte, b'0'..=b'7')),
+        10 => digits.bytes().all(|byte| byte.is_ascii_digit()),
+        16 => digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        _ => unreachable!("only supported IPv4 radices are used"),
+    };
+
+    if !valid_digits {
+        return Err(UrlError::InvalidHost);
+    }
+
+    u64::from_str_radix(digits, radix)
+        .map(Some)
+        .map_err(|_| UrlError::InvalidHost)
 }
 
 fn domain_label_to_ascii(label: &str) -> Result<String, UrlError> {
@@ -1028,5 +1122,22 @@ mod tests {
                 .to_string(),
             "http://example.com/%2e.bar"
         );
+    }
+
+    #[test]
+    fn wpt_legacy_ipv4_cases() {
+        assert_eq!(
+            Url::parse("http://192.0x00A80001").unwrap().to_string(),
+            "http://192.168.0.1/"
+        );
+        assert_eq!(
+            Url::parse("http://0x7f.1").unwrap().to_string(),
+            "http://127.0.0.1/"
+        );
+        assert_eq!(
+            Url::parse("http://127.1").unwrap().to_string(),
+            "http://127.0.0.1/"
+        );
+        assert!(Url::parse("http://256.256.256.256").is_err());
     }
 }
