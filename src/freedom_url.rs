@@ -199,10 +199,10 @@ impl fmt::Display for Url {
                 write!(f, "{}://", self.scheme)?;
 
                 if !self.username.is_empty() || self.password.is_some() {
-                    write!(f, "{}", self.username)?;
+                    write!(f, "{}", serialize_userinfo(&self.username))?;
 
                     if let Some(password) = &self.password {
-                        write!(f, ":{password}")?;
+                        write!(f, ":{}", serialize_userinfo(password))?;
                     }
 
                     write!(f, "@")?;
@@ -251,6 +251,50 @@ fn sanitize_url_input(input: &str) -> String {
 
 fn serialize_component(component: &str) -> String {
     component.replace(' ', "%20")
+}
+
+fn serialize_userinfo(component: &str) -> String {
+    percent_encode(component, |byte| {
+        byte <= 0x1F
+            || byte >= 0x7F
+            || matches!(
+                byte,
+                b' ' | b'"'
+                    | b'#'
+                    | b'<'
+                    | b'>'
+                    | b'?'
+                    | b'`'
+                    | b'/'
+                    | b':'
+                    | b';'
+                    | b'='
+                    | b'@'
+                    | b'['
+                    | b'\\'
+                    | b']'
+                    | b'^'
+                    | b'|'
+            )
+    })
+}
+
+fn percent_encode(input: &str, should_encode: impl Fn(u8) -> bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::new();
+
+    for byte in input.bytes() {
+        if should_encode(byte) {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0F) as usize] as char);
+        } else {
+            encoded.push(byte as char);
+        }
+    }
+
+    encoded
 }
 
 fn split_component(input: &str, marker: char) -> (&str, Option<&str>) {
@@ -367,7 +411,170 @@ fn parse_authority(
         }
     };
 
-    Ok((username, password, host.to_ascii_lowercase(), port))
+    let host = if is_special_scheme(scheme) {
+        canonicalize_special_host(host)?
+    } else {
+        host.to_ascii_lowercase()
+    };
+
+    Ok((username, password, host, port))
+}
+
+fn canonicalize_special_host(host: &str) -> Result<String, UrlError> {
+    if host.is_empty() {
+        return Ok(String::new());
+    }
+
+    if host.starts_with('[') {
+        let Some(address) = host
+            .strip_prefix('[')
+            .and_then(|address| address.strip_suffix(']'))
+        else {
+            return Err(UrlError::InvalidHost);
+        };
+
+        let address = address
+            .parse::<std::net::Ipv6Addr>()
+            .map_err(|_| UrlError::InvalidHost)?;
+
+        return Ok(format!("[{address}]"));
+    }
+
+    if host.contains('[') || host.contains(']') {
+        return Err(UrlError::InvalidHost);
+    }
+
+    host.split('.')
+        .map(domain_label_to_ascii)
+        .collect::<Result<Vec<_>, _>>()
+        .map(|labels| labels.join("."))
+}
+
+fn domain_label_to_ascii(label: &str) -> Result<String, UrlError> {
+    if label.is_ascii() {
+        return Ok(label.to_ascii_lowercase());
+    }
+
+    const BASE: u64 = 36;
+    const TMIN: u64 = 1;
+    const TMAX: u64 = 26;
+    const SKEW: u64 = 38;
+    const DAMP: u64 = 700;
+    const INITIAL_BIAS: u64 = 72;
+    const INITIAL_N: u64 = 128;
+
+    let code_points: Vec<u64> = label
+        .chars()
+        .flat_map(|character| character.to_lowercase())
+        .map(|character| character as u32 as u64)
+        .collect();
+
+    let mut output = String::new();
+
+    for &point in &code_points {
+        if point < 0x80 {
+            output.push((point as u8 as char).to_ascii_lowercase());
+        }
+    }
+
+    let basic_count = output.len() as u64;
+    let mut handled = basic_count;
+
+    if basic_count > 0 {
+        output.push('-');
+    }
+
+    let mut n = INITIAL_N;
+    let mut delta = 0_u64;
+    let mut bias = INITIAL_BIAS;
+
+    while handled < code_points.len() as u64 {
+        let next = code_points
+            .iter()
+            .copied()
+            .filter(|point| *point >= n)
+            .min()
+            .ok_or(UrlError::InvalidHost)?;
+
+        let weight = handled.checked_add(1).ok_or(UrlError::InvalidHost)?;
+        let increment = (next - n)
+            .checked_mul(weight)
+            .ok_or(UrlError::InvalidHost)?;
+
+        delta = delta.checked_add(increment).ok_or(UrlError::InvalidHost)?;
+
+        n = next;
+
+        for &point in &code_points {
+            if point < n {
+                delta = delta.checked_add(1).ok_or(UrlError::InvalidHost)?;
+            }
+
+            if point != n {
+                continue;
+            }
+
+            let mut quotient = delta;
+            let mut k = BASE;
+
+            loop {
+                let threshold = if k <= bias {
+                    TMIN
+                } else if k >= bias.saturating_add(TMAX) {
+                    TMAX
+                } else {
+                    k - bias
+                };
+
+                if quotient < threshold {
+                    output.push(punycode_digit(quotient));
+                    break;
+                }
+
+                let digit = threshold + (quotient - threshold) % (BASE - threshold);
+                output.push(punycode_digit(digit));
+                quotient = (quotient - threshold) / (BASE - threshold);
+                k = k.checked_add(BASE).ok_or(UrlError::InvalidHost)?;
+            }
+
+            bias = adapt_punycode_bias(delta, handled + 1, handled == basic_count);
+            delta = 0;
+            handled += 1;
+        }
+
+        delta = delta.checked_add(1).ok_or(UrlError::InvalidHost)?;
+        n = n.checked_add(1).ok_or(UrlError::InvalidHost)?;
+    }
+
+    Ok(format!("xn--{output}"))
+}
+
+fn punycode_digit(value: u64) -> char {
+    match value {
+        0..=25 => (b'a' + value as u8) as char,
+        26..=35 => (b'0' + (value as u8 - 26)) as char,
+        _ => unreachable!("Punycode digit must be less than 36"),
+    }
+}
+
+fn adapt_punycode_bias(mut delta: u64, number_of_points: u64, first_time: bool) -> u64 {
+    const BASE: u64 = 36;
+    const TMIN: u64 = 1;
+    const TMAX: u64 = 26;
+    const SKEW: u64 = 38;
+    const DAMP: u64 = 700;
+
+    delta = if first_time { delta / DAMP } else { delta / 2 };
+    delta += delta / number_of_points;
+
+    let mut k = 0;
+
+    while delta > ((BASE - TMIN) * TMAX) / 2 {
+        delta /= BASE - TMIN;
+        k += BASE;
+    }
+
+    k + ((BASE - TMIN + 1) * delta) / (delta + SKEW)
 }
 
 fn normalize_path(raw_path: &str) -> String {
@@ -377,27 +584,48 @@ fn normalize_path(raw_path: &str) -> String {
         return "/".to_owned();
     }
 
-    let trailing_slash = path.ends_with('/') || path.ends_with("/.") || path.ends_with("/..");
+    let absolute = path.starts_with('/');
+    let raw_segments: Vec<&str> = if absolute {
+        path[1..].split('/').collect()
+    } else {
+        path.split('/').collect()
+    };
+
     let mut segments = Vec::new();
 
-    for segment in path.split('/') {
-        match segment {
-            "" | "." => {}
+    for (index, segment) in raw_segments.iter().enumerate() {
+        match *segment {
+            "." => {
+                if index + 1 == raw_segments.len() {
+                    segments.push("");
+                }
+            }
+
             ".." => {
                 segments.pop();
+
+                if index + 1 == raw_segments.len() {
+                    segments.push("");
+                }
             }
-            _ => segments.push(segment),
+
+            _ => segments.push(*segment),
         }
     }
 
-    let mut normalized = String::from("/");
+    let mut normalized = if absolute {
+        "/".to_owned()
+    } else {
+        String::new()
+    };
+
     normalized.push_str(&segments.join("/"));
 
-    if trailing_slash && normalized != "/" {
-        normalized.push('/');
+    if normalized.is_empty() {
+        "/".to_owned()
+    } else {
+        normalized
     }
-
-    normalized
 }
 
 fn base_directory(path: &str) -> &str {
@@ -554,5 +782,30 @@ mod tests {
         );
 
         assert_eq!(Url::parse("ws://a@b/c").unwrap().to_string(), "ws://a@b/c");
+    }
+
+    #[test]
+    fn wpt_host_and_userinfo_serialization_cases() {
+        assert_eq!(
+            Url::parse("http://é@é").unwrap().to_string(),
+            "http://%C3%A9@xn--9ca/"
+        );
+        assert_eq!(
+            Url::parse("http://&a:foo(b]c@d:2/").unwrap().to_string(),
+            "http://&a:foo(b%5Dc@d:2/"
+        );
+        assert_eq!(
+            Url::parse("http://::@c@d:2").unwrap().to_string(),
+            "http://:%3A%40c@d:2/"
+        );
+        assert_eq!(
+            Url::parse(r"http://foo.com/\@").unwrap().to_string(),
+            "http://foo.com//@"
+        );
+        assert_eq!(
+            Url::parse("http://[::127.0.0.1]").unwrap().to_string(),
+            "http://[::7f00:1]/"
+        );
+        assert!(Url::parse("http://[::127.0.0.1.]").is_err());
     }
 }
