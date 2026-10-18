@@ -152,7 +152,7 @@ mod tests {
                     "href": "http://example.org/foo/bar#"
                 },
                 {
-                    "input": "ftp://example.org/",
+                    "input": "http://example.org:bad/",
                     "failure": true
                 }
             ]

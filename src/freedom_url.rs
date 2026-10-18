@@ -10,16 +10,22 @@ pub struct Url {
     fragment: Option<String>,
     username: String,
     password: Option<String>,
+    form: UrlForm,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UrlForm {
+    Special,
+    Authority,
+    Opaque,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UrlError {
     EmptyInput,
     InvalidScheme,
-    UnsupportedScheme(String),
     MissingAuthority,
     EmptyHost,
-    UserInfoUnsupported,
     InvalidHost,
     InvalidPort,
 }
@@ -29,10 +35,8 @@ impl fmt::Display for UrlError {
         match self {
             Self::EmptyInput => write!(f, "URL is empty"),
             Self::InvalidScheme => write!(f, "invalid URL scheme"),
-            Self::UnsupportedScheme(scheme) => write!(f, "unsupported URL scheme: {scheme}"),
             Self::MissingAuthority => write!(f, "URL is missing an authority"),
             Self::EmptyHost => write!(f, "URL host is empty"),
-            Self::UserInfoUnsupported => write!(f, "URL user info is not supported yet"),
             Self::InvalidHost => write!(f, "invalid URL host"),
             Self::InvalidPort => write!(f, "invalid URL port"),
         }
@@ -62,32 +66,66 @@ impl Url {
 
         let scheme = scheme.to_ascii_lowercase();
 
-        if !matches!(scheme.as_str(), "http" | "https") {
-            return Err(UrlError::UnsupportedScheme(scheme));
+        if is_special_scheme(&scheme) {
+            let after_scheme = after_scheme.replace('\\', "/");
+
+            let Some(after_authority_marker) = after_scheme.strip_prefix("//") else {
+                return Err(UrlError::MissingAuthority);
+            };
+
+            let authority_end = after_authority_marker
+                .find('/')
+                .unwrap_or(after_authority_marker.len());
+
+            let authority = &after_authority_marker[..authority_end];
+            let raw_path = &after_authority_marker[authority_end..];
+
+            let (username, password, host, port) = parse_authority(&scheme, authority, true)?;
+
+            return Ok(Self {
+                form: UrlForm::Special,
+                scheme,
+                username,
+                password,
+                host,
+                port,
+                path: normalize_path(raw_path),
+                query: query.map(str::to_owned),
+                fragment: fragment.map(str::to_owned),
+            });
         }
 
-        let after_scheme = after_scheme.replace('\\', "/");
+        if let Some(after_authority_marker) = after_scheme.strip_prefix("//") {
+            let authority_end = after_authority_marker
+                .find('/')
+                .unwrap_or(after_authority_marker.len());
 
-        let Some(after_authority_marker) = after_scheme.strip_prefix("//") else {
-            return Err(UrlError::MissingAuthority);
-        };
+            let authority = &after_authority_marker[..authority_end];
+            let raw_path = &after_authority_marker[authority_end..];
 
-        let authority_end = after_authority_marker
-            .find('/')
-            .unwrap_or(after_authority_marker.len());
+            let (username, password, host, port) = parse_authority(&scheme, authority, false)?;
 
-        let authority = &after_authority_marker[..authority_end];
-        let raw_path = &after_authority_marker[authority_end..];
-
-        let (username, password, host, port) = parse_authority(&scheme, authority)?;
+            return Ok(Self {
+                form: UrlForm::Authority,
+                scheme,
+                username,
+                password,
+                host,
+                port,
+                path: raw_path.to_owned(),
+                query: query.map(str::to_owned),
+                fragment: fragment.map(str::to_owned),
+            });
+        }
 
         Ok(Self {
+            form: UrlForm::Opaque,
             scheme,
-            username,
-            password,
-            host,
-            port,
-            path: normalize_path(raw_path),
+            username: String::new(),
+            password: None,
+            host: String::new(),
+            port: None,
+            path: after_scheme.to_owned(),
             query: query.map(str::to_owned),
             fragment: fragment.map(str::to_owned),
         })
@@ -156,25 +194,37 @@ impl Url {
 
 impl fmt::Display for Url {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}://", self.scheme)?;
+        match self.form {
+            UrlForm::Special | UrlForm::Authority => {
+                write!(f, "{}://", self.scheme)?;
 
-        if !self.username.is_empty() || self.password.is_some() {
-            write!(f, "{}", self.username)?;
+                if !self.username.is_empty() || self.password.is_some() {
+                    write!(f, "{}", self.username)?;
 
-            if let Some(password) = &self.password {
-                write!(f, ":{password}")?;
+                    if let Some(password) = &self.password {
+                        write!(f, ":{password}")?;
+                    }
+
+                    write!(f, "@")?;
+                }
+
+                write!(f, "{}", self.host)?;
+
+                if let Some(port) = self.port {
+                    write!(f, ":{port}")?;
+                }
+
+                if self.form == UrlForm::Special {
+                    write!(f, "{}", serialize_component(&self.path))?;
+                } else {
+                    write!(f, "{}", self.path)?;
+                }
             }
 
-            write!(f, "@")?;
+            UrlForm::Opaque => {
+                write!(f, "{}:{}", self.scheme, self.path)?;
+            }
         }
-
-        write!(f, "{}", self.host)?;
-
-        if let Some(port) = self.port {
-            write!(f, ":{port}")?;
-        }
-
-        write!(f, "{}", serialize_component(&self.path))?;
 
         if let Some(query) = &self.query {
             write!(f, "?{}", serialize_component(query))?;
@@ -228,11 +278,16 @@ fn is_valid_scheme(scheme: &str) -> bool {
         .all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.'))
 }
 
+fn is_special_scheme(scheme: &str) -> bool {
+    matches!(scheme, "http" | "https" | "ws" | "wss")
+}
+
 fn parse_authority(
     scheme: &str,
     authority: &str,
+    host_required: bool,
 ) -> Result<(String, Option<String>, String, Option<u16>), UrlError> {
-    if authority.is_empty() {
+    if authority.is_empty() && host_required {
         return Err(UrlError::EmptyHost);
     }
 
@@ -277,7 +332,7 @@ fn parse_authority(
         }
     };
 
-    if host.is_empty() {
+    if host_required && host.is_empty() {
         return Err(UrlError::EmptyHost);
     }
 
@@ -306,7 +361,7 @@ fn parse_authority(
             };
 
             match (scheme, port) {
-                ("http", 80) | ("https", 443) => None,
+                ("http" | "ws", 80) | ("https" | "wss", 443) => None,
                 _ => Some(port),
             }
         }
@@ -473,5 +528,31 @@ mod tests {
             base.join(r"\\x\hello").unwrap().to_string(),
             "http://x/hello"
         );
+    }
+
+    #[test]
+    fn wpt_non_special_url_cases() {
+        assert_eq!(
+            Url::parse("non-special://test:@test/x")
+                .unwrap()
+                .to_string(),
+            "non-special://test@test/x"
+        );
+
+        assert_eq!(Url::parse("a: foo.com").unwrap().to_string(), "a: foo.com");
+
+        assert_eq!(
+            Url::parse("lolscheme:x x#x x").unwrap().to_string(),
+            "lolscheme:x x#x%20x"
+        );
+
+        assert_eq!(Url::parse("foo://").unwrap().to_string(), "foo://");
+
+        assert_eq!(
+            Url::parse("foo:/bar.com/").unwrap().to_string(),
+            "foo:/bar.com/"
+        );
+
+        assert_eq!(Url::parse("ws://a@b/c").unwrap().to_string(), "ws://a@b/c");
     }
 }
