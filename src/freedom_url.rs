@@ -68,10 +68,7 @@ impl Url {
 
         if is_special_scheme(&scheme) {
             let after_scheme = after_scheme.replace('\\', "/");
-
-            let Some(after_authority_marker) = after_scheme.strip_prefix("//") else {
-                return Err(UrlError::MissingAuthority);
-            };
+            let after_authority_marker = after_scheme.trim_start_matches('/');
 
             let authority_end = after_authority_marker
                 .find('/')
@@ -250,7 +247,7 @@ fn sanitize_url_input(input: &str) -> String {
 }
 
 fn serialize_component(component: &str) -> String {
-    component.replace(' ', "%20")
+    percent_encode(component, |byte| byte == b' ' || byte >= 0x7F)
 }
 
 fn serialize_userinfo(component: &str) -> String {
@@ -323,7 +320,7 @@ fn is_valid_scheme(scheme: &str) -> bool {
 }
 
 fn is_special_scheme(scheme: &str) -> bool {
-    matches!(scheme, "http" | "https" | "ws" | "wss")
+    matches!(scheme, "ftp" | "http" | "https" | "ws" | "wss")
 }
 
 fn parse_authority(
@@ -405,7 +402,7 @@ fn parse_authority(
             };
 
             match (scheme, port) {
-                ("http" | "ws", 80) | ("https" | "wss", 443) => None,
+                ("ftp", 21) | ("http" | "ws", 80) | ("https" | "wss", 443) => None,
                 _ => Some(port),
             }
         }
@@ -458,8 +455,6 @@ fn domain_label_to_ascii(label: &str) -> Result<String, UrlError> {
     const BASE: u64 = 36;
     const TMIN: u64 = 1;
     const TMAX: u64 = 26;
-    const SKEW: u64 = 38;
-    const DAMP: u64 = 700;
     const INITIAL_BIAS: u64 = 72;
     const INITIAL_N: u64 = 128;
 
@@ -807,5 +802,28 @@ mod tests {
             "http://[::7f00:1]/"
         );
         assert!(Url::parse("http://[::127.0.0.1.]").is_err());
+    }
+
+    #[test]
+    fn wpt_special_scheme_short_forms() {
+        let cases = [
+            ("ftp://example.com/", "ftp://example.com/"),
+            ("ftp:example.com/", "ftp://example.com/"),
+            ("https:/example.com", "https://example.com/"),
+            ("https:example.com/", "https://example.com/"),
+            ("ws:/example.com/", "ws://example.com/"),
+            ("wss:example.com/", "wss://example.com/"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(Url::parse(input).unwrap().to_string(), expected);
+        }
+
+        let base = Url::parse("http://example.org/foo/bar").unwrap();
+
+        assert_eq!(
+            base.join("#β").unwrap().to_string(),
+            "http://example.org/foo/bar#%CE%B2"
+        );
     }
 }
