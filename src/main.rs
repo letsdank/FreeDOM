@@ -21,25 +21,60 @@ const TOOLBAR: u32 = 0x00_20_25_2B;
 const ADDRESS_BAR: u32 = 0x00_38_40_4A;
 const TEXT: u32 = 0x00_18_1B_20;
 const LIGHT_TEXT: u32 = 0x00_F4_F6_F8;
-const HEADING: u32 = 0x00_15_5E_A8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Display {
+    Inline,
+    Block,
+    None,
+}
 
 #[derive(Clone, Copy)]
-enum Style {
-    Body,
-    Heading1,
-    Heading2,
-    Code,
+struct TextStyle {
+    color: u32,
+    scale: usize,
+    margin_after: i32,
+    display: Display,
 }
 
 struct Block {
     text: String,
-    style: Style,
+    style: TextStyle,
 }
 
 struct Page {
     url: String,
     title: String,
     blocks: Vec<Block>,
+}
+
+#[derive(Clone, Default)]
+struct Declarations {
+    color: Option<u32>,
+    font_scale: Option<usize>,
+    display: Option<Display>,
+    margin_after: Option<i32>,
+}
+
+struct CssRule {
+    selector: Selector,
+    specificity: u16,
+    source_order: usize,
+    declarations: Declarations,
+}
+
+enum Selector {
+    Universal,
+    Tag(String),
+    Class(String),
+    Id(String),
+}
+
+struct ElementInfo {
+    tag: String,
+    id: Option<String>,
+    classes: Vec<String>,
+    inline_style: Option<String>,
 }
 
 enum AppEvent {
@@ -100,12 +135,26 @@ fn parse_html(url: &str, html: &str) -> Page {
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| url.to_owned());
 
+    let rules = collect_author_rules(&dom.document);
+    let base_style = TextStyle {
+        color: TEXT,
+        scale: 1,
+        margin_after: 0,
+        display: Display::Inline,
+    };
+
     let mut blocks = Vec::new();
     let mut current_text = String::new();
 
-    extract_blocks(&dom.document, &mut blocks, &mut current_text, Style::Body);
+    extract_blocks(
+        &dom.document,
+        &rules,
+        &mut blocks,
+        &mut current_text,
+        base_style,
+    );
 
-    flush(&mut blocks, &mut current_text, Style::Body);
+    flush(&mut blocks, &mut current_text, base_style);
 
     Page {
         url: url.to_owned(),
@@ -144,70 +193,391 @@ fn text_content(node: &Handle) -> String {
     result
 }
 
+fn collect_author_rules(root: &Handle) -> Vec<CssRule> {
+    let mut rules = Vec::new();
+    let mut source_order = 0;
+
+    collect_author_rules_from_node(root, &mut rules, &mut source_order);
+
+    rules
+}
+
+fn collect_author_rules_from_node(
+    node: &Handle,
+    rules: &mut Vec<CssRule>,
+    source_order: &mut usize,
+) {
+    if let Some(element) = element_info(node) {
+        if element.tag == "style" {
+            parse_stylesheet(&text_content(node), rules, source_order);
+        }
+    }
+
+    for child in node.children.borrow().iter() {
+        collect_author_rules_from_node(child, rules, source_order);
+    }
+}
+
+fn parse_stylesheet(source: &str, rules: &mut Vec<CssRule>, source_order: &mut usize) {
+    let source = remove_css_comments(source);
+
+    for rule_text in source.split('}') {
+        let Some((selector_text, declaration_text)) = rule_text.split_once('{') else {
+            continue;
+        };
+
+        let declarations = parse_declarations(declaration_text);
+
+        for selector_text in selector_text.split(',') {
+            let Some((selector, specificity)) = parse_selector(selector_text.trim()) else {
+                continue;
+            };
+
+            rules.push(CssRule {
+                selector,
+                specificity,
+                source_order: *source_order,
+                declarations: declarations.clone(),
+            });
+
+            *source_order += 1;
+        }
+    }
+}
+
+fn remove_css_comments(source: &str) -> String {
+    let mut output = String::new();
+    let mut remaining = source;
+
+    loop {
+        let Some(comment_start) = remaining.find("/*") else {
+            output.push_str(remaining);
+            break;
+        };
+
+        output.push_str(&remaining[..comment_start]);
+
+        let after_start = &remaining[comment_start + 2..];
+
+        let Some(comment_end) = after_start.find("*/") else {
+            break;
+        };
+
+        remaining = &after_start[comment_end + 2..];
+    }
+
+    output
+}
+
+fn parse_selector(selector: &str) -> Option<(Selector, u16)> {
+    if selector == "*" {
+        return Some((Selector::Universal, 0));
+    }
+
+    if let Some(id) = selector.strip_prefix('#') {
+        return is_css_identifier(id).then(|| (Selector::Id(id.to_owned()), 100));
+    }
+
+    if let Some(class) = selector.strip_prefix('.') {
+        return is_css_identifier(class).then(|| (Selector::Class(class.to_owned()), 10));
+    }
+
+    let tag = selector.to_ascii_lowercase();
+    is_css_identifier(&tag).then(|| (Selector::Tag(tag), 1))
+}
+
+fn is_css_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '-' || character == '_')
+}
+
+fn parse_declarations(source: &str) -> Declarations {
+    let mut declarations = Declarations::default();
+
+    for declaration in source.split(';') {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+
+        let property = property.trim().to_ascii_lowercase();
+        let value = value.trim();
+
+        match property.as_str() {
+            "color" => declarations.color = parse_color(value),
+
+            "font-size" => declarations.font_scale = parse_font_scale(value),
+
+            "display" => {
+                declarations.display = match value.trim().to_ascii_lowercase().as_str() {
+                    "none" => Some(Display::None),
+                    "block" => Some(Display::Block),
+                    "inline" => Some(Display::Inline),
+                    _ => None,
+                };
+            }
+
+            "margin-bottom" => declarations.margin_after = parse_length(value),
+
+            "margin" => declarations.margin_after = parse_length(value),
+
+            _ => {}
+        }
+    }
+
+    declarations
+}
+
+fn parse_color(value: &str) -> Option<u32> {
+    let value = value.trim().to_ascii_lowercase();
+
+    match value.as_str() {
+        "black" => return Some(0x00_00_00_00),
+        "white" => return Some(0x00_FF_FF_FF),
+        "red" => return Some(0x00_FF_00_00),
+        "green" => return Some(0x00_00_80_00),
+        "blue" => return Some(0x00_00_00_FF),
+        "yellow" => return Some(0x00_FF_FF_00),
+        "gray" | "grey" => return Some(0x00_80_80_80),
+        "purple" => return Some(0x00_80_00_80),
+        _ => {}
+    }
+
+    if let Some(hex) = value.strip_prefix('#') {
+        return match hex.len() {
+            3 => {
+                let red = u8::from_str_radix(&hex[0..1], 16).ok()?;
+                let green = u8::from_str_radix(&hex[1..2], 16).ok()?;
+                let blue = u8::from_str_radix(&hex[2..3], 16).ok()?;
+
+                Some(((red as u32 * 17) << 16) | ((green as u32 * 17) << 8) | (blue as u32 * 17))
+            }
+
+            6 => Some(u32::from_str_radix(hex, 16).ok()?),
+
+            _ => None,
+        };
+    }
+
+    let rgb = value.strip_prefix("rgb(")?.strip_suffix(')')?;
+    let channels: Vec<u8> = rgb
+        .split(',')
+        .map(|channel| channel.trim().parse::<u8>())
+        .collect::<std::result::Result<_, _>>()
+        .ok()?;
+
+    if channels.len() == 3 {
+        return Some(
+            ((channels[0] as u32) << 16) | ((channels[1] as u32) << 8) | channels[2] as u32,
+        );
+    }
+
+    None
+}
+
+fn parse_font_scale(value: &str) -> Option<usize> {
+    let value = value.trim().to_ascii_lowercase();
+
+    if let Some(value) = value.strip_suffix("px") {
+        let pixels = value.trim().parse::<f32>().ok()?;
+        return Some(if pixels >= 20.0 { 2 } else { 1 });
+    }
+
+    if let Some(value) = value.strip_suffix("em") {
+        let em = value.trim().parse::<f32>().ok()?;
+        return Some(if em >= 1.5 { 2 } else { 1 });
+    }
+
+    None
+}
+
+fn parse_length(value: &str) -> Option<i32> {
+    let value = value.split_whitespace().next()?.trim();
+    let value = value.trim_end_matches("px");
+
+    value.parse::<f32>().ok().map(|value| value.round() as i32)
+}
+
+fn element_info(node: &Handle) -> Option<ElementInfo> {
+    let NodeData::Element { name, attrs, .. } = &node.data else {
+        return None;
+    };
+
+    let mut id = None;
+    let mut classes = Vec::new();
+    let mut inline_style = None;
+
+    for attribute in attrs.borrow().iter() {
+        let attribute_name = attribute.name.local.to_string();
+        let value = attribute.value.to_string();
+
+        match attribute_name.as_str() {
+            "id" => id = Some(value),
+
+            "class" => {
+                classes = value.split_whitespace().map(ToOwned::to_owned).collect();
+            }
+
+            "style" => inline_style = Some(value),
+
+            _ => {}
+        }
+    }
+
+    Some(ElementInfo {
+        tag: name.local.to_string(),
+        id,
+        classes,
+        inline_style,
+    })
+}
+
 fn extract_blocks(
     node: &Handle,
+    rules: &[CssRule],
     blocks: &mut Vec<Block>,
     current: &mut String,
-    inherited_style: Style,
+    inherited_style: TextStyle,
 ) {
     if let NodeData::Text { contents } = &node.data {
         append_collapsed(current, contents.borrow().as_ref());
         return;
     }
 
-    let tag = match &node.data {
-        NodeData::Element { name, .. } => Some(name.local.to_string()),
-        _ => None,
+    let Some(element) = element_info(node) else {
+        for child in node.children.borrow().iter() {
+            extract_blocks(child, rules, blocks, current, inherited_style);
+        }
+
+        return;
     };
 
     if matches!(
-        tag.as_deref(),
-        Some("script" | "style" | "template" | "head" | "title" | "meta" | "link")
+        element.tag.as_str(),
+        "script" | "style" | "template" | "head" | "title" | "meta" | "link"
     ) {
         return;
     }
 
-    if tag.as_deref() == Some("br") {
+    if element.tag == "br" {
         flush(blocks, current, inherited_style);
         return;
     }
 
-    let is_block = matches!(
-        tag.as_deref(),
-        Some(
-            "body"
-                | "main"
-                | "article"
-                | "section"
-                | "div"
-                | "p"
-                | "ul"
-                | "ol"
-                | "li"
-                | "h1"
-                | "h2"
-                | "h3"
-                | "pre"
-        )
-    );
+    let style = compute_style(&element, inherited_style, rules);
+
+    if style.display == Display::None {
+        return;
+    }
+
+    let is_block = style.display == Display::Block;
 
     if is_block {
         flush(blocks, current, inherited_style);
     }
 
-    let child_style = match tag.as_deref() {
-        Some("h1") => Style::Heading1,
-        Some("h2" | "h3") => Style::Heading2,
-        Some("pre") => Style::Code,
-        _ => inherited_style,
-    };
-
     for child in node.children.borrow().iter() {
-        extract_blocks(child, blocks, current, child_style);
+        extract_blocks(child, rules, blocks, current, style);
     }
 
     if is_block {
-        flush(blocks, current, child_style);
+        flush(blocks, current, style);
+    }
+}
+
+fn compute_style(
+    element: &ElementInfo,
+    inherited_style: TextStyle,
+    rules: &[CssRule],
+) -> TextStyle {
+    let mut style = default_style(&element.tag, inherited_style);
+
+    let mut matching_rules: Vec<&CssRule> = rules
+        .iter()
+        .filter(|rule| selector_matches(&rule.selector, element))
+        .collect();
+
+    matching_rules.sort_by_key(|rule| (rule.specificity, rule.source_order));
+
+    for rule in matching_rules {
+        apply_declarations(&mut style, &rule.declarations);
+    }
+
+    if let Some(inline_style) = &element.inline_style {
+        apply_declarations(&mut style, &parse_declarations(inline_style));
+    }
+
+    style
+}
+
+fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
+    let mut style = inherited_style;
+    style.display = Display::Inline;
+    style.margin_after = 0;
+
+    if matches!(
+        tag,
+        "body"
+            | "main"
+            | "article"
+            | "section"
+            | "div"
+            | "p"
+            | "ul"
+            | "ol"
+            | "li"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "pre"
+    ) {
+        style.display = Display::Block;
+    }
+
+    match tag {
+        "h1" => {
+            style.scale = 2;
+            style.margin_after = 16;
+        }
+
+        "h2" | "h3" => {
+            style.scale = 1;
+            style.margin_after = 12;
+        }
+
+        "p" | "li" | "pre" => style.margin_after = 10,
+
+        _ => {}
+    }
+
+    style
+}
+
+fn selector_matches(selector: &Selector, element: &ElementInfo) -> bool {
+    match selector {
+        Selector::Universal => true,
+        Selector::Tag(tag) => element.tag == *tag,
+        Selector::Class(class) => element.classes.iter().any(|item| item == class),
+        Selector::Id(id) => element.id.as_ref() == Some(id),
+    }
+}
+
+fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
+    if let Some(color) = declarations.color {
+        style.color = color;
+    }
+
+    if let Some(scale) = declarations.font_scale {
+        style.scale = scale;
+    }
+
+    if let Some(display) = declarations.display {
+        style.display = display;
+    }
+
+    if let Some(margin_after) = declarations.margin_after {
+        style.margin_after = margin_after;
     }
 }
 
@@ -221,7 +591,7 @@ fn append_collapsed(target: &mut String, source: &str) {
     }
 }
 
-fn flush(blocks: &mut Vec<Block>, current: &mut String, style: Style) {
+fn flush(blocks: &mut Vec<Block>, current: &mut String, style: TextStyle) {
     let text = current.trim().to_owned();
     current.clear();
 
@@ -497,12 +867,9 @@ fn paint(
             break;
         }
 
-        let (scale, color, margin_after) = match block.style {
-            Style::Body => (1, TEXT, 10),
-            Style::Heading1 => (2, HEADING, 16),
-            Style::Heading2 => (1, HEADING, 12),
-            Style::Code => (1, TEXT, 10),
-        };
+        let scale = block.style.scale;
+        let color = block.style.color;
+        let margin_after = block.style.margin_after;
 
         y = draw_wrapped_text(
             pixels,
@@ -627,5 +994,45 @@ fn fill_rect(
         for pixel_x in start_x..end_x {
             pixels[pixel_y * width + pixel_x] = color;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_style_overrides_author_rules() {
+        let page = parse_html(
+            "https://example.test",
+            r#"
+                <style>
+                    p { color: #ff0000; }
+                    .note { color: blue; font-size: 24px; }
+                    #first { color: #00ff00; }
+                </style>
+                <p id="first" class="note" style="color: #123456">Hello</p>
+            "#,
+        );
+
+        assert_eq!(page.blocks.len(), 1);
+        assert_eq!(page.blocks[0].text, "Hello");
+        assert_eq!(page.blocks[0].style.color, 0x00_12_34_56);
+        assert_eq!(page.blocks[0].style.scale, 2);
+    }
+
+    #[test]
+    fn display_none_removes_content_from_layout() {
+        let page = parse_html(
+            "https://example.test",
+            r#"
+                <style>.hidden { display: none; }</style>
+                <p>Visible text</p>
+                <p class="hidden">Invisible text</p>
+            "#,
+        );
+
+        assert_eq!(page.blocks.len(), 1);
+        assert_eq!(page.blocks[0].text, "Visible text");
     }
 }
