@@ -343,7 +343,9 @@ fn sanitize_url_input(input: &str) -> String {
 }
 
 fn serialize_component(component: &str) -> String {
-    percent_encode(component, |byte| byte == b' ' || byte >= 0x7F)
+    percent_encode(component, |byte| {
+        byte <= 0x1F || byte >= 0x7F || matches!(byte, b' ' | b'"' | b'<' | b'>' | b'`')
+    })
 }
 
 fn serialize_path_component(component: &str) -> String {
@@ -375,25 +377,7 @@ fn serialize_opaque_path(path: &str, has_query_or_fragment: bool) -> String {
 }
 
 fn serialize_opaque_host(host: &str) -> String {
-    percent_encode(host, |byte| {
-        byte <= 0x1F
-            || byte >= 0x7F
-            || matches!(
-                byte,
-                b' ' | b'"'
-                    | b'#'
-                    | b'/'
-                    | b'<'
-                    | b'>'
-                    | b'?'
-                    | b'@'
-                    | b'['
-                    | b'\\'
-                    | b']'
-                    | b'^'
-                    | b'|'
-            )
-    })
+    percent_encode(host, |byte| byte <= 0x1F || byte >= 0x7F)
 }
 
 fn serialize_userinfo(component: &str) -> String {
@@ -527,11 +511,24 @@ fn parse_authority(
         return Err(UrlError::EmptyHost);
     }
 
-    if host.chars().any(|character| {
-        character.is_control()
-            || character.is_ascii_whitespace()
-            || matches!(character, '/' | '\\' | '?' | '#' | '<' | '>')
-    }) || contains_forbidden_opaque_host_escape(host)
+    let special_scheme = is_special_scheme(scheme);
+
+    let has_forbidden_raw_character = host.chars().any(|character| {
+        if special_scheme {
+            character.is_control()
+                || character.is_ascii_whitespace()
+                || matches!(character, '/' | '\\' | '?' | '#' | '<' | '>' | '^' | '|')
+        } else {
+            character == ' '
+                || matches!(
+                    character,
+                    '/' | '\\' | '?' | '#' | '<' | '>' | '[' | ']' | '^' | '|'
+                )
+        }
+    });
+
+    if has_forbidden_raw_character
+        || (!special_scheme && contains_forbidden_opaque_host_escape(host))
     {
         return Err(UrlError::InvalidHost);
     }
@@ -670,7 +667,7 @@ fn is_forbidden_special_host_character(character: char) -> bool {
         || character.is_whitespace()
         || matches!(
             character,
-            '%' | '#' | '/' | ':' | '?' | '@' | '[' | '\\' | ']'
+            '%' | '#' | '/' | ':' | '?' | '@' | '[' | '\\' | ']' | '^' | '|'
         )
         || character == '\u{FFFD}'
         || (0xFDD0..=0xFDEF).contains(&value)
@@ -1393,5 +1390,27 @@ mod tests {
         assert!(Url::parse("sc://:12/").is_err());
         assert!(Url::parse("sc://a%00b/").is_err());
         assert!(Url::parse("sc://a%3Cb").is_err());
+    }
+
+    #[test]
+    fn wpt_fragment_and_host_context_cases() {
+        assert!(Url::parse("sc://a[b/").is_err());
+        assert!(Url::parse("sc://a]b/").is_err());
+        assert!(Url::parse("sc://a^b/").is_err());
+        assert!(Url::parse("sc://a|b/").is_err());
+        assert!(Url::parse("http://a^b/").is_err());
+        assert!(Url::parse("http://a|b/").is_err());
+
+        assert_eq!(
+            Url::parse("sc://\u{0001}\u{007F}x/").unwrap().to_string(),
+            "sc://%01%7Fx/"
+        );
+
+        assert_eq!(
+            Url::parse("http://foo.bar/baz?qux#foo\u{0008}\"<>`bar")
+                .unwrap()
+                .to_string(),
+            "http://foo.bar/baz?qux#foo%08%22%3C%3E%60bar"
+        );
     }
 }
