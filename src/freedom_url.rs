@@ -215,17 +215,13 @@ impl Url {
         let (without_fragment, fragment) = split_component(&reference, '#');
         let (without_query, query) = split_component(&without_fragment, '?');
 
-        if has_scheme(without_query) {
+        if has_scheme(without_query) && !is_windows_drive_letter(without_query) {
             let (scheme, after_scheme) = without_query
                 .split_once(':')
                 .expect("has_scheme guarantees ':'");
 
             if scheme.eq_ignore_ascii_case("file") {
-                let absolute_file_reference = after_scheme.starts_with('/')
-                    || after_scheme.starts_with('\\')
-                    || is_windows_drive_letter(after_scheme);
-
-                if absolute_file_reference {
+                if after_scheme.starts_with("//") {
                     return parse_file_url(after_scheme, query, fragment);
                 }
 
@@ -269,7 +265,7 @@ impl Url {
             }
         } else {
             let directory = base_directory(&self.path);
-            resolved.path = normalize_path(&format!("{directory}{reference_path}"));
+            resolved.path = normalize_file_path(&format!("{directory}{reference_path}"));
         }
 
         Ok(resolved)
@@ -309,7 +305,23 @@ impl fmt::Display for Url {
                 }
             }
 
-            UrlForm::Path | UrlForm::Opaque => {
+            UrlForm::Path => {
+                let has_query_or_fragment = self.query.is_some() || self.fragment.is_some();
+
+                write!(f, "{}:", self.scheme,)?;
+
+                if self.path.starts_with("//") {
+                    write!(f, "/.")?;
+                }
+
+                write!(
+                    f,
+                    "{}",
+                    serialize_opaque_path(&self.path, has_query_or_fragment)
+                )?;
+            }
+
+            UrlForm::Opaque => {
                 let has_query_or_fragment = self.query.is_some() || self.fragment.is_some();
 
                 write!(
@@ -518,6 +530,7 @@ fn parse_authority(
     }
 
     let special_scheme = is_special_scheme(scheme);
+    let bracketed_ipv6 = host.starts_with('[') && host.ends_with(']');
 
     let has_forbidden_raw_character = host.chars().any(|character| {
         if special_scheme {
@@ -525,11 +538,10 @@ fn parse_authority(
                 || character.is_ascii_whitespace()
                 || matches!(character, '/' | '\\' | '?' | '#' | '<' | '>' | '^' | '|')
         } else {
-            character == ' '
-                || matches!(
-                    character,
-                    '/' | '\\' | '?' | '#' | '<' | '>' | '[' | ']' | '^' | '|'
-                )
+            character == '\0'
+                || character == ' '
+                || matches!(character, '/' | '\\' | '?' | '#' | '<' | '>' | '^' | '|')
+                || (!bracketed_ipv6 && matches!(character, '[' | ']'))
         }
     });
 
@@ -564,8 +576,10 @@ fn parse_authority(
         }
     };
 
-    let host = if is_special_scheme(scheme) {
+    let host = if special_scheme {
         canonicalize_special_host(host)?
+    } else if bracketed_ipv6 {
+        canonicalize_ipv6_host(host)?
     } else {
         serialize_opaque_host(host)
     };
@@ -673,12 +687,27 @@ fn is_forbidden_special_host_character(character: char) -> bool {
         || character.is_whitespace()
         || matches!(
             character,
-            '%' | '#' | '/' | ':' | '?' | '@' | '[' | '\\' | ']' | '^' | '|'
+            '%' | '#' | '/' | ':' | '?' | '@' | '[' | '\\' | ']' | '<' | '>' | '^' | '|'
         )
         || character == '\u{FFFD}'
         || (0xFDD0..=0xFDEF).contains(&value)
         || value & 0xFFFF == 0xFFFE
         || value & 0xFFFF == 0xFFFF
+}
+
+fn canonicalize_ipv6_host(host: &str) -> Result<String, UrlError> {
+    let Some(address) = host
+        .strip_prefix('[')
+        .and_then(|address| address.strip_suffix(']'))
+    else {
+        return Err(UrlError::InvalidHost);
+    };
+
+    let address = address
+        .parse::<std::net::Ipv6Addr>()
+        .map_err(|_| UrlError::InvalidHost)?;
+
+    Ok(format!("[{address}]"))
 }
 
 fn canonicalize_special_host(host: &str) -> Result<String, UrlError> {
@@ -687,18 +716,7 @@ fn canonicalize_special_host(host: &str) -> Result<String, UrlError> {
     }
 
     if host.starts_with('[') {
-        let Some(address) = host
-            .strip_prefix('[')
-            .and_then(|address| address.strip_suffix(']'))
-        else {
-            return Err(UrlError::InvalidHost);
-        };
-
-        let address = address
-            .parse::<std::net::Ipv6Addr>()
-            .map_err(|_| UrlError::InvalidHost)?;
-
-        return Ok(format!("[{address}]"));
+        return canonicalize_ipv6_host(host);
     }
 
     let host = preprocess_special_host(host)?;
@@ -1472,5 +1490,37 @@ mod tests {
 
         assert!(Url::parse("http://ho<st/").is_err());
         assert!(Url::parse("http://ho>st/").is_err());
+    }
+
+    #[test]
+    fn handles_file_references_generic_paths_and_ipv6_hosts() {
+        assert!(Url::parse("sc://a\0b/").is_err());
+        assert!(Url::parse("http://ho%3Cst/").is_err());
+        assert!(Url::parse("http://ho%3Est/").is_err());
+
+        let drive_root = Url::parse("file:///C:/").unwrap();
+        assert_eq!(drive_root.join("..").unwrap().to_string(), "file:///C:/");
+
+        let remote_file = Url::parse("file://host/").unwrap();
+        assert_eq!(
+            remote_file.join("file:C:/").unwrap().to_string(),
+            "file://host/C:/"
+        );
+        assert_eq!(
+            remote_file.join("file:/C:/").unwrap().to_string(),
+            "file://host/C:/"
+        );
+
+        assert_eq!(
+            Url::parse("non-spec:/..//").unwrap().to_string(),
+            "non-spec:/.//"
+        );
+
+        assert_eq!(
+            Url::parse("non-special://[1:2:0:0:5:0:0:0]/")
+                .unwrap()
+                .to_string(),
+            "non-special://[1:2:0:0:5::]/"
+        );
     }
 }
