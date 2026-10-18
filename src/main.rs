@@ -3,6 +3,9 @@ mod freedom_url;
 #[allow(dead_code)]
 mod javascript;
 
+#[cfg(test)]
+mod wpt_url;
+
 use crate::freedom_url::Url;
 use anyhow::{Context as _, Result, bail};
 use font8x8::{BASIC_FONTS, UnicodeFonts};

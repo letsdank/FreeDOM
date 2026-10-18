@@ -386,6 +386,8 @@ pub enum Value {
     Boolean(bool),
     Number(f64),
     String(String),
+    Array(Vec<Value>),
+    Object(HashMap<String, Value>),
     Url(Url),
     NativeFunction(NativeFunction),
 }
@@ -393,13 +395,49 @@ pub enum Value {
 impl Value {
     fn to_js_string(&self) -> String {
         match self {
-            Value::Undefined => "undefined".to_owned(),
-            Value::Null => "null".to_owned(),
-            Value::Boolean(value) => value.to_string(),
-            Value::Number(value) => value.to_string(),
-            Value::String(value) => value.clone(),
-            Value::Url(url) => url.to_string(),
+            Self::Undefined => "undefined".to_owned(),
+            Self::Null => "null".to_owned(),
+            Self::Boolean(value) => value.to_string(),
+            Self::Number(value) => value.to_string(),
+            Self::String(value) => value.clone(),
+
+            Self::Array(values) => values
+                .iter()
+                .map(|value| value.to_js_string())
+                .collect::<Vec<_>>()
+                .join(","),
+
+            Self::Object(_) => "[object Object]".to_owned(),
+            Self::Url(url) => url.to_string(),
             Self::NativeFunction(_) => "function".to_owned(),
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&[Value]> {
+        match self {
+            Self::Array(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
+        match self {
+            Self::Object(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    pub fn as_string(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Boolean(value) => Some(*value),
+            _ => None,
         }
     }
 }
@@ -469,6 +507,171 @@ pub fn evaluate(source: &str) -> Result<Value, JsError> {
 
     let program = Parser::new(tokens).parse_program()?;
     Interpreter::new().execute(&program)
+}
+
+pub fn parse_json(source: &str) -> Result<Value, JsError> {
+    let tokens = tokenize(source).map_err(|error| JsError {
+        offset: Some(error.offset),
+        message: error.message,
+    })?;
+
+    JsonParser::new(tokens).parse()
+}
+
+struct JsonParser {
+    tokens: Vec<Token>,
+    position: usize,
+}
+
+impl JsonParser {
+    fn new(tokens: Vec<Token>) -> Self {
+        Self {
+            tokens,
+            position: 0,
+        }
+    }
+
+    fn parse(&mut self) -> Result<Value, JsError> {
+        let value = self.parse_value()?;
+
+        if !self.check(&TokenKind::EndOfFile) {
+            return Err(JsError::syntax(
+                self.peek().offset,
+                "unexpected token after JSON value",
+            ));
+        }
+
+        Ok(value)
+    }
+
+    fn parse_value(&mut self) -> Result<Value, JsError> {
+        let token = self.advance();
+
+        match token.kind {
+            TokenKind::String(value) => Ok(Value::String(value)),
+            TokenKind::Number(value) => Ok(Value::Number(value)),
+            TokenKind::True => Ok(Value::Boolean(true)),
+            TokenKind::False => Ok(Value::Boolean(false)),
+            TokenKind::Null => Ok(Value::Null),
+            TokenKind::LeftBracket => self.parse_array(),
+            TokenKind::LeftBrace => self.parse_object(),
+
+            TokenKind::EndOfFile => Err(JsError::syntax(
+                token.offset,
+                "unexpected end of JSON input",
+            )),
+
+            _ => Err(JsError::syntax(token.offset, "expected a JSON value")),
+        }
+    }
+
+    fn parse_array(&mut self) -> Result<Value, JsError> {
+        let mut values = Vec::new();
+
+        if self.consume_optional(&TokenKind::RightBracket) {
+            return Ok(Value::Array(values));
+        }
+
+        loop {
+            values.push(self.parse_value()?);
+
+            if self.consume_optional(&TokenKind::Comma) {
+                if self.check(&TokenKind::RightBracket) {
+                    return Err(JsError::syntax(
+                        self.peek().offset,
+                        "trailing comma is not valid JSON",
+                    ));
+                }
+
+                continue;
+            }
+
+            self.consume(
+                &TokenKind::RightBracket,
+                "expected ',' or ']' after JSON array item",
+            )?;
+
+            return Ok(Value::Array(values));
+        }
+    }
+
+    fn parse_object(&mut self) -> Result<Value, JsError> {
+        let mut values = HashMap::new();
+
+        if self.consume_optional(&TokenKind::RightBrace) {
+            return Ok(Value::Object(values));
+        }
+
+        loop {
+            let token = self.advance();
+
+            let TokenKind::String(key) = token.kind else {
+                return Err(JsError::syntax(
+                    token.offset,
+                    "JSON object keys must be strings",
+                ));
+            };
+
+            self.consume(&TokenKind::Colon, "expected ':' after JSON object key")?;
+
+            let value = self.parse_value()?;
+            values.insert(key, value);
+
+            if self.consume_optional(&TokenKind::Comma) {
+                if self.check(&TokenKind::RightBrace) {
+                    return Err(JsError::syntax(
+                        self.peek().offset,
+                        "trailing comma is not valid JSON",
+                    ));
+                }
+
+                continue;
+            }
+
+            self.consume(
+                &TokenKind::RightBrace,
+                "expected ',' or '}' after JSON object property",
+            )?;
+
+            return Ok(Value::Object(values));
+        }
+    }
+
+    fn consume(&mut self, expected: &TokenKind, message: &str) -> Result<(), JsError> {
+        if self.check(expected) {
+            self.advance();
+            Ok(())
+        } else {
+            Err(JsError::syntax(self.peek().offset, message))
+        }
+    }
+
+    fn consume_optional(&mut self, expected: &TokenKind) -> bool {
+        if self.check(expected) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn check(&self, expected: &TokenKind) -> bool {
+        self.peek().kind == *expected
+    }
+
+    fn peek(&self) -> &Token {
+        &self.tokens[self.position]
+    }
+
+    fn advance(&mut self) -> Token {
+        let token = self.tokens[self.position].clone();
+
+        if !matches!(token.kind, TokenKind::EndOfFile) {
+            self.position += 1;
+        }
+
+        token
+    }
 }
 
 struct Parser {
