@@ -291,7 +291,14 @@ impl fmt::Display for Url {
             }
 
             UrlForm::Opaque => {
-                write!(f, "{}:{}", self.scheme, self.path)?;
+                let has_query_or_fragment = self.query.is_some() || self.fragment.is_some();
+
+                write!(
+                    f,
+                    "{}:{}",
+                    self.scheme,
+                    serialize_opaque_path(&self.path, has_query_or_fragment)
+                )?;
             }
         }
 
@@ -311,8 +318,12 @@ fn trim_ascii_whitespace(input: &str) -> &str {
     input.trim_matches(|character: char| character.is_ascii_whitespace())
 }
 
+fn trim_c0_control_and_space(input: &str) -> &str {
+    input.trim_matches(|character| character <= '\u{20}')
+}
+
 fn sanitize_url_input(input: &str) -> String {
-    trim_ascii_whitespace(input)
+    trim_c0_control_and_space(input)
         .chars()
         .filter(|character| !matches!(character, '\t' | '\n' | '\r'))
         .collect()
@@ -320,6 +331,39 @@ fn sanitize_url_input(input: &str) -> String {
 
 fn serialize_component(component: &str) -> String {
     percent_encode(component, |byte| byte == b' ' || byte >= 0x7F)
+}
+
+fn serialize_opaque_path(path: &str, has_query_or_fragment: bool) -> String {
+    let mut serialized = percent_encode(path, |byte| byte >= 0x7F);
+
+    if has_query_or_fragment && serialized.ends_with(' ') {
+        serialized.truncate(serialized.len() - 1);
+        serialized.push_str("%20");
+    }
+
+    serialized
+}
+
+fn serialize_opaque_host(host: &str) -> String {
+    percent_encode(host, |byte| {
+        byte <= 0x1F
+            || byte >= 0x7F
+            || matches!(
+                byte,
+                b' ' | b'"'
+                    | b'#'
+                    | b'/'
+                    | b'<'
+                    | b'>'
+                    | b'?'
+                    | b'@'
+                    | b'['
+                    | b'\\'
+                    | b']'
+                    | b'^'
+                    | b'|'
+            )
+    })
 }
 
 fn serialize_userinfo(component: &str) -> String {
@@ -483,10 +527,87 @@ fn parse_authority(
     let host = if is_special_scheme(scheme) {
         canonicalize_special_host(host)?
     } else {
-        host.to_ascii_lowercase()
+        serialize_opaque_host(host)
     };
 
     Ok((username, password, host, port))
+}
+
+fn preprocess_special_host(host: &str) -> Result<String, UrlError> {
+    let decoded = percent_decode_host(host)?;
+    let mut mapped = String::new();
+
+    for character in decoded.chars() {
+        match character {
+            '\u{200B}' | '\u{2060}' | '\u{FEFF}' => {}
+
+            '\u{3002}' | '\u{FF0E}' | '\u{FF61}' => mapped.push('.'),
+
+            '\u{FF01}'..='\u{FF5E}' => {
+                let ascii = char::from_u32(character as u32 - 0xFEE0)
+                    .expect("fullwidth ASCII always maps to ASCII");
+                mapped.push(ascii);
+            }
+
+            _ => mapped.push(character),
+        }
+    }
+
+    if mapped.chars().any(is_forbidden_special_host_character) {
+        return Err(UrlError::InvalidHost);
+    }
+
+    Ok(mapped)
+}
+
+fn percent_decode_host(host: &str) -> Result<String, UrlError> {
+    let bytes = host.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+
+        if index + 2 >= bytes.len() {
+            return Err(UrlError::InvalidHost);
+        }
+
+        let high = hex_value(bytes[index + 1]).ok_or(UrlError::InvalidHost)?;
+        let low = hex_value(bytes[index + 2]).ok_or(UrlError::InvalidHost)?;
+
+        decoded.push((high << 4) | low);
+        index += 3;
+    }
+
+    String::from_utf8(decoded).map_err(|_| UrlError::InvalidHost)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn is_forbidden_special_host_character(character: char) -> bool {
+    let value = character as u32;
+
+    character.is_control()
+        || character.is_whitespace()
+        || matches!(
+            character,
+            '%' | '#' | '/' | ':' | '?' | '@' | '[' | '\\' | ']'
+        )
+        || character == '\u{FFFD}'
+        || (0xFDD0..=0xFDEF).contains(&value)
+        || value & 0xFFFF == 0xFFFE
+        || value & 0xFFFF == 0xFFFF
 }
 
 fn canonicalize_special_host(host: &str) -> Result<String, UrlError> {
@@ -509,11 +630,13 @@ fn canonicalize_special_host(host: &str) -> Result<String, UrlError> {
         return Ok(format!("[{address}]"));
     }
 
+    let host = preprocess_special_host(host)?;
+
     if host.contains('[') || host.contains(']') {
         return Err(UrlError::InvalidHost);
     }
 
-    if let Some(address) = parse_ipv4_address(host)? {
+    if let Some(address) = parse_ipv4_address(&host)? {
         return Ok(address);
     }
 
@@ -1139,5 +1262,41 @@ mod tests {
             "http://127.0.0.1/"
         );
         assert!(Url::parse("http://256.256.256.256").is_err());
+    }
+
+    #[test]
+    fn wpt_host_preprocessing_and_opaque_urls() {
+        assert_eq!(
+            Url::parse("http://GOO\u{200B}\u{2060}\u{FEFF}goo.com")
+                .unwrap()
+                .to_string(),
+            "http://googoo.com/"
+        );
+        assert_eq!(
+            Url::parse("http://www.foo\u{3002}bar.com")
+                .unwrap()
+                .to_string(),
+            "http://www.foo.bar.com/"
+        );
+        assert_eq!(
+            Url::parse("http://\u{FF27}\u{FF4F}.com")
+                .unwrap()
+                .to_string(),
+            "http://go.com/"
+        );
+
+        assert!(Url::parse("http://GOO\u{00A0}\u{3000}goo.com").is_err());
+        assert!(Url::parse("http://\u{FDD0}zyx.com").is_err());
+        assert!(Url::parse("http://%EF%B7%90zyx.com").is_err());
+        assert!(Url::parse("http://%zz%66%a.com").is_err());
+
+        assert_eq!(
+            Url::parse("sc://fa\u{00DF}.ExAmPlE/").unwrap().to_string(),
+            "sc://fa%C3%9F.ExAmPlE/"
+        );
+        assert_eq!(
+            Url::parse("non-special:opaque  ?hi").unwrap().to_string(),
+            "non-special:opaque %20?hi"
+        );
     }
 }
