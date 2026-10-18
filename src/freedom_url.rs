@@ -230,7 +230,11 @@ impl Url {
                 }
 
                 let mut resolved = self.join_file_url(after_scheme)?;
-                resolved.query = query.map(str::to_owned);
+
+                if let Some(query) = query {
+                    resolved.query = Some(query.to_owned());
+                }
+
                 resolved.fragment = fragment.map(str::to_owned);
                 return Ok(resolved);
             }
@@ -257,10 +261,12 @@ impl Url {
         }
 
         if is_windows_drive_letter(reference_path.trim_start_matches('/')) {
-            resolved.host.clear();
             resolved.path = normalize_file_path(&reference_path);
         } else if reference_path.starts_with('/') {
-            resolved.path = normalize_file_path(&reference_path);
+            resolved.path = match file_drive_prefix(&self.path) {
+                Some(drive) => normalize_file_path(&format!("{drive}{reference_path}")),
+                None => normalize_file_path(&reference_path),
+            }
         } else {
             let directory = base_directory(&self.path);
             resolved.path = normalize_path(&format!("{directory}{reference_path}"));
@@ -782,7 +788,11 @@ fn parse_ipv4_number(part: &str) -> Result<Option<u64>, UrlError> {
     };
 
     if digits.is_empty() {
-        return Err(UrlError::InvalidHost);
+        return if radix == 16 {
+            Ok(Some(0))
+        } else {
+            Err(UrlError::InvalidHost)
+        };
     }
 
     let valid_digits = match radix {
@@ -990,6 +1000,14 @@ fn is_windows_drive_letter(input: &str) -> bool {
         && (bytes.len() == 2 || matches!(bytes[2], b'/' | b'\\' | b'?' | b'#'))
 }
 
+fn file_drive_prefix(path: &str) -> Option<&str> {
+    if path.starts_with('/') && is_windows_drive_letter(&path[1..]) {
+        Some(&path[..3])
+    } else {
+        None
+    }
+}
+
 fn normalize_file_path(raw_path: &str) -> String {
     let mut path = raw_path.replace('\\', "/");
 
@@ -999,6 +1017,15 @@ fn normalize_file_path(raw_path: &str) -> String {
 
     if is_windows_drive_letter(&path[1..]) {
         path.replace_range(2..3, ":");
+
+        let drive = path[..3].to_owned();
+        let remainder = &path[3..];
+
+        return if remainder.is_empty() {
+            drive
+        } else {
+            format!("{drive}{}", normalize_path(remainder))
+        };
     }
 
     normalize_path(&path)
@@ -1412,5 +1439,38 @@ mod tests {
                 .to_string(),
             "http://foo.bar/baz?qux#foo%08%22%3C%3E%60bar"
         );
+    }
+
+    #[test]
+    fn preserves_file_drive_roots_and_query() {
+        assert_eq!(
+            Url::parse("https://0x.0x.0").unwrap().to_string(),
+            "https://0.0.0.0/"
+        );
+
+        let base = Url::parse("file:///C:/a/b").unwrap();
+        assert_eq!(base.join("/").unwrap().to_string(), "file:///C:/");
+        assert_eq!(base.join("..").unwrap().to_string(), "file:///C:/");
+        assert_eq!(base.join("//d:/..").unwrap().to_string(), "file:///d:/");
+
+        let remote = Url::parse("file://host/C:/a/b").unwrap();
+        assert_eq!(remote.join("C|").unwrap().to_string(), "file://host/C:");
+        assert_eq!(
+            remote.join("/c:/foo/bar").unwrap().to_string(),
+            "file://host/c:/foo/bar"
+        );
+
+        let query_base = Url::parse("file:///test?test#test").unwrap();
+        assert_eq!(
+            query_base.join("file:").unwrap().to_string(),
+            "file:///test?test"
+        );
+        assert_eq!(
+            query_base.join("file:#x").unwrap().to_string(),
+            "file:///test?test#x"
+        );
+
+        assert!(Url::parse("http://ho<st/").is_err());
+        assert!(Url::parse("http://ho>st/").is_err());
     }
 }
