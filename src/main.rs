@@ -10,8 +10,9 @@ use url::Url;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    event::{ElementState, KeyEvent, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
 
@@ -41,6 +42,13 @@ struct Page {
     blocks: Vec<Block>,
 }
 
+enum AppEvent {
+    NavigationFinished {
+        request_id: u64,
+        result: std::result::Result<Page, String>,
+    },
+}
+
 fn main() -> Result<()> {
     let requested_url = std::env::args()
         .nth(1)
@@ -49,8 +57,10 @@ fn main() -> Result<()> {
     let page =
         load_page(&requested_url).with_context(|| format!("не удалось открыть {requested_url}"))?;
 
-    let event_loop = EventLoop::new()?;
-    let mut app = App::new(page);
+    let event_loop = EventLoop::<AppEvent>::with_user_event().build()?;
+    let proxy = event_loop.create_proxy();
+    let mut app = App::new(page, proxy);
+
     event_loop.run_app(&mut app)?;
 
     Ok(())
@@ -222,18 +232,92 @@ fn flush(blocks: &mut Vec<Block>, current: &mut String, style: Style) {
 
 struct App {
     page: Page,
+    address: String,
+    status: String,
+    loading: bool,
+    next_request_id: u64,
+    active_request_id: u64,
+    event_proxy: EventLoopProxy<AppEvent>,
     window: Option<Rc<Window>>,
     _context: Option<SoftbufferContext<Rc<Window>>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
 }
 
 impl App {
-    fn new(page: Page) -> Self {
+    fn new(page: Page, event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
+            address: page.url.clone(),
             page,
+            status: "Ready".to_owned(),
+            loading: false,
+            next_request_id: 0,
+            active_request_id: 0,
+            event_proxy,
             window: None,
             _context: None,
             surface: None,
+        }
+    }
+
+    fn request_redraw(&self) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    fn navigate(&mut self) {
+        let address = self.address.trim().to_owned();
+
+        if address.is_empty() {
+            return;
+        }
+
+        self.next_request_id += 1;
+        let request_id = self.next_request_id;
+
+        self.active_request_id = request_id;
+        self.loading = true;
+        self.status = "Loading...".to_owned();
+        self.request_redraw();
+
+        let proxy = self.event_proxy.clone();
+
+        std::thread::spawn(move || {
+            let result = load_page(&address).map_err(|error| error.to_string());
+
+            let _ = proxy.send_event(AppEvent::NavigationFinished { request_id, result });
+        });
+    }
+
+    fn handle_key(&mut self, event: KeyEvent) {
+        if event.state != ElementState::Pressed {
+            return;
+        }
+
+        match &event.logical_key {
+            Key::Named(NamedKey::Enter) => self.navigate(),
+
+            Key::Named(NamedKey::Backspace) => {
+                self.address.pop();
+                self.request_redraw();
+            }
+
+            Key::Named(NamedKey::Escape) => {
+                self.address = self.page.url.clone();
+                self.status = "Ready".to_owned();
+                self.request_redraw();
+            }
+
+            _ => {
+                if let Some(text) = &event.text {
+                    let text = text.to_string();
+
+                    if !text.chars().any(char::is_control) {
+                        self.address.push_str(&text);
+                        self.request_redraw();
+                    }
+                }
+            }
         }
     }
 
@@ -260,7 +344,14 @@ impl App {
             .buffer_mut()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-        paint(&mut buffer, width as usize, height as usize, &self.page);
+        paint(
+            &mut buffer,
+            width as usize,
+            height as usize,
+            &self.page,
+            &self.address,
+            &self.status,
+        );
 
         buffer
             .present()
@@ -270,7 +361,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -314,6 +405,37 @@ impl ApplicationHandler for App {
         self.surface = Some(surface);
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::NavigationFinished { request_id, result } => {
+                if request_id != self.active_request_id {
+                    return;
+                }
+
+                self.loading = false;
+
+                match result {
+                    Ok(page) => {
+                        self.address = page.url.clone();
+                        self.status = "Ready".to_owned();
+
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!("FreeDOM - {}", page.title));
+                        }
+
+                        self.page = page;
+                    }
+
+                    Err(error) => {
+                        self.status = format!("Load failed: {error}");
+                    }
+                }
+
+                self.request_redraw();
+            }
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -327,11 +449,9 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
-            WindowEvent::Resized(_) => {
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
+            WindowEvent::Resized(_) => self.request_redraw(),
+
+            WindowEvent::KeyboardInput { event, .. } => self.handle_key(event),
 
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.redraw() {
@@ -345,10 +465,17 @@ impl ApplicationHandler for App {
     }
 }
 
-fn paint(pixels: &mut [u32], width: usize, height: usize, page: &Page) {
+fn paint(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    page: &Page,
+    address: &str,
+    status: &str,
+) {
     pixels.fill(BACKGROUND);
 
-    fill_rect(pixels, width, height, 0, 0, width as i32, 48, TOOLBAR);
+    fill_rect(pixels, width, height, 0, 0, width as i32, 70, TOOLBAR);
     fill_rect(
         pixels,
         width,
@@ -360,9 +487,10 @@ fn paint(pixels: &mut [u32], width: usize, height: usize, page: &Page) {
         ADDRESS_BAR,
     );
 
-    draw_text_line(pixels, width, height, 20, 18, &page.url, 1, LIGHT_TEXT);
+    draw_text_line(pixels, width, height, 20, 18, address, 1, LIGHT_TEXT);
+    draw_text_line(pixels, width, height, 16, 51, status, 1, LIGHT_TEXT);
 
-    let mut y = 68;
+    let mut y = 90;
 
     for block in &page.blocks {
         if y >= height as i32 {
