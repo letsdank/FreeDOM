@@ -374,6 +374,11 @@ fn is_identifier_continue(character: char) -> bool {
     is_identifier_start(character) || character.is_ascii_digit()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFunction {
+    AssertEquals,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Undefined,
@@ -382,6 +387,7 @@ pub enum Value {
     Number(f64),
     String(String),
     Url(Url),
+    NativeFunction(NativeFunction),
 }
 
 impl Value {
@@ -393,6 +399,7 @@ impl Value {
             Value::Number(value) => value.to_string(),
             Value::String(value) => value.clone(),
             Value::Url(url) => url.to_string(),
+            Self::NativeFunction(_) => "function".to_owned(),
         }
     }
 }
@@ -414,6 +421,10 @@ enum Expression {
     Member {
         object: Box<Expression>,
         property: String,
+    },
+    Call {
+        callee: Box<Expression>,
+        arguments: Vec<Expression>,
     },
 }
 
@@ -517,19 +528,37 @@ impl Parser {
     }
 
     fn parse_expression(&mut self) -> Result<Expression, JsError> {
-        self.parse_member_expression()
+        self.parse_postfix_expression()
     }
 
-    fn parse_member_expression(&mut self) -> Result<Expression, JsError> {
+    fn parse_postfix_expression(&mut self) -> Result<Expression, JsError> {
         let mut expression = self.parse_primary()?;
 
-        while self.consume_optional(&TokenKind::Dot) {
-            let (property, _) = self.consume_identifier("expected a property name after '.'")?;
+        loop {
+            if self.consume_optional(&TokenKind::Dot) {
+                let (property, _) =
+                    self.consume_identifier("expected a property name after '.'")?;
 
-            expression = Expression::Member {
-                object: Box::new(expression),
-                property,
-            };
+                expression = Expression::Member {
+                    object: Box::new(expression),
+                    property,
+                };
+
+                continue;
+            }
+
+            if self.consume_optional(&TokenKind::LeftParen) {
+                let arguments = self.parse_arguments()?;
+
+                expression = Expression::Call {
+                    callee: Box::new(expression),
+                    arguments,
+                };
+
+                continue;
+            }
+
+            break;
         }
 
         Ok(expression)
@@ -592,6 +621,10 @@ impl Parser {
             arguments.push(self.parse_expression()?);
 
             if self.consume_optional(&TokenKind::Comma) {
+                if self.consume_optional(&TokenKind::RightParen) {
+                    return Ok(arguments);
+                }
+
                 continue;
             }
 
@@ -653,9 +686,14 @@ struct Interpreter {
 
 impl Interpreter {
     fn new() -> Self {
-        Self {
-            variables: HashMap::new(),
-        }
+        let mut variables = HashMap::new();
+
+        variables.insert(
+            "assert_equals".to_owned(),
+            Value::NativeFunction(NativeFunction::AssertEquals),
+        );
+
+        Self { variables }
     }
 
     fn execute(&mut self, program: &[Statement]) -> Result<Value, JsError> {
@@ -710,7 +748,55 @@ impl Interpreter {
                     ))),
                 }
             }
+
+            Expression::Call { callee, arguments } => self.evaluate_call(callee, arguments),
         }
+    }
+
+    fn evaluate_call(
+        &mut self,
+        callee: &Expression,
+        arguments: &[Expression],
+    ) -> Result<Value, JsError> {
+        let callee = self.evaluate_expression(callee)?;
+
+        let mut values = Vec::with_capacity(arguments.len());
+
+        for argument in arguments {
+            values.push(self.evaluate_expression(argument)?);
+        }
+
+        match callee {
+            Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
+
+            _ => Err(JsError::runtime("TypeError: this value is not callable")),
+        }
+    }
+
+    fn assert_equals(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if !(2..=3).contains(&arguments.len()) {
+            return Err(JsError::runtime(
+                "TypeError: assert_equals expects two or three arguments",
+            ));
+        }
+
+        let actual = &arguments[0];
+        let expected = &arguments[1];
+
+        if actual == expected {
+            return Ok(Value::Undefined);
+        }
+
+        let description = arguments
+            .get(2)
+            .map(Value::to_js_string)
+            .filter(|message| !message.is_empty())
+            .map(|message| format!(": {message}"))
+            .unwrap_or_default();
+
+        Err(JsError::runtime(format!(
+            "AssertionError{description}; expected {expected:?}, got {actual:?}"
+        )))
     }
 
     fn construct(&mut self, constructor: &str, arguments: &[Expression]) -> Result<Value, JsError> {
@@ -822,5 +908,23 @@ let base = "https:\/\/example.test\u002Fdocs";
             result,
             Value::String("http://example.org/foo/bar#".to_owned())
         );
+    }
+
+    #[test]
+    fn runs_wpt_style_url_assertion() {
+        let result = evaluate(
+            r##"
+                const base = "http://example.org/foo/bar";
+
+                assert_equals(
+                    new URL("#", base).href,
+                    "http://example.org/foo/bar#",
+                    "empty fragment must be preserved",
+                );
+            "##,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
     }
 }
