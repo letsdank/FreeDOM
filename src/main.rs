@@ -12,7 +12,7 @@ use softbuffer::{Context as SoftbufferContext, Surface};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{ElementState, KeyEvent, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
@@ -23,6 +23,7 @@ const TOOLBAR: u32 = 0x00_20_25_2B;
 const ADDRESS_BAR: u32 = 0x00_38_40_4A;
 const TEXT: u32 = 0x00_18_1B_20;
 const LIGHT_TEXT: u32 = 0x00_F4_F6_F8;
+const LINK_TEXT: u32 = 0x00_00_00_EE;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Display {
@@ -42,6 +43,21 @@ struct TextStyle {
 struct Block {
     text: String,
     style: TextStyle,
+    link: Option<String>,
+}
+
+struct LinkRegion {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    target: String,
+}
+
+impl LinkRegion {
+    fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
 }
 
 struct Page {
@@ -77,6 +93,7 @@ struct ElementInfo {
     id: Option<String>,
     classes: Vec<String>,
     inline_style: Option<String>,
+    href: Option<String>,
 }
 
 enum StylesheetSource {
@@ -163,6 +180,7 @@ fn parse_dom(url: &str, dom: RcDom, stylesheets: &[String]) -> Page {
 
     let mut blocks = Vec::new();
     let mut current_text = String::new();
+    let page_url = Url::parse(url).ok();
 
     extract_blocks(
         &dom.document,
@@ -170,6 +188,7 @@ fn parse_dom(url: &str, dom: RcDom, stylesheets: &[String]) -> Page {
         &mut blocks,
         &mut current_text,
         base_style,
+        page_url.as_ref(),
     );
 
     flush(&mut blocks, &mut current_text, base_style);
@@ -503,6 +522,7 @@ fn element_info(node: &Handle) -> Option<ElementInfo> {
     let mut id = None;
     let mut classes = Vec::new();
     let mut inline_style = None;
+    let mut href = None;
 
     for attribute in attrs.borrow().iter() {
         let attribute_name = attribute.name.local.to_string();
@@ -517,6 +537,8 @@ fn element_info(node: &Handle) -> Option<ElementInfo> {
 
             "style" => inline_style = Some(value),
 
+            "href" => href = Some(value),
+
             _ => {}
         }
     }
@@ -526,6 +548,7 @@ fn element_info(node: &Handle) -> Option<ElementInfo> {
         id,
         classes,
         inline_style,
+        href,
     })
 }
 
@@ -535,6 +558,7 @@ fn extract_blocks(
     blocks: &mut Vec<Block>,
     current: &mut String,
     inherited_style: TextStyle,
+    page_url: Option<&Url>,
 ) {
     if let NodeData::Text { contents } = &node.data {
         append_collapsed(current, contents.borrow().as_ref());
@@ -543,7 +567,7 @@ fn extract_blocks(
 
     let Some(element) = element_info(node) else {
         for child in node.children.borrow().iter() {
-            extract_blocks(child, rules, blocks, current, inherited_style);
+            extract_blocks(child, rules, blocks, current, inherited_style, page_url);
         }
 
         return;
@@ -567,6 +591,30 @@ fn extract_blocks(
         return;
     }
 
+    if element.tag == "a" {
+        flush(blocks, current, inherited_style);
+
+        let mut text = String::new();
+        append_collapsed(&mut text, &text_content(node));
+
+        let target = element
+            .href
+            .as_deref()
+            .and_then(|href| page_url.and_then(|url| url.join(href.trim()).ok()))
+            .filter(|url| matches!(url.scheme(), "http" | "https"))
+            .map(|url| url.to_string());
+
+        if !text.is_empty() {
+            blocks.push(Block {
+                text,
+                style,
+                link: target,
+            });
+        }
+
+        return;
+    }
+
     let is_block = style.display == Display::Block;
 
     if is_block {
@@ -574,7 +622,7 @@ fn extract_blocks(
     }
 
     for child in node.children.borrow().iter() {
-        extract_blocks(child, rules, blocks, current, style);
+        extract_blocks(child, rules, blocks, current, style, page_url);
     }
 
     if is_block {
@@ -611,6 +659,10 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     let mut style = inherited_style;
     style.display = Display::Inline;
     style.margin_after = 0;
+
+    if tag == "a" {
+        style.color = LINK_TEXT;
+    }
 
     if matches!(
         tag,
@@ -692,7 +744,11 @@ fn flush(blocks: &mut Vec<Block>, current: &mut String, style: TextStyle) {
     current.clear();
 
     if !text.is_empty() {
-        blocks.push(Block { text, style });
+        blocks.push(Block {
+            text,
+            style,
+            link: None,
+        });
     }
 }
 
@@ -707,6 +763,8 @@ struct App {
     window: Option<Rc<Window>>,
     _context: Option<SoftbufferContext<Rc<Window>>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
+    link_regions: Vec<LinkRegion>,
+    cursor_position: Option<(i32, i32)>,
 }
 
 impl App {
@@ -722,6 +780,8 @@ impl App {
             window: None,
             _context: None,
             surface: None,
+            link_regions: Vec::new(),
+            cursor_position: None,
         }
     }
 
@@ -753,6 +813,24 @@ impl App {
 
             let _ = proxy.send_event(AppEvent::NavigationFinished { request_id, result });
         });
+    }
+
+    fn open_link_at_cursor(&mut self) {
+        let Some((x, y)) = self.cursor_position else {
+            return;
+        };
+
+        let Some(target) = self
+            .link_regions
+            .iter()
+            .find(|region| region.contains(x, y))
+            .map(|region| region.target.clone())
+        else {
+            return;
+        };
+
+        self.address = target;
+        self.navigate();
     }
 
     fn handle_key(&mut self, event: KeyEvent) {
@@ -810,7 +888,7 @@ impl App {
             .buffer_mut()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-        paint(
+        let link_regions = paint(
             &mut buffer,
             width as usize,
             height as usize,
@@ -822,6 +900,8 @@ impl App {
         buffer
             .present()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+        self.link_regions = link_regions;
 
         Ok(())
     }
@@ -919,6 +999,16 @@ impl ApplicationHandler<AppEvent> for App {
 
             WindowEvent::KeyboardInput { event, .. } => self.handle_key(event),
 
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = Some((position.x as i32, position.y as i32));
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => self.open_link_at_cursor(),
+
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.redraw() {
                     eprintln!("ошибка отрисовки: {error}");
@@ -938,7 +1028,7 @@ fn paint(
     page: &Page,
     address: &str,
     status: &str,
-) {
+) -> Vec<LinkRegion> {
     pixels.fill(BACKGROUND);
 
     fill_rect(pixels, width, height, 0, 0, width as i32, 70, TOOLBAR);
@@ -957,15 +1047,12 @@ fn paint(
     draw_text_line(pixels, width, height, 16, 51, status, 1, LIGHT_TEXT);
 
     let mut y = 90;
+    let mut link_regions = Vec::new();
 
     for block in &page.blocks {
         if y >= height as i32 {
             break;
         }
-
-        let scale = block.style.scale;
-        let color = block.style.color;
-        let margin_after = block.style.margin_after;
 
         y = draw_wrapped_text(
             pixels,
@@ -975,12 +1062,16 @@ fn paint(
             y,
             width as i32 - 16,
             &block.text,
-            scale,
-            color,
+            block.style.scale,
+            block.style.color,
+            block.link.as_deref(),
+            &mut link_regions,
         );
 
-        y += margin_after;
+        y += block.style.margin_after;
     }
+
+    link_regions
 }
 
 fn draw_wrapped_text(
@@ -993,6 +1084,8 @@ fn draw_wrapped_text(
     text: &str,
     scale: usize,
     color: u32,
+    link_target: Option<&str>,
+    link_regions: &mut Vec<LinkRegion>,
 ) -> i32 {
     let character_width = (8 * scale) as i32;
     let line_height = (10 * scale) as i32;
@@ -1014,7 +1107,20 @@ fn draw_wrapped_text(
             x += character_width;
         }
 
-        draw_text_line(pixels, width, height, x, y, word, scale, color);
+        let word_x = x;
+
+        draw_text_line(pixels, width, height, word_x, y, word, scale, color);
+
+        if let Some(target) = link_target {
+            link_regions.push(LinkRegion {
+                x: word_x,
+                y,
+                width: word_width,
+                height: (8 * scale) as i32,
+                target: target.to_owned(),
+            });
+        }
+
         x += word_width;
     }
 
@@ -1161,6 +1267,25 @@ mod tests {
                 "https://example.test/assets/site.css",
                 "https://cdn.example.test/theme.css",
             ]
+        );
+    }
+
+    #[test]
+    fn resolves_anchor_href_against_document_url() {
+        let page = parse_html(
+            "https://example.test/docs/guide/index.html",
+            r#"<p>Read <a href="../about.html">about us</a>.</p>"#,
+        );
+
+        let link = page
+            .blocks
+            .iter()
+            .find(|block| block.text == "about us")
+            .unwrap();
+
+        assert_eq!(
+            link.link.as_deref(),
+            Some("https://example.test/docs/about.html")
         );
     }
 }
