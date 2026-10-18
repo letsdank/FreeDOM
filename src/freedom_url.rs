@@ -17,6 +17,7 @@ pub struct Url {
 enum UrlForm {
     Special,
     Authority,
+    Path,
     Opaque,
 }
 
@@ -27,6 +28,7 @@ pub enum UrlError {
     EmptyHost,
     InvalidHost,
     InvalidPort,
+    InvalidBase,
 }
 
 impl fmt::Display for UrlError {
@@ -37,6 +39,7 @@ impl fmt::Display for UrlError {
             Self::EmptyHost => write!(f, "URL host is empty"),
             Self::InvalidHost => write!(f, "invalid URL host"),
             Self::InvalidPort => write!(f, "invalid URL port"),
+            Self::InvalidBase => write!(f, "URL cannot be used as a relative base"),
         }
     }
 }
@@ -117,14 +120,20 @@ impl Url {
             });
         }
 
+        let (form, path) = if after_scheme.starts_with('/') {
+            (UrlForm::Path, normalize_path(after_scheme))
+        } else {
+            (UrlForm::Opaque, after_scheme.to_owned())
+        };
+
         Ok(Self {
-            form: UrlForm::Opaque,
+            form,
             scheme,
             username: String::new(),
             password: None,
             host: String::new(),
             port: None,
-            path: after_scheme.to_owned(),
+            path,
             query: query.map(str::to_owned),
             fragment: fragment.map(str::to_owned),
         })
@@ -141,6 +150,10 @@ impl Url {
             let mut resolved = self.clone();
             resolved.fragment = None;
             return Ok(resolved);
+        }
+
+        if self.form == UrlForm::Opaque && !reference.starts_with('#') {
+            return Err(UrlError::InvalidBase);
         }
 
         if has_scheme(&reference) {
@@ -284,13 +297,13 @@ impl fmt::Display for Url {
                 }
 
                 if self.form == UrlForm::Special {
-                    write!(f, "{}", serialize_component(&self.path))?;
+                    write!(f, "{}", serialize_path_component(&self.path))?;
                 } else {
                     write!(f, "{}", self.path)?;
                 }
             }
 
-            UrlForm::Opaque => {
+            UrlForm::Path | UrlForm::Opaque => {
                 let has_query_or_fragment = self.query.is_some() || self.fragment.is_some();
 
                 write!(
@@ -303,7 +316,11 @@ impl fmt::Display for Url {
         }
 
         if let Some(query) = &self.query {
-            write!(f, "?{}", serialize_component(query))?;
+            write!(
+                f,
+                "?{}",
+                serialize_query_component(query, self.form == UrlForm::Special)
+            )?;
         }
 
         if let Some(fragment) = &self.fragment {
@@ -312,10 +329,6 @@ impl fmt::Display for Url {
 
         Ok(())
     }
-}
-
-fn trim_ascii_whitespace(input: &str) -> &str {
-    input.trim_matches(|character: char| character.is_ascii_whitespace())
 }
 
 fn trim_c0_control_and_space(input: &str) -> &str {
@@ -331,6 +344,23 @@ fn sanitize_url_input(input: &str) -> String {
 
 fn serialize_component(component: &str) -> String {
     percent_encode(component, |byte| byte == b' ' || byte >= 0x7F)
+}
+
+fn serialize_path_component(component: &str) -> String {
+    percent_encode(component, |byte| {
+        byte == b' '
+            || byte >= 0x7F
+            || matches!(byte, b'"' | b'<' | b'>' | b'?' | b'^' | b'`' | b'{' | b'}')
+    })
+}
+
+fn serialize_query_component(component: &str, is_special: bool) -> String {
+    percent_encode(component, |byte| {
+        byte == b' '
+            || byte >= 0x7F
+            || matches!(byte, b'"' | b'#' | b'<' | b'>')
+            || (is_special && byte == b'\'')
+    })
 }
 
 fn serialize_opaque_path(path: &str, has_query_or_fragment: bool) -> String {
@@ -388,6 +418,8 @@ fn serialize_userinfo(component: &str) -> String {
                     | b']'
                     | b'^'
                     | b'|'
+                    | b'{'
+                    | b'}'
             )
     })
 }
@@ -448,6 +480,8 @@ fn parse_authority(
         return Err(UrlError::EmptyHost);
     }
 
+    let has_userinfo = authority.rsplit_once('@').is_some();
+
     let (username, password, host_and_port) = match authority.rsplit_once('@') {
         Some((userinfo, host_and_port)) => {
             let (username, password) = match userinfo.split_once(':') {
@@ -489,13 +523,16 @@ fn parse_authority(
         }
     };
 
-    if host_required && host.is_empty() {
+    if host.is_empty() && (host_required || has_userinfo || port_text.is_some()) {
         return Err(UrlError::EmptyHost);
     }
 
     if host.chars().any(|character| {
-        character.is_ascii_whitespace() || matches!(character, '/' | '\\' | '?' | '#')
-    }) {
+        character.is_control()
+            || character.is_ascii_whitespace()
+            || matches!(character, '/' | '\\' | '?' | '#' | '<' | '>')
+    }) || contains_forbidden_opaque_host_escape(host)
+    {
         return Err(UrlError::InvalidHost);
     }
 
@@ -531,6 +568,37 @@ fn parse_authority(
     };
 
     Ok((username, password, host, port))
+}
+
+fn contains_forbidden_opaque_host_escape(host: &str) -> bool {
+    let bytes = host.as_bytes();
+    let mut index = 0;
+
+    while index + 2 < bytes.len() {
+        if bytes[index] != b'%' {
+            index += 1;
+            continue;
+        }
+
+        let Some(high) = hex_value(bytes[index + 1]) else {
+            index += 1;
+            continue;
+        };
+        let Some(low) = hex_value(bytes[index + 2]) else {
+            index += 1;
+            continue;
+        };
+
+        let decoded = (high << 4) | low;
+
+        if decoded <= 0x20 || matches!(decoded, b'"' | b'<' | b'>' | b'`') {
+            return true;
+        }
+
+        index += 3;
+    }
+
+    false
 }
 
 fn preprocess_special_host(host: &str) -> Result<String, UrlError> {
@@ -1298,5 +1366,32 @@ mod tests {
             Url::parse("non-special:opaque  ?hi").unwrap().to_string(),
             "non-special:opaque %20?hi"
         );
+    }
+
+    #[test]
+    fn wpt_component_encoding_and_generic_url_forms() {
+        assert_eq!(
+            Url::parse(r"http://`{}:`{}@h/`{}?`{}").unwrap().to_string(),
+            "http://%60%7B%7D:%60%7B%7D@h/%60%7B%7D?`{}"
+        );
+        assert_eq!(
+            Url::parse("http://host/?'").unwrap().to_string(),
+            "http://host/?%27"
+        );
+        assert_eq!(
+            Url::parse("notspecial://host/?'").unwrap().to_string(),
+            "notspecial://host/?'"
+        );
+
+        assert_eq!(Url::parse("about:/../").unwrap().to_string(), "about:/");
+
+        let opaque = Url::parse("sc:sd").unwrap();
+        assert!(opaque.join("i").is_err());
+        assert_eq!(opaque.join("#i").unwrap().to_string(), "sc:sd#i");
+
+        assert!(Url::parse("sc://@/").is_err());
+        assert!(Url::parse("sc://:12/").is_err());
+        assert!(Url::parse("sc://a%00b/").is_err());
+        assert!(Url::parse("sc://a%3Cb").is_err());
     }
 }
