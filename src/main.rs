@@ -1,12 +1,14 @@
+mod freedom_url;
+
 use std::{num::NonZeroU32, rc::Rc, time::Duration};
 
+use crate::freedom_url::Url;
 use anyhow::{Context as _, Result, bail};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 use html5ever::{parse_document, tendril::TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use reqwest::{blocking::Client, redirect::Policy};
 use softbuffer::{Context as SoftbufferContext, Surface};
-use url::Url;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -125,14 +127,17 @@ fn load_page(input: &str) -> Result<Page> {
         .redirect(Policy::limited(10))
         .build()?;
 
-    let response = client.get(url.as_str()).send()?.error_for_status()?;
-    let final_url = response.url().clone();
+    let response = client.get(url.to_string()).send()?.error_for_status()?;
+
+    let final_url =
+        Url::parse(response.url().as_str()).context("server returned an invalid final URL")?;
     let html = response.text()?;
 
     let dom = parse_document(RcDom::default(), Default::default()).one(html);
     let stylesheets = load_author_stylesheets(&client, &final_url, &dom.document);
+    let final_url_text = final_url.to_string();
 
-    Ok(parse_dom(final_url.as_str(), dom, &stylesheets))
+    Ok(parse_dom(&final_url_text, dom, &stylesheets))
 }
 
 #[cfg(test)]
@@ -247,7 +252,7 @@ fn load_author_stylesheets(client: &Client, page_url: &Url, root: &Handle) -> Ve
 
             StylesheetSource::External(url) => {
                 let response = client
-                    .get(url.as_str())
+                    .get(url.to_string())
                     .send()
                     .and_then(|response| response.error_for_status())
                     .and_then(|response| response.text());

@@ -543,7 +543,6 @@ dependencies = [
  "markup5ever_rcdom",
  "reqwest",
  "softbuffer",
- "url",
  "winit",
 ]
 
