@@ -114,7 +114,11 @@ impl Url {
                 password,
                 host,
                 port,
-                path: raw_path.to_owned(),
+                path: if raw_path.is_empty() {
+                    String::new()
+                } else {
+                    normalize_path(raw_path)
+                },
                 query: query.map(str::to_owned),
                 fragment: fragment.map(str::to_owned),
             });
@@ -172,16 +176,21 @@ impl Url {
         }
 
         let (without_fragment, fragment) = split_component(&reference, '#');
-        let special_reference = without_fragment.replace('\\', "/");
 
-        if special_reference.starts_with("//") {
-            let absolute = format!("{}:{}", self.scheme, special_reference);
+        let reference_for_path = if self.form == UrlForm::Special {
+            without_fragment.replace('\\', "/")
+        } else {
+            without_fragment.to_owned()
+        };
+
+        if reference_for_path.starts_with("//") {
+            let absolute = format!("{}:{}", self.scheme, reference_for_path);
             let mut resolved = Self::parse(&absolute)?;
             resolved.fragment = fragment.map(str::to_owned);
             return Ok(resolved);
         }
 
-        let (reference_path, query) = split_component(&special_reference, '?');
+        let (reference_path, query) = split_component(&reference_for_path, '?');
 
         let mut resolved = self.clone();
         resolved.fragment = fragment.map(str::to_owned);
@@ -838,7 +847,11 @@ fn parse_ipv4_number(part: &str) -> Result<Option<u64>, UrlError> {
     };
 
     if !valid_digits {
-        return Ok(None);
+        return if radix == 8 && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            Err(UrlError::InvalidHost)
+        } else {
+            Ok(None)
+        };
     }
 
     u64::from_str_radix(digits, radix)
@@ -986,10 +999,6 @@ fn parse_file_url(
         let authority = &after_authority_marker[..authority_end];
         let raw_path = &after_authority_marker[authority_end..];
 
-        if authority.contains('%') {
-            return Err(UrlError::InvalidHost);
-        }
-
         if is_windows_drive_letter(authority) {
             (String::new(), format!("/{authority}{raw_path}"))
         } else {
@@ -1078,7 +1087,7 @@ fn is_double_dot_segment(segment: &str) -> bool {
 }
 
 fn normalize_path(raw_path: &str) -> String {
-    let path = raw_path.replace('\\', "/");
+    let path = raw_path;
 
     if path.is_empty() {
         return "/".to_owned();
@@ -1564,5 +1573,24 @@ mod tests {
             opaque_base.join("abc:rootless").unwrap().to_string(),
             "abc:rootless"
         );
+    }
+
+    #[test]
+    fn normalizes_generic_authority_paths_without_rewriting_backslashes() {
+        assert_eq!(
+            Url::parse("data://test/a/../b").unwrap().to_string(),
+            "data://test/b"
+        );
+
+        assert_eq!(
+            Url::parse(r"non-special:/\path").unwrap().to_string(),
+            r"non-special:/\path"
+        );
+
+        let base = Url::parse("foo://foo/a").unwrap();
+
+        assert_eq!(base.join(r"\a").unwrap().to_string(), r"foo://foo/\a");
+        assert_eq!(base.join(r"\/a").unwrap().to_string(), r"foo://foo/\/a");
+        assert_eq!(base.join(r"\\a").unwrap().to_string(), r"foo://foo/\\a");
     }
 }
