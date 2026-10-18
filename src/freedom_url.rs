@@ -8,6 +8,8 @@ pub struct Url {
     path: String,
     query: Option<String>,
     fragment: Option<String>,
+    username: String,
+    password: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,12 +43,13 @@ impl Error for UrlError {}
 
 impl Url {
     pub fn parse(input: &str) -> Result<Self, UrlError> {
-        let input = trim_ascii_whitespace(input);
+        let input = sanitize_url_input(input);
+
         if input.is_empty() {
             return Err(UrlError::EmptyInput);
         }
 
-        let (without_fragment, fragment) = split_component(input, '#');
+        let (without_fragment, fragment) = split_component(&input, '#');
         let (without_query, query) = split_component(without_fragment, '?');
 
         let Some((scheme, after_scheme)) = without_query.split_once(':') else {
@@ -58,9 +61,12 @@ impl Url {
         }
 
         let scheme = scheme.to_ascii_lowercase();
+
         if !matches!(scheme.as_str(), "http" | "https") {
             return Err(UrlError::UnsupportedScheme(scheme));
         }
+
+        let after_scheme = after_scheme.replace('\\', "/");
 
         let Some(after_authority_marker) = after_scheme.strip_prefix("//") else {
             return Err(UrlError::MissingAuthority);
@@ -72,10 +78,13 @@ impl Url {
 
         let authority = &after_authority_marker[..authority_end];
         let raw_path = &after_authority_marker[authority_end..];
-        let (host, port) = parse_authority(&scheme, authority)?;
+
+        let (username, password, host, port) = parse_authority(&scheme, authority)?;
 
         Ok(Self {
             scheme,
+            username,
+            password,
             host,
             port,
             path: normalize_path(raw_path),
@@ -85,7 +94,7 @@ impl Url {
     }
 
     pub fn join(&self, reference: &str) -> Result<Self, UrlError> {
-        let reference = trim_ascii_whitespace(reference);
+        let reference = sanitize_url_input(reference);
 
         if reference.is_empty() {
             let mut resolved = self.clone();
@@ -93,20 +102,29 @@ impl Url {
             return Ok(resolved);
         }
 
-        if has_scheme(reference) {
-            return Self::parse(reference);
+        if has_scheme(&reference) {
+            let (scheme, after_scheme) = reference
+                .split_once(':')
+                .expect("has_scheme guarantees ':'");
+
+            if scheme.eq_ignore_ascii_case(&self.scheme) && !after_scheme.starts_with("//") {
+                return self.join(after_scheme);
+            }
+
+            return Self::parse(&reference);
         }
 
-        let (without_fragment, fragment) = split_component(reference, '#');
+        let (without_fragment, fragment) = split_component(&reference, '#');
+        let special_reference = without_fragment.replace('\\', "/");
 
-        if without_fragment.starts_with("//") {
-            let absolute = format!("{}:{}", self.scheme, without_fragment);
+        if special_reference.starts_with("//") {
+            let absolute = format!("{}:{}", self.scheme, special_reference);
             let mut resolved = Self::parse(&absolute)?;
             resolved.fragment = fragment.map(str::to_owned);
             return Ok(resolved);
         }
 
-        let (reference_path, query) = split_component(without_fragment, '?');
+        let (reference_path, query) = split_component(&special_reference, '?');
 
         let mut resolved = self.clone();
         resolved.fragment = fragment.map(str::to_owned);
@@ -115,6 +133,7 @@ impl Url {
             if let Some(query) = query {
                 resolved.query = Some(query.to_owned());
             }
+
             return Ok(resolved);
         }
 
@@ -137,20 +156,32 @@ impl Url {
 
 impl fmt::Display for Url {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}://{}", self.scheme, self.host)?;
+        write!(f, "{}://", self.scheme)?;
+
+        if !self.username.is_empty() || self.password.is_some() {
+            write!(f, "{}", self.username)?;
+
+            if let Some(password) = &self.password {
+                write!(f, ":{password}")?;
+            }
+
+            write!(f, "@")?;
+        }
+
+        write!(f, "{}", self.host)?;
 
         if let Some(port) = self.port {
             write!(f, ":{port}")?;
         }
 
-        write!(f, "{}", self.path)?;
+        write!(f, "{}", serialize_component(&self.path))?;
 
         if let Some(query) = &self.query {
-            write!(f, "?{query}")?;
+            write!(f, "?{}", serialize_component(query))?;
         }
 
         if let Some(fragment) = &self.fragment {
-            write!(f, "#{fragment}")?;
+            write!(f, "#{}", serialize_component(fragment))?;
         }
 
         Ok(())
@@ -159,6 +190,17 @@ impl fmt::Display for Url {
 
 fn trim_ascii_whitespace(input: &str) -> &str {
     input.trim_matches(|character: char| character.is_ascii_whitespace())
+}
+
+fn sanitize_url_input(input: &str) -> String {
+    trim_ascii_whitespace(input)
+        .chars()
+        .filter(|character| !matches!(character, '\t' | '\n' | '\r'))
+        .collect()
+}
+
+fn serialize_component(component: &str) -> String {
+    component.replace(' ', "%20")
 }
 
 fn split_component(input: &str, marker: char) -> (&str, Option<&str>) {
@@ -178,7 +220,7 @@ fn is_valid_scheme(scheme: &str) -> bool {
     let mut characters = scheme.chars();
 
     match characters.next() {
-        Some(character) if character.is_alphanumeric() => {}
+        Some(character) if character.is_ascii_alphabetic() => {}
         _ => return false,
     }
 
@@ -186,22 +228,39 @@ fn is_valid_scheme(scheme: &str) -> bool {
         .all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.'))
 }
 
-fn parse_authority(scheme: &str, authority: &str) -> Result<(String, Option<u16>), UrlError> {
+fn parse_authority(
+    scheme: &str,
+    authority: &str,
+) -> Result<(String, Option<String>, String, Option<u16>), UrlError> {
     if authority.is_empty() {
         return Err(UrlError::EmptyHost);
     }
 
-    if authority.contains('@') {
-        return Err(UrlError::UserInfoUnsupported);
-    }
+    let (username, password, host_and_port) = match authority.rsplit_once('@') {
+        Some((userinfo, host_and_port)) => {
+            let (username, password) = match userinfo.split_once(':') {
+                Some((username, password)) if !password.is_empty() => {
+                    (username.to_owned(), Some(password.to_owned()))
+                }
 
-    let (host, port_text) = if authority.starts_with('[') {
-        let Some(closing_bracket) = authority.find(']') else {
+                Some((username, _)) => (username.to_owned(), None),
+
+                None => (userinfo.to_owned(), None),
+            };
+
+            (username, password, host_and_port)
+        }
+
+        None => (String::new(), None, authority),
+    };
+
+    let (host, port_text) = if host_and_port.starts_with('[') {
+        let Some(closing_bracket) = host_and_port.find(']') else {
             return Err(UrlError::InvalidHost);
         };
 
-        let host = &authority[..=closing_bracket];
-        let suffix = &authority[closing_bracket + 1..];
+        let host = &host_and_port[..=closing_bracket];
+        let suffix = &host_and_port[closing_bracket + 1..];
 
         if suffix.is_empty() {
             (host, None)
@@ -211,10 +270,10 @@ fn parse_authority(scheme: &str, authority: &str) -> Result<(String, Option<u16>
             return Err(UrlError::InvalidHost);
         }
     } else {
-        match authority.rsplit_once(':') {
+        match host_and_port.rsplit_once(':') {
             Some((host, port)) if !host.contains(':') => (host, Some(port)),
             Some(_) => return Err(UrlError::InvalidHost),
-            None => (authority, None),
+            None => (host_and_port, None),
         }
     };
 
@@ -230,8 +289,21 @@ fn parse_authority(scheme: &str, authority: &str) -> Result<(String, Option<u16>
 
     let port = match port_text {
         None | Some("") => None,
+
         Some(port) => {
-            let port = port.parse::<u16>().map_err(|_| UrlError::InvalidPort)?;
+            if !port.chars().all(|character| character.is_ascii_digit()) {
+                return Err(UrlError::InvalidPort);
+            }
+
+            let canonical_port = port.trim_start_matches('0');
+
+            let port = if canonical_port.is_empty() {
+                0
+            } else {
+                canonical_port
+                    .parse::<u16>()
+                    .map_err(|_| UrlError::InvalidPort)?
+            };
 
             match (scheme, port) {
                 ("http", 80) | ("https", 443) => None,
@@ -240,7 +312,7 @@ fn parse_authority(scheme: &str, authority: &str) -> Result<(String, Option<u16>
         }
     };
 
-    Ok((host.to_ascii_lowercase(), port))
+    Ok((username, password, host.to_ascii_lowercase(), port))
 }
 
 fn normalize_path(raw_path: &str) -> String {
@@ -348,6 +420,58 @@ mod tests {
                 .unwrap()
                 .to_string(),
             "https://example.org/docs"
+        );
+    }
+
+    #[test]
+    fn wpt_special_url_normalization_cases() {
+        assert_eq!(
+            Url::parse("http://example\t.\norg").unwrap().to_string(),
+            "http://example.org/"
+        );
+
+        assert_eq!(
+            Url::parse("http://user:pass@foo:21/bar;par?b#c")
+                .unwrap()
+                .to_string(),
+            "http://user:pass@foo:21/bar;par?b#c"
+        );
+
+        assert_eq!(
+            Url::parse("https://test:@test").unwrap().to_string(),
+            "https://test@test/"
+        );
+
+        assert_eq!(
+            Url::parse("http://f:00000000000000000000080/c")
+                .unwrap()
+                .to_string(),
+            "http://f/c"
+        );
+
+        assert_eq!(
+            Url::parse("http://f:21/ b ? d # e").unwrap().to_string(),
+            "http://f:21/%20b%20?%20d%20#%20e"
+        );
+    }
+
+    #[test]
+    fn wpt_special_url_reference_cases() {
+        let base = Url::parse("http://example.org/foo/bar").unwrap();
+
+        assert_eq!(
+            base.join("http:foo.com").unwrap().to_string(),
+            "http://example.org/foo/foo.com"
+        );
+
+        assert_eq!(
+            base.join(r"\x").unwrap().to_string(),
+            "http://example.org/x"
+        );
+
+        assert_eq!(
+            base.join(r"\\x\hello").unwrap().to_string(),
+            "http://x/hello"
         );
     }
 }
