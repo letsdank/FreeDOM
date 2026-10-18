@@ -8,6 +8,7 @@ use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use reqwest::{blocking::Client, redirect::Policy};
 use softbuffer::{Context as SoftbufferContext, Surface};
 use std::{num::NonZeroU32, rc::Rc, time::Duration};
+use winit::keyboard::ModifiersState;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -107,9 +108,54 @@ enum StylesheetSource {
     External(Url),
 }
 
+#[derive(Clone, Copy)]
+enum NavigationKind {
+    New,
+    History { entry_index: usize },
+}
+
+struct SessionHistory {
+    entries: Vec<String>,
+    current: usize,
+}
+
+impl SessionHistory {
+    fn new(initial_url: String) -> Self {
+        Self {
+            entries: vec![initial_url],
+            current: 0,
+        }
+    }
+
+    fn back_target(&self) -> Option<(usize, String)> {
+        let entry_index = self.current.checked_sub(1)?;
+        Some((entry_index, self.entries[entry_index].clone()))
+    }
+
+    fn forward_target(&self) -> Option<(usize, String)> {
+        let entry_index = self.current + 1;
+
+        (entry_index < self.entries.len()).then(|| (entry_index, self.entries[entry_index].clone()))
+    }
+
+    fn commit_new(&mut self, url: String) {
+        self.entries.truncate(self.current + 1);
+        self.entries.push(url);
+        self.current = self.entries.len() - 1;
+    }
+
+    fn commit_existing(&mut self, entry_index: usize, url: String) {
+        if entry_index < self.entries.len() {
+            self.entries[entry_index] = url;
+            self.current = entry_index;
+        }
+    }
+}
+
 enum AppEvent {
     NavigationFinished {
         request_id: u64,
+        kind: NavigationKind,
         result: std::result::Result<Page, String>,
     },
 }
@@ -773,12 +819,18 @@ struct App {
     cursor_position: Option<(i32, i32)>,
     scroll_y: i32,
     max_scroll_y: i32,
+    history: SessionHistory,
+    modifiers: ModifiersState,
 }
 
 impl App {
     fn new(page: Page, event_proxy: EventLoopProxy<AppEvent>) -> Self {
+        let initial_url = page.url.clone();
+
         Self {
-            address: page.url.clone(),
+            address: initial_url.clone(),
+            history: SessionHistory::new(initial_url),
+            modifiers: ModifiersState::default(),
             page,
             status: "Ready".to_owned(),
             loading: false,
@@ -808,6 +860,36 @@ impl App {
             return;
         }
 
+        self.start_navigation(address, NavigationKind::New);
+    }
+
+    fn navigate_back(&mut self) {
+        if self.loading {
+            return;
+        }
+
+        let Some((entry_index, address)) = self.history.back_target() else {
+            return;
+        };
+
+        self.address = address.clone();
+        self.start_navigation(address, NavigationKind::History { entry_index });
+    }
+
+    fn navigate_forward(&mut self) {
+        if self.loading {
+            return;
+        }
+
+        let Some((entry_index, address)) = self.history.forward_target() else {
+            return;
+        };
+
+        self.address = address.clone();
+        self.start_navigation(address, NavigationKind::History { entry_index });
+    }
+
+    fn start_navigation(&mut self, address: String, kind: NavigationKind) {
         self.next_request_id += 1;
         let request_id = self.next_request_id;
 
@@ -821,7 +903,11 @@ impl App {
         std::thread::spawn(move || {
             let result = load_page(&address).map_err(|error| error.to_string());
 
-            let _ = proxy.send_event(AppEvent::NavigationFinished { request_id, result });
+            let _ = proxy.send_event(AppEvent::NavigationFinished {
+                request_id,
+                kind,
+                result,
+            });
         });
     }
 
@@ -849,6 +935,14 @@ impl App {
         }
 
         match &event.logical_key {
+            Key::Named(NamedKey::ArrowLeft) if self.modifiers.alt_key() => {
+                self.navigate_back();
+            }
+
+            Key::Named(NamedKey::ArrowRight) if self.modifiers.alt_key() => {
+                self.navigate_forward();
+            }
+
             Key::Named(NamedKey::Enter) => self.navigate(),
 
             Key::Named(NamedKey::Backspace) => {
@@ -986,7 +1080,11 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::NavigationFinished { request_id, result } => {
+            AppEvent::NavigationFinished {
+                request_id,
+                kind,
+                result,
+            } => {
                 if request_id != self.active_request_id {
                     return;
                 }
@@ -995,6 +1093,14 @@ impl ApplicationHandler<AppEvent> for App {
 
                 match result {
                     Ok(page) => {
+                        match kind {
+                            NavigationKind::New => self.history.commit_new(page.url.clone()),
+
+                            NavigationKind::History { entry_index } => {
+                                self.history.commit_existing(entry_index, page.url.clone());
+                            }
+                        }
+
                         self.address = page.url.clone();
                         self.status = "Ready".to_owned();
 
@@ -1010,6 +1116,10 @@ impl ApplicationHandler<AppEvent> for App {
 
                     Err(error) => {
                         self.status = format!("Load failed: {error}");
+
+                        if matches!(kind, NavigationKind::History { .. }) {
+                            self.address = self.page.url.clone();
+                        }
                     }
                 }
 
@@ -1032,6 +1142,10 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::Resized(_) => self.request_redraw(),
+
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
 
             WindowEvent::KeyboardInput { event, .. } => self.handle_key(event),
 
@@ -1108,11 +1222,11 @@ fn paint(
         y += block.style.margin_after;
     }
 
-    let document_button = y + scroll_y;
+    let document_bottom = y + scroll_y;
 
     PaintResult {
         link_regions,
-        max_scroll_y: (document_button - height as i32).max(0),
+        max_scroll_y: (document_bottom - height as i32).max(0),
     }
 }
 
@@ -1336,5 +1450,22 @@ mod tests {
         assert_eq!(next_scroll_offset(0, 500, 48), 48);
         assert_eq!(next_scroll_offset(48, 500, -100), 0);
         assert_eq!(next_scroll_offset(490, 500, 100), 500);
+    }
+
+    #[test]
+    fn new_navigation_discards_forward_history() {
+        let mut history = SessionHistory::new("https://example.test/one".to_owned());
+
+        history.commit_new("https://example.test/two".to_owned());
+
+        let (first_index, first_url) = history.back_target().unwrap();
+        history.commit_existing(first_index, first_url);
+
+        history.commit_new("https://example.test/three".to_owned());
+
+        assert_eq!(history.forward_target(), None);
+
+        let (_, previous_url) = history.back_target().unwrap();
+        assert_eq!(previous_url, "https://example.test/one");
     }
 }
