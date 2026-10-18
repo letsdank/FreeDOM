@@ -77,6 +77,11 @@ struct ElementInfo {
     inline_style: Option<String>,
 }
 
+enum StylesheetSource {
+    Inline(String),
+    External(Url),
+}
+
 enum AppEvent {
     NavigationFinished {
         request_id: u64,
@@ -121,21 +126,29 @@ fn load_page(input: &str) -> Result<Page> {
         .build()?;
 
     let response = client.get(url.as_str()).send()?.error_for_status()?;
-
-    let final_url = response.url().to_string();
+    let final_url = response.url().clone();
     let html = response.text()?;
 
-    Ok(parse_html(&final_url, &html))
+    let dom = parse_document(RcDom::default(), Default::default()).one(html);
+    let stylesheets = load_author_stylesheets(&client, &final_url, &dom.document);
+
+    Ok(parse_dom(final_url.as_str(), dom, &stylesheets))
 }
 
+#[cfg(test)]
 fn parse_html(url: &str, html: &str) -> Page {
     let dom = parse_document(RcDom::default(), Default::default()).one(html);
+    let stylesheets = collect_inline_stylesheets(&dom.document);
 
+    parse_dom(url, dom, &stylesheets)
+}
+
+fn parse_dom(url: &str, dom: RcDom, stylesheets: &[String]) -> Page {
     let title = find_title(&dom.document)
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| url.to_owned());
 
-    let rules = collect_author_rules(&dom.document);
+    let rules = build_author_rules(stylesheets);
     let base_style = TextStyle {
         color: TEXT,
         scale: 1,
@@ -193,28 +206,106 @@ fn text_content(node: &Handle) -> String {
     result
 }
 
-fn collect_author_rules(root: &Handle) -> Vec<CssRule> {
+fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
     let mut rules = Vec::new();
     let mut source_order = 0;
 
-    collect_author_rules_from_node(root, &mut rules, &mut source_order);
+    for stylesheet in stylesheets {
+        parse_stylesheet(stylesheet, &mut rules, &mut source_order);
+    }
 
     rules
 }
 
-fn collect_author_rules_from_node(
-    node: &Handle,
-    rules: &mut Vec<CssRule>,
-    source_order: &mut usize,
-) {
+fn collect_inline_stylesheets(root: &Handle) -> Vec<String> {
+    let mut stylesheets = Vec::new();
+    collect_inline_stylesheets_from_node(root, &mut stylesheets);
+
+    stylesheets
+}
+
+fn collect_inline_stylesheets_from_node(node: &Handle, stylesheets: &mut Vec<String>) {
     if let Some(element) = element_info(node) {
         if element.tag == "style" {
-            parse_stylesheet(&text_content(node), rules, source_order);
+            stylesheets.push(text_content(node));
         }
     }
 
     for child in node.children.borrow().iter() {
-        collect_author_rules_from_node(child, rules, source_order);
+        collect_inline_stylesheets_from_node(child, stylesheets);
+    }
+}
+
+fn load_author_stylesheets(client: &Client, page_url: &Url, root: &Handle) -> Vec<String> {
+    let mut sources = Vec::new();
+    collect_stylesheet_sources(root, page_url, &mut sources);
+
+    sources
+        .into_iter()
+        .filter_map(|source| match source {
+            StylesheetSource::Inline(css) => Some(css),
+
+            StylesheetSource::External(url) => {
+                let response = client
+                    .get(url.as_str())
+                    .send()
+                    .and_then(|response| response.error_for_status())
+                    .and_then(|response| response.text());
+
+                match response {
+                    Ok(css) => Some(css),
+
+                    Err(error) => {
+                        eprintln!("не удалось загрузить stylesheet {url}: {error}");
+                        None
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+fn collect_stylesheet_sources(node: &Handle, page_url: &Url, sources: &mut Vec<StylesheetSource>) {
+    if let NodeData::Element { name, attrs, .. } = &node.data {
+        let tag = name.local.to_string();
+
+        if tag == "style" {
+            sources.push(StylesheetSource::Inline(text_content(node)));
+        }
+
+        if tag == "link" {
+            let attributes = attrs.borrow();
+
+            let rel = attributes.iter().find_map(|attribute| {
+                (attribute.name.local.to_string() == "rel").then(|| attribute.value.to_string())
+            });
+
+            let href = attributes.iter().find_map(|attribute| {
+                (attribute.name.local.to_string() == "href").then(|| attribute.value.to_string())
+            });
+
+            let is_stylesheet = rel
+                .as_deref()
+                .map(|rel| {
+                    rel.split_ascii_whitespace()
+                        .any(|value| value.eq_ignore_ascii_case("stylesheet"))
+                })
+                .unwrap_or(false);
+
+            if is_stylesheet {
+                if let Some(href) = href {
+                    if let Ok(url) = page_url.join(href.trim()) {
+                        if matches!(url.scheme(), "http" | "https") {
+                            sources.push(StylesheetSource::External(url));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for child in node.children.borrow().iter() {
+        collect_stylesheet_sources(child, page_url, sources);
     }
 }
 
@@ -1034,5 +1125,37 @@ mod tests {
 
         assert_eq!(page.blocks.len(), 1);
         assert_eq!(page.blocks[0].text, "Visible text");
+    }
+
+    #[test]
+    fn resolves_relative_external_stylesheets() {
+        let dom = parse_document(RcDom::default(), Default::default()).one(
+            r#"
+                <link rel="stylesheet" href="../assets/site.css">
+                <link rel="icon" href="/favicon.ico">
+                <link rel="stylesheet" href="https://cdn.example.test/theme.css">
+            "#,
+        );
+
+        let page_url = Url::parse("https://example.test/docs/page.html").unwrap();
+        let mut sources = Vec::new();
+
+        collect_stylesheet_sources(&dom.document, &page_url, &mut sources);
+
+        let urls: Vec<String> = sources
+            .into_iter()
+            .filter_map(|source| match source {
+                StylesheetSource::External(url) => Some(url.to_string()),
+                StylesheetSource::Inline(_) => None,
+            })
+            .collect();
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.test/assets/site.css",
+                "https://cdn.example.test/theme.css",
+            ]
+        );
     }
 }
