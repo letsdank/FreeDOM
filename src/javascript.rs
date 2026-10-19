@@ -539,6 +539,36 @@ impl DocumentState {
         true
     }
 
+    fn remove_node_attribute(&mut self, node_id: u64, name: &str) -> bool {
+        let Some(element) = self.elements_by_node_id.get(&node_id) else {
+            return false;
+        };
+
+        let connected = element.connected;
+        let old_id = element.id.clone();
+        let is_id = name.eq_ignore_ascii_case("id");
+
+        if is_id
+            && connected
+            && !old_id.is_empty()
+            && self.elements_by_id.get(&old_id) == Some(&node_id)
+        {
+            self.elements_by_id.remove(&old_id);
+        }
+
+        let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
+            return false;
+        };
+
+        element.attributes.remove(name);
+
+        if is_id {
+            element.id.clear();
+        }
+
+        true
+    }
+
     fn append_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
         let Some(parent) = self.elements_by_node_id.get(&parent_node_id) else {
             return false;
@@ -634,6 +664,7 @@ enum ElementMethod {
     SetAttribute(u64),
     AppendChild(u64),
     RemoveChild(u64),
+    RemoveAttribute(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1606,6 +1637,10 @@ impl Interpreter {
                                 Ok(Value::ElementMethod(ElementMethod::SetAttribute(node_id)))
                             }
 
+                            "removeAttribute" => Ok(Value::ElementMethod(
+                                ElementMethod::RemoveAttribute(node_id),
+                            )),
+
                             "appendChild" => {
                                 Ok(Value::ElementMethod(ElementMethod::AppendChild(node_id)))
                             }
@@ -1957,6 +1992,10 @@ impl Interpreter {
                 self.set_document_element_attribute(node_id, values)
             }
 
+            Value::ElementMethod(ElementMethod::RemoveAttribute(node_id)) => {
+                self.remove_document_element_attribute(node_id, values)
+            }
+
             Value::ElementMethod(ElementMethod::AppendChild(parent_node_id)) => {
                 self.append_document_child(parent_node_id, values)
             }
@@ -2171,6 +2210,31 @@ impl Interpreter {
         if self
             .current_document_mut()?
             .set_node_attribute(node_id, &name, value)
+        {
+            Ok(Value::Undefined)
+        } else {
+            Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ))
+        }
+    }
+
+    fn remove_document_element_attribute(
+        &mut self,
+        node_id: u64,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: Element.removeAttribute expects one argument",
+            ));
+        }
+
+        let name = arguments[0].to_js_string().to_ascii_lowercase();
+
+        if self
+            .current_document_mut()?
+            .remove_node_attribute(node_id, &name)
         {
             Ok(Value::Undefined)
         } else {
