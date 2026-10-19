@@ -1,5 +1,3 @@
-use html5ever::tendril::fmt::Slice;
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Document {
     pub children: Vec<Node>,

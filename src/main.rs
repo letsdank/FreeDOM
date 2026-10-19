@@ -9,11 +9,12 @@ mod javascript;
 #[cfg(test)]
 mod wpt_url;
 
-use crate::freedom_url::Url;
+use crate::{
+    freedom_url::Url,
+    html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
+};
 use anyhow::{Context as _, Result, bail};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
-use html5ever::{parse_document, tendril::TendrilSink};
-use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use reqwest::{blocking::Client, redirect::Policy};
 use softbuffer::{Context as SoftbufferContext, Surface};
 use std::{num::NonZeroU32, rc::Rc, time::Duration};
@@ -211,23 +212,23 @@ fn load_page(input: &str) -> Result<Page> {
         Url::parse(response.url().as_str()).context("server returned an invalid final URL")?;
     let html = response.text()?;
 
-    let dom = parse_document(RcDom::default(), Default::default()).one(html);
-    let stylesheets = load_author_stylesheets(&client, &final_url, &dom.document);
+    let document = HtmlDocument::parse(&html);
+    let stylesheets = load_author_stylesheets(&client, &final_url, &document);
     let final_url_text = final_url.to_string();
 
-    Ok(parse_dom(&final_url_text, dom, &stylesheets))
+    Ok(parse_dom(&final_url_text, &document, &stylesheets))
 }
 
 #[cfg(test)]
 fn parse_html(url: &str, html: &str) -> Page {
-    let dom = parse_document(RcDom::default(), Default::default()).one(html);
-    let stylesheets = collect_inline_stylesheets(&dom.document);
+    let document = HtmlDocument::parse(html);
+    let stylesheets = collect_inline_stylesheets(&document);
 
-    parse_dom(url, dom, &stylesheets)
+    parse_dom(url, &document, &stylesheets)
 }
 
-fn parse_dom(url: &str, dom: RcDom, stylesheets: &[String]) -> Page {
-    let title = find_title(&dom.document)
+fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page {
+    let title = find_title(document)
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| url.to_owned());
 
@@ -243,14 +244,16 @@ fn parse_dom(url: &str, dom: RcDom, stylesheets: &[String]) -> Page {
     let mut current_text = String::new();
     let page_url = Url::parse(url).ok();
 
-    extract_blocks(
-        &dom.document,
-        &rules,
-        &mut blocks,
-        &mut current_text,
-        base_style,
-        page_url.as_ref(),
-    );
+    for child in &document.children {
+        extract_blocks(
+            child,
+            &rules,
+            &mut blocks,
+            &mut current_text,
+            base_style,
+            page_url.as_ref(),
+        );
+    }
 
     flush(&mut blocks, &mut current_text, base_style);
 
@@ -261,34 +264,29 @@ fn parse_dom(url: &str, dom: RcDom, stylesheets: &[String]) -> Page {
     }
 }
 
-fn find_title(node: &Handle) -> Option<String> {
-    if let NodeData::Element { name, .. } = &node.data {
-        if name.local.as_ref() == "title" {
-            return Some(text_content(node).trim().to_owned());
-        }
+fn find_title(document: &HtmlDocument) -> Option<String> {
+    document.children.iter().find_map(find_title_in_node)
+}
+fn find_title_in_node(node: &HtmlNode) -> Option<String> {
+    let HtmlNode::Element(element) = node else {
+        return None;
+    };
+
+    if element.name == "title" {
+        return Some(text_content(node).trim().to_owned());
     }
 
-    for child in node.children.borrow().iter() {
-        if let Some(title) = find_title(child) {
-            return Some(title);
-        }
-    }
-
-    None
+    element.children.iter().find_map(find_title_in_node)
 }
 
-fn text_content(node: &Handle) -> String {
-    let mut result = String::new();
+fn text_content(node: &HtmlNode) -> String {
+    match node {
+        HtmlNode::Text(text) => text.clone(),
 
-    if let NodeData::Text { contents } = &node.data {
-        result.push_str(contents.borrow().as_ref());
+        HtmlNode::Element(element) => element.children.iter().map(text_content).collect(),
+
+        HtmlNode::Doctype(_) | HtmlNode::Comment(_) => String::new(),
     }
-
-    for child in node.children.borrow().iter() {
-        result.push_str(&text_content(child));
-    }
-
-    result
 }
 
 fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
@@ -302,26 +300,31 @@ fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
     rules
 }
 
-fn collect_inline_stylesheets(root: &Handle) -> Vec<String> {
+fn collect_inline_stylesheets(root: &HtmlDocument) -> Vec<String> {
     let mut stylesheets = Vec::new();
-    collect_inline_stylesheets_from_node(root, &mut stylesheets);
+
+    for child in &root.children {
+        collect_inline_stylesheets_from_node(child, &mut stylesheets);
+    }
 
     stylesheets
 }
 
-fn collect_inline_stylesheets_from_node(node: &Handle, stylesheets: &mut Vec<String>) {
-    if let Some(element) = element_info(node) {
-        if element.tag == "style" {
-            stylesheets.push(text_content(node));
-        }
+fn collect_inline_stylesheets_from_node(node: &HtmlNode, stylesheets: &mut Vec<String>) {
+    let HtmlNode::Element(element) = node else {
+        return;
+    };
+
+    if element.name == "style" {
+        stylesheets.push(text_content(node));
     }
 
-    for child in node.children.borrow().iter() {
+    for child in &element.children {
         collect_inline_stylesheets_from_node(child, stylesheets);
     }
 }
 
-fn load_author_stylesheets(client: &Client, page_url: &Url, root: &Handle) -> Vec<String> {
+fn load_author_stylesheets(client: &Client, page_url: &Url, root: &HtmlDocument) -> Vec<String> {
     let mut sources = Vec::new();
     collect_stylesheet_sources(root, page_url, &mut sources);
 
@@ -350,48 +353,62 @@ fn load_author_stylesheets(client: &Client, page_url: &Url, root: &Handle) -> Ve
         .collect()
 }
 
-fn collect_stylesheet_sources(node: &Handle, page_url: &Url, sources: &mut Vec<StylesheetSource>) {
-    if let NodeData::Element { name, attrs, .. } = &node.data {
-        let tag = name.local.to_string();
+fn collect_stylesheet_sources(
+    root: &HtmlDocument,
+    page_url: &Url,
+    sources: &mut Vec<StylesheetSource>,
+) {
+    for child in &root.children {
+        collect_stylesheet_sources_from_node(child, page_url, sources);
+    }
+}
 
-        if tag == "style" {
-            sources.push(StylesheetSource::Inline(text_content(node)));
-        }
+fn collect_stylesheet_sources_from_node(
+    node: &HtmlNode,
+    page_url: &Url,
+    sources: &mut Vec<StylesheetSource>,
+) {
+    let HtmlNode::Element(element) = node else {
+        return;
+    };
 
-        if tag == "link" {
-            let attributes = attrs.borrow();
+    if element.name == "style" {
+        sources.push(StylesheetSource::Inline(text_content(node)));
+    }
 
-            let rel = attributes.iter().find_map(|attribute| {
-                (attribute.name.local.to_string() == "rel").then(|| attribute.value.to_string())
-            });
+    if element.name == "link" {
+        let rel = html_attribute(element, "rel");
+        let href = html_attribute(element, "href");
 
-            let href = attributes.iter().find_map(|attribute| {
-                (attribute.name.local.to_string() == "href").then(|| attribute.value.to_string())
-            });
+        let is_stylesheet = rel
+            .map(|rel| {
+                rel.split_ascii_whitespace()
+                    .any(|value| value.eq_ignore_ascii_case("stylesheet"))
+            })
+            .unwrap_or(false);
 
-            let is_stylesheet = rel
-                .as_deref()
-                .map(|rel| {
-                    rel.split_ascii_whitespace()
-                        .any(|value| value.eq_ignore_ascii_case("stylesheet"))
-                })
-                .unwrap_or(false);
-
-            if is_stylesheet {
-                if let Some(href) = href {
-                    if let Ok(url) = page_url.join(href.trim()) {
-                        if matches!(url.scheme(), "http" | "https") {
-                            sources.push(StylesheetSource::External(url));
-                        }
+        if is_stylesheet {
+            if let Some(href) = href {
+                if let Ok(url) = page_url.join(href.trim()) {
+                    if matches!(url.scheme(), "http" | "https") {
+                        sources.push(StylesheetSource::External(url));
                     }
                 }
             }
         }
     }
 
-    for child in node.children.borrow().iter() {
-        collect_stylesheet_sources(child, page_url, sources);
+    for child in &element.children {
+        collect_stylesheet_sources_from_node(child, page_url, sources);
     }
+}
+
+fn html_attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
+    element
+        .attributes
+        .iter()
+        .find(|attribute| attribute.name == name)
+        .map(|attribute| attribute.value.as_str())
 }
 
 fn parse_stylesheet(source: &str, rules: &mut Vec<CssRule>, source_order: &mut usize) {
@@ -575,8 +592,8 @@ fn parse_length(value: &str) -> Option<i32> {
     value.parse::<f32>().ok().map(|value| value.round() as i32)
 }
 
-fn element_info(node: &Handle) -> Option<ElementInfo> {
-    let NodeData::Element { name, attrs, .. } = &node.data else {
+fn element_info(node: &HtmlNode) -> Option<ElementInfo> {
+    let HtmlNode::Element(element) = node else {
         return None;
     };
 
@@ -585,27 +602,28 @@ fn element_info(node: &Handle) -> Option<ElementInfo> {
     let mut inline_style = None;
     let mut href = None;
 
-    for attribute in attrs.borrow().iter() {
-        let attribute_name = attribute.name.local.to_string();
-        let value = attribute.value.to_string();
-
-        match attribute_name.as_str() {
-            "id" => id = Some(value),
+    for attribute in &element.attributes {
+        match attribute.name.as_str() {
+            "id" => id = Some(attribute.value.clone()),
 
             "class" => {
-                classes = value.split_whitespace().map(ToOwned::to_owned).collect();
+                classes = attribute
+                    .value
+                    .split_whitespace()
+                    .map(ToOwned::to_owned)
+                    .collect();
             }
 
-            "style" => inline_style = Some(value),
+            "style" => inline_style = Some(attribute.value.clone()),
 
-            "href" => href = Some(value),
+            "href" => href = Some(attribute.value.clone()),
 
             _ => {}
         }
     }
 
     Some(ElementInfo {
-        tag: name.local.to_string(),
+        tag: element.name.clone(),
         id,
         classes,
         inline_style,
@@ -614,23 +632,19 @@ fn element_info(node: &Handle) -> Option<ElementInfo> {
 }
 
 fn extract_blocks(
-    node: &Handle,
+    node: &HtmlNode,
     rules: &[CssRule],
     blocks: &mut Vec<Block>,
     current: &mut String,
     inherited_style: TextStyle,
     page_url: Option<&Url>,
 ) {
-    if let NodeData::Text { contents } = &node.data {
-        append_collapsed(current, contents.borrow().as_ref());
+    if let HtmlNode::Text(contents) = node {
+        append_collapsed(current, contents);
         return;
     }
 
     let Some(element) = element_info(node) else {
-        for child in node.children.borrow().iter() {
-            extract_blocks(child, rules, blocks, current, inherited_style, page_url);
-        }
-
         return;
     };
 
@@ -682,7 +696,11 @@ fn extract_blocks(
         flush(blocks, current, inherited_style);
     }
 
-    for child in node.children.borrow().iter() {
+    let HtmlNode::Element(dom_element) = node else {
+        unreachable!("element_info возвращает данные только для Element");
+    };
+
+    for child in &dom_element.children {
         extract_blocks(child, rules, blocks, current, style, page_url);
     }
 
@@ -1405,7 +1423,7 @@ mod tests {
 
     #[test]
     fn resolves_relative_external_stylesheets() {
-        let dom = parse_document(RcDom::default(), Default::default()).one(
+        let dom = HtmlDocument::parse(
             r#"
                 <link rel="stylesheet" href="../assets/site.css">
                 <link rel="icon" href="/favicon.ico">
@@ -1416,7 +1434,7 @@ mod tests {
         let page_url = Url::parse("https://example.test/docs/page.html").unwrap();
         let mut sources = Vec::new();
 
-        collect_stylesheet_sources(&dom.document, &page_url, &mut sources);
+        collect_stylesheet_sources(&dom, &page_url, &mut sources);
 
         let urls: Vec<String> = sources
             .into_iter()
