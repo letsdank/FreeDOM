@@ -381,6 +381,9 @@ fn is_identifier_continue(character: char) -> bool {
 pub enum NativeFunction {
     AssertEquals,
     Test,
+    AssertTrue,
+    AssertFalse,
+    AssertNotEquals,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1269,6 +1272,21 @@ impl Interpreter {
             Value::NativeFunction(NativeFunction::Test),
         );
 
+        variables.insert(
+            "assert_true".to_owned(),
+            Value::NativeFunction(NativeFunction::AssertTrue),
+        );
+
+        variables.insert(
+            "assert_false".to_owned(),
+            Value::NativeFunction(NativeFunction::AssertFalse),
+        );
+
+        variables.insert(
+            "assert_not_equals".to_owned(),
+            Value::NativeFunction(NativeFunction::AssertNotEquals),
+        );
+
         Self { variables }
     }
 
@@ -1602,6 +1620,14 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::Test) => self.run_test(values),
 
+            Value::NativeFunction(NativeFunction::AssertTrue) => self.assert_true(values),
+
+            Value::NativeFunction(NativeFunction::AssertFalse) => self.assert_false(values),
+
+            Value::NativeFunction(NativeFunction::AssertNotEquals) => {
+                self.assert_not_equals(values)
+            }
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }
@@ -1692,6 +1718,15 @@ impl Interpreter {
             .unwrap_or(Value::Null))
     }
 
+    fn assertion_description(arguments: &[Value], index: usize) -> String {
+        arguments
+            .get(index)
+            .map(Value::to_js_string)
+            .filter(|message| !message.is_empty())
+            .map(|message| format!(": {message}"))
+            .unwrap_or_default()
+    }
+
     fn assert_equals(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
         if !(2..=3).contains(&arguments.len()) {
             return Err(JsError::runtime(
@@ -1706,15 +1741,67 @@ impl Interpreter {
             return Ok(Value::Undefined);
         }
 
-        let description = arguments
-            .get(2)
-            .map(Value::to_js_string)
-            .filter(|message| !message.is_empty())
-            .map(|message| format!(": {message}"))
-            .unwrap_or_default();
+        let description = Self::assertion_description(&arguments, 2);
 
         Err(JsError::runtime(format!(
             "AssertionError{description}; expected {expected:?}, got {actual:?}"
+        )))
+    }
+
+    fn assert_true(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if !(1..=2).contains(&arguments.len()) {
+            return Err(JsError::runtime(
+                "TypeError: assert_true expects one or two arguments",
+            ));
+        }
+
+        if arguments[0] == Value::Boolean(true) {
+            return Ok(Value::Undefined);
+        }
+
+        let description = Self::assertion_description(&arguments, 1);
+
+        Err(JsError::runtime(format!(
+            "AssertionError{description}; expected true, got {:?}",
+            arguments[0]
+        )))
+    }
+
+    fn assert_false(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if !(1..=2).contains(&arguments.len()) {
+            return Err(JsError::runtime(
+                "TypeError: assert_false expects one or two arguments",
+            ));
+        }
+
+        if arguments[0] == Value::Boolean(false) {
+            return Ok(Value::Undefined);
+        }
+
+        let description = Self::assertion_description(&arguments, 1);
+
+        Err(JsError::runtime(format!(
+            "AssertionError{description}; expected false, got {:?}",
+            arguments[0]
+        )))
+    }
+
+    fn assert_not_equals(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if !(2..=3).contains(&arguments.len()) {
+            return Err(JsError::runtime(
+                "TypeError: assert_not_equals expects two or three arguments",
+            ));
+        }
+
+        if arguments[0] != arguments[1] {
+            return Ok(Value::Undefined);
+        }
+
+        let description = Self::assertion_description(&arguments, 2);
+
+        Err(JsError::runtime(format!(
+            "AssertionError{description}; values must differ, got {:?}",
+            arguments[0]
         )))
     }
 
@@ -1933,6 +2020,22 @@ let base = "https:\/\/example.test\u002Fdocs";
                     assert_equals(t === t, true);
                     assert_equals("Free" + "DOM", "FreeDOM");
                 }, "single function parameter");
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn runs_common_testharness_assertions() {
+        let result = evaluate(
+            r#"
+                test(t => {
+                    assert_true(t === t);
+                    assert_false(2 < 1);
+                    assert_not_equals("FreeDOM", "Chrome");
+                }, "common synchronous assertions");
             "#,
         )
         .unwrap();
