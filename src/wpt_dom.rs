@@ -250,4 +250,55 @@ mod tests {
 
         assert_eq!(state.title, "Document.getElementById");
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_null_and_undefined() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <div id="log"></div>
+
+                    <script>
+                        test(function() {
+                            var foo = document.createElement("div");
+                            foo.setAttribute("id", "null");
+                            document.body.appendChild(foo);
+
+                            this.add_cleanup(function() {
+                                document.body.removeChild(foo);
+                            });
+
+                            var bar = document.getElementById(null);
+                            assert_equals(bar, foo);
+                        }, "Calling document.getElementById with a null argument.");
+                    </script>
+
+                    <script>
+                        test(function() {
+                            var foo = document.createElement("div");
+                            foo.setAttribute("id", "undefined");
+                            document.body.appendChild(foo);
+
+                            this.add_cleanup(function() {
+                                document.body.removeChild(foo);
+                            });
+
+                            var bar = document.getElementById(undefined);
+                            assert_equals(bar, foo);
+                        }, "Calling document.getElementById with an undefined argument.");
+                    </script>
+                </body>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }

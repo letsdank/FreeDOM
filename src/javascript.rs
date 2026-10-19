@@ -1449,6 +1449,8 @@ impl Interpreter {
     fn new() -> Self {
         let mut variables = HashMap::new();
 
+        variables.insert("undefined".to_owned(), Value::Undefined);
+
         variables.insert(
             "assert_equals".to_owned(),
             Value::NativeFunction(NativeFunction::AssertEquals),
