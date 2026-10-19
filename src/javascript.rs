@@ -389,48 +389,100 @@ pub enum NativeFunction {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ElementState {
+struct ElementState {
+    node_id: u64,
     id: String,
     tag_name: String,
     text_content: String,
     text_content_was_set: bool,
+    attributes: HashMap<String, String>,
+    connected: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DocumentState {
     pub title: String,
-    elements_by_id: HashMap<String, ElementState>,
+    elements_by_id: HashMap<String, u64>,
+    elements_by_node_id: HashMap<u64, ElementState>,
+    body: Option<u64>,
+    next_node_id: u64,
 }
 
 impl DocumentState {
     pub fn with_title(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
-            elements_by_id: HashMap::new(),
+            ..Self::default()
         }
     }
 
-    pub fn register_element(&mut self, id: &str, tag_name: &str, text_content: String) {
-        if id.is_empty() {
-            return;
+    fn insert_element(
+        &mut self,
+        id: &str,
+        tag_name: &str,
+        text_content: String,
+        connected: bool,
+    ) -> u64 {
+        let node_id = self.next_node_id;
+        self.next_node_id += 1;
+
+        let mut attributes = HashMap::new();
+
+        if !id.is_empty() {
+            attributes.insert("id".to_owned(), id.to_owned());
         }
 
-        self.elements_by_id
-            .entry(id.to_owned())
-            .or_insert_with(|| ElementState {
+        self.elements_by_node_id.insert(
+            node_id,
+            ElementState {
+                node_id,
                 id: id.to_owned(),
                 tag_name: tag_name.to_owned(),
                 text_content,
                 text_content_was_set: false,
-            });
+                attributes,
+                connected,
+            },
+        );
+
+        if connected && !id.is_empty() {
+            self.elements_by_id.entry(id.to_owned()).or_insert(node_id);
+        }
+
+        node_id
     }
 
-    fn get_element_by_id(&self, id: &str) -> Option<ElementState> {
-        self.elements_by_id.get(id).cloned()
+    pub fn register_element(&mut self, id: &str, tag_name: &str, text_content: String) {
+        if !id.is_empty() {
+            self.insert_element(id, tag_name, text_content, true);
+        }
     }
 
-    pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
-        let Some(element) = self.elements_by_id.get_mut(id) else {
+    pub fn register_body(&mut self, id: &str, text_content: String) {
+        if self.body.is_none() {
+            let node_id = self.insert_element(id, "body", text_content, true);
+            self.body = Some(node_id);
+        }
+    }
+
+    fn create_element(&mut self, tag_name: &str) -> u64 {
+        self.insert_element("", tag_name, String::new(), false)
+    }
+
+    fn body_node(&self) -> Option<u64> {
+        self.body
+    }
+
+    fn get_element_by_id(&self, id: &str) -> Option<u64> {
+        self.elements_by_id.get(id).copied()
+    }
+
+    fn element(&self, node_id: u64) -> Option<&ElementState> {
+        self.elements_by_node_id.get(&node_id)
+    }
+
+    fn set_node_text_content(&mut self, node_id: u64, text_content: String) -> bool {
+        let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
             return false;
         };
 
@@ -439,8 +491,114 @@ impl DocumentState {
         true
     }
 
+    fn set_node_attribute(&mut self, node_id: u64, name: &str, value: String) -> bool {
+        let Some(element) = self.elements_by_node_id.get(&node_id) else {
+            return false;
+        };
+
+        let connected = element.connected;
+        let old_id = element.id.clone();
+        let is_id = name.eq_ignore_ascii_case("id");
+
+        if is_id
+            && connected
+            && !old_id.is_empty()
+            && self.elements_by_id.get(&old_id) == Some(&node_id)
+        {
+            self.elements_by_id.remove(&old_id);
+        }
+
+        let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
+            return false;
+        };
+
+        element.attributes.insert(name.to_owned(), value.clone());
+
+        if is_id {
+            element.id = value.clone();
+        }
+
+        if is_id && connected && !value.is_empty() {
+            self.elements_by_id.entry(value).or_insert(node_id);
+        }
+
+        true
+    }
+
+    fn append_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
+        let Some(parent) = self.elements_by_node_id.get(&parent_node_id) else {
+            return false;
+        };
+
+        if !parent.connected {
+            return false;
+        }
+
+        let Some(child) = self.elements_by_node_id.get(&child_node_id) else {
+            return false;
+        };
+
+        if child.connected {
+            return true;
+        }
+
+        let id = child.id.clone();
+
+        let Some(child) = self.elements_by_node_id.get_mut(&child_node_id) else {
+            return false;
+        };
+
+        child.connected = true;
+
+        if !id.is_empty() {
+            self.elements_by_id.entry(id).or_insert(child_node_id);
+        }
+
+        true
+    }
+
+    fn remove_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
+        let Some(parent) = self.elements_by_node_id.get(&parent_node_id) else {
+            return false;
+        };
+
+        if !parent.connected {
+            return false;
+        }
+
+        let Some(child) = self.elements_by_node_id.get_mut(&child_node_id) else {
+            return false;
+        };
+
+        if !child.connected {
+            return false;
+        }
+
+        let id = child.id.clone();
+
+        if !id.is_empty() && self.elements_by_id.get(&id) == Some(&child_node_id) {
+            self.elements_by_id.remove(&id);
+        }
+
+        let Some(child) = self.elements_by_node_id.get_mut(&child_node_id) else {
+            return false;
+        };
+
+        child.connected = false;
+        true
+    }
+
+    pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
+        let Some(node_id) = self.get_element_by_id(id) else {
+            return false;
+        };
+
+        self.set_node_text_content(node_id, text_content)
+    }
+
     pub fn text_content_override(&self, id: &str) -> Option<&str> {
-        let element = self.elements_by_id.get(id)?;
+        let node_id = self.get_element_by_id(id)?;
+        let element = self.element(node_id)?;
 
         if element.text_content_was_set {
             Some(element.text_content.as_str())
@@ -453,6 +611,14 @@ impl DocumentState {
 #[derive(Clone, Debug, PartialEq)]
 enum DocumentMethod {
     GetElementById(DocumentState),
+    CreateElement,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ElementMethod {
+    SetAttribute(u64),
+    AppendChild(u64),
+    RemoveChild(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -472,7 +638,8 @@ pub enum Value {
     Url(Url),
     NativeFunction(NativeFunction),
     Document(DocumentState),
-    Element(ElementState),
+    Element(u64),
+    ElementMethod(ElementMethod),
     DocumentMethod(DocumentMethod),
     Function(UserFunction),
     TestContext,
@@ -505,6 +672,7 @@ impl Value {
             Self::TestContext => "[object TestContext]".to_owned(),
             Self::ElementConstructor(_) => "function".to_owned(),
             Self::TestContextMethod(_) => "function".to_owned(),
+            Self::ElementMethod(_) => "function".to_owned(),
         }
     }
 
@@ -1366,23 +1534,49 @@ impl Interpreter {
 
                     (Value::Document(document), "title") => Ok(Value::String(document.title)),
 
+                    (Value::Document(document), "body") => Ok(document
+                        .body_node()
+                        .map(Value::Element)
+                        .unwrap_or(Value::Null)),
+
                     (Value::Document(document), "getElementById") => Ok(Value::DocumentMethod(
                         DocumentMethod::GetElementById(document),
                     )),
 
-                    (Value::Element(element), "id") => Ok(Value::String(element.id)),
-
-                    (Value::Element(element), "tagName") => {
-                        Ok(Value::String(element.tag_name.to_ascii_uppercase()))
+                    (Value::Document(_), "createElement") => {
+                        Ok(Value::DocumentMethod(DocumentMethod::CreateElement))
                     }
 
-                    (Value::Element(element), "textContent") => {
-                        let text_content = self
-                            .current_document_element(&element.id)
-                            .map(|current| current.text_content)
-                            .unwrap_or(element.text_content);
+                    (Value::Element(node_id), property) => {
+                        let Some(element) = self.current_document_element(node_id) else {
+                            return Err(JsError::runtime(
+                                "TypeError: element is no longer available",
+                            ));
+                        };
 
-                        Ok(Value::String(text_content))
+                        match property {
+                            "id" => Ok(Value::String(element.id.clone())),
+
+                            "tagName" => Ok(Value::String(element.tag_name.to_ascii_uppercase())),
+
+                            "textContent" => Ok(Value::String(element.text_content.clone())),
+
+                            "setAttribute" => {
+                                Ok(Value::ElementMethod(ElementMethod::SetAttribute(node_id)))
+                            }
+
+                            "appendChild" => {
+                                Ok(Value::ElementMethod(ElementMethod::AppendChild(node_id)))
+                            }
+
+                            "removeChild" => {
+                                Ok(Value::ElementMethod(ElementMethod::RemoveChild(node_id)))
+                            }
+
+                            property => Err(JsError::runtime(format!(
+                                "Element.{property} is not implemented yet"
+                            ))),
+                        }
                     }
 
                     (Value::Url(_), property) => Err(JsError::runtime(format!(
@@ -1391,10 +1585,6 @@ impl Interpreter {
 
                     (Value::Document(_), property) => Err(JsError::runtime(format!(
                         "Document.{property} is not implemented yet"
-                    ))),
-
-                    (Value::Element(_), property) => Err(JsError::runtime(format!(
-                        "Element.{property} is not implemented yet"
                     ))),
 
                     (_, property) => Err(JsError::runtime(format!(
@@ -1492,11 +1682,14 @@ impl Interpreter {
             )?)),
 
             BinaryOperator::Instanceof => {
-                let matches = matches!(
-                    (&left,&right),
-                    (Value::Element(element),Value::ElementConstructor(tag))
-                    if element.tag_name==*tag
-                );
+                let matches = match (&left, &right) {
+                    (Value::Element(node_id), Value::ElementConstructor(tag)) => self
+                        .current_document_element(*node_id)
+                        .map(|element| element.tag_name == *tag)
+                        .unwrap_or(false),
+
+                    _ => false,
+                };
 
                 Ok(Value::Boolean(matches))
             }
@@ -1558,6 +1751,7 @@ impl Interpreter {
             | Value::Function(_)
             | Value::ElementConstructor(_)
             | Value::TestContextMethod(_)
+            | Value::ElementMethod(_)
             | Value::TestContext => None,
         }
     }
@@ -1572,31 +1766,38 @@ impl Interpreter {
         Ok(comparison(left, right))
     }
 
-    fn current_document_element(&self, id: &str) -> Option<ElementState> {
+    fn current_document_element(&self, node_id: u64) -> Option<&ElementState> {
         let Value::Document(document) = self.variables.get("document")? else {
             return None;
         };
 
-        document.get_element_by_id(id)
+        document.element(node_id)
     }
 
-    fn set_document_element_text_content(
-        &mut self,
-        id: &str,
-        text_content: String,
-    ) -> Result<(), JsError> {
+    fn current_document_mut(&mut self) -> Result<&mut DocumentState, JsError> {
         let Some(Value::Document(document)) = self.variables.get_mut("document") else {
             return Err(JsError::runtime(
                 "TypeError: document binding is unavailable",
             ));
         };
 
-        if document.set_element_text_content(id, text_content) {
+        Ok(document)
+    }
+
+    fn set_document_element_text_content(
+        &mut self,
+        node_id: u64,
+        text_content: String,
+    ) -> Result<(), JsError> {
+        if self
+            .current_document_mut()?
+            .set_node_text_content(node_id, text_content)
+        {
             Ok(())
         } else {
-            Err(JsError::runtime(format!(
-                "TypeError: element #{id:?} is no longer in the document"
-            )))
+            Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ))
         }
     }
 
@@ -1625,8 +1826,8 @@ impl Interpreter {
                 let object = self.evaluate_expression(object)?;
 
                 match object {
-                    Value::Element(element) if property == "textContent" => {
-                        self.set_document_element_text_content(&element.id, value.to_js_string())
+                    Value::Element(node_id) if property == "textContent" => {
+                        self.set_document_element_text_content(node_id, value.to_js_string())
                     }
 
                     Value::Element(_) => Err(JsError::runtime(format!(
@@ -1673,6 +1874,22 @@ impl Interpreter {
 
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
+            }
+
+            Value::DocumentMethod(DocumentMethod::CreateElement) => {
+                self.create_document_element(values)
+            }
+
+            Value::ElementMethod(ElementMethod::SetAttribute(node_id)) => {
+                self.set_document_element_attribute(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::AppendChild(parent_node_id)) => {
+                self.append_document_child(parent_node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::RemoveChild(parent_node_id)) => {
+                self.remove_document_child(parent_node_id, values)
             }
 
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
@@ -1820,6 +2037,106 @@ impl Interpreter {
             .get_element_by_id(&id)
             .map(Value::Element)
             .unwrap_or(Value::Null))
+    }
+
+    fn create_document_element(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: document.createElement expects one argument",
+            ));
+        }
+
+        let tag_name = arguments[0].to_js_string().to_ascii_lowercase();
+
+        if tag_name.is_empty() {
+            return Err(JsError::runtime(
+                "TypeError: document.createElement requires a tag name",
+            ));
+        }
+
+        let node_id = self.current_document_mut()?.create_element(&tag_name);
+
+        Ok(Value::Element(node_id))
+    }
+
+    fn set_document_element_attribute(
+        &mut self,
+        node_id: u64,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 2 {
+            return Err(JsError::runtime(
+                "TypeError: Element.setAttribute expects two arguments",
+            ));
+        }
+
+        let name = arguments[0].to_js_string().to_ascii_lowercase();
+        let value = arguments[1].to_js_string();
+
+        if self
+            .current_document_mut()?
+            .set_node_attribute(node_id, &name, value)
+        {
+            Ok(Value::Undefined)
+        } else {
+            Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ))
+        }
+    }
+
+    fn append_document_child(
+        &mut self,
+        parent_node_id: u64,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: Element.appendChild expects one argument",
+            ));
+        }
+
+        let Value::Element(child_node_id) = arguments[0] else {
+            return Err(JsError::runtime(
+                "TypeError: Element.appendChild expects an Element",
+            ));
+        };
+
+        if self
+            .current_document_mut()?
+            .append_child(parent_node_id, child_node_id)
+        {
+            Ok(Value::Element(child_node_id))
+        } else {
+            Err(JsError::runtime("TypeError: cannot append this element"))
+        }
+    }
+
+    fn remove_document_child(
+        &mut self,
+        parent_node_id: u64,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: Element.removeChild expects one argument",
+            ));
+        }
+
+        let Value::Element(child_node_id) = arguments[0] else {
+            return Err(JsError::runtime(
+                "TypeError: Element.removeChild expects an Element",
+            ));
+        };
+
+        if self
+            .current_document_mut()?
+            .remove_child(parent_node_id, child_node_id)
+        {
+            Ok(Value::Element(child_node_id))
+        } else {
+            Err(JsError::runtime("TypeError: cannot remove this element"))
+        }
     }
 
     fn assertion_description(arguments: &[Value], index: usize) -> String {
@@ -2192,5 +2509,29 @@ let base = "https:\/\/example.test\u002Fdocs";
 
         assert!(error.message.contains("intentional failure"));
         assert_eq!(document.title, "Cleaned after failure");
+    }
+
+    #[test]
+    fn creates_attaches_and_removes_dynamic_elements() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const element = document.createElement("div");
+
+                element.setAttribute("id", "dynamic");
+                document.body.appendChild(element);
+
+                assert_equals(document.getElementById("dynamic"), element);
+                assert_true(element instanceof HTMLDivElement);
+
+                document.body.removeChild(element);
+
+                assert_equals(document.getElementById("dynamic"), null);
+            "#,
+            &mut document,
+        )
+        .unwrap();
     }
 }

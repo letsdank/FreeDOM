@@ -1,5 +1,6 @@
 use crate::{
     html::{Document, Element, Node},
+    html_attribute,
     javascript::{DocumentState, JsError, evaluate_with_document},
 };
 
@@ -41,8 +42,13 @@ fn register_elements_in_node(node: &Node, document_state: &mut DocumentState) {
         return;
     };
 
-    if let Some(id) = attribute(element, "id") {
-        document_state.register_element(id, &element.name, text_content(node));
+    if element.name == "body" {
+        document_state.register_body(
+            html_attribute(element, "id").unwrap_or(""),
+            crate::text_content(node),
+        );
+    } else if let Some(id) = html_attribute(element, "id") {
+        document_state.register_element(id, &element.name, crate::text_content(node));
     }
 
     for child in &element.children {

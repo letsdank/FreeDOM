@@ -312,7 +312,12 @@ fn register_document_elements_in_node(node: &HtmlNode, document: &mut DocumentSt
         return;
     };
 
-    if let Some(id) = html_attribute(element, "id") {
+    if element.name == "body" {
+        document.register_body(
+            html_attribute(element, "id").unwrap_or(""),
+            text_content(node),
+        );
+    } else if let Some(id) = html_attribute(element, "id") {
         document.register_element(id, &element.name, text_content(node));
     }
 
