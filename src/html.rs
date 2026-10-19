@@ -46,6 +46,8 @@ impl Document {
                     attributes,
                     self_closing,
                 } => {
+                    implicitly_close_for_start_tag(&mut document, &mut open_elements, &name);
+
                     if self_closing || is_void_element(&name) {
                         append_node(
                             &mut document,
@@ -131,6 +133,84 @@ fn append_node(document: &mut Document, open_elements: &mut [OpenElement], node:
     } else {
         document.children.push(node);
     }
+}
+
+fn implicitly_close_for_start_tag(
+    document: &mut Document,
+    open_elements: &mut Vec<OpenElement>,
+    name: &str,
+) {
+    if is_block_start_tag(name) {
+        close_latest_matching(document, open_elements, &["p"]);
+    }
+
+    match name {
+        "li" => close_latest_matching(document, open_elements, &["li"]),
+        "dt" | "dd" => close_latest_matching(document, open_elements, &["dt", "dd"]),
+        "option" => close_latest_matching(document, open_elements, &["option"]),
+        "tr" => close_latest_matching(document, open_elements, &["tr"]),
+        "td" | "th" => close_latest_matching(document, open_elements, &["td", "th"]),
+        _ => {}
+    }
+}
+
+fn close_latest_matching(
+    document: &mut Document,
+    open_elements: &mut Vec<OpenElement>,
+    names: &[&str],
+) {
+    let Some(index) = open_elements
+        .iter()
+        .rposition(|element| names.contains(&element.name.as_str()))
+    else {
+        return;
+    };
+
+    while open_elements.len() > index {
+        let element = open_elements.pop().unwrap();
+        append_node(document, open_elements, Node::Element(element.into()));
+    }
+}
+
+fn is_block_start_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "address"
+            | "article"
+            | "aside"
+            | "blockquote"
+            | "center"
+            | "details"
+            | "dialog"
+            | "dir"
+            | "div"
+            | "dl"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "header"
+            | "hgroup"
+            | "hr"
+            | "main"
+            | "menu"
+            | "nav"
+            | "ol"
+            | "p"
+            | "pre"
+            | "section"
+            | "summary"
+            | "table"
+            | "ul"
+            | "li"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+    )
 }
 
 fn close_element(document: &mut Document, open_elements: &mut Vec<OpenElement>, name: &str) {
@@ -520,7 +600,7 @@ fn decode_reference(input: &str) -> Option<(char, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, Node};
+    use super::{Document, Element, Node};
 
     #[test]
     fn builds_a_nested_dom_and_decodes_text() {
@@ -585,5 +665,50 @@ mod tests {
             title.children,
             vec![Node::Text("Tom & Jerry <b>".to_owned())]
         );
+    }
+
+    #[test]
+    fn implicitly_closes_a_paragraph_before_the_next_one() {
+        let document = Document::parse("<p>first<p>second");
+
+        let paragraphs: Vec<&Element> = document
+            .children
+            .iter()
+            .filter_map(|node| match node {
+                Node::Element(element) if element.name == "p" => Some(element),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(paragraphs.len(), 2);
+        assert_eq!(paragraphs[0].children, vec![Node::Text("first".to_owned())]);
+        assert_eq!(
+            paragraphs[1].children,
+            vec![Node::Text("second".to_owned())]
+        );
+    }
+
+    #[test]
+    fn implicitly_closes_list_items() {
+        let document = Document::parse("<ul><li>one<li>two</ul>");
+
+        let Node::Element(list) = &document.children[0] else {
+            panic!("expected a list element");
+        };
+
+        assert_eq!(list.name, "ul");
+        assert_eq!(list.children.len(), 2);
+
+        let Node::Element(first) = &list.children[0] else {
+            panic!("expected first list item");
+        };
+        let Node::Element(second) = &list.children[1] else {
+            panic!("expected second list item");
+        };
+
+        assert_eq!(first.name, "li");
+        assert_eq!(second.name, "li");
+        assert_eq!(first.children, vec![Node::Text("one".to_owned())]);
+        assert_eq!(second.children, vec![Node::Text("two".to_owned())]);
     }
 }
