@@ -503,6 +503,10 @@ impl DocumentState {
         }
     }
 
+    pub fn register_element_attribute(&mut self, node_id: u64, name: &str, value: String) {
+        self.set_node_attribute(node_id, name, value);
+    }
+
     fn create_element(&mut self, tag_name: &str) -> u64 {
         self.insert_element("", tag_name, String::new(), None, false)
     }
@@ -569,13 +573,15 @@ impl DocumentState {
     }
 
     fn set_node_attribute(&mut self, node_id: u64, name: &str, value: String) -> bool {
+        let name = name.to_ascii_lowercase();
+
         let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
             return false;
         };
 
-        let is_id = name.eq_ignore_ascii_case("id");
+        let is_id = name == "id";
 
-        element.attributes.insert(name.to_owned(), value.clone());
+        element.attributes.insert(name, value.clone());
 
         if is_id {
             element.id = value.clone();
@@ -589,13 +595,15 @@ impl DocumentState {
     }
 
     fn remove_node_attribute(&mut self, node_id: u64, name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+
         let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
             return false;
         };
 
-        element.attributes.remove(name);
+        element.attributes.remove(&name);
 
-        if name.eq_ignore_ascii_case("id") {
+        if name == "id" {
             element.id.clear();
         }
 
@@ -701,6 +709,7 @@ enum DocumentMethod {
 
 #[derive(Clone, Debug, PartialEq)]
 enum ElementMethod {
+    GetAttribute(u64),
     SetAttribute(u64),
     AppendChild(u64),
     RemoveChild(u64),
@@ -1673,6 +1682,14 @@ impl Interpreter {
 
                             "textContent" => Ok(Value::String(element.text_content.clone())),
 
+                            "parentNode" => {
+                                Ok(element.parent.map(Value::Element).unwrap_or(Value::Null))
+                            }
+
+                            "getAttribute" => {
+                                Ok(Value::ElementMethod(ElementMethod::GetAttribute(node_id)))
+                            }
+
                             "setAttribute" => {
                                 Ok(Value::ElementMethod(ElementMethod::SetAttribute(node_id)))
                             }
@@ -2028,6 +2045,10 @@ impl Interpreter {
                 self.get_elements_by_tag_name(document, values)
             }
 
+            Value::ElementMethod(ElementMethod::GetAttribute(node_id)) => {
+                self.get_document_element_attribute(node_id, values)
+            }
+
             Value::ElementMethod(ElementMethod::SetAttribute(node_id)) => {
                 self.set_document_element_attribute(node_id, values)
             }
@@ -2231,6 +2252,33 @@ impl Interpreter {
         let node_id = self.current_document_mut()?.create_element(&tag_name);
 
         Ok(Value::Element(node_id))
+    }
+
+    fn get_document_element_attribute(
+        &self,
+        node_id: u64,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: Element.getAttribute expects one argument",
+            ));
+        }
+
+        let name = arguments[0].to_js_string().to_ascii_lowercase();
+
+        let Some(element) = self.current_document_element(node_id) else {
+            return Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ));
+        };
+
+        Ok(element
+            .attributes
+            .get(&name)
+            .cloned()
+            .map(Value::String)
+            .unwrap_or(Value::Null))
     }
 
     fn set_document_element_attribute(

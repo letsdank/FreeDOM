@@ -323,6 +323,10 @@ fn register_document_elements_in_node(
         parent_node_id,
     );
 
+    for attribute in &element.attributes {
+        document.register_element_attribute(node_id, &attribute.name, attribute.value.clone());
+    }
+
     for child in &element.children {
         register_document_elements_in_node(child, Some(node_id), document);
     }

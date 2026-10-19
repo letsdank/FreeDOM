@@ -52,6 +52,14 @@ fn register_elements_in_node(
         parent_node_id,
     );
 
+    for attribute in &element.attributes {
+        document_state.register_element_attribute(
+            node_id,
+            &attribute.name,
+            attribute.value.clone(),
+        );
+    }
+
     for child in &element.children {
         register_elements_in_node(child, Some(node_id), document_state);
     }
@@ -448,5 +456,65 @@ mod tests {
             .unwrap();
 
         assert_eq!(state.title, "Document.getElementById");
+    }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_tree_order() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <div id="test5" data-name="1st">
+                        <p id="test5" data-name="2nd">P</p>
+                        <input id="test5" type="submit" value="Submit" data-name="3rd">
+                    </div>
+
+                    <script>
+                        var gBody = document.getElementsByTagName("body")[0];
+
+                        test(function() {
+                            var TEST_ID = "test5";
+
+                            var target = document.getElementById(TEST_ID);
+                            assert_not_equals(target, null, "should not be null");
+                            assert_equals(
+                                target.getAttribute("data-name"),
+                                "1st",
+                                "should return the 1st"
+                            );
+
+                            var element4 = document.createElement("div");
+                            element4.setAttribute("id", TEST_ID);
+                            element4.setAttribute("data-name", "4th");
+                            gBody.appendChild(element4);
+
+                            var target2 = document.getElementById(TEST_ID);
+                            assert_not_equals(target2, null, "should not be null");
+                            assert_equals(
+                                target2.getAttribute("data-name"),
+                                "1st",
+                                "should be the 1st"
+                            );
+
+                            target2.parentNode.removeChild(target2);
+
+                            var target3 = document.getElementById(TEST_ID);
+                            assert_not_equals(target3, null, "should not be null");
+                            assert_equals(
+                                target3.getAttribute("data-name"),
+                                "4th",
+                                "should be the 4th"
+                            );
+                        }, "in tree order, within the context object's tree");
+                    </script>
+            "#,
+        )
+        .unwrap();
     }
 }
