@@ -1,6 +1,9 @@
 mod freedom_url;
 
 #[allow(dead_code)]
+mod html;
+
+#[allow(dead_code)]
 mod javascript;
 
 #[cfg(test)]
