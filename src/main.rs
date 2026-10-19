@@ -9,6 +9,9 @@ mod javascript;
 #[cfg(test)]
 mod wpt_url;
 
+#[cfg(test)]
+mod wpt_dom;
+
 use crate::{
     freedom_url::Url,
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
