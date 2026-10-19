@@ -303,26 +303,28 @@ fn text_content(node: &HtmlNode) -> String {
 
 fn register_document_elements(root: &HtmlDocument, document: &mut DocumentState) {
     for child in &root.children {
-        register_document_elements_in_node(child, document)
+        register_document_elements_in_node(child, None, document)
     }
 }
 
-fn register_document_elements_in_node(node: &HtmlNode, document: &mut DocumentState) {
+fn register_document_elements_in_node(
+    node: &HtmlNode,
+    parent_node_id: Option<u64>,
+    document: &mut DocumentState,
+) {
     let HtmlNode::Element(element) = node else {
         return;
     };
 
-    if element.name == "body" {
-        document.register_body(
-            html_attribute(element, "id").unwrap_or(""),
-            text_content(node),
-        );
-    } else if let Some(id) = html_attribute(element, "id") {
-        document.register_element(id, &element.name, text_content(node));
-    }
+    let node_id = document.register_parsed_element(
+        &element.name,
+        html_attribute(element, "id").unwrap_or(""),
+        text_content(node),
+        parent_node_id,
+    );
 
     for child in &element.children {
-        register_document_elements_in_node(child, document);
+        register_document_elements_in_node(child, Some(node_id), document);
     }
 }
 

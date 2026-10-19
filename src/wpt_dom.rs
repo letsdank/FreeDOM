@@ -1,6 +1,5 @@
 use crate::{
     html::{Document, Element, Node},
-    html_attribute,
     javascript::{DocumentState, JsError, evaluate_with_document},
 };
 
@@ -33,26 +32,28 @@ fn find_title_in_node(node: &Node) -> Option<String> {
 
 fn register_elements(root: &Document, document_state: &mut DocumentState) {
     for child in &root.children {
-        register_elements_in_node(child, document_state);
+        register_elements_in_node(child, None, document_state);
     }
 }
 
-fn register_elements_in_node(node: &Node, document_state: &mut DocumentState) {
+fn register_elements_in_node(
+    node: &Node,
+    parent_node_id: Option<u64>,
+    document_state: &mut DocumentState,
+) {
     let Node::Element(element) = node else {
         return;
     };
 
-    if element.name == "body" {
-        document_state.register_body(
-            html_attribute(element, "id").unwrap_or(""),
-            crate::text_content(node),
-        );
-    } else if let Some(id) = html_attribute(element, "id") {
-        document_state.register_element(id, &element.name, crate::text_content(node));
-    }
+    let node_id = document_state.register_parsed_element(
+        &element.name,
+        attribute(element, "id").unwrap_or(""),
+        text_content(node),
+        parent_node_id,
+    );
 
     for child in &element.children {
-        register_elements_in_node(child, document_state);
+        register_elements_in_node(child, Some(node_id), document_state);
     }
 }
 

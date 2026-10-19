@@ -396,13 +396,15 @@ struct ElementState {
     text_content: String,
     text_content_was_set: bool,
     attributes: HashMap<String, String>,
+    parent: Option<u64>,
+    children: Vec<u64>,
     connected: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DocumentState {
     pub title: String,
-    elements_by_id: HashMap<String, u64>,
+    elements_by_id: HashMap<String, Vec<u64>>,
     elements_by_node_id: HashMap<u64, ElementState>,
     body: Option<u64>,
     next_node_id: u64,
@@ -416,15 +418,30 @@ impl DocumentState {
         }
     }
 
+    fn add_id_candidate(&mut self, id: &str, node_id: u64) {
+        if id.is_empty() {
+            return;
+        }
+
+        let candidates = self.elements_by_id.entry(id.to_owned()).or_default();
+
+        if !candidates.contains(&node_id) {
+            candidates.push(node_id);
+        }
+    }
+
     fn insert_element(
         &mut self,
         id: &str,
         tag_name: &str,
         text_content: String,
+        parent: Option<u64>,
         connected: bool,
     ) -> u64 {
         let node_id = self.next_node_id;
         self.next_node_id += 1;
+
+        let parent = parent.filter(|node_id| self.elements_by_node_id.contains_key(node_id));
 
         let mut attributes = HashMap::new();
 
@@ -441,12 +458,34 @@ impl DocumentState {
                 text_content,
                 text_content_was_set: false,
                 attributes,
+                parent,
+                children: Vec::new(),
                 connected,
             },
         );
 
-        if connected && !id.is_empty() {
-            self.elements_by_id.entry(id.to_owned()).or_insert(node_id);
+        if let Some(parent_node_id) = parent {
+            if let Some(parent) = self.elements_by_node_id.get_mut(&parent_node_id) {
+                parent.children.push(node_id);
+            }
+        }
+
+        self.add_id_candidate(id, node_id);
+
+        node_id
+    }
+
+    pub fn register_parsed_element(
+        &mut self,
+        tag_name: &str,
+        id: &str,
+        text_content: String,
+        parent: Option<u64>,
+    ) -> u64 {
+        let node_id = self.insert_element(id, tag_name, text_content, parent, true);
+
+        if tag_name == "body" && self.body.is_none() {
+            self.body = Some(node_id);
         }
 
         node_id
@@ -454,19 +493,18 @@ impl DocumentState {
 
     pub fn register_element(&mut self, id: &str, tag_name: &str, text_content: String) {
         if !id.is_empty() {
-            self.insert_element(id, tag_name, text_content, true);
+            self.register_parsed_element(tag_name, id, text_content, None);
         }
     }
 
     pub fn register_body(&mut self, id: &str, text_content: String) {
         if self.body.is_none() {
-            let node_id = self.insert_element(id, "body", text_content, true);
-            self.body = Some(node_id);
+            self.register_parsed_element("body", id, text_content, None);
         }
     }
 
     fn create_element(&mut self, tag_name: &str) -> u64 {
-        self.insert_element("", tag_name, String::new(), false)
+        self.insert_element("", tag_name, String::new(), None, false)
     }
 
     fn body_node(&self) -> Option<u64> {
@@ -474,7 +512,19 @@ impl DocumentState {
     }
 
     fn get_element_by_id(&self, id: &str) -> Option<u64> {
-        self.elements_by_id.get(id).copied()
+        if id.is_empty() {
+            return None;
+        }
+
+        self.elements_by_id
+            .get(id)?
+            .iter()
+            .copied()
+            .find(|node_id| {
+                self.elements_by_node_id
+                    .get(node_id)
+                    .is_some_and(|element| element.connected && element.id == id)
+            })
     }
 
     fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<u64> {
@@ -495,6 +545,19 @@ impl DocumentState {
         self.elements_by_node_id.get(&node_id)
     }
 
+    fn set_subtree_connected(&mut self, node_id: u64, connected: bool) {
+        let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
+            return;
+        };
+
+        element.connected = connected;
+        let children = element.children.clone();
+
+        for child_node_id in children {
+            self.set_subtree_connected(child_node_id, connected);
+        }
+    }
+
     fn set_node_text_content(&mut self, node_id: u64, text_content: String) -> bool {
         let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
             return false;
@@ -506,25 +569,11 @@ impl DocumentState {
     }
 
     fn set_node_attribute(&mut self, node_id: u64, name: &str, value: String) -> bool {
-        let Some(element) = self.elements_by_node_id.get(&node_id) else {
-            return false;
-        };
-
-        let connected = element.connected;
-        let old_id = element.id.clone();
-        let is_id = name.eq_ignore_ascii_case("id");
-
-        if is_id
-            && connected
-            && !old_id.is_empty()
-            && self.elements_by_id.get(&old_id) == Some(&node_id)
-        {
-            self.elements_by_id.remove(&old_id);
-        }
-
         let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
             return false;
         };
+
+        let is_id = name.eq_ignore_ascii_case("id");
 
         element.attributes.insert(name.to_owned(), value.clone());
 
@@ -532,37 +581,21 @@ impl DocumentState {
             element.id = value.clone();
         }
 
-        if is_id && connected && !value.is_empty() {
-            self.elements_by_id.entry(value).or_insert(node_id);
+        if is_id {
+            self.add_id_candidate(&value, node_id);
         }
 
         true
     }
 
     fn remove_node_attribute(&mut self, node_id: u64, name: &str) -> bool {
-        let Some(element) = self.elements_by_node_id.get(&node_id) else {
-            return false;
-        };
-
-        let connected = element.connected;
-        let old_id = element.id.clone();
-        let is_id = name.eq_ignore_ascii_case("id");
-
-        if is_id
-            && connected
-            && !old_id.is_empty()
-            && self.elements_by_id.get(&old_id) == Some(&node_id)
-        {
-            self.elements_by_id.remove(&old_id);
-        }
-
         let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
             return false;
         };
 
         element.attributes.remove(name);
 
-        if is_id {
+        if name.eq_ignore_ascii_case("id") {
             element.id.clear();
         }
 
@@ -570,65 +603,72 @@ impl DocumentState {
     }
 
     fn append_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
+        if parent_node_id == child_node_id {
+            return false;
+        }
+
         let Some(parent) = self.elements_by_node_id.get(&parent_node_id) else {
             return false;
         };
 
-        if !parent.connected {
-            return false;
-        }
+        let parent_connected = parent.connected;
 
         let Some(child) = self.elements_by_node_id.get(&child_node_id) else {
             return false;
         };
 
-        if child.connected {
-            return true;
-        }
+        let old_parent = child.parent;
 
-        let id = child.id.clone();
+        if let Some(old_parent_node_id) = old_parent {
+            if let Some(old_parent) = self.elements_by_node_id.get_mut(&old_parent_node_id) {
+                old_parent
+                    .children
+                    .retain(|node_id| *node_id != child_node_id);
+            }
+        }
 
         let Some(child) = self.elements_by_node_id.get_mut(&child_node_id) else {
             return false;
         };
 
-        child.connected = true;
+        child.parent = Some(parent_node_id);
 
-        if !id.is_empty() {
-            self.elements_by_id.entry(id).or_insert(child_node_id);
+        let Some(parent) = self.elements_by_node_id.get_mut(&parent_node_id) else {
+            return false;
+        };
+
+        if !parent.children.contains(&child_node_id) {
+            parent.children.push(child_node_id);
         }
+
+        self.set_subtree_connected(child_node_id, parent_connected);
 
         true
     }
 
     fn remove_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
-        let Some(parent) = self.elements_by_node_id.get(&parent_node_id) else {
+        let Some(child) = self.elements_by_node_id.get(&child_node_id) else {
             return false;
         };
 
-        if !parent.connected {
+        if child.parent != Some(parent_node_id) {
             return false;
         }
+
+        let Some(parent) = self.elements_by_node_id.get_mut(&parent_node_id) else {
+            return false;
+        };
+
+        parent.children.retain(|node_id| *node_id != child_node_id);
 
         let Some(child) = self.elements_by_node_id.get_mut(&child_node_id) else {
             return false;
         };
 
-        if !child.connected {
-            return false;
-        }
+        child.parent = None;
 
-        let id = child.id.clone();
+        self.set_subtree_connected(child_node_id, false);
 
-        if !id.is_empty() && self.elements_by_id.get(&id) == Some(&child_node_id) {
-            self.elements_by_id.remove(&id);
-        }
-
-        let Some(child) = self.elements_by_node_id.get_mut(&child_node_id) else {
-            return false;
-        };
-
-        child.connected = false;
         true
     }
 
@@ -2688,6 +2728,32 @@ let base = "https:\/\/example.test\u002Fdocs";
                 document.body.removeChild(element);
 
                 assert_equals(document.getElementById("dynamic"), null);
+            "#,
+            &mut document,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn connects_and_disconnects_an_entire_dynamic_subtree() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const parent = document.createElement("div");
+                const child = document.createElement("div");
+
+                child.setAttribute("id", "nested");
+                parent.appendChild(child);
+
+                assert_equals(document.getElementById("nested"), null);
+
+                document.body.appendChild(parent);
+                assert_equals(document.getElementById("nested"), child);
+
+                document.body.removeChild(parent);
+                assert_equals(document.getElementById("nested"), null);
             "#,
             &mut document,
         )
