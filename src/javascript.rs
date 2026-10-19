@@ -379,9 +379,45 @@ pub enum NativeFunction {
     AssertEquals,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ElementState {
+    id: String,
+    tag_name: String,
+    text_content: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DocumentState {
     pub title: String,
+    elements_by_id: HashMap<String, ElementState>,
+}
+
+impl DocumentState {
+    pub fn with_title(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            elements_by_id: HashMap::new(),
+        }
+    }
+
+    pub fn register_element(&mut self, id: &str, tag_name: &str, text_content: String) {
+        self.elements_by_id
+            .entry(id.to_owned())
+            .or_insert_with(|| ElementState {
+                id: id.to_owned(),
+                tag_name: tag_name.to_owned(),
+                text_content,
+            });
+    }
+
+    fn get_element_by_id(&self, id: &str) -> Option<ElementState> {
+        self.elements_by_id.get(id).cloned()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum DocumentMethod {
+    GetElementById(DocumentState),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -396,6 +432,8 @@ pub enum Value {
     Url(Url),
     NativeFunction(NativeFunction),
     Document(DocumentState),
+    Element(ElementState),
+    DocumentMethod(DocumentMethod),
 }
 
 impl Value {
@@ -417,6 +455,8 @@ impl Value {
             Self::Url(url) => url.to_string(),
             Self::NativeFunction(_) => "function".to_owned(),
             Self::Document(_) => "[object Document]".to_owned(),
+            Self::Element(_) => "[object HTMLElement]".to_owned(),
+            Self::DocumentMethod(_) => "function".to_owned(),
         }
     }
 
@@ -998,12 +1038,30 @@ impl Interpreter {
 
                     (Value::Document(document), "title") => Ok(Value::String(document.title)),
 
+                    (Value::Document(document), "getElementById") => Ok(Value::DocumentMethod(
+                        DocumentMethod::GetElementById(document),
+                    )),
+
+                    (Value::Element(element), "id") => Ok(Value::String(element.id)),
+
+                    (Value::Element(element), "tagName") => {
+                        Ok(Value::String(element.tag_name.to_ascii_uppercase()))
+                    }
+
+                    (Value::Element(element), "textContent") => {
+                        Ok(Value::String(element.text_content))
+                    }
+
                     (Value::Url(_), property) => Err(JsError::runtime(format!(
                         "URL.{property} is not implemented yet"
                     ))),
 
                     (Value::Document(_), property) => Err(JsError::runtime(format!(
                         "Document.{property} is not implemented yet"
+                    ))),
+
+                    (Value::Element(_), property) => Err(JsError::runtime(format!(
+                        "Element.{property} is not implemented yet"
                     ))),
 
                     (_, property) => Err(JsError::runtime(format!(
@@ -1078,8 +1136,31 @@ impl Interpreter {
         match callee {
             Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
 
+            Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
+                self.get_element_by_id(document, values)
+            }
+
             _ => Err(JsError::runtime("TypeError: this value is not callable")),
         }
+    }
+
+    fn get_element_by_id(
+        &mut self,
+        document: DocumentState,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: document.getElementById expects one argument",
+            ));
+        }
+
+        let id = arguments[0].to_js_string();
+
+        Ok(document
+            .get_element_by_id(&id)
+            .map(Value::Element)
+            .unwrap_or(Value::Null))
     }
 
     fn assert_equals(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -1239,9 +1320,7 @@ let base = "https:\/\/example.test\u002Fdocs";
 
     #[test]
     fn changes_document_title_through_javascript() {
-        let mut document = DocumentState {
-            title: "Before".to_owned(),
-        };
+        let mut document = DocumentState::with_title("Before");
 
         let result = evaluate_with_document(
             r#"
@@ -1254,5 +1333,24 @@ let base = "https:\/\/example.test\u002Fdocs";
 
         assert_eq!(result, Value::Undefined);
         assert_eq!(document.title, "FreeDOM");
+    }
+
+    #[test]
+    fn finds_an_element_by_id_and_reads_its_properties() {
+        let mut document = DocumentState::default();
+        document.register_element("welcome", "h1", "Welcome home".to_owned());
+
+        evaluate_with_document(
+            r#"
+                const heading = document.getElementById("welcome");
+
+                assert_equals(heading.id, "welcome");
+                assert_equals(heading.tagName, "H1");
+                assert_equals(heading.textContent, "Welcome home");
+                assert_equals(document.getElementById("missing"), null);
+            "#,
+            &mut document,
+        )
+        .unwrap();
     }
 }

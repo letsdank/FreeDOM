@@ -229,10 +229,9 @@ fn parse_html(url: &str, html: &str) -> Page {
 }
 
 fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page {
-    let mut document_state = DocumentState {
-        title: find_title(document).unwrap_or_default(),
-    };
+    let mut document_state = DocumentState::with_title(find_title(document).unwrap_or_default());
 
+    register_document_elements(document, &mut document_state);
     run_inline_scripts(document, &mut document_state);
 
     let title = if document_state.title.is_empty() {
@@ -295,6 +294,26 @@ fn text_content(node: &HtmlNode) -> String {
         HtmlNode::Element(element) => element.children.iter().map(text_content).collect(),
 
         HtmlNode::Doctype(_) | HtmlNode::Comment(_) => String::new(),
+    }
+}
+
+fn register_document_elements(root: &HtmlDocument, document: &mut DocumentState) {
+    for child in &root.children {
+        register_document_elements_in_node(child, document)
+    }
+}
+
+fn register_document_elements_in_node(node: &HtmlNode, document: &mut DocumentState) {
+    let HtmlNode::Element(element) = node else {
+        return;
+    };
+
+    if let Some(id) = html_attribute(element, "id") {
+        document.register_element(id, &element.name, text_content(node));
+    }
+
+    for child in &element.children {
+        register_document_elements_in_node(child, document);
     }
 }
 
@@ -1570,5 +1589,26 @@ mod tests {
         assert_eq!(page.title, "FreeDOM script test");
         assert_eq!(page.blocks.len(), 1);
         assert_eq!(page.blocks[0].text, "Visible content");
+    }
+
+    #[test]
+    fn inline_javascript_can_read_an_element_from_the_document() {
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <title>Before</title>
+                <h1 id="welcome">Welcome <em>home</em></h1>
+                <script>
+                    const heading = document.getElementById("welcome");
+
+                    assert_equals(heading.tagName, "H1");
+                    assert_equals(heading.textContent, "Welcome home");
+
+                    document.title = heading.textContent;
+                </script>
+            "#,
+        );
+
+        assert_eq!(page.title, "Welcome home");
     }
 }
