@@ -241,8 +241,44 @@ fn tokenize(input: &str) -> Vec<Token> {
 
         if input.as_bytes()[cursor] == b'<' {
             if let Some((token, next_cursor)) = parse_start_tag(input, cursor) {
+                let raw_text_mode = match &token {
+                    Token::StartTag {
+                        name,
+                        self_closing: false,
+                        ..
+                    } if matches!(name.as_str(), "script" | "style") => Some((name.clone(), false)),
+
+                    Token::StartTag {
+                        name,
+                        self_closing: false,
+                        ..
+                    } if matches!(name.as_str(), "title" | "textarea") => {
+                        Some((name.clone(), true))
+                    }
+
+                    _ => None,
+                };
+
                 tokens.push(token);
                 cursor = next_cursor;
+
+                if let Some((tag_name, decode_references)) = raw_text_mode {
+                    let end = find_raw_text_end(input, cursor, &tag_name).unwrap_or(input.len());
+                    let source = &input[cursor..end];
+
+                    let text = if decode_references {
+                        decode_character_references(source)
+                    } else {
+                        source.to_owned()
+                    };
+
+                    if !text.is_empty() {
+                        tokens.push(Token::Text(text));
+                    }
+
+                    cursor = end;
+                }
+
                 continue;
             }
         }
@@ -259,6 +295,33 @@ fn tokenize(input: &str) -> Vec<Token> {
     }
 
     tokens
+}
+
+fn find_raw_text_end(input: &str, start: usize, tag_name: &str) -> Option<usize> {
+    let mut search_from = start;
+
+    while let Some(offset) = input[search_from..].find('<') {
+        let candidate = search_from + offset;
+
+        if input[candidate..].starts_with("</") {
+            let name_start = candidate + 2;
+            let name_end = name_start + tag_name.len();
+
+            if name_end <= input.len()
+                && input[name_start..name_end].eq_ignore_ascii_case(tag_name)
+                && input
+                    .as_bytes()
+                    .get(name_end)
+                    .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(*byte, b'>' | b'/'))
+            {
+                return Some(candidate);
+            }
+        }
+
+        search_from = candidate + 1;
+    }
+
+    None
 }
 
 fn parse_end_tag(input: &str, start: usize) -> Option<(String, usize)> {
@@ -493,5 +556,34 @@ mod tests {
         assert_eq!(input.attributes[1].value, "one & two");
         assert_eq!(input.attributes[2].value, "three");
         assert_eq!(input.attributes[3].name, "checked");
+    }
+
+    #[test]
+    fn keeps_raw_text_elements_as_text_until_their_end_tag() {
+        let document =
+            Document::parse(r#"<style>.quote::before { content: "<tag>"; }</style><p>Visible</p>"#);
+
+        let style = document.first_element("style").unwrap();
+
+        assert_eq!(
+            style.children,
+            vec![Node::Text(
+                r#".quote::before { content: "<tag>"; }"#.to_owned()
+            )]
+        );
+
+        assert_eq!(document.first_element("p").unwrap().children.len(), 1);
+    }
+
+    #[test]
+    fn decodes_references_but_not_markup_in_rcdata_elements() {
+        let document = Document::parse("<title>Tom &amp; Jerry <b></title>");
+
+        let title = document.first_element("title").unwrap();
+
+        assert_eq!(
+            title.children,
+            vec![Node::Text("Tom & Jerry <b>".to_owned())]
+        );
     }
 }
