@@ -175,4 +175,34 @@ mod tests {
         assert!(error.message.contains("AssertionError"));
         assert!(error.message.contains("arithmetic must be correct"));
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_empty_string() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <div id="log"></div>
+
+                    <!-- test 0 from dom/nodes/Document-getElementById.html -->
+                    <div id=""></div>
+
+                    <script>
+                        test(function() {
+                            assert_equals(document.getElementById(""), null);
+                        }, "Calling document.getElementById with an empty string argument.");
+                    </script>
+                </body>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }

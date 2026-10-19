@@ -409,6 +409,10 @@ impl DocumentState {
     }
 
     pub fn register_element(&mut self, id: &str, tag_name: &str, text_content: String) {
+        if id.is_empty() {
+            return;
+        }
+
         self.elements_by_id
             .entry(id.to_owned())
             .or_insert_with(|| ElementState {
