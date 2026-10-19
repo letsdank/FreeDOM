@@ -517,4 +517,40 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_ignores_detached_subtrees() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <script>
+                        test(function() {
+                            var TEST_ID = "test6";
+                            var s = document.createElement("div");
+
+                            s.setAttribute("id", TEST_ID);
+
+                            document.createElement("div").appendChild(s);
+
+                            assert_equals(
+                                document.getElementById(TEST_ID),
+                                null,
+                                "should be null"
+                            );
+                        }, "Appending to a detached node must not expose its descendants");
+                    </script>
+                </body>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }
