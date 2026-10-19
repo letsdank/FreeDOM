@@ -12,6 +12,7 @@ mod wpt_url;
 use crate::{
     freedom_url::Url,
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
+    javascript::{DocumentState, evaluate_with_document},
 };
 use anyhow::{Context as _, Result, bail};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -228,9 +229,17 @@ fn parse_html(url: &str, html: &str) -> Page {
 }
 
 fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page {
-    let title = find_title(document)
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| url.to_owned());
+    let mut document_state = DocumentState {
+        title: find_title(document).unwrap_or_default(),
+    };
+
+    run_inline_scripts(document, &mut document_state);
+
+    let title = if document_state.title.is_empty() {
+        url.to_owned()
+    } else {
+        document_state.title
+    };
 
     let rules = build_author_rules(stylesheets);
     let base_style = TextStyle {
@@ -289,6 +298,52 @@ fn text_content(node: &HtmlNode) -> String {
     }
 }
 
+fn run_inline_scripts(root: &HtmlDocument, document: &mut DocumentState) {
+    for child in &root.children {
+        run_inline_scripts_in_node(child, document);
+    }
+}
+
+fn run_inline_scripts_in_node(node: &HtmlNode, document: &mut DocumentState) {
+    let HtmlNode::Element(element) = node else {
+        return;
+    };
+
+    if element.name == "script" {
+        let is_inline = html_attribute(element, "src").is_none();
+
+        if is_inline && is_classic_javascript(element) {
+            let source = text_content(node);
+
+            if !source.trim().is_empty() {
+                if let Err(error) = evaluate_with_document(&source, document) {
+                    eprintln!("FreeDOM: inline script error: {error}");
+                }
+            }
+        }
+
+        return;
+    }
+
+    for child in &element.children {
+        run_inline_scripts_in_node(child, document);
+    }
+}
+
+fn is_classic_javascript(element: &HtmlElement) -> bool {
+    let Some(kind) = html_attribute(element, "type") else {
+        return true;
+    };
+
+    matches!(
+        kind.trim().to_ascii_lowercase().as_str(),
+        "" | "text/javascript"
+            | "application/javascript"
+            | "text/ecmascript"
+            | "application/ecmascript"
+    )
+}
+
 fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
     let mut rules = Vec::new();
     let mut source_order = 0;
@@ -300,6 +355,7 @@ fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
     rules
 }
 
+#[cfg(test)]
 fn collect_inline_stylesheets(root: &HtmlDocument) -> Vec<String> {
     let mut stylesheets = Vec::new();
 
@@ -310,6 +366,7 @@ fn collect_inline_stylesheets(root: &HtmlDocument) -> Vec<String> {
     stylesheets
 }
 
+#[cfg(test)]
 fn collect_inline_stylesheets_from_node(node: &HtmlNode, stylesheets: &mut Vec<String>) {
     let HtmlNode::Element(element) = node else {
         return;
@@ -1494,5 +1551,24 @@ mod tests {
 
         let (_, previous_url) = history.back_target().unwrap();
         assert_eq!(previous_url, "https://example.test/one");
+    }
+
+    #[test]
+    fn inline_javascript_updates_the_page_title() {
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <title>Before</title>
+                <script>
+                    document.title = "FreeDOM script test";
+                    assert_equals(document.title, "FreeDOM script test");
+                </script>
+                <p>Visible content</p>
+            "#,
+        );
+
+        assert_eq!(page.title, "FreeDOM script test");
+        assert_eq!(page.blocks.len(), 1);
+        assert_eq!(page.blocks[0].text, "Visible content");
     }
 }
