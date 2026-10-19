@@ -379,6 +379,11 @@ pub enum NativeFunction {
     AssertEquals,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DocumentState {
+    pub title: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Undefined,
@@ -390,6 +395,7 @@ pub enum Value {
     Object(HashMap<String, Value>),
     Url(Url),
     NativeFunction(NativeFunction),
+    Document(DocumentState),
 }
 
 impl Value {
@@ -410,6 +416,7 @@ impl Value {
             Self::Object(_) => "[object Object]".to_owned(),
             Self::Url(url) => url.to_string(),
             Self::NativeFunction(_) => "function".to_owned(),
+            Self::Document(_) => "[object Document]".to_owned(),
         }
     }
 
@@ -464,6 +471,10 @@ enum Expression {
         callee: Box<Expression>,
         arguments: Vec<Expression>,
     },
+    Assignment {
+        target: Box<Expression>,
+        value: Box<Expression>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -500,13 +511,41 @@ impl fmt::Display for JsError {
 impl Error for JsError {}
 
 pub fn evaluate(source: &str) -> Result<Value, JsError> {
+    let program = parse_program(source)?;
+    Interpreter::new().execute(&program)
+}
+
+pub fn evaluate_with_document(
+    source: &str,
+    document: &mut DocumentState,
+) -> Result<Value, JsError> {
+    let program = parse_program(source)?;
+
+    let mut interpreter = Interpreter::new();
+    interpreter
+        .variables
+        .insert("document".to_owned(), Value::Document(document.clone()));
+
+    let result = interpreter.execute(&program)?;
+
+    let Some(Value::Document(updated_document)) = interpreter.variables.remove("document") else {
+        return Err(JsError::runtime(
+            "TypeError: global document binding must remain a Document",
+        ));
+    };
+
+    *document = updated_document;
+
+    Ok(result)
+}
+
+fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
     let tokens = tokenize(source).map_err(|error| JsError {
         offset: Some(error.offset),
         message: error.message,
     })?;
 
-    let program = Parser::new(tokens).parse_program()?;
-    Interpreter::new().execute(&program)
+    Parser::new(tokens).parse_program()
 }
 
 pub fn parse_json(source: &str) -> Result<Value, JsError> {
@@ -731,7 +770,22 @@ impl Parser {
     }
 
     fn parse_expression(&mut self) -> Result<Expression, JsError> {
-        self.parse_postfix_expression()
+        self.parse_assignment_expression()
+    }
+
+    fn parse_assignment_expression(&mut self) -> Result<Expression, JsError> {
+        let expression = self.parse_postfix_expression()?;
+
+        if self.consume_optional(&TokenKind::Assign) {
+            let value = self.parse_assignment_expression()?;
+
+            return Ok(Expression::Assignment {
+                target: Box::new(expression),
+                value: Box::new(value),
+            });
+        }
+
+        Ok(expression)
     }
 
     fn parse_postfix_expression(&mut self) -> Result<Expression, JsError> {
@@ -942,8 +996,14 @@ impl Interpreter {
                         Ok(Value::String(format!("{}:", url.scheme())))
                     }
 
+                    (Value::Document(document), "title") => Ok(Value::String(document.title)),
+
                     (Value::Url(_), property) => Err(JsError::runtime(format!(
                         "URL.{property} is not implemented yet"
+                    ))),
+
+                    (Value::Document(_), property) => Err(JsError::runtime(format!(
+                        "Document.{property} is not implemented yet"
                     ))),
 
                     (_, property) => Err(JsError::runtime(format!(
@@ -952,7 +1012,53 @@ impl Interpreter {
                 }
             }
 
+            Expression::Assignment { target, value } => {
+                let value = self.evaluate_expression(value)?;
+                self.assign(target, value.clone())?;
+                Ok(value)
+            }
+
             Expression::Call { callee, arguments } => self.evaluate_call(callee, arguments),
+        }
+    }
+
+    fn assign(&mut self, target: &Expression, value: Value) -> Result<(), JsError> {
+        match target {
+            Expression::Identifier(name) => {
+                self.variables.insert(name.clone(), value);
+                Ok(())
+            }
+
+            Expression::Member { object, property } => {
+                let Expression::Identifier(object_name) = object.as_ref() else {
+                    return Err(JsError::runtime(
+                        "TypeError: assignment target is not supported",
+                    ));
+                };
+
+                let object = self.variables.get_mut(object_name).ok_or_else(|| {
+                    JsError::runtime(format!("ReferenceError: {object_name} is not defined"))
+                })?;
+
+                match object {
+                    Value::Document(document) if property == "title" => {
+                        document.title = value.to_js_string();
+                        Ok(())
+                    }
+
+                    Value::Document(_) => Err(JsError::runtime(format!(
+                        "Document.{property} is not implemented yet"
+                    ))),
+
+                    _ => Err(JsError::runtime(
+                        "TypeError: assignment target is not supported",
+                    )),
+                }
+            }
+
+            _ => Err(JsError::runtime(
+                "TypeError: assignment target is not supported",
+            )),
         }
     }
 
@@ -1032,7 +1138,7 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use super::{TokenKind, Value, evaluate, tokenize};
+    use super::{DocumentState, TokenKind, Value, evaluate, evaluate_with_document, tokenize};
 
     #[test]
     fn tokenizes_url_constructor_syntax() {
@@ -1129,5 +1235,24 @@ let base = "https:\/\/example.test\u002Fdocs";
         .unwrap();
 
         assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn changes_document_title_through_javascript() {
+        let mut document = DocumentState {
+            title: "Before".to_owned(),
+        };
+
+        let result = evaluate_with_document(
+            r#"
+                document.title = "FreeDOM";
+                assert_equals(document.title, "FreeDOM");
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
+        assert_eq!(document.title, "FreeDOM");
     }
 }
