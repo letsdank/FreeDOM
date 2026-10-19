@@ -406,4 +406,46 @@ mod tests {
 
         assert_eq!(state.title, "Document.getElementById");
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_ignores_detached_elements() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <script>
+                        test(function() {
+                            var TEST_ID = "test4-should-not-exist";
+
+                            var e = document.createElement("div");
+                            e.setAttribute("id", TEST_ID);
+
+                            assert_equals(
+                                document.getElementById(TEST_ID),
+                                null,
+                                "should be null"
+                            );
+
+                            document.body.appendChild(e);
+
+                            assert_equals(
+                                document.getElementById(TEST_ID),
+                                e,
+                                "should be the appended element"
+                            );
+                        }, "Ensure that the id attribute only affects elements present in a document");
+                    </script>
+                </body>
+            "#,
+        )
+            .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }
