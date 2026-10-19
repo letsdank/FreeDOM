@@ -461,6 +461,7 @@ pub enum Value {
     Element(ElementState),
     DocumentMethod(DocumentMethod),
     Function(UserFunction),
+    TestContext,
 }
 
 impl Value {
@@ -485,6 +486,7 @@ impl Value {
             Self::Element(_) => "[object HTMLElement]".to_owned(),
             Self::DocumentMethod(_) => "function".to_owned(),
             Self::Function(_) => "function".to_owned(),
+            Self::TestContext => "[object TestContext]".to_owned(),
         }
     }
 
@@ -553,6 +555,7 @@ enum Expression {
 
 #[derive(Clone, Debug, PartialEq)]
 struct UserFunction {
+    parameters: Vec<String>,
     body: Vec<Statement>,
 }
 
@@ -869,6 +872,23 @@ impl Parser {
     }
 
     fn parse_assignment_expression(&mut self) -> Result<Expression, JsError> {
+        if let TokenKind::Identifier(parameter) = self.peek().kind.clone() {
+            let is_arrow = self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Arrow));
+
+            if is_arrow {
+                self.advance();
+                self.advance();
+
+                return Ok(Expression::Function(UserFunction {
+                    parameters: vec![parameter],
+                    body: self.parse_function_body()?,
+                }));
+            }
+        }
+
         let expression = self.parse_equality_expression()?;
 
         if self.consume_optional(&TokenKind::Assign) {
@@ -1034,10 +1054,20 @@ impl Parser {
 
             TokenKind::New => self.parse_new_expression(token.offset),
 
+            TokenKind::EndOfFile => Err(JsError::syntax(
+                token.offset,
+                "unexpected end of JavaScript source",
+            )),
+
+            TokenKind::Function => self.parse_function_expression(),
+
             TokenKind::LeftParen => {
                 if self.consume_optional(&TokenKind::RightParen) {
                     if self.consume_optional(&TokenKind::Arrow) {
-                        return Ok(Expression::Function(self.parse_function_body()?));
+                        return Ok(Expression::Function(UserFunction {
+                            parameters: Vec::new(),
+                            body: self.parse_function_body()?,
+                        }));
                     }
 
                     return Err(JsError::syntax(
@@ -1046,18 +1076,34 @@ impl Parser {
                     ));
                 }
 
+                if let TokenKind::Identifier(parameter) = self.peek().kind.clone() {
+                    let has_closing_parenthesis = self
+                        .tokens
+                        .get(self.position + 1)
+                        .is_some_and(|token| matches!(token.kind, TokenKind::RightParen));
+
+                    let has_arrow = self
+                        .tokens
+                        .get(self.position + 2)
+                        .is_some_and(|token| matches!(token.kind, TokenKind::Arrow));
+
+                    if has_closing_parenthesis && has_arrow {
+                        self.advance();
+                        self.advance();
+                        self.advance();
+
+                        return Ok(Expression::Function(UserFunction {
+                            parameters: vec![parameter],
+                            body: self.parse_function_body()?,
+                        }));
+                    }
+                }
+
                 let expression = self.parse_expression()?;
                 self.consume(&TokenKind::RightParen, "expected ')' after expression")?;
 
                 Ok(expression)
             }
-
-            TokenKind::EndOfFile => Err(JsError::syntax(
-                token.offset,
-                "unexpected end of JavaScript source",
-            )),
-
-            TokenKind::Function => self.parse_function_expression(),
 
             _ => Err(JsError::syntax(token.offset, "expected an expression")),
         }
@@ -1066,15 +1112,38 @@ impl Parser {
     fn parse_function_expression(&mut self) -> Result<Expression, JsError> {
         self.consume(&TokenKind::LeftParen, "expected '(' after function keyword")?;
 
-        self.consume(
-            &TokenKind::RightParen,
-            "function parameters are not implemented yet",
-        )?;
+        let parameters = self.parse_function_parameters()?;
+        let body = self.parse_function_body()?;
 
-        Ok(Expression::Function(self.parse_function_body()?))
+        Ok(Expression::Function(UserFunction { parameters, body }))
     }
 
-    fn parse_function_body(&mut self) -> Result<UserFunction, JsError> {
+    fn parse_function_parameters(&mut self) -> Result<Vec<String>, JsError> {
+        let mut parameters = Vec::new();
+
+        if self.consume_optional(&TokenKind::RightParen) {
+            return Ok(parameters);
+        }
+
+        loop {
+            let (parameter, _) = self.consume_identifier("expected a function identifier")?;
+
+            parameters.push(parameter);
+
+            if self.consume_optional(&TokenKind::Comma) {
+                continue;
+            }
+
+            self.consume(
+                &TokenKind::RightParen,
+                "expected ',' or ')' after function parameter",
+            )?;
+
+            return Ok(parameters);
+        }
+    }
+
+    fn parse_function_body(&mut self) -> Result<Vec<Statement>, JsError> {
         self.consume(&TokenKind::LeftBrace, "expected '{' before function body")?;
 
         let mut body = Vec::new();
@@ -1092,7 +1161,7 @@ impl Parser {
 
         self.advance();
 
-        Ok(UserFunction { body })
+        Ok(body)
     }
 
     fn parse_new_expression(&mut self, offset: usize) -> Result<Expression, JsError> {
@@ -1427,7 +1496,8 @@ impl Interpreter {
             | Value::Document(_)
             | Value::Element(_)
             | Value::DocumentMethod(_)
-            | Value::Function(_) => None,
+            | Value::Function(_)
+            | Value::TestContext => None,
         }
     }
 
@@ -1555,7 +1625,19 @@ impl Interpreter {
             ));
         };
 
-        self.call_function(callback, Vec::new())
+        if callback.parameters.len() > 1 {
+            return Err(JsError::runtime(
+                "TypeError: test callbacks may accept at most one parameter",
+            ));
+        }
+
+        let arguments = if callback.parameters.is_empty() {
+            Vec::new()
+        } else {
+            vec![Value::TestContext]
+        };
+
+        self.call_function(callback, arguments)
     }
 
     fn call_function(
@@ -1563,13 +1645,32 @@ impl Interpreter {
         function: &UserFunction,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
-        if !arguments.is_empty() {
-            return Err(JsError::runtime(
-                "TypeError: function parameters are not implemented yet",
-            ));
+        if function.parameters.len() != arguments.len() {
+            return Err(JsError::runtime(format!(
+                "TypeError: function expects {} arguments, got {}",
+                function.parameters.len(),
+                arguments.len(),
+            )));
         }
 
-        self.execute(&function.body)
+        let mut replaced_bindings = Vec::new();
+
+        for (parameter, argument) in function.parameters.iter().zip(arguments) {
+            let previous = self.variables.insert(parameter.clone(), argument);
+            replaced_bindings.push((parameter.clone(), previous));
+        }
+
+        let result = self.execute(&function.body);
+
+        for (name, previous) in replaced_bindings.into_iter().rev() {
+            if let Some(value) = previous {
+                self.variables.insert(name, value);
+            } else {
+                self.variables.remove(&name);
+            }
+        }
+
+        result
     }
 
     fn get_element_by_id(
@@ -1812,6 +1913,26 @@ let base = "https:\/\/example.test\u002Fdocs";
                 test(function() {
                     assert_equals("Free" + "DOM", "FreeDOM");
                 }, "function callback");
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn passes_test_context_to_wpt_style_callbacks() {
+        let result = evaluate(
+            r#"
+                test(t => {
+                    assert_equals(t === t, true);
+                    assert_equals(2 + 2, 4);
+                }, "single arrow parameter");
+
+                test(function(t) {
+                    assert_equals(t === t, true);
+                    assert_equals("Free" + "DOM", "FreeDOM");
+                }, "single function parameter");
             "#,
         )
         .unwrap();
