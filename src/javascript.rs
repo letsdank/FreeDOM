@@ -47,6 +47,8 @@ pub enum TokenKind {
 
     Arrow,
     EndOfFile,
+
+    Function,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -315,6 +317,7 @@ impl<'source> Lexer<'source> {
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "null" => TokenKind::Null,
+            "function" => TokenKind::Function,
             _ => TokenKind::Identifier(identifier.to_owned()),
         };
 
@@ -377,6 +380,7 @@ fn is_identifier_continue(character: char) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeFunction {
     AssertEquals,
+    Test,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -456,6 +460,7 @@ pub enum Value {
     Document(DocumentState),
     Element(ElementState),
     DocumentMethod(DocumentMethod),
+    Function(UserFunction),
 }
 
 impl Value {
@@ -479,6 +484,7 @@ impl Value {
             Self::Document(_) => "[object Document]".to_owned(),
             Self::Element(_) => "[object HTMLElement]".to_owned(),
             Self::DocumentMethod(_) => "function".to_owned(),
+            Self::Function(_) => "function".to_owned(),
         }
     }
 
@@ -511,13 +517,13 @@ impl Value {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Statement {
     Declaration { name: String, value: Expression },
     Expression(Expression),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Expression {
     Literal(Value),
     Identifier(String),
@@ -542,9 +548,15 @@ enum Expression {
         operator: BinaryOperator,
         right: Box<Expression>,
     },
+    Function(UserFunction),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
+struct UserFunction {
+    body: Vec<Statement>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum BinaryOperator {
     Add,
     Subtract,
@@ -1023,8 +1035,20 @@ impl Parser {
             TokenKind::New => self.parse_new_expression(token.offset),
 
             TokenKind::LeftParen => {
+                if self.consume_optional(&TokenKind::RightParen) {
+                    if self.consume_optional(&TokenKind::Arrow) {
+                        return Ok(Expression::Function(self.parse_function_body()?));
+                    }
+
+                    return Err(JsError::syntax(
+                        token.offset,
+                        "expected an expression inside parentheses",
+                    ));
+                }
+
                 let expression = self.parse_expression()?;
                 self.consume(&TokenKind::RightParen, "expected ')' after expression")?;
+
                 Ok(expression)
             }
 
@@ -1033,8 +1057,42 @@ impl Parser {
                 "unexpected end of JavaScript source",
             )),
 
+            TokenKind::Function => self.parse_function_expression(),
+
             _ => Err(JsError::syntax(token.offset, "expected an expression")),
         }
+    }
+
+    fn parse_function_expression(&mut self) -> Result<Expression, JsError> {
+        self.consume(&TokenKind::LeftParen, "expected '(' after function keyword")?;
+
+        self.consume(
+            &TokenKind::RightParen,
+            "function parameters are not implemented yet",
+        )?;
+
+        Ok(Expression::Function(self.parse_function_body()?))
+    }
+
+    fn parse_function_body(&mut self) -> Result<UserFunction, JsError> {
+        self.consume(&TokenKind::LeftBrace, "expected '{' before function body")?;
+
+        let mut body = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) {
+            if self.check(&TokenKind::EndOfFile) {
+                return Err(JsError::syntax(
+                    self.peek().offset,
+                    "unterminated function body",
+                ));
+            }
+
+            body.push(self.parse_statement()?);
+        }
+
+        self.advance();
+
+        Ok(UserFunction { body })
     }
 
     fn parse_new_expression(&mut self, offset: usize) -> Result<Expression, JsError> {
@@ -1137,6 +1195,11 @@ impl Interpreter {
             Value::NativeFunction(NativeFunction::AssertEquals),
         );
 
+        variables.insert(
+            "test".to_owned(),
+            Value::NativeFunction(NativeFunction::Test),
+        );
+
         Self { variables }
     }
 
@@ -1221,6 +1284,8 @@ impl Interpreter {
                     ))),
                 }
             }
+
+            Expression::Function(function) => Ok(Value::Function(function.clone())),
 
             Expression::Assignment { target, value } => {
                 let value = self.evaluate_expression(value)?;
@@ -1361,7 +1426,8 @@ impl Interpreter {
             | Value::NativeFunction(_)
             | Value::Document(_)
             | Value::Element(_)
-            | Value::DocumentMethod(_) => None,
+            | Value::DocumentMethod(_)
+            | Value::Function(_) => None,
         }
     }
 
@@ -1464,12 +1530,46 @@ impl Interpreter {
         match callee {
             Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
 
+            Value::NativeFunction(NativeFunction::Test) => self.run_test(values),
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }
 
+            Value::Function(function) => self.call_function(&function, values),
+
             _ => Err(JsError::runtime("TypeError: this value is not callable")),
         }
+    }
+
+    fn run_test(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if !(1..=2).contains(&arguments.len()) {
+            return Err(JsError::runtime(
+                "TypeError: test expects a callback and an optional description",
+            ));
+        }
+
+        let Value::Function(callback) = &arguments[0] else {
+            return Err(JsError::runtime(
+                "TypeError: test expects a function callback",
+            ));
+        };
+
+        self.call_function(callback, Vec::new())
+    }
+
+    fn call_function(
+        &mut self,
+        function: &UserFunction,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if !arguments.is_empty() {
+            return Err(JsError::runtime(
+                "TypeError: function parameters are not implemented yet",
+            ));
+        }
+
+        self.execute(&function.body)
     }
 
     fn get_element_by_id(
@@ -1699,5 +1799,23 @@ let base = "https:\/\/example.test\u002Fdocs";
         .unwrap();
 
         assert_eq!(result, Value::Number(4.0));
+    }
+
+    #[test]
+    fn runs_synchronous_wpt_style_test_callbacks() {
+        let result = evaluate(
+            r#"
+                test(() => {
+                    assert_equals(1 + 2 * 3, 7);
+                }, "arrow callback");
+
+                test(function() {
+                    assert_equals("Free" + "DOM", "FreeDOM");
+                }, "function callback");
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
     }
 }
