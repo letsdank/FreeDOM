@@ -49,6 +49,7 @@ pub enum TokenKind {
     EndOfFile,
 
     Function,
+    Instanceof,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -318,6 +319,7 @@ impl<'source> Lexer<'source> {
             "false" => TokenKind::False,
             "null" => TokenKind::Null,
             "function" => TokenKind::Function,
+            "instanceof" => TokenKind::Instanceof,
             _ => TokenKind::Identifier(identifier.to_owned()),
         };
 
@@ -469,6 +471,7 @@ pub enum Value {
     DocumentMethod(DocumentMethod),
     Function(UserFunction),
     TestContext,
+    ElementConstructor(String),
 }
 
 impl Value {
@@ -494,6 +497,7 @@ impl Value {
             Self::DocumentMethod(_) => "function".to_owned(),
             Self::Function(_) => "function".to_owned(),
             Self::TestContext => "[object TestContext]".to_owned(),
+            Self::ElementConstructor(_) => "function".to_owned(),
         }
     }
 
@@ -580,6 +584,7 @@ enum BinaryOperator {
     LessEqual,
     Greater,
     GreaterEqual,
+    Instanceof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -946,6 +951,8 @@ impl Parser {
                 BinaryOperator::LessEqual
             } else if self.consume_optional(&TokenKind::GreaterEqual) {
                 BinaryOperator::GreaterEqual
+            } else if self.consume_optional(&TokenKind::Instanceof) {
+                BinaryOperator::Instanceof
             } else if self.consume_optional(&TokenKind::Less) {
                 BinaryOperator::Less
             } else if self.consume_optional(&TokenKind::Greater) {
@@ -1291,6 +1298,11 @@ impl Interpreter {
             Value::NativeFunction(NativeFunction::AssertNotEquals),
         );
 
+        variables.insert(
+            "HTMLDivElement".to_owned(),
+            Value::ElementConstructor("div".to_owned()),
+        );
+
         Self { variables }
     }
 
@@ -1463,6 +1475,16 @@ impl Interpreter {
                 &right,
                 |a, b| a >= b,
             )?)),
+
+            BinaryOperator::Instanceof => {
+                let matches = matches!(
+                    (&left,&right),
+                    (Value::Element(element),Value::ElementConstructor(tag))
+                    if element.tag_name==*tag
+                );
+
+                Ok(Value::Boolean(matches))
+            }
         }
     }
 
@@ -1519,6 +1541,7 @@ impl Interpreter {
             | Value::Element(_)
             | Value::DocumentMethod(_)
             | Value::Function(_)
+            | Value::ElementConstructor(_)
             | Value::TestContext => None,
         }
     }

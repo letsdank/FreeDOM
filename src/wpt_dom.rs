@@ -205,4 +205,43 @@ mod tests {
 
         assert_eq!(state.title, "Document.getElementById");
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_static_element() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <!-- test 1 from dom/nodes/Document-getElementById.html -->
+                    <div id="test1"></div>
+
+                    <script>
+                        test(function() {
+                            var bar = document.getElementById("test1");
+
+                            assert_not_equals(bar, null, "should not be null");
+                            assert_equals(
+                                bar.tagName,
+                                "DIV",
+                                "should have expected tag name."
+                            );
+                            assert_true(
+                                bar instanceof HTMLDivElement,
+                                "should be a valid Element instance"
+                            );
+                        }, "on static page");
+                    </script>
+                </body>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }
