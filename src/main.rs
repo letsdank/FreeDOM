@@ -237,7 +237,7 @@ fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page
     let title = if document_state.title.is_empty() {
         url.to_owned()
     } else {
-        document_state.title
+        document_state.title.clone()
     };
 
     let rules = build_author_rules(stylesheets);
@@ -260,6 +260,7 @@ fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page
             &mut current_text,
             base_style,
             page_url.as_ref(),
+            &document_state,
         );
     }
 
@@ -714,6 +715,7 @@ fn extract_blocks(
     current: &mut String,
     inherited_style: TextStyle,
     page_url: Option<&Url>,
+    document: &DocumentState,
 ) {
     if let HtmlNode::Text(contents) = node {
         append_collapsed(current, contents);
@@ -746,7 +748,15 @@ fn extract_blocks(
         flush(blocks, current, inherited_style);
 
         let mut text = String::new();
-        append_collapsed(&mut text, &text_content(node));
+
+        let contents = element
+            .id
+            .as_deref()
+            .and_then(|id| document.text_content_override(id))
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| text_content(node));
+
+        append_collapsed(&mut text, &contents);
 
         let target = element
             .href
@@ -772,12 +782,26 @@ fn extract_blocks(
         flush(blocks, current, inherited_style);
     }
 
+    if let Some(contents) = element
+        .id
+        .as_deref()
+        .and_then(|id| document.text_content_override(id))
+    {
+        append_collapsed(current, contents);
+
+        if is_block {
+            flush(blocks, current, style);
+        }
+
+        return;
+    }
+
     let HtmlNode::Element(dom_element) = node else {
         unreachable!("element_info возвращает данные только для Element");
     };
 
     for child in &dom_element.children {
-        extract_blocks(child, rules, blocks, current, style, page_url);
+        extract_blocks(child, rules, blocks, current, style, page_url, document);
     }
 
     if is_block {
@@ -1610,5 +1634,27 @@ mod tests {
         );
 
         assert_eq!(page.title, "Welcome home");
+    }
+
+    #[test]
+    fn javascript_text_content_updates_layout() {
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <h1 id="welcome">Before</h1>
+                <script>
+                    const heading = document.getElementById("welcome");
+
+                    heading.textContent = "After";
+                    assert_equals(heading.textContent, "After");
+
+                    document.title = heading.textContent;
+                </script>
+            "#,
+        );
+
+        assert_eq!(page.title, "After");
+        assert_eq!(page.blocks.len(), 1);
+        assert_eq!(page.blocks[0].text, "After");
     }
 }

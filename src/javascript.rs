@@ -384,6 +384,7 @@ pub struct ElementState {
     id: String,
     tag_name: String,
     text_content: String,
+    text_content_was_set: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -407,11 +408,32 @@ impl DocumentState {
                 id: id.to_owned(),
                 tag_name: tag_name.to_owned(),
                 text_content,
+                text_content_was_set: false,
             });
     }
 
     fn get_element_by_id(&self, id: &str) -> Option<ElementState> {
         self.elements_by_id.get(id).cloned()
+    }
+
+    pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
+        let Some(element) = self.elements_by_id.get_mut(id) else {
+            return false;
+        };
+
+        element.text_content = text_content;
+        element.text_content_was_set = true;
+        true
+    }
+
+    pub fn text_content_override(&self, id: &str) -> Option<&str> {
+        let element = self.elements_by_id.get(id)?;
+
+        if element.text_content_was_set {
+            Some(element.text_content.as_str())
+        } else {
+            None
+        }
     }
 }
 
@@ -1049,7 +1071,12 @@ impl Interpreter {
                     }
 
                     (Value::Element(element), "textContent") => {
-                        Ok(Value::String(element.text_content))
+                        let text_content = self
+                            .current_document_element(&element.id)
+                            .map(|current| current.text_content)
+                            .unwrap_or(element.text_content);
+
+                        Ok(Value::String(text_content))
                     }
 
                     (Value::Url(_), property) => Err(JsError::runtime(format!(
@@ -1080,6 +1107,34 @@ impl Interpreter {
         }
     }
 
+    fn current_document_element(&self, id: &str) -> Option<ElementState> {
+        let Value::Document(document) = self.variables.get("document")? else {
+            return None;
+        };
+
+        document.get_element_by_id(id)
+    }
+
+    fn set_document_element_text_content(
+        &mut self,
+        id: &str,
+        text_content: String,
+    ) -> Result<(), JsError> {
+        let Some(Value::Document(document)) = self.variables.get_mut("document") else {
+            return Err(JsError::runtime(
+                "TypeError: document binding is unavailable",
+            ));
+        };
+
+        if document.set_element_text_content(id, text_content) {
+            Ok(())
+        } else {
+            Err(JsError::runtime(format!(
+                "TypeError: element #{id:?} is no longer in the document"
+            )))
+        }
+    }
+
     fn assign(&mut self, target: &Expression, value: Value) -> Result<(), JsError> {
         match target {
             Expression::Identifier(name) => {
@@ -1088,24 +1143,29 @@ impl Interpreter {
             }
 
             Expression::Member { object, property } => {
-                let Expression::Identifier(object_name) = object.as_ref() else {
-                    return Err(JsError::runtime(
-                        "TypeError: assignment target is not supported",
-                    ));
-                };
+                if let Expression::Identifier(name) = object.as_ref() {
+                    if name == "document" && property == "title" {
+                        let Some(Value::Document(document)) = self.variables.get_mut("document")
+                        else {
+                            return Err(JsError::runtime(
+                                "TypeError: document binding is unavailable",
+                            ));
+                        };
 
-                let object = self.variables.get_mut(object_name).ok_or_else(|| {
-                    JsError::runtime(format!("ReferenceError: {object_name} is not defined"))
-                })?;
+                        document.title = value.to_js_string();
+                        return Ok(());
+                    }
+                }
+
+                let object = self.evaluate_expression(object)?;
 
                 match object {
-                    Value::Document(document) if property == "title" => {
-                        document.title = value.to_js_string();
-                        Ok(())
+                    Value::Element(element) if property == "textContent" => {
+                        self.set_document_element_text_content(&element.id, value.to_js_string())
                     }
 
-                    Value::Document(_) => Err(JsError::runtime(format!(
-                        "Document.{property} is not implemented yet"
+                    Value::Element(_) => Err(JsError::runtime(format!(
+                        "Element.{property} is not implemented yet"
                     ))),
 
                     _ => Err(JsError::runtime(
