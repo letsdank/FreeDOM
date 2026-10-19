@@ -537,6 +537,27 @@ enum Expression {
         target: Box<Expression>,
         value: Box<Expression>,
     },
+    Binary {
+        left: Box<Expression>,
+        operator: BinaryOperator,
+        right: Box<Expression>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Equal,
+    StrictEqual,
+    NotEqual,
+    StrictNotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -836,7 +857,7 @@ impl Parser {
     }
 
     fn parse_assignment_expression(&mut self) -> Result<Expression, JsError> {
-        let expression = self.parse_postfix_expression()?;
+        let expression = self.parse_equality_expression()?;
 
         if self.consume_optional(&TokenKind::Assign) {
             let value = self.parse_assignment_expression()?;
@@ -845,6 +866,110 @@ impl Parser {
                 target: Box::new(expression),
                 value: Box::new(value),
             });
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_equality_expression(&mut self) -> Result<Expression, JsError> {
+        let mut expression = self.parse_comparison_expression()?;
+
+        loop {
+            let operator = if self.consume_optional(&TokenKind::StrictEqual) {
+                BinaryOperator::StrictEqual
+            } else if self.consume_optional(&TokenKind::StrictNotEqual) {
+                BinaryOperator::StrictNotEqual
+            } else if self.consume_optional(&TokenKind::Equal) {
+                BinaryOperator::Equal
+            } else if self.consume_optional(&TokenKind::NotEqual) {
+                BinaryOperator::NotEqual
+            } else {
+                break;
+            };
+
+            let right = self.parse_comparison_expression()?;
+
+            expression = Expression::Binary {
+                left: Box::new(expression),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_comparison_expression(&mut self) -> Result<Expression, JsError> {
+        let mut expression = self.parse_term_expression()?;
+
+        loop {
+            let operator = if self.consume_optional(&TokenKind::LessEqual) {
+                BinaryOperator::LessEqual
+            } else if self.consume_optional(&TokenKind::GreaterEqual) {
+                BinaryOperator::GreaterEqual
+            } else if self.consume_optional(&TokenKind::Less) {
+                BinaryOperator::Less
+            } else if self.consume_optional(&TokenKind::Greater) {
+                BinaryOperator::Greater
+            } else {
+                break;
+            };
+
+            let right = self.parse_term_expression()?;
+
+            expression = Expression::Binary {
+                left: Box::new(expression),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_term_expression(&mut self) -> Result<Expression, JsError> {
+        let mut expression = self.parse_factor_expression()?;
+
+        loop {
+            let operator = if self.consume_optional(&TokenKind::Plus) {
+                BinaryOperator::Add
+            } else if self.consume_optional(&TokenKind::Minus) {
+                BinaryOperator::Subtract
+            } else {
+                break;
+            };
+
+            let right = self.parse_factor_expression()?;
+
+            expression = Expression::Binary {
+                left: Box::new(expression),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_factor_expression(&mut self) -> Result<Expression, JsError> {
+        let mut expression = self.parse_postfix_expression()?;
+
+        loop {
+            let operator = if self.consume_optional(&TokenKind::Star) {
+                BinaryOperator::Multiply
+            } else if self.consume_optional(&TokenKind::Slash) {
+                BinaryOperator::Divide
+            } else {
+                break;
+            };
+
+            let right = self.parse_postfix_expression()?;
+
+            expression = Expression::Binary {
+                left: Box::new(expression),
+                operator,
+                right: Box::new(right),
+            };
         }
 
         Ok(expression)
@@ -1104,7 +1229,150 @@ impl Interpreter {
             }
 
             Expression::Call { callee, arguments } => self.evaluate_call(callee, arguments),
+
+            Expression::Binary {
+                left,
+                operator,
+                right,
+            } => {
+                let left = self.evaluate_expression(left)?;
+                let right = self.evaluate_expression(right)?;
+
+                self.evaluate_binary(left, *operator, right)
+            }
         }
+    }
+
+    fn evaluate_binary(
+        &self,
+        left: Value,
+        operator: BinaryOperator,
+        right: Value,
+    ) -> Result<Value, JsError> {
+        match operator {
+            BinaryOperator::StrictEqual => Ok(Value::Boolean(left == right)),
+            BinaryOperator::StrictNotEqual => Ok(Value::Boolean(left != right)),
+
+            BinaryOperator::Equal => Ok(Value::Boolean(self.loosely_equals(&left, &right))),
+            BinaryOperator::NotEqual => Ok(Value::Boolean(!self.loosely_equals(&left, &right))),
+
+            BinaryOperator::Add => {
+                if matches!(&left, Value::String(_)) || matches!(&right, Value::String(_)) {
+                    return Ok(Value::String(format!(
+                        "{}{}",
+                        left.to_js_string(),
+                        right.to_js_string()
+                    )));
+                }
+
+                let (left, right) = self.numeric_operands(&left, &right)?;
+                Ok(Value::Number(left + right))
+            }
+
+            BinaryOperator::Subtract => {
+                let (left, right) = self.numeric_operands(&left, &right)?;
+                Ok(Value::Number(left - right))
+            }
+
+            BinaryOperator::Multiply => {
+                let (left, right) = self.numeric_operands(&left, &right)?;
+                Ok(Value::Number(left * right))
+            }
+
+            BinaryOperator::Divide => {
+                let (left, right) = self.numeric_operands(&left, &right)?;
+                Ok(Value::Number(left / right))
+            }
+
+            BinaryOperator::Less => Ok(Value::Boolean(self.compare_values(
+                &left,
+                &right,
+                |a, b| a < b,
+            )?)),
+
+            BinaryOperator::LessEqual => Ok(Value::Boolean(self.compare_values(
+                &left,
+                &right,
+                |a, b| a <= b,
+            )?)),
+
+            BinaryOperator::Greater => Ok(Value::Boolean(self.compare_values(
+                &left,
+                &right,
+                |a, b| a > b,
+            )?)),
+
+            BinaryOperator::GreaterEqual => Ok(Value::Boolean(self.compare_values(
+                &left,
+                &right,
+                |a, b| a >= b,
+            )?)),
+        }
+    }
+
+    fn loosely_equals(&self, left: &Value, right: &Value) -> bool {
+        match (left, right) {
+            (Value::Undefined, Value::Null) | (Value::Null, Value::Undefined) => true,
+
+            (Value::String(_), Value::Number(_)) | (Value::Number(_), Value::String(_)) => {
+                self.to_number(left) == self.to_number(right)
+            }
+
+            _ => left == right,
+        }
+    }
+
+    fn numeric_operands(&self, left: &Value, right: &Value) -> Result<(f64, f64), JsError> {
+        let Some(left) = self.to_number(left) else {
+            return Err(JsError::runtime(
+                "TypeError: operator requires numeric operands",
+            ));
+        };
+
+        let Some(right) = self.to_number(right) else {
+            return Err(JsError::runtime(
+                "TypeError: operator requires numeric operands",
+            ));
+        };
+
+        Ok((left, right))
+    }
+
+    fn to_number(&self, value: &Value) -> Option<f64> {
+        match value {
+            Value::Number(value) => Some(*value),
+            Value::Boolean(true) => Some(1.0),
+            Value::Boolean(false) | Value::Null => Some(0.0),
+
+            Value::String(value) => {
+                let value = value.trim();
+
+                if value.is_empty() {
+                    Some(0.0)
+                } else {
+                    value.parse::<f64>().ok()
+                }
+            }
+
+            Value::Undefined
+            | Value::Array(_)
+            | Value::Object(_)
+            | Value::Url(_)
+            | Value::NativeFunction(_)
+            | Value::Document(_)
+            | Value::Element(_)
+            | Value::DocumentMethod(_) => None,
+        }
+    }
+
+    fn compare_values(
+        &self,
+        left: &Value,
+        right: &Value,
+        comparison: impl FnOnce(f64, f64) -> bool,
+    ) -> Result<bool, JsError> {
+        let (left, right) = self.numeric_operands(left, right)?;
+        Ok(comparison(left, right))
     }
 
     fn current_document_element(&self, id: &str) -> Option<ElementState> {
@@ -1412,5 +1680,24 @@ let base = "https:\/\/example.test\u002Fdocs";
             &mut document,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn evaluates_arithmetic_comparisons_and_string_concatenation() {
+        let result = evaluate(
+            r#"
+                assert_equals(1 + 2 * 3, 7);
+                assert_equals("Free" + "DOM", "FreeDOM");
+                assert_equals(10 / 2 - 1, 4);
+                assert_equals(3 < 5, true);
+                assert_equals(3 === 3, true);
+                assert_equals(3 !== 4, true);
+
+                2 + 2;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(4.0));
     }
 }
