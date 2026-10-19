@@ -456,6 +456,11 @@ enum DocumentMethod {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+enum TestContextMethod {
+    AddCleanup,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Undefined,
     Null,
@@ -472,6 +477,7 @@ pub enum Value {
     Function(UserFunction),
     TestContext,
     ElementConstructor(String),
+    TestContextMethod(TestContextMethod),
 }
 
 impl Value {
@@ -498,6 +504,7 @@ impl Value {
             Self::Function(_) => "function".to_owned(),
             Self::TestContext => "[object TestContext]".to_owned(),
             Self::ElementConstructor(_) => "function".to_owned(),
+            Self::TestContextMethod(_) => "function".to_owned(),
         }
     }
 
@@ -636,7 +643,7 @@ pub fn evaluate_with_document(
         .variables
         .insert("document".to_owned(), Value::Document(document.clone()));
 
-    let result = interpreter.execute(&program)?;
+    let result = interpreter.execute(&program);
 
     let Some(Value::Document(updated_document)) = interpreter.variables.remove("document") else {
         return Err(JsError::runtime(
@@ -646,7 +653,7 @@ pub fn evaluate_with_document(
 
     *document = updated_document;
 
-    Ok(result)
+    result
 }
 
 fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
@@ -1267,6 +1274,7 @@ impl Parser {
 
 struct Interpreter {
     variables: HashMap<String, Value>,
+    cleanups: Vec<UserFunction>,
 }
 
 impl Interpreter {
@@ -1303,7 +1311,10 @@ impl Interpreter {
             Value::ElementConstructor("div".to_owned()),
         );
 
-        Self { variables }
+        Self {
+            variables,
+            cleanups: Vec::new(),
+        }
     }
 
     fn execute(&mut self, program: &[Statement]) -> Result<Value, JsError> {
@@ -1343,6 +1354,10 @@ impl Interpreter {
                 let object = self.evaluate_expression(object)?;
 
                 match (object, property.as_str()) {
+                    (Value::TestContext, "add_cleanup") => {
+                        Ok(Value::TestContextMethod(TestContextMethod::AddCleanup))
+                    }
+
                     (Value::Url(url), "href") => Ok(Value::String(url.to_string())),
 
                     (Value::Url(url), "protocol") => {
@@ -1542,6 +1557,7 @@ impl Interpreter {
             | Value::DocumentMethod(_)
             | Value::Function(_)
             | Value::ElementConstructor(_)
+            | Value::TestContextMethod(_)
             | Value::TestContext => None,
         }
     }
@@ -1659,6 +1675,8 @@ impl Interpreter {
                 self.get_element_by_id(document, values)
             }
 
+            Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
+
             Value::Function(function) => self.call_function(&function, values),
 
             _ => Err(JsError::runtime("TypeError: this value is not callable")),
@@ -1684,13 +1702,72 @@ impl Interpreter {
             ));
         }
 
-        let arguments = if callback.parameters.is_empty() {
+        let callback_arguments = if callback.parameters.is_empty() {
             Vec::new()
         } else {
             vec![Value::TestContext]
         };
 
-        self.call_function(callback, arguments)
+        let cleanup_start = self.cleanups.len();
+        let previous_this = self.variables.insert("this".to_owned(), Value::TestContext);
+
+        let test_result = self.call_function(callback, callback_arguments);
+
+        if let Some(previous_this) = previous_this {
+            self.variables.insert("this".to_owned(), previous_this);
+        } else {
+            self.variables.remove("this");
+        }
+
+        let cleanup_result = self.run_cleanups_since(cleanup_start);
+
+        test_result?;
+        cleanup_result?;
+
+        Ok(Value::Undefined)
+    }
+
+    fn add_cleanup(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: add_cleanup expects one callback",
+            ));
+        }
+
+        let Value::Function(callback) = arguments.into_iter().next().unwrap() else {
+            return Err(JsError::runtime(
+                "TypeError: add_cleanup expects a function callback",
+            ));
+        };
+
+        if !callback.parameters.is_empty() {
+            return Err(JsError::runtime(
+                "TypeError: cleanup callbacks cannot accept parameters",
+            ));
+        }
+
+        self.cleanups.push(callback);
+
+        Ok(Value::Undefined)
+    }
+
+    fn run_cleanups_since(&mut self, cleanup_start: usize) -> Result<(), JsError> {
+        let mut first_error = None;
+
+        while self.cleanups.len() > cleanup_start {
+            let cleanup = self.cleanups.pop().unwrap();
+
+            if let Err(error) = self.call_function(&cleanup, Vec::new()) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn call_function(
@@ -2068,5 +2145,52 @@ let base = "https:\/\/example.test\u002Fdocs";
         .unwrap();
 
         assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn runs_wpt_cleanup_callbacks_with_this_binding() {
+        let mut document = DocumentState::with_title("Before");
+
+        evaluate_with_document(
+            r#"
+                test(function() {
+                    assert_true(this === this);
+
+                    this.add_cleanup(function() {
+                        document.title = "After cleanup";
+                    });
+
+                    document.title = "During test";
+                }, "cleanup callbacks run after the test body");
+
+                assert_equals(document.title, "After cleanup");
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(document.title, "After cleanup");
+    }
+
+    #[test]
+    fn preserves_document_changes_from_cleanups_after_a_failed_test() {
+        let mut document = DocumentState::with_title("Before");
+
+        let error = evaluate_with_document(
+            r#"
+                test(function() {
+                    this.add_cleanup(function() {
+                        document.title = "Cleaned after failure";
+                    });
+
+                    assert_equals(1, 2, "intentional failure");
+                }, "cleanup on failure");
+            "#,
+            &mut document,
+        )
+        .unwrap_err();
+
+        assert!(error.message.contains("intentional failure"));
+        assert_eq!(document.title, "Cleaned after failure");
     }
 }
