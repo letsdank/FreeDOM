@@ -301,4 +301,56 @@ mod tests {
 
         assert_eq!(state.title, "Document.getElementById");
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_script_inserted_element() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <script>
+                        var gBody = document.getElementsByTagName("body")[0];
+
+                        test(function() {
+                            var TEST_ID = "test2";
+
+                            var test = document.createElement("div");
+                            test.setAttribute("id", TEST_ID);
+                            gBody.appendChild(test);
+
+                            var result = document.getElementById(TEST_ID);
+                            assert_not_equals(result, null, "should not be null.");
+                            assert_equals(
+                                result.tagName,
+                                "DIV",
+                                "should have appended element's tag name"
+                            );
+                            assert_true(
+                                result instanceof HTMLDivElement,
+                                "should be a valid Element instance"
+                            );
+
+                            gBody.removeChild(test);
+
+                            var removed = document.getElementById(TEST_ID);
+                            assert_equals(
+                                removed,
+                                null,
+                                "should not get removed element."
+                            );
+                        }, "Document.getElementById with a script-inserted element");
+                    </script>
+                </body>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }

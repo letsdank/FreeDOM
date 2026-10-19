@@ -477,6 +477,20 @@ impl DocumentState {
         self.elements_by_id.get(id).copied()
     }
 
+    fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<u64> {
+        let tag_name = tag_name.to_ascii_lowercase();
+
+        let mut nodes: Vec<u64> = self
+            .elements_by_node_id
+            .values()
+            .filter(|element| element.connected && element.tag_name == tag_name)
+            .map(|element| element.node_id)
+            .collect();
+
+        nodes.sort_unstable();
+        nodes
+    }
+
     fn element(&self, node_id: u64) -> Option<&ElementState> {
         self.elements_by_node_id.get(&node_id)
     }
@@ -612,6 +626,7 @@ impl DocumentState {
 enum DocumentMethod {
     GetElementById(DocumentState),
     CreateElement,
+    GetElementsByTagName(DocumentState),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -737,6 +752,10 @@ enum Expression {
         right: Box<Expression>,
     },
     Function(UserFunction),
+    Index {
+        object: Box<Expression>,
+        index: Box<Expression>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1212,6 +1231,22 @@ impl Parser {
                 continue;
             }
 
+            if self.consume_optional(&TokenKind::LeftBracket) {
+                let index = self.parse_expression()?;
+
+                self.consume(
+                    &TokenKind::RightBracket,
+                    "expected ']' after index expression",
+                )?;
+
+                expression = Expression::Index {
+                    object: Box::new(expression),
+                    index: Box::new(index),
+                };
+
+                continue;
+            }
+
             if self.consume_optional(&TokenKind::LeftParen) {
                 let arguments = self.parse_arguments()?;
 
@@ -1545,6 +1580,10 @@ impl Interpreter {
                         DocumentMethod::GetElementById(document),
                     )),
 
+                    (Value::Document(document), "getElementsByTagName") => Ok(
+                        Value::DocumentMethod(DocumentMethod::GetElementsByTagName(document)),
+                    ),
+
                     (Value::Document(_), "createElement") => {
                         Ok(Value::DocumentMethod(DocumentMethod::CreateElement))
                     }
@@ -1595,6 +1634,13 @@ impl Interpreter {
                 }
             }
 
+            Expression::Index { object, index } => {
+                let object = self.evaluate_expression(object)?;
+                let index = self.evaluate_expression(index)?;
+
+                self.index_value(object, index)
+            }
+
             Expression::Function(function) => Ok(Value::Function(function.clone())),
 
             Expression::Assignment { target, value } => {
@@ -1615,6 +1661,27 @@ impl Interpreter {
 
                 self.evaluate_binary(left, *operator, right)
             }
+        }
+    }
+
+    fn index_value(&self, object: Value, index: Value) -> Result<Value, JsError> {
+        let Some(index) = self.to_number(&index) else {
+            return Err(JsError::runtime(
+                "TypeError: collection index must be numeric",
+            ));
+        };
+
+        if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
+            return Ok(Value::Undefined);
+        }
+
+        match object {
+            Value::Array(values) => Ok(values
+                .get(index as usize)
+                .cloned()
+                .unwrap_or(Value::Undefined)),
+
+            _ => Err(JsError::runtime("TypeError: this value cannot be indexed")),
         }
     }
 
@@ -1882,6 +1949,10 @@ impl Interpreter {
                 self.create_document_element(values)
             }
 
+            Value::DocumentMethod(DocumentMethod::GetElementsByTagName(document)) => {
+                self.get_elements_by_tag_name(document, values)
+            }
+
             Value::ElementMethod(ElementMethod::SetAttribute(node_id)) => {
                 self.set_document_element_attribute(node_id, values)
             }
@@ -2039,6 +2110,28 @@ impl Interpreter {
             .get_element_by_id(&id)
             .map(Value::Element)
             .unwrap_or(Value::Null))
+    }
+
+    fn get_elements_by_tag_name(
+        &mut self,
+        document: DocumentState,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: document.getElementsByTagName expects one argument",
+            ));
+        }
+
+        let tag_name = arguments[0].to_js_string();
+
+        Ok(Value::Array(
+            document
+                .get_elements_by_tag_name(&tag_name)
+                .into_iter()
+                .map(Value::Element)
+                .collect(),
+        ))
     }
 
     fn create_document_element(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
