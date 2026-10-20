@@ -1962,6 +1962,19 @@ impl Interpreter {
         }
     }
 
+    fn set_document_element_id(&mut self, node_id: u64, id: String) -> Result<(), JsError> {
+        if self
+            .current_document_mut()?
+            .set_node_attribute(node_id, "id", id)
+        {
+            Ok(())
+        } else {
+            Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ))
+        }
+    }
+
     fn assign(&mut self, target: &Expression, value: Value) -> Result<(), JsError> {
         match target {
             Expression::Identifier(name) => {
@@ -1989,6 +2002,10 @@ impl Interpreter {
                 match object {
                     Value::Element(node_id) if property == "textContent" => {
                         self.set_document_element_text_content(node_id, value.to_js_string())
+                    }
+
+                    Value::Element(node_id) if property == "id" => {
+                        self.set_document_element_id(node_id, value.to_js_string())
                     }
 
                     Value::Element(_) => Err(JsError::runtime(format!(
