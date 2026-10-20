@@ -2779,6 +2779,15 @@ impl Interpreter {
                                 ElementMethod::QuerySelectorAll(node_id),
                             )),
 
+                            "className" => Ok(Value::String(
+                                element
+                                    .attributes
+                                    .iter()
+                                    .find(|attribute| attribute.name == "class")
+                                    .map(|attribute| attribute.value.clone())
+                                    .unwrap_or_default(),
+                            )),
+
                             property => Err(JsError::runtime(format!(
                                 "Element.{property} is not implemented yet"
                             ))),
@@ -3256,6 +3265,21 @@ impl Interpreter {
 
                     Value::Element(node_id) if property == "id" => {
                         self.set_document_element_id(node_id, value.to_js_string())
+                    }
+
+                    Value::Element(node_id) if property == "className" => {
+                        let class_name = value.to_js_string();
+
+                        if self
+                            .current_document_mut()?
+                            .set_node_attribute(node_id, "class", class_name)
+                        {
+                            Ok(())
+                        } else {
+                            Err(JsError::runtime(
+                                "TypeError: element is no longer available",
+                            ))
+                        }
                     }
 
                     Value::Attribute { node_id, name } if property == "value" => {
@@ -4674,7 +4698,7 @@ let base = "https:\/\/example.test\u002Fdocs";
             "##,
             &mut document,
         )
-        .unwrap();
+            .unwrap();
     }
 
     #[test]
@@ -4751,5 +4775,34 @@ let base = "https:\/\/example.test\u002Fdocs";
             &mut document,
         )
             .unwrap();
+    }
+
+    #[test]
+    fn reflects_class_name_to_the_class_attribute() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const card = document.createElement("article");
+                document.body.appendChild(card);
+
+                assert_equals(card.className, "");
+
+                card.className = "card featured";
+
+                assert_equals(card.className, "card featured");
+                assert_equals(card.getAttribute("class"), "card featured");
+                assert_equals(document.querySelector(".featured"), card);
+
+                card.className = "card";
+
+                assert_equals(card.getAttribute("class"), "card");
+                assert_equals(document.querySelector(".featured"), null);
+                assert_equals(document.querySelector(".card"), card);
+            "#,
+            &mut document,
+        )
+        .unwrap();
     }
 }
