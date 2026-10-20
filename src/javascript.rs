@@ -63,6 +63,7 @@ pub enum TokenKind {
     While,
     For,
     Break,
+    Continue,
     PlusPlus,
     MinusMinus,
 }
@@ -346,6 +347,7 @@ impl<'source> Lexer<'source> {
             "while" => TokenKind::While,
             "for" => TokenKind::For,
             "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
             _ => TokenKind::Identifier(identifier.to_owned()),
         };
 
@@ -1093,19 +1095,21 @@ enum Statement {
         body: Vec<Statement>,
     },
     Break,
+    Continue,
 }
 
 enum Completion {
     Normal(Value),
     Return(Value),
     Break,
+    Continue,
 }
 
 impl Completion {
     fn into_value(self) -> Value {
         match self {
             Self::Normal(value) | Self::Return(value) => value,
-            Self::Break => Value::Undefined,
+            Self::Break | Self::Continue => Value::Undefined,
         }
     }
 }
@@ -1162,7 +1166,10 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
-            Statement::Expression(_) | Statement::Return(_) | Statement::Break => {}
+            Statement::Expression(_)
+            | Statement::Return(_)
+            | Statement::Break
+            | Statement::Continue => {}
         }
     }
 
@@ -1507,6 +1514,11 @@ impl Parser {
         if self.consume_optional(&TokenKind::Break) {
             self.consume_optional(&TokenKind::Semicolon);
             return Ok(Statement::Break);
+        }
+
+        if self.consume_optional(&TokenKind::Continue) {
+            self.consume_optional(&TokenKind::Semicolon);
+            return Ok(Statement::Continue);
         }
 
         if self.consume_optional(&TokenKind::If) {
@@ -2243,6 +2255,7 @@ impl Interpreter {
                         Completion::Break => {
                             return Ok(Completion::Break);
                         }
+                        Completion::Continue => return Ok(Completion::Continue),
                     }
                 }
 
@@ -2262,6 +2275,7 @@ impl Interpreter {
                                 return Ok(Completion::Return(value));
                             }
                             Completion::Break => break,
+                            Completion::Continue => continue,
                         }
                     }
 
@@ -2270,6 +2284,10 @@ impl Interpreter {
 
                 Statement::Break => {
                     return Ok(Completion::Break);
+                }
+
+                Statement::Continue => {
+                    return Ok(Completion::Continue);
                 }
 
                 Statement::For {
@@ -2289,6 +2307,10 @@ impl Interpreter {
                             Completion::Break => {
                                 return Ok(Completion::Break);
                             }
+
+                            Completion::Continue => {
+                                return Ok(Completion::Continue);
+                            }
                         }
                     }
 
@@ -2302,13 +2324,10 @@ impl Interpreter {
                         }
 
                         match self.execute(body)? {
-                            Completion::Normal(_) => {}
-
-                            Completion::Return(value) => {
-                                return Ok(Completion::Return(value));
-                            }
-
+                            Completion::Normal(value) => result = value,
+                            Completion::Return(value) => return Ok(Completion::Return(value)),
                             Completion::Break => break,
+                            Completion::Continue => {}
                         }
 
                         if let Some(update) = update {
@@ -4069,5 +4088,40 @@ let base = "https:\/\/example.test\u002Fdocs";
         .unwrap();
 
         assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn evaluates_continue_in_loops() {
+        evaluate(
+            r#"
+                let sum = 0;
+
+                for (let index = 0; index < 5; index++) {
+                    if (index === 2) {
+                        continue;
+                    }
+
+                    sum = sum + index;
+                }
+
+                assert_equals(sum, 8);
+
+                let current = 0;
+                let count = 0;
+
+                while (current < 5) {
+                    current++;
+
+                    if (current === 3) {
+                        continue;
+                    }
+
+                    count = count + 1;
+                }
+
+                assert_equals(count, 4);
+            "#,
+        )
+        .unwrap();
     }
 }
