@@ -732,4 +732,56 @@ mod tests {
 
         assert_eq!(state.title, "Document.getElementById");
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_after_inner_html_changes() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <title>Document.getElementById</title>
+
+                <body>
+                    <script>
+                        var gBody = document.getElementsByTagName("body")[0];
+
+                        test(function() {
+                            var TEST_ID = "test8";
+                            var test = document.createElement("div");
+
+                            gBody.appendChild(test);
+                            test.innerHTML = '<div id="' + TEST_ID + '"></div>';
+
+                            assert_not_equals(
+                                document.getElementById(TEST_ID),
+                                null
+                            );
+                        }, "addition through innerHTML");
+
+                        test(function() {
+                            var TEST_ID = "test9";
+                            var test = document.createElement("div");
+
+                            test.innerHTML = '<div id="' + TEST_ID + '"></div>';
+                            gBody.appendChild(test);
+
+                            assert_not_equals(
+                                document.getElementById(TEST_ID),
+                                null
+                            );
+
+                            test.innerHTML = "";
+
+                            assert_equals(
+                                document.getElementById(TEST_ID),
+                                null
+                            );
+                        }, "removal through innerHTML");
+                    </script>
+                </body>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }

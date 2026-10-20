@@ -1,4 +1,7 @@
-use crate::freedom_url::Url;
+use crate::{
+    freedom_url::Url,
+    html::{Document as HtmlDocument, Node as HtmlNode},
+};
 use std::{collections::HashMap, error::Error, fmt};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -756,6 +759,66 @@ impl DocumentState {
         true
     }
 
+    fn set_node_inner_html(&mut self, node_id: u64, html: &str) -> bool {
+        let fragment = HtmlDocument::parse(html);
+        let fragment_text = fragment.text_content();
+
+        let (previous_children, connected) = {
+            let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
+                return false;
+            };
+
+            element.text_content = fragment_text;
+            element.text_content_was_set = false;
+
+            (std::mem::take(&mut element.children), element.connected)
+        };
+
+        for child_node_id in previous_children {
+            if let Some(child) = self.elements_by_node_id.get_mut(&child_node_id) {
+                child.parent = None;
+            }
+
+            self.set_subtree_connected(child_node_id, false);
+        }
+
+        for node in &fragment.children {
+            self.import_html_node(node, Some(node_id), connected);
+        }
+
+        true
+    }
+
+    fn import_html_node(&mut self, node: &HtmlNode, parent: Option<u64>, connected: bool) {
+        let HtmlNode::Element(element) = node else {
+            return;
+        };
+
+        let id = element
+            .attributes
+            .iter()
+            .find(|attribute| attribute.name == "id")
+            .map(|attribute| attribute.value.as_str())
+            .unwrap_or("");
+
+        let node_id = self.insert_element(
+            id,
+            &element.name,
+            html_node_text_content(node),
+            parent,
+            connected,
+            false,
+        );
+
+        for attribute in &element.attributes {
+            self.set_node_attribute(node_id, &attribute.name, attribute.value.clone());
+        }
+
+        for child in &element.children {
+            self.import_html_node(child, Some(node_id), connected);
+        }
+    }
+
     pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
         let Some(node_id) = self.get_element_by_id(id) else {
             return false;
@@ -773,6 +836,20 @@ impl DocumentState {
         } else {
             None
         }
+    }
+}
+
+fn html_node_text_content(node: &HtmlNode) -> String {
+    match node {
+        HtmlNode::Text(text) => text.clone(),
+
+        HtmlNode::Element(element) => element
+            .children
+            .iter()
+            .map(html_node_text_content)
+            .collect(),
+
+        HtmlNode::Doctype(_) | HtmlNode::Comment(_) => String::new(),
     }
 }
 
@@ -2092,6 +2169,23 @@ impl Interpreter {
         }
     }
 
+    fn set_document_element_inner_html(
+        &mut self,
+        node_id: u64,
+        html: String,
+    ) -> Result<(), JsError> {
+        if self
+            .current_document_mut()?
+            .set_node_inner_html(node_id, &html)
+        {
+            Ok(())
+        } else {
+            Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ))
+        }
+    }
+
     fn set_document_element_id(&mut self, node_id: u64, id: String) -> Result<(), JsError> {
         if self
             .current_document_mut()?
@@ -2132,6 +2226,10 @@ impl Interpreter {
                 match object {
                     Value::Element(node_id) if property == "textContent" => {
                         self.set_document_element_text_content(node_id, value.to_js_string())
+                    }
+
+                    Value::Element(node_id) if property == "innerHTML" => {
+                        self.set_document_element_inner_html(node_id, value.to_js_string())
                     }
 
                     Value::Element(node_id) if property == "id" => {
@@ -3059,6 +3157,36 @@ let base = "https:\/\/example.test\u002Fdocs";
                 assert_equals(element.getAttribute("id"), "after");
                 assert_equals(document.getElementById("before"), null);
                 assert_equals(document.getElementById("after"), element);
+            "#,
+            &mut document,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn replaces_inner_html_children_and_updates_id_lookup() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const container = document.createElement("div");
+                document.body.appendChild(container);
+
+                container.innerHTML = "<div id='first'><span id='nested'></span></div>";
+
+                assert_not_equals(document.getElementById("first"), null);
+                assert_not_equals(document.getElementById("nested"), null);
+
+                container.innerHTML = "<p id='second'></p>";
+
+                assert_equals(document.getElementById("first"), null);
+                assert_equals(document.getElementById("nested"), null);
+                assert_equals(document.getElementById("second").tagName, "P");
+
+                container.innerHTML = "";
+
+                assert_equals(document.getElementById("second"), null);
             "#,
             &mut document,
         )
