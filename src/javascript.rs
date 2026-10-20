@@ -2439,10 +2439,26 @@ impl Interpreter {
         }
 
         let mut replaced_bindings = Vec::new();
+        let mut local_names = Vec::new();
 
         for (parameter, argument) in function.parameters.iter().zip(arguments) {
             let previous = self.variables.insert(parameter.clone(), argument);
             replaced_bindings.push((parameter.clone(), previous));
+            local_names.push(parameter.clone());
+        }
+
+        for statement in &function.body {
+            let Statement::Declaration { name, .. } = statement else {
+                continue;
+            };
+
+            if local_names.iter().any(|local_name| local_name == name) {
+                continue;
+            }
+
+            let previous = self.variables.insert(name.clone(), Value::Undefined);
+            replaced_bindings.push((name.clone(), previous));
+            local_names.push(name.clone());
         }
 
         let result = self.execute(&function.body);
@@ -3189,6 +3205,23 @@ let base = "https:\/\/example.test\u002Fdocs";
                 assert_equals(document.getElementById("second"), null);
             "#,
             &mut document,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn function_local_declarations_do_not_overwrite_global_bindings() {
+        evaluate(
+            r#"
+                test(function() {
+                    var test = "local value";
+                    assert_equals(test, "local value");
+                });
+
+                test(function() {
+                    assert_true(true);
+                });
+            "#,
         )
         .unwrap();
     }
