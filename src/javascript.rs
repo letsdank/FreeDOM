@@ -54,6 +54,9 @@ pub enum TokenKind {
     Function,
     Instanceof,
     Return,
+
+    If,
+    Else,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -325,6 +328,8 @@ impl<'source> Lexer<'source> {
             "function" => TokenKind::Function,
             "instanceof" => TokenKind::Instanceof,
             "return" => TokenKind::Return,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
             _ => TokenKind::Identifier(identifier.to_owned()),
         };
 
@@ -1050,9 +1055,63 @@ impl Value {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Statement {
-    Declaration { name: String, value: Expression },
+    Declaration {
+        name: String,
+        value: Expression,
+    },
     Expression(Expression),
     Return(Expression),
+    If {
+        condition: Expression,
+        then_body: Vec<Statement>,
+        else_body: Vec<Statement>,
+    },
+}
+
+enum Completion {
+    Normal(Value),
+    Return(Value),
+}
+
+impl Completion {
+    fn into_value(self) -> Value {
+        match self {
+            Self::Normal(value) | Self::Return(value) => value,
+        }
+    }
+}
+
+fn function_local_names(statements: &[Statement]) -> Vec<String> {
+    let mut names = Vec::new();
+
+    for statement in statements {
+        match statement {
+            Statement::Declaration { name, .. } => {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                for name in function_local_names(then_body)
+                    .into_iter()
+                    .chain(function_local_names(else_body))
+                {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
+            Statement::Expression(_) | Statement::Return(_) => {}
+        }
+    }
+
+    names
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1085,6 +1144,7 @@ enum Expression {
         object: Box<Expression>,
         index: Box<Expression>,
     },
+    Not(Box<Expression>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1151,7 +1211,9 @@ impl Error for JsError {}
 
 pub fn evaluate(source: &str) -> Result<Value, JsError> {
     let program = parse_program(source)?;
-    Interpreter::new().execute(&program)
+    Interpreter::new()
+        .execute(&program)
+        .map(Completion::into_value)
 }
 
 pub fn evaluate_with_document(
@@ -1175,7 +1237,7 @@ pub fn evaluate_with_document(
 
     *document = updated_document;
 
-    result
+    result.map(Completion::into_value)
 }
 
 fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
@@ -1376,6 +1438,10 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, JsError> {
+        if self.consume_optional(&TokenKind::If) {
+            return self.parse_if_statement();
+        }
+
         if self.consume_optional(&TokenKind::Return) {
             let value = self.parse_expression()?;
             self.consume_optional(&TokenKind::Semicolon);
@@ -1395,6 +1461,51 @@ impl Parser {
         self.consume_optional(&TokenKind::Semicolon);
 
         Ok(Statement::Expression(expression))
+    }
+
+    fn parse_if_statement(&mut self) -> Result<Statement, JsError> {
+        self.consume(&TokenKind::LeftParen, "expected '(' after if")?;
+
+        let condition = self.parse_expression()?;
+
+        self.consume(&TokenKind::RightParen, "expected ')' after if condition")?;
+
+        let then_body = self.parse_statement_body()?;
+
+        let else_body = if self.consume_optional(&TokenKind::Else) {
+            self.parse_statement_body()?
+        } else {
+            Vec::new()
+        };
+
+        Ok(Statement::If {
+            condition,
+            then_body,
+            else_body,
+        })
+    }
+
+    fn parse_statement_body(&mut self) -> Result<Vec<Statement>, JsError> {
+        if !self.consume_optional(&TokenKind::LeftBrace) {
+            return Ok(vec![self.parse_statement()?]);
+        }
+
+        let mut body = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) {
+            if self.check(&TokenKind::EndOfFile) {
+                return Err(JsError::syntax(
+                    self.peek().offset,
+                    "unterminated statement block",
+                ));
+            }
+
+            body.push(self.parse_statement()?);
+        }
+
+        self.advance();
+
+        Ok(body)
     }
 
     fn parse_declaration(&mut self) -> Result<Statement, JsError> {
@@ -1534,7 +1645,7 @@ impl Parser {
     }
 
     fn parse_factor_expression(&mut self) -> Result<Expression, JsError> {
-        let mut expression = self.parse_postfix_expression()?;
+        let mut expression = self.parse_unary_expression()?;
 
         loop {
             let operator = if self.consume_optional(&TokenKind::Star) {
@@ -1545,7 +1656,7 @@ impl Parser {
                 break;
             };
 
-            let right = self.parse_postfix_expression()?;
+            let right = self.parse_unary_expression()?;
 
             expression = Expression::Binary {
                 left: Box::new(expression),
@@ -1555,6 +1666,14 @@ impl Parser {
         }
 
         Ok(expression)
+    }
+
+    fn parse_unary_expression(&mut self) -> Result<Expression, JsError> {
+        if self.consume_optional(&TokenKind::Not) {
+            return Ok(Expression::Not(Box::new(self.parse_unary_expression()?)));
+        }
+
+        self.parse_postfix_expression()
     }
 
     fn parse_postfix_expression(&mut self) -> Result<Expression, JsError> {
@@ -1866,7 +1985,7 @@ impl Interpreter {
         }
     }
 
-    fn execute(&mut self, program: &[Statement]) -> Result<Value, JsError> {
+    fn execute(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
         let mut result = Value::Undefined;
 
         for statement in program {
@@ -1880,12 +1999,33 @@ impl Interpreter {
                 Statement::Expression(expression) => self.evaluate_expression(expression)?,
 
                 Statement::Return(expression) => {
-                    return self.evaluate_expression(expression);
+                    return Ok(Completion::Return(self.evaluate_expression(expression)?));
+                }
+
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    let condition = self.evaluate_expression(condition)?;
+
+                    let branch = if self.is_truthy(&condition) {
+                        then_body
+                    } else {
+                        else_body
+                    };
+
+                    match self.execute(branch)? {
+                        Completion::Normal(value) => value,
+                        Completion::Return(value) => {
+                            return Ok(Completion::Return(value));
+                        }
+                    }
                 }
             };
         }
 
-        Ok(result)
+        Ok(Completion::Normal(result))
     }
 
     fn evaluate_expression(&mut self, expression: &Expression) -> Result<Value, JsError> {
@@ -2037,6 +2177,11 @@ impl Interpreter {
             }
 
             Expression::Function(function) => Ok(Value::Function(function.clone())),
+
+            Expression::Not(expression) => {
+                let value = self.evaluate_expression(expression)?;
+                Ok(Value::Boolean(!self.is_truthy(&value)))
+            }
 
             Expression::Assignment { target, value } => {
                 let value = self.evaluate_expression(value)?;
@@ -2206,6 +2351,15 @@ impl Interpreter {
         };
 
         Ok((left, right))
+    }
+
+    fn is_truthy(&self, value: &Value) -> bool {
+        match value {
+            Value::Undefined | Value::Null | Value::Boolean(false) => false,
+            Value::Number(value) => *value != 0.0 && !value.is_nan(),
+            Value::String(value) => !value.is_empty(),
+            _ => true,
+        }
     }
 
     fn to_number(&self, value: &Value) -> Option<f64> {
@@ -2617,12 +2771,8 @@ impl Interpreter {
             local_names.push(parameter.clone());
         }
 
-        for statement in &function.body {
-            let Statement::Declaration { name, .. } = statement else {
-                continue;
-            };
-
-            if local_names.iter().any(|local_name| local_name == name) {
+        for name in function_local_names(&function.body) {
+            if local_names.iter().any(|local_name| local_name == &name) {
                 continue;
             }
 
@@ -2645,7 +2795,7 @@ impl Interpreter {
             }
         }
 
-        result
+        result.map(Completion::into_value)
     }
 
     fn get_element_by_id(
@@ -3450,5 +3600,31 @@ let base = "https:\/\/example.test\u002Fdocs";
             &mut document,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn evaluates_conditionals_and_returns_from_nested_branches() {
+        let result = evaluate(
+            r#"
+                const choose = function(value) {
+                    if (!value) {
+                        return "missing";
+                    }
+
+                    if (value > 3) {
+                        return "large";
+                    } else {
+                        return "small";
+                    }
+                };
+
+                assert_equals(choose(0), "missing");
+                assert_equals(choose(4), "large");
+                assert_equals(choose(1), "small");
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
     }
 }
