@@ -930,6 +930,25 @@ impl DocumentState {
         Some(node_id)
     }
 
+    fn previous_element_sibling(&self, node_id: u64) -> Option<u64> {
+        let parent_node_id = self.element(node_id)?.parent?;
+        let siblings = &self.element(parent_node_id)?.children;
+        let index = siblings.iter().position(|child| *child == node_id)?;
+
+        index
+            .checked_sub(1)
+            .and_then(|previous| siblings.get(previous))
+            .copied()
+    }
+
+    fn next_element_sibling(&self, node_id: u64) -> Option<u64> {
+        let parent_node_id = self.element(node_id)?.parent?;
+        let siblings = &self.element(parent_node_id)?.children;
+        let index = siblings.iter().position(|child| *child == node_id)?;
+
+        siblings.get(index + 1).copied()
+    }
+
     pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
         let Some(node_id) = self.get_element_by_id(id) else {
             return false;
@@ -2445,6 +2464,22 @@ impl Interpreter {
                                 .unwrap_or(Value::Null)),
 
                             "children" => Ok(Value::ElementChildren(node_id)),
+
+                            "childElementCount" => Ok(Value::Number(element.children.len() as f64)),
+
+                            "isConnected" => Ok(Value::Boolean(element.connected)),
+
+                            "previousElementSibling" => Ok(self
+                                .current_document()
+                                .and_then(|document| document.previous_element_sibling(node_id))
+                                .map(Value::Element)
+                                .unwrap_or(Value::Null)),
+
+                            "nextElementSibling" => Ok(self
+                                .current_document()
+                                .and_then(|document| document.next_element_sibling(node_id))
+                                .map(Value::Element)
+                                .unwrap_or(Value::Null)),
 
                             "attributes" => Ok(Value::Attributes(node_id)),
 
@@ -4162,9 +4197,9 @@ let base = "https:\/\/example.test\u002Fdocs";
     }
 
     #[test]
-    fn exposes_live_element_children_and_navigation(){
-        let mut document=DocumentState::default();
-        document.register_body("",String::new());
+    fn exposes_live_element_children_and_navigation() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
 
         evaluate_with_document(
             r#"
@@ -4201,6 +4236,57 @@ let base = "https:\/\/example.test\u002Fdocs";
             "#,
             &mut document,
         )
-            .unwrap();
+        .unwrap();
+    }
+
+    #[test]
+    fn exposes_element_siblings_and_connection_state() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const parent = document.createElement("div")
+                const first = document.createElement("span");
+                const middle = document.createElement("em");
+                const last = document.createElement("strong");
+
+                document.body.appendChild(parent);
+
+                const children = parent.children;
+                parent.appendChild(first);
+                parent.appendChild(middle);
+                parent.appendChild(last);
+
+                assert_equals(children.length, 3);
+                assert_equals(parent.childElementCount, 3);
+
+                assert_equals(first.previousElementSibling, null);
+                assert_equals(first.nextElementSibling, middle);
+                assert_equals(middle.previousElementSibling, first);
+                assert_equals(middle.nextElementSibling, last);
+                assert_equals(last.previousElementSibling, middle);
+                assert_equals(last.nextElementSibling, null);
+
+                assert_equals(parent.isConnected, true);
+                assert_equals(middle.isConnected, true);
+
+                parent.removeChild(middle);
+
+                assert_equals(children.length, 2);
+                assert_equals(parent.childElementCount, 2);
+                assert_equals(first.nextElementSibling, last);
+                assert_equals(last.previousElementSibling, first);
+                assert_equals(middle.isConnected, false);
+
+                document.body.removeChild(parent);
+
+                assert_equals(parent.isConnected, false);
+                assert_equals(first.isConnected, false);
+                assert_equals(last.isConnected, false);
+            "#,
+            &mut document,
+        )
+        .unwrap();
     }
 }
