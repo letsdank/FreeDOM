@@ -783,15 +783,101 @@ impl DocumentState {
         }
 
         for node in &fragment.children {
-            self.import_html_node(node, Some(node_id), connected);
+            let _ = self.import_html_node(node, Some(node_id), connected);
         }
 
         true
     }
 
-    fn import_html_node(&mut self, node: &HtmlNode, parent: Option<u64>, connected: bool) {
+    fn set_node_outer_html(&mut self, node_id: u64, html: &str) -> bool {
+        let fragment = HtmlDocument::parse(html);
+
+        let Some(element) = self.elements_by_node_id.get(&node_id) else {
+            return false;
+        };
+
+        let parent = element.parent;
+        let connected = element.connected;
+
+        let index = if let Some(parent_node_id) = parent {
+            let Some(parent_element) = self.elements_by_node_id.get(&parent_node_id) else {
+                return false;
+            };
+
+            let Some(index) = parent_element
+                .children
+                .iter()
+                .position(|child_node_id| *child_node_id == node_id)
+            else {
+                return false;
+            };
+
+            index
+        } else if let Some(index) = self
+            .root_nodes
+            .iter()
+            .position(|root_node_id| *root_node_id == node_id)
+        {
+            index
+        } else {
+            return true;
+        };
+
+        if let Some(parent_node_id) = parent {
+            let parent_element = self
+                .elements_by_node_id
+                .get_mut(&parent_node_id)
+                .expect("parent was checked above");
+
+            parent_element.children.remove(index);
+        } else {
+            self.root_nodes.remove(index);
+        }
+
+        if let Some(element) = self.elements_by_node_id.get_mut(&node_id) {
+            element.parent = None;
+        }
+
+        self.set_subtree_connected(node_id, false);
+
+        let mut inserted = 0;
+
+        for node in &fragment.children {
+            let Some(imported_node_id) = self.import_html_node(node, parent, connected) else {
+                continue;
+            };
+
+            if let Some(parent_node_id) = parent {
+                let parent_element = self
+                    .elements_by_node_id
+                    .get_mut(&parent_node_id)
+                    .expect("parent was checked above");
+
+                parent_element
+                    .children
+                    .retain(|child_node_id| *child_node_id != imported_node_id);
+
+                parent_element
+                    .children
+                    .insert(index + inserted, imported_node_id);
+            } else {
+                self.root_nodes.insert(index + inserted, imported_node_id);
+            }
+
+            inserted += 1;
+        }
+
+        true
+    }
+
+    fn import_html_node(
+        &mut self,
+        node: &HtmlNode,
+        parent: Option<u64>,
+        connected: bool,
+    ) -> Option<u64> {
         let HtmlNode::Element(element) = node else {
-            return;
+            return None;
         };
 
         let id = element
@@ -815,8 +901,10 @@ impl DocumentState {
         }
 
         for child in &element.children {
-            self.import_html_node(child, Some(node_id), connected);
+            let _ = self.import_html_node(child, Some(node_id), connected);
         }
+
+        Some(node_id)
     }
 
     pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
@@ -2194,6 +2282,23 @@ impl Interpreter {
         }
     }
 
+    fn set_document_element_outer_html(
+        &mut self,
+        node_id: u64,
+        html: String,
+    ) -> Result<(), JsError> {
+        if self
+            .current_document_mut()?
+            .set_node_outer_html(node_id, &html)
+        {
+            Ok(())
+        } else {
+            Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ))
+        }
+    }
+
     fn set_document_element_id(&mut self, node_id: u64, id: String) -> Result<(), JsError> {
         if self
             .current_document_mut()?
@@ -2238,6 +2343,10 @@ impl Interpreter {
 
                     Value::Element(node_id) if property == "innerHTML" => {
                         self.set_document_element_inner_html(node_id, value.to_js_string())
+                    }
+
+                    Value::Element(node_id) if property == "outerHTML" => {
+                        self.set_document_element_outer_html(node_id, value.to_js_string())
                     }
 
                     Value::Element(node_id) if property == "id" => {
@@ -3260,6 +3369,32 @@ let base = "https:\/\/example.test\u002Fdocs";
                     assert_true(true);
                 });
             "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn replaces_outer_html_and_disconnects_the_old_subtree() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const original = document.createElement("div");
+                original.id = "old";
+                document.body.appendChild(original);
+
+                original.outerHTML = "<p id='new'></p>";
+
+                assert_equals(document.getElementById("old"), null);
+                assert_equals(document.getElementById("new").tagName, "P");
+
+                const replacement = document.getElementById("new");
+                replacement.outerHTML = "";
+
+                assert_equals(document.getElementById("new"), null);
+            "#,
+            &mut document,
         )
         .unwrap();
     }
