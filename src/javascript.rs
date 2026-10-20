@@ -1000,6 +1000,7 @@ pub enum Value {
     Document(DocumentState),
     Element(u64),
     HtmlCollection(String),
+    ElementChildren(u64),
     Attributes(u64),
     Attribute { node_id: u64, name: String },
     ElementMethod(ElementMethod),
@@ -1030,7 +1031,9 @@ impl Value {
             Self::NativeFunction(_) => "function".to_owned(),
             Self::Document(_) => "[object Document]".to_owned(),
             Self::Element(_) => "[object HTMLElement]".to_owned(),
-            Self::HtmlCollection(_) => "[object HTMLCollection]".to_owned(),
+            Self::HtmlCollection(_) | Self::ElementChildren(_) => {
+                "[object HTMLCollection]".to_owned()
+            }
             Self::Attributes(_) => "[object NamedNodeMap]".to_owned(),
             Self::Attribute { .. } => "[object Attr]".to_owned(),
             Self::DocumentMethod(_) => "function".to_owned(),
@@ -2391,6 +2394,15 @@ impl Interpreter {
                         Ok(Value::DocumentMethod(DocumentMethod::CreateElement))
                     }
 
+                    (Value::ElementChildren(node_id), "length") => {
+                        let length = self
+                            .current_document_element(node_id)
+                            .map(|element| element.children.len())
+                            .unwrap_or(0);
+
+                        Ok(Value::Number(length as f64))
+                    }
+
                     (Value::HtmlCollection(tag_name), "length") => {
                         let length = self
                             .current_document()
@@ -2414,9 +2426,25 @@ impl Interpreter {
 
                             "textContent" => Ok(Value::String(element.text_content.clone())),
 
-                            "parentNode" => {
+                            "parentElement" | "parentNode" => {
                                 Ok(element.parent.map(Value::Element).unwrap_or(Value::Null))
                             }
+
+                            "firstElementChild" => Ok(element
+                                .children
+                                .first()
+                                .copied()
+                                .map(Value::Element)
+                                .unwrap_or(Value::Null)),
+
+                            "lastElementChild" => Ok(element
+                                .children
+                                .last()
+                                .copied()
+                                .map(Value::Element)
+                                .unwrap_or(Value::Null)),
+
+                            "children" => Ok(Value::ElementChildren(node_id)),
 
                             "attributes" => Ok(Value::Attributes(node_id)),
 
@@ -2590,6 +2618,13 @@ impl Interpreter {
                 .map(Value::Element)
                 .unwrap_or(Value::Undefined)),
 
+            Value::ElementChildren(node_id) => Ok(self
+                .current_document_element(node_id)
+                .and_then(|element| element.children.get(index as usize))
+                .copied()
+                .map(Value::Element)
+                .unwrap_or(Value::Undefined)),
+
             _ => Err(JsError::runtime("TypeError: this value cannot be indexed")),
         }
     }
@@ -2739,6 +2774,7 @@ impl Interpreter {
             | Value::Document(_)
             | Value::Element(_)
             | Value::HtmlCollection(_)
+            | Value::ElementChildren(_)
             | Value::Attributes(_)
             | Value::Attribute { .. }
             | Value::DocumentMethod(_)
@@ -4123,5 +4159,48 @@ let base = "https:\/\/example.test\u002Fdocs";
             "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn exposes_live_element_children_and_navigation(){
+        let mut document=DocumentState::default();
+        document.register_body("",String::new());
+
+        evaluate_with_document(
+            r#"
+                const parent = document.createElement("div");
+                const first = document.createElement("span");
+                const second = document.createElement("strong");
+
+                document.body.appendChild(parent);
+
+                assert_equals(parent.children.length, 0);
+                assert_equals(parent.firstElementChild, null);
+
+                parent.appendChild(first);
+                parent.appendChild(second);
+
+                assert_equals(parent.children.length, 2);
+                assert_equals(parent.children[0], first);
+                assert_equals(parent.children[1], second);
+                assert_equals(parent.firstElementChild, first);
+                assert_equals(parent.lastElementChild, second);
+                assert_equals(second.parentElement, parent);
+
+                parent.removeChild(first);
+
+                assert_equals(parent.children.length, 1);
+                assert_equals(parent.firstElementChild, second);
+                assert_equals(first.parentElement, null);
+
+                parent.innerHTML = "<em id='one'></em><b id='two'></b>";
+
+                assert_equals(parent.children.length, 2);
+                assert_equals(parent.children[0].tagName, "EM");
+                assert_equals(parent.lastElementChild.tagName, "B");
+            "#,
+            &mut document,
+        )
+            .unwrap();
     }
 }
