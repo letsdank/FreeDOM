@@ -959,6 +959,22 @@ impl DocumentState {
         None
     }
 
+    fn query_selector_within(&self, node_id: u64, selector: &SimpleSelector) -> Option<u64> {
+        let element = self.element(node_id)?;
+
+        if !element.connected {
+            return None;
+        }
+
+        for child_node_id in &element.children {
+            if let Some(found) = self.find_matching_element(*child_node_id, selector) {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
     fn find_matching_element(&self, node_id: u64, selector: &SimpleSelector) -> Option<u64> {
         let element = self.elements_by_node_id.get(&node_id)?;
 
@@ -1090,6 +1106,7 @@ enum ElementMethod {
     RemoveChild(u64),
     RemoveAttribute(u64),
     InsertBefore(u64),
+    QuerySelector(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2603,6 +2620,10 @@ impl Interpreter {
                                 Ok(Value::ElementMethod(ElementMethod::InsertBefore(node_id)))
                             }
 
+                            "querySelector" => {
+                                Ok(Value::ElementMethod(ElementMethod::QuerySelector(node_id)))
+                            }
+
                             property => Err(JsError::runtime(format!(
                                 "Element.{property} is not implemented yet"
                             ))),
@@ -3171,6 +3192,10 @@ impl Interpreter {
                 self.remove_document_child(parent_node_id, values)
             }
 
+            Value::ElementMethod(ElementMethod::QuerySelector(node_id)) => {
+                self.query_selector_within(node_id, values)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => self.call_function(&function, values),
@@ -3382,6 +3407,26 @@ impl Interpreter {
         Ok(self
             .current_document()
             .and_then(|document| document.query_selector(&selector))
+            .map(Value::Element)
+            .unwrap_or(Value::Null))
+    }
+
+    fn query_selector_within(
+        &mut self,
+        node_id: u64,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: Element.querySelector expects one argument",
+            ));
+        }
+
+        let selector = parse_simple_selector(&arguments[0].to_js_string())?;
+
+        Ok(self
+            .current_document()
+            .and_then(|document| document.query_selector_within(node_id, &selector))
             .map(Value::Element)
             .unwrap_or(Value::Null))
     }
@@ -4422,5 +4467,27 @@ let base = "https:\/\/example.test\u002Fdocs";
             &mut document,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn queries_only_element_descendants() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r##"
+                document.body.innerHTML =
+                    "<main id='root' class='item'><section class='item'><p id='inside'>text</p></section></main>";
+
+                const root = document.querySelector("#root");
+
+                assert_equals(root.querySelector("#root"), null);
+                assert_equals(root.querySelector("#inside").textContent, "text");
+                assert_equals(root.querySelector(".item").tagName, "SECTION");
+                assert_equals(root.querySelector("aside"), null);
+            "##,
+            &mut document,
+        )
+            .unwrap();
     }
 }
