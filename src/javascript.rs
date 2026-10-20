@@ -949,7 +949,7 @@ impl DocumentState {
         siblings.get(index + 1).copied()
     }
 
-    fn query_selector(&self, selector: &SimpleSelector) -> Option<u64> {
+    fn query_selector(&self, selector: &[SimpleSelector]) -> Option<u64> {
         for node_id in &self.root_nodes {
             if let Some(found) = self.find_matching_element(*node_id, selector) {
                 return Some(found);
@@ -959,7 +959,7 @@ impl DocumentState {
         None
     }
 
-    fn query_selector_within(&self, node_id: u64, selector: &SimpleSelector) -> Option<u64> {
+    fn query_selector_within(&self, node_id: u64, selector: &[SimpleSelector]) -> Option<u64> {
         let element = self.element(node_id)?;
 
         if !element.connected {
@@ -975,7 +975,7 @@ impl DocumentState {
         None
     }
 
-    fn query_selector_all(&self, selector: &SimpleSelector) -> Vec<u64> {
+    fn query_selector_all(&self, selector: &[SimpleSelector]) -> Vec<u64> {
         let mut result = Vec::new();
 
         for node_id in &self.root_nodes {
@@ -985,7 +985,7 @@ impl DocumentState {
         result
     }
 
-    fn query_selector_all_within(&self, node_id: u64, selector: &SimpleSelector) -> Vec<u64> {
+    fn query_selector_all_within(&self, node_id: u64, selector: &[SimpleSelector]) -> Vec<u64> {
         let Some(element) = self.element(node_id) else {
             return Vec::new();
         };
@@ -1002,7 +1002,7 @@ impl DocumentState {
     fn collect_matching_elements(
         &self,
         node_id: u64,
-        selector: &SimpleSelector,
+        selectors: &[SimpleSelector],
         result: &mut Vec<u64>,
     ) {
         let Some(element) = self.element(node_id) else {
@@ -1013,33 +1013,74 @@ impl DocumentState {
             return;
         }
 
-        if element_matches_selector(element, selector) {
+        if self.node_matches_selector(node_id, selectors) {
             result.push(node_id);
         }
 
         for child_node_id in &element.children {
-            self.collect_matching_elements(*child_node_id, selector, result);
+            self.collect_matching_elements(*child_node_id, selectors, result);
         }
     }
 
-    fn find_matching_element(&self, node_id: u64, selector: &SimpleSelector) -> Option<u64> {
+    fn find_matching_element(&self, node_id: u64, selectors: &[SimpleSelector]) -> Option<u64> {
         let element = self.elements_by_node_id.get(&node_id)?;
 
         if !element.connected {
             return None;
         }
 
-        if element_matches_selector(element, selector) {
+        if self.node_matches_selector(node_id, selectors) {
             return Some(node_id);
         }
 
         for child_node_id in &element.children {
-            if let Some(found) = self.find_matching_element(*child_node_id, selector) {
+            if let Some(found) = self.find_matching_element(*child_node_id, selectors) {
                 return Some(found);
             }
         }
 
         None
+    }
+
+    fn node_matches_selector(&self, node_id: u64, selectors: &[SimpleSelector]) -> bool {
+        let Some(last_selector) = selectors.last() else {
+            return false;
+        };
+
+        let Some(element) = self.element(node_id) else {
+            return false;
+        };
+
+        if !element.connected || !element_matches_selector(element, last_selector) {
+            return false;
+        }
+
+        let mut ancestor = element.parent;
+
+        for required_selector in selectors[..selectors.len() - 1].iter().rev() {
+            let mut found = false;
+
+            while let Some(ancestor_node_id) = ancestor {
+                let Some(ancestor_element) = self.element(ancestor_node_id) else {
+                    return false;
+                };
+
+                ancestor = ancestor_element.parent;
+
+                if ancestor_element.connected
+                    && element_matches_selector(ancestor_element, required_selector)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                return false;
+            }
+        }
+
+        true
     }
 
     pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
@@ -1062,57 +1103,111 @@ impl DocumentState {
     }
 }
 
-fn parse_simple_selector(input: &str) -> Result<SimpleSelector, JsError> {
-    let input = input.trim();
+fn parse_simple_selector(input: &str) -> Result<Vec<SimpleSelector>, JsError> {
+    let selectors = input
+        .split_ascii_whitespace()
+        .map(parse_compound_selector)
+        .collect::<Result<Vec<_>, _>>()?;
 
-    if input.is_empty() || input.chars().any(char::is_whitespace) {
-        return Err(JsError::runtime(
-            "SyntaxError: only a single simple selector is supported",
-        ));
+    if selectors.is_empty() {
+        return Err(JsError::runtime("SyntaxError: selector must not be empty"));
     }
 
-    if input == "*" {
-        return Ok(SimpleSelector::Universal);
-    }
+    Ok(selectors)
+}
 
-    let (kind, value) = match input.as_bytes().first() {
-        Some(b'#') => ("id", &input[1..]),
-        Some(b'.') => ("class", &input[1..]),
-        _ => ("tag", input),
-    };
+fn parse_compound_selector(input: &str) -> Result<SimpleSelector, JsError> {
+    let bytes = input.as_bytes();
 
-    if value.is_empty()
-        || !value.chars().all(|character| {
-            character.is_ascii_alphanumeric() || character == '-' || character == '_'
-        })
-    {
+    if bytes.is_empty() {
         return Err(JsError::runtime("SyntaxError: unsupported selector"));
     }
 
-    Ok(match kind {
-        "id" => SimpleSelector::Id(value.to_owned()),
-        "class" => SimpleSelector::Class(value.to_owned()),
-        _ => SimpleSelector::Tag(value.to_ascii_lowercase()),
-    })
+    let mut cursor = 0;
+    let mut selector = SimpleSelector {
+        tag_name: None,
+        id: None,
+        classes: Vec::new(),
+    };
+
+    if bytes[cursor] == b'*' {
+        cursor += 1;
+    } else if bytes[cursor] != b'#' && bytes[cursor] != b'.' {
+        let name = take_selector_identifier(input, &mut cursor)?;
+        selector.tag_name = Some(name.to_ascii_lowercase());
+    }
+
+    while cursor < input.len() {
+        let marker = bytes[cursor];
+
+        if marker != b'#' && marker != b'.' {
+            return Err(JsError::runtime("SyntaxError: unsupported selector"));
+        }
+
+        cursor += 1;
+        let name = take_selector_identifier(input, &mut cursor)?;
+
+        match marker {
+            b'#' if selector.id.is_none() => selector.id = Some(name.to_owned()),
+            b'.' => selector.classes.push(name.to_owned()),
+            _ => return Err(JsError::runtime("SyntaxError: unsupported selector")),
+        }
+    }
+
+    if selector.tag_name.is_none() && selector.id.is_none() && selector.classes.is_empty() {
+        return Err(JsError::runtime("SyntaxError: unsupported selector"));
+    }
+
+    Ok(selector)
+}
+
+fn take_selector_identifier<'a>(input: &'a str, cursor: &mut usize) -> Result<&'a str, JsError> {
+    let start = *cursor;
+    let bytes = input.as_bytes();
+
+    while *cursor < input.len() {
+        let byte = bytes[*cursor];
+
+        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+            *cursor += 1;
+        } else {
+            break;
+        }
+    }
+
+    if start == *cursor {
+        return Err(JsError::runtime("SyntaxError: unsupported selector"));
+    }
+
+    Ok(&input[start..*cursor])
 }
 
 fn element_matches_selector(element: &ElementState, selector: &SimpleSelector) -> bool {
-    match selector {
-        SimpleSelector::Universal => true,
-        SimpleSelector::Tag(tag_name) => element.tag_name == *tag_name,
-        SimpleSelector::Id(id) => element.id == *id,
-
-        SimpleSelector::Class(class_name) => element
-            .attributes
-            .iter()
-            .find(|attribute| attribute.name == "class")
-            .is_some_and(|attribute| {
-                attribute
-                    .value
-                    .split_ascii_whitespace()
-                    .any(|class| class == class_name)
-            }),
+    if let Some(tag_name) = &selector.tag_name {
+        if element.tag_name != *tag_name {
+            return false;
+        }
     }
+
+    if let Some(id) = &selector.id {
+        if element.id != *id {
+            return false;
+        }
+    }
+
+    let class_attribute = element
+        .attributes
+        .iter()
+        .find(|attribute| attribute.name == "class");
+
+    selector.classes.iter().all(|required_class| {
+        class_attribute.is_some_and(|attribute| {
+            attribute
+                .value
+                .split_ascii_whitespace()
+                .any(|class| class == required_class)
+        })
+    })
 }
 
 fn html_node_text_content(node: &HtmlNode) -> String {
@@ -1139,11 +1234,10 @@ enum DocumentMethod {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum SimpleSelector {
-    Universal,
-    Tag(String),
-    Id(String),
-    Class(String),
+struct SimpleSelector {
+    tag_name: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4632,6 +4726,27 @@ let base = "https:\/\/example.test\u002Fdocs";
 
                 assert_equals(all_items.length, 2);
                 assert_equals(document.querySelectorAll(".item").length, 3);
+            "##,
+            &mut document,
+        )
+            .unwrap();
+    }
+
+    #[test]
+    fn supports_compound_and_descendant_selectors() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r##"
+                document.body.innerHTML =
+                    "<main id='root'><section id='panel' class='panel featured'><p id='first' class='item featured'>first</p><p id='second' class='item'>second</p></section></main>";
+
+                assert_equals(document.querySelector("section.panel#panel").id, "panel");
+                assert_equals(document.querySelector("#root .item.featured").id, "first");
+                assert_equals(document.querySelector("main section .item").id, "first");
+                assert_equals(document.querySelectorAll("#root .item").length, 2);
+                assert_equals(document.querySelector("main .missing"), null);
             "##,
             &mut document,
         )
