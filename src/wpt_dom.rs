@@ -667,4 +667,69 @@ mod tests {
 
         assert_eq!(state.title, "Document.getElementById");
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_tree_order_after_insert_before() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <script>
+                        var gBody = document.getElementsByTagName("body")[0];
+
+                        test(function() {
+                            var TEST_ID = "test13";
+
+                            var create_same_id_element = function(order) {
+                                var element = document.createElement("div");
+                                element.setAttribute("id", TEST_ID);
+                                element.setAttribute("data-order", order);
+                                return element;
+                            };
+
+                            var container = document.createElement("div");
+                            container.setAttribute("id", TEST_ID + "-fixture");
+                            gBody.appendChild(container);
+
+                            var element1 = create_same_id_element("1");
+                            var element2 = create_same_id_element("2");
+                            var element3 = create_same_id_element("3");
+                            var element4 = create_same_id_element("4");
+
+                            container.appendChild(element2);
+                            container.appendChild(element4);
+                            container.insertBefore(element3, element4);
+                            container.insertBefore(element1, element2);
+
+                            var test = document.getElementById(TEST_ID);
+                            assert_equals(test, element1, "should return 1st element");
+
+                            container.removeChild(element1);
+                            test = document.getElementById(TEST_ID);
+                            assert_equals(test, element2, "should return 2nd element");
+
+                            container.removeChild(element2);
+                            test = document.getElementById(TEST_ID);
+                            assert_equals(test, element3, "should return 3rd element");
+
+                            container.removeChild(element3);
+                            test = document.getElementById(TEST_ID);
+                            assert_equals(test, element4, "should return 4th element");
+
+                            container.removeChild(element4);
+                        }, "where insertion order and tree order don't match");
+                    </script>
+                </body>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }

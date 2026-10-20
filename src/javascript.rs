@@ -50,6 +50,7 @@ pub enum TokenKind {
 
     Function,
     Instanceof,
+    Return,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -320,6 +321,7 @@ impl<'source> Lexer<'source> {
             "null" => TokenKind::Null,
             "function" => TokenKind::Function,
             "instanceof" => TokenKind::Instanceof,
+            "return" => TokenKind::Return,
             _ => TokenKind::Identifier(identifier.to_owned()),
         };
 
@@ -611,6 +613,36 @@ impl DocumentState {
     }
 
     fn append_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
+        self.insert_child(parent_node_id, child_node_id, None)
+    }
+
+    fn insert_before(
+        &mut self,
+        parent_node_id: u64,
+        child_node_id: u64,
+        reference_node_id: u64,
+    ) -> bool {
+        let Some(parent) = self.elements_by_node_id.get(&parent_node_id) else {
+            return false;
+        };
+
+        let Some(index) = parent
+            .children
+            .iter()
+            .position(|node_id| *node_id == reference_node_id)
+        else {
+            return false;
+        };
+
+        self.insert_child(parent_node_id, child_node_id, Some(index))
+    }
+
+    fn insert_child(
+        &mut self,
+        parent_node_id: u64,
+        child_node_id: u64,
+        index: Option<usize>,
+    ) -> bool {
         if parent_node_id == child_node_id {
             return false;
         }
@@ -645,9 +677,10 @@ impl DocumentState {
             return false;
         };
 
-        if !parent.children.contains(&child_node_id) {
-            parent.children.push(child_node_id);
-        }
+        let index = index
+            .unwrap_or(parent.children.len())
+            .min(parent.children.len());
+        parent.children.insert(index, child_node_id);
 
         self.set_subtree_connected(child_node_id, parent_connected);
 
@@ -714,6 +747,7 @@ enum ElementMethod {
     AppendChild(u64),
     RemoveChild(u64),
     RemoveAttribute(u64),
+    InsertBefore(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -804,6 +838,7 @@ impl Value {
 enum Statement {
     Declaration { name: String, value: Expression },
     Expression(Expression),
+    Return(Expression),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1121,6 +1156,13 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, JsError> {
+        if self.consume_optional(&TokenKind::Return) {
+            let value = self.parse_expression()?;
+            self.consume_optional(&TokenKind::Semicolon);
+
+            return Ok(Statement::Return(value));
+        }
+
         if matches!(
             self.peek().kind,
             TokenKind::Let | TokenKind::Const | TokenKind::Var
@@ -1614,6 +1656,10 @@ impl Interpreter {
                 }
 
                 Statement::Expression(expression) => self.evaluate_expression(expression)?,
+
+                Statement::Return(expression) => {
+                    return self.evaluate_expression(expression);
+                }
             };
         }
 
@@ -1704,6 +1750,10 @@ impl Interpreter {
 
                             "removeChild" => {
                                 Ok(Value::ElementMethod(ElementMethod::RemoveChild(node_id)))
+                            }
+
+                            "insertBefore" => {
+                                Ok(Value::ElementMethod(ElementMethod::InsertBefore(node_id)))
                             }
 
                             property => Err(JsError::runtime(format!(
@@ -2078,6 +2128,10 @@ impl Interpreter {
                 self.append_document_child(parent_node_id, values)
             }
 
+            Value::ElementMethod(ElementMethod::InsertBefore(parent_node_id)) => {
+                self.insert_document_child_before(parent_node_id, values)
+            }
+
             Value::ElementMethod(ElementMethod::RemoveChild(parent_node_id)) => {
                 self.remove_document_child(parent_node_id, values)
             }
@@ -2373,6 +2427,42 @@ impl Interpreter {
             Ok(Value::Element(child_node_id))
         } else {
             Err(JsError::runtime("TypeError: cannot append this element"))
+        }
+    }
+
+    fn insert_document_child_before(
+        &mut self,
+        parent_node_id: u64,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 2 {
+            return Err(JsError::runtime(
+                "TypeError: Element.insertBefore expects two arguments",
+            ));
+        }
+
+        let Value::Element(child_node_id) = arguments[0] else {
+            return Err(JsError::runtime(
+                "TypeError: Element.insertBefore expects an Element to insert",
+            ));
+        };
+
+        let Value::Element(reference_node_id) = arguments[1] else {
+            return Err(JsError::runtime(
+                "TypeError: Element.insertBefore expects an Element reference",
+            ));
+        };
+
+        if self.current_document_mut()?.insert_before(
+            parent_node_id,
+            child_node_id,
+            reference_node_id,
+        ) {
+            Ok(Value::Element(child_node_id))
+        } else {
+            Err(JsError::runtime(
+                "TypeError: cannot insert this element before the reference node",
+            ))
         }
     }
 
