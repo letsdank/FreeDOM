@@ -1003,6 +1003,12 @@ struct UserFunction {
     body: Vec<Statement>,
 }
 
+#[derive(Clone, Debug)]
+struct Cleanup {
+    callback: UserFunction,
+    captured: HashMap<String, Value>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum BinaryOperator {
     Add,
@@ -1723,7 +1729,8 @@ impl Parser {
 
 struct Interpreter {
     variables: HashMap<String, Value>,
-    cleanups: Vec<UserFunction>,
+    cleanups: Vec<Cleanup>,
+    function_locals: Vec<Vec<String>>,
 }
 
 impl Interpreter {
@@ -1765,6 +1772,7 @@ impl Interpreter {
         Self {
             variables,
             cleanups: Vec::new(),
+            function_locals: Vec::new(),
         }
     }
 
@@ -2401,7 +2409,17 @@ impl Interpreter {
             ));
         }
 
-        self.cleanups.push(callback);
+        let mut captured = HashMap::new();
+
+        for scope in &self.function_locals {
+            for name in scope {
+                if let Some(value) = self.variables.get(name) {
+                    captured.insert(name.clone(), value.clone());
+                }
+            }
+        }
+
+        self.cleanups.push(Cleanup { callback, captured });
 
         Ok(Value::Undefined)
     }
@@ -2411,8 +2429,24 @@ impl Interpreter {
 
         while self.cleanups.len() > cleanup_start {
             let cleanup = self.cleanups.pop().unwrap();
+            let mut replaced_bindings = Vec::new();
 
-            if let Err(error) = self.call_function(&cleanup, Vec::new()) {
+            for (name, value) in cleanup.captured {
+                let previous = self.variables.insert(name.clone(), value);
+                replaced_bindings.push((name, previous));
+            }
+
+            let result = self.call_function(&cleanup.callback, Vec::new());
+
+            for (name, previous) in replaced_bindings.into_iter().rev() {
+                if let Some(value) = previous {
+                    self.variables.insert(name, value);
+                } else {
+                    self.variables.remove(&name);
+                }
+            }
+
+            if let Err(error) = result {
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
@@ -2461,7 +2495,11 @@ impl Interpreter {
             local_names.push(name.clone());
         }
 
+        self.function_locals.push(local_names);
+
         let result = self.execute(&function.body);
+
+        self.function_locals.pop();
 
         for (name, previous) in replaced_bindings.into_iter().rev() {
             if let Some(value) = previous {
