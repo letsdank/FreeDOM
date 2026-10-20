@@ -406,7 +406,7 @@ struct ElementState {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DocumentState {
     pub title: String,
-    elements_by_id: HashMap<String, Vec<u64>>,
+    root_nodes: Vec<u64>,
     elements_by_node_id: HashMap<u64, ElementState>,
     body: Option<u64>,
     next_node_id: u64,
@@ -420,18 +420,6 @@ impl DocumentState {
         }
     }
 
-    fn add_id_candidate(&mut self, id: &str, node_id: u64) {
-        if id.is_empty() {
-            return;
-        }
-
-        let candidates = self.elements_by_id.entry(id.to_owned()).or_default();
-
-        if !candidates.contains(&node_id) {
-            candidates.push(node_id);
-        }
-    }
-
     fn insert_element(
         &mut self,
         id: &str,
@@ -439,6 +427,7 @@ impl DocumentState {
         text_content: String,
         parent: Option<u64>,
         connected: bool,
+        is_document_node: bool,
     ) -> u64 {
         let node_id = self.next_node_id;
         self.next_node_id += 1;
@@ -472,7 +461,9 @@ impl DocumentState {
             }
         }
 
-        self.add_id_candidate(id, node_id);
+        if is_document_node && parent.is_none() {
+            self.root_nodes.push(node_id);
+        }
 
         node_id
     }
@@ -484,7 +475,7 @@ impl DocumentState {
         text_content: String,
         parent: Option<u64>,
     ) -> u64 {
-        let node_id = self.insert_element(id, tag_name, text_content, parent, true);
+        let node_id = self.insert_element(id, tag_name, text_content, parent, true, true);
 
         if tag_name == "body" && self.body.is_none() {
             self.body = Some(node_id);
@@ -510,7 +501,7 @@ impl DocumentState {
     }
 
     fn create_element(&mut self, tag_name: &str) -> u64 {
-        self.insert_element("", tag_name, String::new(), None, false)
+        self.insert_element("", tag_name, String::new(), None, false, false)
     }
 
     fn body_node(&self) -> Option<u64> {
@@ -522,29 +513,62 @@ impl DocumentState {
             return None;
         }
 
-        self.elements_by_id
-            .get(id)?
-            .iter()
-            .copied()
-            .find(|node_id| {
-                self.elements_by_node_id
-                    .get(node_id)
-                    .is_some_and(|element| element.connected && element.id == id)
-            })
+        for node_id in &self.root_nodes {
+            if let Some(found) = self.find_element_by_id(*node_id, id) {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
+    fn find_element_by_id(&self, node_id: u64, id: &str) -> Option<u64> {
+        let element = self.elements_by_node_id.get(&node_id)?;
+
+        if !element.connected {
+            return None;
+        }
+
+        if element.id == id {
+            return Some(node_id);
+        }
+
+        for child_node_id in &element.children {
+            if let Some(found) = self.find_element_by_id(*child_node_id, id) {
+                return Some(found);
+            }
+        }
+
+        None
     }
 
     fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<u64> {
         let tag_name = tag_name.to_ascii_lowercase();
+        let mut result = Vec::new();
 
-        let mut nodes: Vec<u64> = self
-            .elements_by_node_id
-            .values()
-            .filter(|element| element.connected && element.tag_name == tag_name)
-            .map(|element| element.node_id)
-            .collect();
+        for node_id in &self.root_nodes {
+            self.collect_elements_by_tag_name(*node_id, &tag_name, &mut result);
+        }
 
-        nodes.sort_unstable();
-        nodes
+        result
+    }
+
+    fn collect_elements_by_tag_name(&self, node_id: u64, tag_name: &str, result: &mut Vec<u64>) {
+        let Some(element) = self.elements_by_node_id.get(&node_id) else {
+            return;
+        };
+
+        if !element.connected {
+            return;
+        }
+
+        if element.tag_name == tag_name {
+            result.push(node_id);
+        }
+
+        for child_node_id in &element.children {
+            self.collect_elements_by_tag_name(*child_node_id, tag_name, result);
+        }
     }
 
     fn element(&self, node_id: u64) -> Option<&ElementState> {
@@ -576,21 +600,16 @@ impl DocumentState {
 
     fn set_node_attribute(&mut self, node_id: u64, name: &str, value: String) -> bool {
         let name = name.to_ascii_lowercase();
+        let is_id = name == "id";
 
         let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
             return false;
         };
 
-        let is_id = name == "id";
-
         element.attributes.insert(name, value.clone());
 
         if is_id {
             element.id = value.clone();
-        }
-
-        if is_id {
-            self.add_id_candidate(&value, node_id);
         }
 
         true
@@ -665,6 +684,8 @@ impl DocumentState {
                     .children
                     .retain(|node_id| *node_id != child_node_id);
             }
+        } else {
+            self.root_nodes.retain(|node_id| *node_id != child_node_id);
         }
 
         let Some(child) = self.elements_by_node_id.get_mut(&child_node_id) else {
@@ -2909,6 +2930,32 @@ let base = "https:\/\/example.test\u002Fdocs";
 
                 document.body.removeChild(parent);
                 assert_equals(document.getElementById("nested"), null);
+            "#,
+            &mut document,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolves_duplicate_ids_in_actual_tree_order() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const first_created = document.createElement("div");
+                const second_created = document.createElement("div");
+
+                first_created.id = "duplicate";
+                second_created.id = "duplicate";
+
+                document.body.appendChild(second_created);
+                document.body.appendChild(first_created);
+
+                assert_equals(
+                    document.getElementById("duplicate"),
+                    second_created
+                );
             "#,
             &mut document,
         )
