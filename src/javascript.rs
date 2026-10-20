@@ -574,7 +574,7 @@ impl DocumentState {
             return;
         }
 
-        if element.tag_name == tag_name {
+        if tag_name == "*" || element.tag_name == tag_name {
             result.push(node_id);
         }
 
@@ -945,7 +945,7 @@ fn html_node_text_content(node: &HtmlNode) -> String {
 enum DocumentMethod {
     GetElementById(DocumentState),
     CreateElement,
-    GetElementsByTagName(DocumentState),
+    GetElementsByTagName,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -976,6 +976,7 @@ pub enum Value {
     NativeFunction(NativeFunction),
     Document(DocumentState),
     Element(u64),
+    HtmlCollection(String),
     Attributes(u64),
     Attribute { node_id: u64, name: String },
     ElementMethod(ElementMethod),
@@ -1006,6 +1007,7 @@ impl Value {
             Self::NativeFunction(_) => "function".to_owned(),
             Self::Document(_) => "[object Document]".to_owned(),
             Self::Element(_) => "[object HTMLElement]".to_owned(),
+            Self::HtmlCollection(_) => "[object HTMLCollection]".to_owned(),
             Self::Attributes(_) => "[object NamedNodeMap]".to_owned(),
             Self::Attribute { .. } => "[object Attr]".to_owned(),
             Self::DocumentMethod(_) => "function".to_owned(),
@@ -1926,12 +1928,21 @@ impl Interpreter {
                         DocumentMethod::GetElementById(document),
                     )),
 
-                    (Value::Document(document), "getElementsByTagName") => Ok(
-                        Value::DocumentMethod(DocumentMethod::GetElementsByTagName(document)),
-                    ),
+                    (Value::Document(_), "getElementsByTagName") => {
+                        Ok(Value::DocumentMethod(DocumentMethod::GetElementsByTagName))
+                    }
 
                     (Value::Document(_), "createElement") => {
                         Ok(Value::DocumentMethod(DocumentMethod::CreateElement))
+                    }
+
+                    (Value::HtmlCollection(tag_name), "length") => {
+                        let length = self
+                            .current_document()
+                            .map(|document| document.get_elements_by_tag_name(&tag_name).len())
+                            .unwrap_or(0);
+
+                        Ok(Value::Number(length as f64))
                     }
 
                     (Value::Element(node_id), property) => {
@@ -2074,6 +2085,17 @@ impl Interpreter {
                 })
                 .unwrap_or(Value::Undefined)),
 
+            Value::HtmlCollection(tag_name) => Ok(self
+                .current_document()
+                .and_then(|document| {
+                    document
+                        .get_elements_by_tag_name(&tag_name)
+                        .get(index as usize)
+                        .copied()
+                })
+                .map(Value::Element)
+                .unwrap_or(Value::Undefined)),
+
             _ => Err(JsError::runtime("TypeError: this value cannot be indexed")),
         }
     }
@@ -2209,6 +2231,7 @@ impl Interpreter {
             | Value::NativeFunction(_)
             | Value::Document(_)
             | Value::Element(_)
+            | Value::HtmlCollection(_)
             | Value::Attributes(_)
             | Value::Attribute { .. }
             | Value::DocumentMethod(_)
@@ -2230,12 +2253,16 @@ impl Interpreter {
         Ok(comparison(left, right))
     }
 
-    fn current_document_element(&self, node_id: u64) -> Option<&ElementState> {
+    fn current_document(&self) -> Option<&DocumentState> {
         let Value::Document(document) = self.variables.get("document")? else {
             return None;
         };
 
-        document.element(node_id)
+        Some(document)
+    }
+
+    fn current_document_element(&self, node_id: u64) -> Option<&ElementState> {
+        self.current_document()?.element(node_id)
     }
 
     fn current_document_mut(&mut self) -> Result<&mut DocumentState, JsError> {
@@ -2419,8 +2446,8 @@ impl Interpreter {
                 self.create_document_element(values)
             }
 
-            Value::DocumentMethod(DocumentMethod::GetElementsByTagName(document)) => {
-                self.get_elements_by_tag_name(document, values)
+            Value::DocumentMethod(DocumentMethod::GetElementsByTagName) => {
+                self.get_elements_by_tag_name(values)
             }
 
             Value::ElementMethod(ElementMethod::GetAttribute(node_id)) => {
@@ -2640,26 +2667,14 @@ impl Interpreter {
             .unwrap_or(Value::Null))
     }
 
-    fn get_elements_by_tag_name(
-        &mut self,
-        document: DocumentState,
-        arguments: Vec<Value>,
-    ) -> Result<Value, JsError> {
+    fn get_elements_by_tag_name(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
         if arguments.len() != 1 {
             return Err(JsError::runtime(
                 "TypeError: document.getElementsByTagName expects one argument",
             ));
         }
 
-        let tag_name = arguments[0].to_js_string();
-
-        Ok(Value::Array(
-            document
-                .get_elements_by_tag_name(&tag_name)
-                .into_iter()
-                .map(Value::Element)
-                .collect(),
-        ))
+        Ok(Value::HtmlCollection(arguments[0].to_js_string()))
     }
 
     fn create_document_element(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -3393,6 +3408,44 @@ let base = "https:\/\/example.test\u002Fdocs";
                 replacement.outerHTML = "";
 
                 assert_equals(document.getElementById("new"), null);
+            "#,
+            &mut document,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn exposes_live_document_tag_collections() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const elements = document.getElementsByTagName("div");
+
+                assert_equals(elements.length, 0);
+
+                const first = document.createElement("div");
+                const second = document.createElement("div");
+
+                document.body.appendChild(first);
+
+                assert_equals(elements.length, 1);
+                assert_equals(elements[0], first);
+
+                document.body.insertBefore(second, first);
+
+                assert_equals(elements.length, 2);
+                assert_equals(elements[0], second);
+                assert_equals(elements[1], first);
+
+                document.body.removeChild(first);
+
+                assert_equals(elements.length, 1);
+                assert_equals(elements[0], second);
+
+                const all = document.getElementsByTagName("*");
+                assert_equals(all.length, 2);
             "#,
             &mut document,
         )
