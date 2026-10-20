@@ -60,6 +60,7 @@ pub enum TokenKind {
 
     And,
     Or,
+    While,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -336,6 +337,7 @@ impl<'source> Lexer<'source> {
             "return" => TokenKind::Return,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
+            "while" => TokenKind::While,
             _ => TokenKind::Identifier(identifier.to_owned()),
         };
 
@@ -1072,6 +1074,10 @@ enum Statement {
         then_body: Vec<Statement>,
         else_body: Vec<Statement>,
     },
+    While {
+        condition: Expression,
+        body: Vec<Statement>,
+    },
 }
 
 enum Completion {
@@ -1107,6 +1113,14 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                     .into_iter()
                     .chain(function_local_names(else_body))
                 {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
+            Statement::While { body, .. } => {
+                for name in function_local_names(body) {
                     if !names.contains(&name) {
                         names.push(name);
                     }
@@ -1450,6 +1464,10 @@ impl Parser {
             return self.parse_if_statement();
         }
 
+        if self.consume_optional(&TokenKind::While) {
+            return self.parse_while_statement();
+        }
+
         if self.consume_optional(&TokenKind::Return) {
             let value = self.parse_expression()?;
             self.consume_optional(&TokenKind::Semicolon);
@@ -1469,6 +1487,18 @@ impl Parser {
         self.consume_optional(&TokenKind::Semicolon);
 
         Ok(Statement::Expression(expression))
+    }
+
+    fn parse_while_statement(&mut self) -> Result<Statement, JsError> {
+        self.consume(&TokenKind::LeftParen, "expected '(' after while")?;
+
+        let condition = self.parse_expression()?;
+
+        self.consume(&TokenKind::RightParen, "expected ')' after while condition")?;
+
+        let body = self.parse_statement_body()?;
+
+        Ok(Statement::While { condition, body })
     }
 
     fn parse_if_statement(&mut self) -> Result<Statement, JsError> {
@@ -2061,6 +2091,28 @@ impl Interpreter {
                             return Ok(Completion::Return(value));
                         }
                     }
+                }
+
+                Statement::While { condition, body } => {
+                    let mut last_value = Value::Undefined;
+
+                    loop {
+                        let condition = self.evaluate_expression(condition)?;
+
+                        if !self.is_truthy(&condition) {
+                            break;
+                        }
+
+                        match self.execute(body)? {
+                            Completion::Normal(value) => last_value = value,
+
+                            Completion::Return(value) => {
+                                return Ok(Completion::Return(value));
+                            }
+                        }
+                    }
+
+                    last_value
                 }
             };
         }
@@ -3712,6 +3764,38 @@ let base = "https:\/\/example.test\u002Fdocs";
 
                 assert_equals("left" && "right", "right");
                 assert_equals("" || "fallback", "fallback");
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn evaluates_while_loops_and_returns_from_them() {
+        let result = evaluate(
+            r#"
+                let count = 0;
+
+                while (count < 3) {
+                    count = count + 1;
+                }
+
+                assert_equals(count, 3);
+
+                const find_two = function() {
+                    let value = 0;
+
+                    while (true) {
+                        value = value + 1;
+
+                        if (value === 2) {
+                            return value;
+                        }
+                    }
+                };
+
+                assert_equals(find_two(), 2);
             "#,
         )
         .unwrap();
