@@ -61,6 +61,10 @@ pub enum TokenKind {
     And,
     Or,
     While,
+    For,
+    Break,
+    PlusPlus,
+    MinusMinus,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -130,6 +134,8 @@ impl<'source> Lexer<'source> {
                 ';' => self.push(TokenKind::Semicolon, offset),
                 ':' => self.push(TokenKind::Colon, offset),
                 '?' => self.push(TokenKind::Question, offset),
+                '+' if self.consume_if('+') => self.push(TokenKind::PlusPlus, offset),
+                '-' if self.consume_if('-') => self.push(TokenKind::MinusMinus, offset),
                 '+' => self.push(TokenKind::Plus, offset),
                 '-' => self.push(TokenKind::Minus, offset),
                 '*' => self.push(TokenKind::Star, offset),
@@ -338,6 +344,8 @@ impl<'source> Lexer<'source> {
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "while" => TokenKind::While,
+            "for" => TokenKind::For,
+            "break" => TokenKind::Break,
             _ => TokenKind::Identifier(identifier.to_owned()),
         };
 
@@ -1078,17 +1086,26 @@ enum Statement {
         condition: Expression,
         body: Vec<Statement>,
     },
+    For {
+        initializer: Option<Box<Statement>>,
+        condition: Option<Expression>,
+        update: Option<Expression>,
+        body: Vec<Statement>,
+    },
+    Break,
 }
 
 enum Completion {
     Normal(Value),
     Return(Value),
+    Break,
 }
 
 impl Completion {
     fn into_value(self) -> Value {
         match self {
             Self::Normal(value) | Self::Return(value) => value,
+            Self::Break => Value::Undefined,
         }
     }
 }
@@ -1127,7 +1144,25 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
-            Statement::Expression(_) | Statement::Return(_) => {}
+            Statement::For {
+                initializer, body, ..
+            } => {
+                if let Some(initializer) = initializer {
+                    for name in function_local_names(std::slice::from_ref(initializer.as_ref())) {
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                }
+
+                for name in function_local_names(body) {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
+            Statement::Expression(_) | Statement::Return(_) | Statement::Break => {}
         }
     }
 
@@ -1165,6 +1200,11 @@ enum Expression {
         index: Box<Expression>,
     },
     Not(Box<Expression>),
+    Update {
+        target: Box<Expression>,
+        delta: f64,
+        prefix: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1460,6 +1500,15 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, JsError> {
+        if self.consume_optional(&TokenKind::For) {
+            return self.parse_for_statement();
+        }
+
+        if self.consume_optional(&TokenKind::Break) {
+            self.consume_optional(&TokenKind::Semicolon);
+            return Ok(Statement::Break);
+        }
+
         if self.consume_optional(&TokenKind::If) {
             return self.parse_if_statement();
         }
@@ -1487,6 +1536,71 @@ impl Parser {
         self.consume_optional(&TokenKind::Semicolon);
 
         Ok(Statement::Expression(expression))
+    }
+
+    fn parse_for_statement(&mut self) -> Result<Statement, JsError> {
+        self.consume(&TokenKind::LeftParen, "expected '(' after for")?;
+
+        let initializer = if self.consume_optional(&TokenKind::Semicolon) {
+            None
+        } else if matches!(
+            self.peek().kind,
+            TokenKind::Let | TokenKind::Const | TokenKind::For
+        ) {
+            self.advance();
+            Some(Box::new(self.parse_for_declaration()?))
+        } else {
+            let expression = self.parse_expression()?;
+
+            self.consume(&TokenKind::Semicolon, "expected ';' after for initializer")?;
+
+            Some(Box::new(Statement::Expression(expression)))
+        };
+
+        let condition = if self.consume_optional(&TokenKind::Semicolon) {
+            None
+        } else {
+            let condition = self.parse_expression()?;
+
+            self.consume(&TokenKind::Semicolon, "expected ';' after for condition")?;
+
+            Some(condition)
+        };
+
+        let update = if self.check(&TokenKind::RightParen) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+
+        self.consume(&TokenKind::RightParen, "expected ')' after for clauses")?;
+
+        let body = self.parse_statement_body()?;
+
+        Ok(Statement::For {
+            initializer,
+            condition,
+            update,
+            body,
+        })
+    }
+
+    fn parse_for_declaration(&mut self) -> Result<Statement, JsError> {
+        let (name, offset) = self.consume_identifier("expected a variable name")?;
+
+        let value = if self.consume_optional(&TokenKind::Assign) {
+            self.parse_expression()?
+        } else {
+            Expression::Literal(Value::Undefined)
+        };
+
+        self.consume(&TokenKind::Semicolon, "expected ';' after for declaration")?;
+
+        if name.is_empty() {
+            return Err(JsError::syntax(offset, "variable name cannot be empty"));
+        }
+
+        Ok(Statement::Declaration { name, value })
     }
 
     fn parse_while_statement(&mut self) -> Result<Statement, JsError> {
@@ -1739,6 +1853,22 @@ impl Parser {
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, JsError> {
+        if self.consume_optional(&TokenKind::PlusPlus) {
+            return Ok(Expression::Update {
+                target: Box::new(self.parse_unary_expression()?),
+                delta: 1.0,
+                prefix: true,
+            });
+        }
+
+        if self.consume_optional(&TokenKind::MinusMinus) {
+            return Ok(Expression::Update {
+                target: Box::new(self.parse_unary_expression()?),
+                delta: -1.0,
+                prefix: true,
+            });
+        }
+
         if self.consume_optional(&TokenKind::Not) {
             return Ok(Expression::Not(Box::new(self.parse_unary_expression()?)));
         }
@@ -1784,6 +1914,26 @@ impl Parser {
                 expression = Expression::Call {
                     callee: Box::new(expression),
                     arguments,
+                };
+
+                continue;
+            }
+
+            if self.consume_optional(&TokenKind::PlusPlus) {
+                expression = Expression::Update {
+                    target: Box::new(expression),
+                    delta: 1.0,
+                    prefix: false,
+                };
+
+                continue;
+            }
+
+            if self.consume_optional(&TokenKind::MinusMinus) {
+                expression = Expression::Update {
+                    target: Box::new(expression),
+                    delta: -1.0,
+                    prefix: false,
                 };
 
                 continue;
@@ -2090,6 +2240,9 @@ impl Interpreter {
                         Completion::Return(value) => {
                             return Ok(Completion::Return(value));
                         }
+                        Completion::Break => {
+                            return Ok(Completion::Break);
+                        }
                     }
                 }
 
@@ -2105,14 +2258,65 @@ impl Interpreter {
 
                         match self.execute(body)? {
                             Completion::Normal(value) => last_value = value,
-
                             Completion::Return(value) => {
                                 return Ok(Completion::Return(value));
                             }
+                            Completion::Break => break,
                         }
                     }
 
                     last_value
+                }
+
+                Statement::Break => {
+                    return Ok(Completion::Break);
+                }
+
+                Statement::For {
+                    initializer,
+                    condition,
+                    update,
+                    body,
+                } => {
+                    if let Some(initializer) = initializer {
+                        match self.execute(std::slice::from_ref(initializer.as_ref()))? {
+                            Completion::Normal(_) => {}
+
+                            Completion::Return(value) => {
+                                return Ok(Completion::Return(value));
+                            }
+
+                            Completion::Break => {
+                                return Ok(Completion::Break);
+                            }
+                        }
+                    }
+
+                    loop {
+                        if let Some(condition) = condition {
+                            let value = self.evaluate_expression(condition)?;
+
+                            if !self.is_truthy(&value) {
+                                break;
+                            }
+                        }
+
+                        match self.execute(body)? {
+                            Completion::Normal(_) => {}
+
+                            Completion::Return(value) => {
+                                return Ok(Completion::Return(value));
+                            }
+
+                            Completion::Break => break,
+                        }
+
+                        if let Some(update) = update {
+                            self.evaluate_expression(update)?;
+                        }
+                    }
+
+                    Value::Undefined
                 }
             };
         }
@@ -2321,6 +2525,12 @@ impl Interpreter {
 
                 self.evaluate_binary(left, *operator, right)
             }
+
+            Expression::Update {
+                target,
+                delta,
+                prefix,
+            } => self.evaluate_update(target, *delta, *prefix),
         }
     }
 
@@ -2615,6 +2825,27 @@ impl Interpreter {
                 "TypeError: element is no longer available",
             ))
         }
+    }
+
+    fn evaluate_update(
+        &mut self,
+        target: &Expression,
+        delta: f64,
+        prefix: bool,
+    ) -> Result<Value, JsError> {
+        let previous = self.evaluate_expression(target)?;
+
+        let Some(number) = self.to_number(&previous) else {
+            return Err(JsError::runtime(
+                "TypeError: update operator requires a numeric value",
+            ));
+        };
+
+        let updated = Value::Number(number + delta);
+
+        self.assign(target, updated.clone())?;
+
+        if prefix { Ok(updated) } else { Ok(previous) }
     }
 
     fn assign(&mut self, target: &Expression, value: Value) -> Result<(), JsError> {
@@ -3796,6 +4027,43 @@ let base = "https:\/\/example.test\u002Fdocs";
                 };
 
                 assert_equals(find_two(), 2);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn evaluates_for_loops_updates_and_breaks() {
+        let result = evaluate(
+            r#"
+                const sum_before_four = function() {
+                    let sum = 0;
+
+                    for (let index = 0; index < 10; index++) {
+                        if (index === 4) {
+                            break;
+                        }
+
+                        sum = sum + index;
+                    }
+
+                    return sum;
+                };
+
+                assert_equals(sum_before_four(), 6);
+
+                let value = 0;
+                ++value;
+                value--;
+
+                assert_equals(value, 0);
+
+                let value = 0;
+                assert_equals(++value, 1);
+                assert_equals(value--, 1);
+                assert_equals(value, 0);
             "#,
         )
         .unwrap();
