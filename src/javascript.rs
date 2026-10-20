@@ -57,6 +57,9 @@ pub enum TokenKind {
 
     If,
     Else,
+
+    And,
+    Or,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -154,6 +157,9 @@ impl<'source> Lexer<'source> {
 
                 '>' if self.consume_if('=') => self.push(TokenKind::GreaterEqual, offset),
                 '>' => self.push(TokenKind::Greater, offset),
+
+                '&' if self.consume_if('&') => self.push(TokenKind::And, offset),
+                '|' if self.consume_if('|') => self.push(TokenKind::Or, offset),
 
                 unexpected => {
                     return Err(LexError {
@@ -1174,6 +1180,8 @@ enum BinaryOperator {
     Greater,
     GreaterEqual,
     Instanceof,
+    And,
+    Or,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1548,7 +1556,7 @@ impl Parser {
             }
         }
 
-        let expression = self.parse_equality_expression()?;
+        let expression = self.parse_logical_or_expression()?;
 
         if self.consume_optional(&TokenKind::Assign) {
             let value = self.parse_assignment_expression()?;
@@ -1557,6 +1565,38 @@ impl Parser {
                 target: Box::new(expression),
                 value: Box::new(value),
             });
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_logical_or_expression(&mut self) -> Result<Expression, JsError> {
+        let mut expression = self.parse_logical_and_expression()?;
+
+        while self.consume_optional(&TokenKind::Or) {
+            let right = self.parse_logical_and_expression()?;
+
+            expression = Expression::Binary {
+                left: Box::new(expression),
+                operator: BinaryOperator::Or,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_logical_and_expression(&mut self) -> Result<Expression, JsError> {
+        let mut expression = self.parse_equality_expression()?;
+
+        while self.consume_optional(&TokenKind::And) {
+            let right = self.parse_equality_expression()?;
+
+            expression = Expression::Binary {
+                left: Box::new(expression),
+                operator: BinaryOperator::And,
+                right: Box::new(right),
+            };
         }
 
         Ok(expression)
@@ -2193,6 +2233,34 @@ impl Interpreter {
 
             Expression::Binary {
                 left,
+                operator: BinaryOperator::And,
+                right,
+            } => {
+                let left = self.evaluate_expression(left)?;
+
+                if self.is_truthy(&left) {
+                    self.evaluate_expression(right)
+                } else {
+                    Ok(left)
+                }
+            }
+
+            Expression::Binary {
+                left,
+                operator: BinaryOperator::Or,
+                right,
+            } => {
+                let left = self.evaluate_expression(left)?;
+
+                if self.is_truthy(&left) {
+                    Ok(left)
+                } else {
+                    self.evaluate_expression(right)
+                }
+            }
+
+            Expression::Binary {
+                left,
                 operator,
                 right,
             } => {
@@ -2257,6 +2325,10 @@ impl Interpreter {
 
             BinaryOperator::Equal => Ok(Value::Boolean(self.loosely_equals(&left, &right))),
             BinaryOperator::NotEqual => Ok(Value::Boolean(!self.loosely_equals(&left, &right))),
+
+            BinaryOperator::And | BinaryOperator::Or => {
+                unreachable!("logical operators are evaluated with short-circuiting")
+            }
 
             BinaryOperator::Add => {
                 if matches!(&left, Value::String(_)) || matches!(&right, Value::String(_)) {
@@ -3621,6 +3693,25 @@ let base = "https:\/\/example.test\u002Fdocs";
                 assert_equals(choose(0), "missing");
                 assert_equals(choose(4), "large");
                 assert_equals(choose(1), "small");
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn short_circuits_logical_operations() {
+        let result = evaluate(
+            r#"
+                const skipped_and = false && missing_value;
+                const skipped_or = true || missing_value;
+
+                assert_equals(skipped_and, false);
+                assert_equals(skipped_or, true);
+
+                assert_equals("left" && "right", "right");
+                assert_equals("" || "fallback", "fallback");
             "#,
         )
         .unwrap();
