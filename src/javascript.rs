@@ -391,13 +391,19 @@ pub enum NativeFunction {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct AttributeState {
+    name: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ElementState {
     node_id: u64,
     id: String,
     tag_name: String,
     text_content: String,
     text_content_was_set: bool,
-    attributes: HashMap<String, String>,
+    attributes: Vec<AttributeState>,
     parent: Option<u64>,
     children: Vec<u64>,
     connected: bool,
@@ -434,10 +440,13 @@ impl DocumentState {
 
         let parent = parent.filter(|node_id| self.elements_by_node_id.contains_key(node_id));
 
-        let mut attributes = HashMap::new();
+        let mut attributes = Vec::new();
 
         if !id.is_empty() {
-            attributes.insert("id".to_owned(), id.to_owned());
+            attributes.push(AttributeState {
+                name: "id".to_owned(),
+                value: id.to_owned(),
+            });
         }
 
         self.elements_by_node_id.insert(
@@ -606,7 +615,18 @@ impl DocumentState {
             return false;
         };
 
-        element.attributes.insert(name, value.clone());
+        if let Some(attribute) = element
+            .attributes
+            .iter_mut()
+            .find(|attribute| attribute.name == name)
+        {
+            attribute.value = value.clone();
+        } else {
+            element.attributes.push(AttributeState {
+                name,
+                value: value.clone(),
+            });
+        }
 
         if is_id {
             element.id = value.clone();
@@ -622,7 +642,9 @@ impl DocumentState {
             return false;
         };
 
-        element.attributes.remove(&name);
+        element
+            .attributes
+            .retain(|attribute| attribute.name != name);
 
         if name == "id" {
             element.id.clear();
@@ -789,6 +811,8 @@ pub enum Value {
     NativeFunction(NativeFunction),
     Document(DocumentState),
     Element(u64),
+    Attributes(u64),
+    Attribute { node_id: u64, name: String },
     ElementMethod(ElementMethod),
     DocumentMethod(DocumentMethod),
     Function(UserFunction),
@@ -817,6 +841,8 @@ impl Value {
             Self::NativeFunction(_) => "function".to_owned(),
             Self::Document(_) => "[object Document]".to_owned(),
             Self::Element(_) => "[object HTMLElement]".to_owned(),
+            Self::Attributes(_) => "[object NamedNodeMap]".to_owned(),
+            Self::Attribute { .. } => "[object Attr]".to_owned(),
             Self::DocumentMethod(_) => "function".to_owned(),
             Self::Function(_) => "function".to_owned(),
             Self::TestContext => "[object TestContext]".to_owned(),
@@ -1753,6 +1779,8 @@ impl Interpreter {
                                 Ok(element.parent.map(Value::Element).unwrap_or(Value::Null))
                             }
 
+                            "attributes" => Ok(Value::Attributes(node_id)),
+
                             "getAttribute" => {
                                 Ok(Value::ElementMethod(ElementMethod::GetAttribute(node_id)))
                             }
@@ -1781,6 +1809,26 @@ impl Interpreter {
                                 "Element.{property} is not implemented yet"
                             ))),
                         }
+                    }
+
+                    (Value::Attribute { node_id, name }, "value") => {
+                        let Some(element) = self.current_document_element(node_id) else {
+                            return Err(JsError::runtime(
+                                "TypeError: attribute owner is no longer available",
+                            ));
+                        };
+
+                        let Some(attribute) = element
+                            .attributes
+                            .iter()
+                            .find(|attribute| attribute.name == name)
+                        else {
+                            return Err(JsError::runtime(
+                                "TypeError: attribute is no longer available",
+                            ));
+                        };
+
+                        Ok(Value::String(attribute.value.clone()))
                     }
 
                     (Value::Url(_), property) => Err(JsError::runtime(format!(
@@ -1842,6 +1890,15 @@ impl Interpreter {
             Value::Array(values) => Ok(values
                 .get(index as usize)
                 .cloned()
+                .unwrap_or(Value::Undefined)),
+
+            Value::Attributes(node_id) => Ok(self
+                .current_document_element(node_id)
+                .and_then(|element| element.attributes.get(index as usize))
+                .map(|attribute| Value::Attribute {
+                    node_id,
+                    name: attribute.name.clone(),
+                })
                 .unwrap_or(Value::Undefined)),
 
             _ => Err(JsError::runtime("TypeError: this value cannot be indexed")),
@@ -1979,6 +2036,8 @@ impl Interpreter {
             | Value::NativeFunction(_)
             | Value::Document(_)
             | Value::Element(_)
+            | Value::Attributes(_)
+            | Value::Attribute { .. }
             | Value::DocumentMethod(_)
             | Value::Function(_)
             | Value::ElementConstructor(_)
@@ -2077,6 +2136,22 @@ impl Interpreter {
 
                     Value::Element(node_id) if property == "id" => {
                         self.set_document_element_id(node_id, value.to_js_string())
+                    }
+
+                    Value::Attribute { node_id, name } if property == "value" => {
+                        let serialized_value = value.to_js_string();
+
+                        if self.current_document_mut()?.set_node_attribute(
+                            node_id,
+                            &name,
+                            serialized_value,
+                        ) {
+                            Ok(())
+                        } else {
+                            Err(JsError::runtime(
+                                "TypeError: attribute owner is no longer available",
+                            ))
+                        }
                     }
 
                     Value::Element(_) => Err(JsError::runtime(format!(
@@ -2367,9 +2442,9 @@ impl Interpreter {
 
         Ok(element
             .attributes
-            .get(&name)
-            .cloned()
-            .map(Value::String)
+            .iter()
+            .find(|attribute| attribute.name == name)
+            .map(|attribute| Value::String(attribute.value.clone()))
             .unwrap_or(Value::Null))
     }
 
@@ -2956,6 +3031,34 @@ let base = "https:\/\/example.test\u002Fdocs";
                     document.getElementById("duplicate"),
                     second_created
                 );
+            "#,
+            &mut document,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn exposes_mutable_attributes_in_insertion_order() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const element = document.createElement("div");
+
+                element.setAttribute("id", "before");
+                element.setAttribute("data-kind", "example");
+                document.body.appendChild(element);
+
+                assert_equals(element.attributes[0].value, "before");
+                assert_equals(element.attributes[1].value, "example");
+
+                element.attributes[0].value = "after";
+
+                assert_equals(element.id, "after");
+                assert_equals(element.getAttribute("id"), "after");
+                assert_equals(document.getElementById("before"), null);
+                assert_equals(document.getElementById("after"), element);
             "#,
             &mut document,
         )
