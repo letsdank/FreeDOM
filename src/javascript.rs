@@ -975,6 +975,53 @@ impl DocumentState {
         None
     }
 
+    fn query_selector_all(&self, selector: &SimpleSelector) -> Vec<u64> {
+        let mut result = Vec::new();
+
+        for node_id in &self.root_nodes {
+            self.collect_matching_elements(*node_id, selector, &mut result);
+        }
+
+        result
+    }
+
+    fn query_selector_all_within(&self, node_id: u64, selector: &SimpleSelector) -> Vec<u64> {
+        let Some(element) = self.element(node_id) else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+
+        for child_node_id in &element.children {
+            self.collect_matching_elements(*child_node_id, selector, &mut result);
+        }
+
+        result
+    }
+
+    fn collect_matching_elements(
+        &self,
+        node_id: u64,
+        selector: &SimpleSelector,
+        result: &mut Vec<u64>,
+    ) {
+        let Some(element) = self.element(node_id) else {
+            return;
+        };
+
+        if !element.connected {
+            return;
+        }
+
+        if element_matches_selector(element, selector) {
+            result.push(node_id);
+        }
+
+        for child_node_id in &element.children {
+            self.collect_matching_elements(*child_node_id, selector, result);
+        }
+    }
+
     fn find_matching_element(&self, node_id: u64, selector: &SimpleSelector) -> Option<u64> {
         let element = self.elements_by_node_id.get(&node_id)?;
 
@@ -1088,6 +1135,7 @@ enum DocumentMethod {
     CreateElement,
     GetElementsByTagName,
     QuerySelector,
+    QuerySelectorAll,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1107,6 +1155,7 @@ enum ElementMethod {
     RemoveAttribute(u64),
     InsertBefore(u64),
     QuerySelector(u64),
+    QuerySelectorAll(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1137,6 +1186,7 @@ pub enum Value {
     TestContext,
     ElementConstructor(String),
     TestContextMethod(TestContextMethod),
+    NodeList(Vec<u64>),
 }
 
 impl Value {
@@ -1170,6 +1220,7 @@ impl Value {
             Self::ElementConstructor(_) => "function".to_owned(),
             Self::TestContextMethod(_) => "function".to_owned(),
             Self::ElementMethod(_) => "function".to_owned(),
+            Self::NodeList(_) => "[object NodeList]".to_owned(),
         }
     }
 
@@ -2526,6 +2577,12 @@ impl Interpreter {
                         Ok(Value::DocumentMethod(DocumentMethod::QuerySelector))
                     }
 
+                    (Value::Document(_), "querySelectorAll") => {
+                        Ok(Value::DocumentMethod(DocumentMethod::QuerySelectorAll))
+                    }
+
+                    (Value::NodeList(nodes), "length") => Ok(Value::Number(nodes.len() as f64)),
+
                     (Value::ElementChildren(node_id), "length") => {
                         let length = self
                             .current_document_element(node_id)
@@ -2623,6 +2680,10 @@ impl Interpreter {
                             "querySelector" => {
                                 Ok(Value::ElementMethod(ElementMethod::QuerySelector(node_id)))
                             }
+
+                            "querySelectorAll" => Ok(Value::ElementMethod(
+                                ElementMethod::QuerySelectorAll(node_id),
+                            )),
 
                             property => Err(JsError::runtime(format!(
                                 "Element.{property} is not implemented yet"
@@ -2773,6 +2834,12 @@ impl Interpreter {
             Value::ElementChildren(node_id) => Ok(self
                 .current_document_element(node_id)
                 .and_then(|element| element.children.get(index as usize))
+                .copied()
+                .map(Value::Element)
+                .unwrap_or(Value::Undefined)),
+
+            Value::NodeList(nodes) => Ok(nodes
+                .get(index as usize)
                 .copied()
                 .map(Value::Element)
                 .unwrap_or(Value::Undefined)),
@@ -2934,6 +3001,7 @@ impl Interpreter {
             | Value::ElementConstructor(_)
             | Value::TestContextMethod(_)
             | Value::ElementMethod(_)
+            | Value::NodeList(_)
             | Value::TestContext => None,
         }
     }
@@ -3168,6 +3236,10 @@ impl Interpreter {
 
             Value::DocumentMethod(DocumentMethod::QuerySelector) => self.query_selector(values),
 
+            Value::DocumentMethod(DocumentMethod::QuerySelectorAll) => {
+                self.query_selector_all(values)
+            }
+
             Value::ElementMethod(ElementMethod::GetAttribute(node_id)) => {
                 self.get_document_element_attribute(node_id, values)
             }
@@ -3194,6 +3266,10 @@ impl Interpreter {
 
             Value::ElementMethod(ElementMethod::QuerySelector(node_id)) => {
                 self.query_selector_within(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::QuerySelectorAll(node_id)) => {
+                self.query_selector_all_within(node_id, values)
             }
 
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
@@ -3429,6 +3505,44 @@ impl Interpreter {
             .and_then(|document| document.query_selector_within(node_id, &selector))
             .map(Value::Element)
             .unwrap_or(Value::Null))
+    }
+
+    fn query_selector_all(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: document.querySelectorAll expects one argument",
+            ));
+        }
+
+        let selector = parse_simple_selector(&arguments[0].to_js_string())?;
+
+        let nodes = self
+            .current_document()
+            .map(|document| document.query_selector_all(&selector))
+            .unwrap_or_default();
+
+        Ok(Value::NodeList(nodes))
+    }
+
+    fn query_selector_all_within(
+        &mut self,
+        node_id: u64,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: Element.querySelectorAll expects one argument",
+            ));
+        }
+
+        let selector = parse_simple_selector(&arguments[0].to_js_string())?;
+
+        let nodes = self
+            .current_document()
+            .map(|document| document.query_selector_all_within(node_id, &selector))
+            .unwrap_or_default();
+
+        Ok(Value::NodeList(nodes))
     }
 
     fn create_document_element(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -4485,6 +4599,39 @@ let base = "https:\/\/example.test\u002Fdocs";
                 assert_equals(root.querySelector("#inside").textContent, "text");
                 assert_equals(root.querySelector(".item").tagName, "SECTION");
                 assert_equals(root.querySelector("aside"), null);
+            "##,
+            &mut document,
+        )
+            .unwrap();
+    }
+
+    #[test]
+    fn queries_static_node_lists_in_document_and_element_scopes() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r##"
+                document.body.innerHTML =
+                    "<section id='catalog'><p id='first' class='item'>one</p><p id='second' class='item'>two</p></section>";
+
+                const all_items = document.querySelectorAll(".item");
+                const catalog = document.querySelector("#catalog");
+                const scoped_items = catalog.querySelectorAll(".item");
+
+                assert_equals(all_items.length, 2);
+                assert_equals(all_items[0].id, "first");
+                assert_equals(all_items[1].id, "second");
+
+                assert_equals(scoped_items.length, 2);
+                assert_equals(scoped_items[0], all_items[0]);
+
+                const extra = document.createElement("p");
+                extra.setAttribute("class", "item");
+                catalog.appendChild(extra);
+
+                assert_equals(all_items.length, 2);
+                assert_equals(document.querySelectorAll(".item").length, 3);
             "##,
             &mut document,
         )
