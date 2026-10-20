@@ -606,4 +606,65 @@ mod tests {
 
         assert_eq!(state.title, "Document.getElementById");
     }
+
+    #[test]
+    fn official_wpt_document_get_element_by_id_nested_connectivity() {
+        let state = run_document_test(
+            r#"
+                <!DOCTYPE html>
+                <meta charset=utf-8>
+                <title>Document.getElementById</title>
+
+                <script src="/resources/testharness.js"></script>
+                <script src="/resources/testharnessreport.js"></script>
+
+                <body>
+                    <div id="outer">
+                        <div id="middle">
+                            <div id="inner"></div>
+                        </div>
+                    </div>
+
+                    <script>
+                        var gBody = document.getElementsByTagName("body")[0];
+
+                        test(function() {
+                            var TEST_ID = "test14";
+                            var a = document.createElement("a");
+                            var b = document.createElement("b");
+
+                            a.appendChild(b);
+                            b.id = TEST_ID;
+
+                            assert_equals(document.getElementById(TEST_ID), null);
+
+                            gBody.appendChild(a);
+
+                            assert_equals(document.getElementById(TEST_ID), b);
+                        }, "Inserting an id by inserting its parent node");
+
+                        test(function() {
+                            var outer = document.getElementById("outer");
+                            var middle = document.getElementById("middle");
+                            var inner = document.getElementById("inner");
+
+                            outer.removeChild(middle);
+
+                            var new_el = document.createElement("h1");
+                            new_el.id = "heading";
+                            inner.appendChild(new_el);
+
+                            assert_equals(
+                                document.getElementById("heading"),
+                                null
+                            );
+                        }, "Document.getElementById must not return nodes not present in document");
+                    </script>
+                </body>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "Document.getElementById");
+    }
 }
