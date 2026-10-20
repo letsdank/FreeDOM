@@ -949,6 +949,36 @@ impl DocumentState {
         siblings.get(index + 1).copied()
     }
 
+    fn query_selector(&self, selector: &SimpleSelector) -> Option<u64> {
+        for node_id in &self.root_nodes {
+            if let Some(found) = self.find_matching_element(*node_id, selector) {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
+    fn find_matching_element(&self, node_id: u64, selector: &SimpleSelector) -> Option<u64> {
+        let element = self.elements_by_node_id.get(&node_id)?;
+
+        if !element.connected {
+            return None;
+        }
+
+        if element_matches_selector(element, selector) {
+            return Some(node_id);
+        }
+
+        for child_node_id in &element.children {
+            if let Some(found) = self.find_matching_element(*child_node_id, selector) {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
     pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
         let Some(node_id) = self.get_element_by_id(id) else {
             return false;
@@ -966,6 +996,59 @@ impl DocumentState {
         } else {
             None
         }
+    }
+}
+
+fn parse_simple_selector(input: &str) -> Result<SimpleSelector, JsError> {
+    let input = input.trim();
+
+    if input.is_empty() || input.chars().any(char::is_whitespace) {
+        return Err(JsError::runtime(
+            "SyntaxError: only a single simple selector is supported",
+        ));
+    }
+
+    if input == "*" {
+        return Ok(SimpleSelector::Universal);
+    }
+
+    let (kind, value) = match input.as_bytes().first() {
+        Some(b'#') => ("id", &input[1..]),
+        Some(b'.') => ("class", &input[1..]),
+        _ => ("tag", input),
+    };
+
+    if value.is_empty()
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        return Err(JsError::runtime("SyntaxError: unsupported selector"));
+    }
+
+    Ok(match kind {
+        "id" => SimpleSelector::Id(value.to_owned()),
+        "class" => SimpleSelector::Class(value.to_owned()),
+        _ => SimpleSelector::Tag(value.to_ascii_lowercase()),
+    })
+}
+
+fn element_matches_selector(element: &ElementState, selector: &SimpleSelector) -> bool {
+    match selector {
+        SimpleSelector::Universal => true,
+        SimpleSelector::Tag(tag_name) => element.tag_name == *tag_name,
+        SimpleSelector::Id(id) => element.id == *id,
+
+        SimpleSelector::Class(class_name) => element
+            .attributes
+            .iter()
+            .find(|attribute| attribute.name == "class")
+            .is_some_and(|attribute| {
+                attribute
+                    .value
+                    .split_ascii_whitespace()
+                    .any(|class| class == class_name)
+            }),
     }
 }
 
@@ -988,6 +1071,15 @@ enum DocumentMethod {
     GetElementById(DocumentState),
     CreateElement,
     GetElementsByTagName,
+    QuerySelector,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SimpleSelector {
+    Universal,
+    Tag(String),
+    Id(String),
+    Class(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2413,6 +2505,10 @@ impl Interpreter {
                         Ok(Value::DocumentMethod(DocumentMethod::CreateElement))
                     }
 
+                    (Value::Document(_), "querySelector") => {
+                        Ok(Value::DocumentMethod(DocumentMethod::QuerySelector))
+                    }
+
                     (Value::ElementChildren(node_id), "length") => {
                         let length = self
                             .current_document_element(node_id)
@@ -3049,6 +3145,8 @@ impl Interpreter {
                 self.get_elements_by_tag_name(values)
             }
 
+            Value::DocumentMethod(DocumentMethod::QuerySelector) => self.query_selector(values),
+
             Value::ElementMethod(ElementMethod::GetAttribute(node_id)) => {
                 self.get_document_element_attribute(node_id, values)
             }
@@ -3270,6 +3368,22 @@ impl Interpreter {
         }
 
         Ok(Value::HtmlCollection(arguments[0].to_js_string()))
+    }
+
+    fn query_selector(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: document.querySelector expects one argument",
+            ));
+        }
+
+        let selector = parse_simple_selector(&arguments[0].to_js_string())?;
+
+        Ok(self
+            .current_document()
+            .and_then(|document| document.query_selector(&selector))
+            .map(Value::Element)
+            .unwrap_or(Value::Null))
     }
 
     fn create_document_element(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -4285,6 +4399,26 @@ let base = "https:\/\/example.test\u002Fdocs";
                 assert_equals(first.isConnected, false);
                 assert_equals(last.isConnected, false);
             "#,
+            &mut document,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn queries_elements_by_tag_id_and_class() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r##"
+                document.body.innerHTML =
+                    "<section id='catalog' class='panel'><p class='item'>first</p><p id='featured' class='item'>second</p></section>";
+
+                assert_equals(document.querySelector("section").id, "catalog");
+                assert_equals(document.querySelector("#featured").textContent, "second");
+                assert_equals(document.querySelector(".item").textContent, "first");
+                assert_equals(document.querySelector("aside"), null);
+            "##,
             &mut document,
         )
         .unwrap();
