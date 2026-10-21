@@ -43,7 +43,7 @@ impl<'a> TransformParser<'a> {
             let name = self.parse_name()?;
 
             self.skip_separators();
-            self.expect_byte(b'(');
+            self.expect_byte(b'(')?;
 
             let operation = match name {
                 "matrix" => self.parse_matrix()?,
