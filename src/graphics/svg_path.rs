@@ -90,6 +90,9 @@ impl<'a> PathDataParser<'a> {
                 'T' => self.parse_smooth_quadratic_to(&mut path, false)?,
                 't' => self.parse_smooth_quadratic_to(&mut path, true)?,
 
+                'A' => self.parse_arc_to(&mut path, false)?,
+                'a' => self.parse_arc_to(&mut path, true)?,
+
                 'Z' | 'z' => {
                     if !self.has_subpath {
                         return Err(self.error("close-path appears before move-to"));
@@ -280,6 +283,55 @@ impl<'a> PathDataParser<'a> {
         Ok(())
     }
 
+    fn parse_arc_to(&mut self, path: &mut Path, relative: bool) -> Result<(), SvgPathError> {
+        self.last_cubic_control = None;
+        self.last_quadratic_control = None;
+
+        loop {
+            let radius_x = self.parse_number()?.abs();
+            let radius_y = self.parse_number()?.abs();
+            let rotation = self.parse_number()?.to_radians();
+            let large_arc = self.parse_arc_flag()?;
+            let sweep = self.parse_arc_flag()?;
+            let to = self.parse_point(relative)?;
+
+            append_elliptical_arc(
+                path,
+                self.current,
+                to,
+                radius_x,
+                radius_y,
+                rotation,
+                large_arc,
+                sweep,
+            );
+
+            self.current = to;
+
+            if !self.has_number() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_arc_flag(&mut self) -> Result<bool, SvgPathError> {
+        self.skip_separators();
+
+        match self.peek_byte() {
+            Some(b'0') => {
+                self.cursor += 1;
+                Ok(false)
+            }
+            Some(b'1') => {
+                self.cursor += 1;
+                Ok(true)
+            }
+            _ => Err(self.error("expected arc flag 0 or 1")),
+        }
+    }
+
     fn parse_point(&mut self, relative: bool) -> Result<Point, SvgPathError> {
         let x = self.parse_number()?;
         let y = self.parse_number()?;
@@ -403,6 +455,210 @@ impl<'a> PathDataParser<'a> {
             message: message.to_owned(),
         }
     }
+}
+
+fn append_elliptical_arc(
+    path: &mut Path,
+    from: Point,
+    to: Point,
+    mut radius_x: f32,
+    mut radius_y: f32,
+    rotation: f32,
+    large_arc: bool,
+    sweep: bool,
+) {
+    if from == to {
+        return;
+    }
+
+    if radius_x == 0.0 || radius_y == 0.0 {
+        path.line_to(to);
+        return;
+    }
+
+    let (sin_rotation, cos_rotation) = rotation.sin_cos();
+    let half_delta_x = (from.x - to.x) * 0.5;
+    let half_delta_y = (from.y - to.y) * 0.5;
+
+    let x_prime = cos_rotation * half_delta_x + sin_rotation * half_delta_y;
+    let y_prime = -sin_rotation * half_delta_x + cos_rotation * half_delta_y;
+
+    let mut radius_x_squared = radius_x * radius_x;
+    let mut radius_y_squared = radius_y * radius_y;
+
+    let radius_scale = x_prime * x_prime / radius_x_squared + y_prime * y_prime / radius_y_squared;
+
+    if !radius_scale.is_finite() {
+        path.line_to(to);
+        return;
+    }
+
+    if radius_scale > 1.0 {
+        let scale = radius_scale.sqrt();
+        radius_x *= scale;
+        radius_y *= scale;
+        radius_x_squared = radius_x * radius_x;
+        radius_y_squared = radius_y * radius_y;
+    }
+
+    let numerator = radius_x_squared * radius_y_squared
+        - radius_x_squared * y_prime * y_prime
+        - radius_y_squared * x_prime * x_prime;
+
+    let denominator = radius_x_squared * y_prime * y_prime + radius_y_squared * x_prime * x_prime;
+
+    let center_factor = if denominator <= f32::EPSILON {
+        0.0
+    } else {
+        (numerator.max(0.0) / denominator).sqrt()
+    };
+
+    let center_factor = if large_arc == sweep {
+        -center_factor
+    } else {
+        center_factor
+    };
+
+    let center_x_prime = center_factor * radius_x * y_prime / radius_y;
+    let center_y_prime = -center_factor * radius_y * x_prime / radius_x;
+
+    let center = Point::new(
+        cos_rotation * center_x_prime - sin_rotation * center_y_prime + (from.x + to.x) * 0.5,
+        sin_rotation * center_x_prime + cos_rotation * center_y_prime + (from.y + to.y) * 0.5,
+    );
+
+    if !point_is_finite(center) {
+        path.line_to(to);
+        return;
+    }
+
+    let start_x = (x_prime - center_x_prime) / radius_x;
+    let start_y = (y_prime - center_y_prime) / radius_y;
+    let end_x = (-x_prime - center_x_prime) / radius_x;
+    let end_y = (-y_prime - center_y_prime) / radius_y;
+
+    let start_angle = start_y.atan2(start_x);
+    let mut sweep_angle = signed_angle(start_x, start_y, end_x, end_y);
+
+    if !sweep && sweep_angle > 0.0 {
+        sweep_angle -= std::f32::consts::TAU;
+    } else if sweep && sweep_angle < 0.0 {
+        sweep_angle += std::f32::consts::TAU;
+    }
+
+    if sweep_angle.abs() <= f32::EPSILON {
+        path.line_to(to);
+        return;
+    }
+
+    let segment_count = (sweep_angle.abs() / std::f32::consts::FRAC_PI_2)
+        .ceil()
+        .max(1.0) as u32;
+
+    let segment_angle = sweep_angle / segment_count as f32;
+
+    for index in 0..segment_count {
+        let segment_start_angle = start_angle + segment_angle * index as f32;
+        let segment_end_angle = segment_start_angle + segment_angle;
+
+        let segment_from = if index == 0 {
+            from
+        } else {
+            ellipse_point(
+                center,
+                radius_x,
+                radius_y,
+                cos_rotation,
+                sin_rotation,
+                segment_start_angle,
+            )
+        };
+
+        let segment_to = if index + 1 == segment_count {
+            to
+        } else {
+            ellipse_point(
+                center,
+                radius_x,
+                radius_y,
+                cos_rotation,
+                sin_rotation,
+                segment_end_angle,
+            )
+        };
+
+        let handle_scale = 4.0 / 3.0 * (segment_angle * 0.25).tan();
+        let start_derivative = ellipse_derivative(
+            radius_x,
+            radius_y,
+            cos_rotation,
+            sin_rotation,
+            segment_start_angle,
+        );
+        let end_derivative = ellipse_derivative(
+            radius_x,
+            radius_y,
+            cos_rotation,
+            sin_rotation,
+            segment_end_angle,
+        );
+
+        let control_one = Point::new(
+            segment_from.x + start_derivative.x * handle_scale,
+            segment_from.y + start_derivative.y * handle_scale,
+        );
+
+        let control_two = Point::new(
+            segment_to.x - end_derivative.x * handle_scale,
+            segment_to.y - end_derivative.y * handle_scale,
+        );
+
+        if !point_is_finite(control_one) || !point_is_finite(control_two) {
+            path.line_to(to);
+            return;
+        }
+
+        path.cubic_to(control_one, control_two, segment_to);
+    }
+}
+
+fn ellipse_point(
+    center: Point,
+    radius_x: f32,
+    radius_y: f32,
+    cos_rotation: f32,
+    sin_rotation: f32,
+    angle: f32,
+) -> Point {
+    let (sin_angle, cos_angle) = angle.sin_cos();
+
+    Point::new(
+        center.x + radius_x * cos_rotation * cos_angle - radius_y * sin_rotation * sin_angle,
+        center.y + radius_x * sin_rotation * cos_angle + radius_y * cos_rotation * sin_angle,
+    )
+}
+
+fn ellipse_derivative(
+    radius_x: f32,
+    radius_y: f32,
+    cos_rotation: f32,
+    sin_rotation: f32,
+    angle: f32,
+) -> Point {
+    let (sin_angle, cos_angle) = angle.sin_cos();
+
+    Point::new(
+        -radius_x * cos_rotation * sin_angle - radius_y * sin_rotation * cos_angle,
+        -radius_x * sin_rotation * sin_angle + radius_y * cos_rotation * cos_angle,
+    )
+}
+
+fn signed_angle(from_x: f32, from_y: f32, to_x: f32, to_y: f32) -> f32 {
+    (from_x * to_y - from_y * to_x).atan2(from_x * to_x + from_y * to_y)
+}
+
+fn point_is_finite(point: Point) -> bool {
+    point.x.is_finite() && point.y.is_finite()
 }
 
 #[cfg(test)]
@@ -536,6 +792,41 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn converts_elliptical_arcs_to_cubic_curves() {
+        let path = parse_path_data("M 10 10 A 10 10 0 0 1 30 10").unwrap();
+
+        assert_eq!(path.commands().len(), 3);
+        assert!(matches!(path.commands()[1], PathCommand::CubicTo { .. }));
+        assert!(matches!(path.commands()[2], PathCommand::CubicTo { .. }));
+
+        let PathCommand::CubicTo { to, .. } = path.commands()[2] else {
+            panic!("the final arc segment must be cubic");
+        };
+
+        assert_eq!(to, Point::new(30.0, 10.0));
+    }
+
+    #[test]
+    fn turns_zero_radius_arc_into_a_line() {
+        let path = parse_path_data("M 1 2 A 0 5 0 0 1 8 9").unwrap();
+
+        assert_eq!(
+            path.commands(),
+            &[
+                PathCommand::MoveTo(Point::new(1.0, 2.0)),
+                PathCommand::LineTo(Point::new(8.0, 9.0))
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_arc_flags() {
+        let error = parse_path_data("M 0 0 A 5 5 0 2 0 10 10").unwrap_err();
+
+        assert_eq!(error.message, "expected arc flag 0 or 1");
     }
 }
 
