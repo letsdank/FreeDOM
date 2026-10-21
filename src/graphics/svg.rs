@@ -167,6 +167,8 @@ fn collect_shapes(
         "rect" => parse_rect(element)?,
         "circle" => parse_circle(element)?,
         "ellipse" => parse_ellipse(element)?,
+        "polygon" => parse_poly_points(element, true)?,
+        "polyline" => parse_poly_points(element, false)?,
 
         _ => None,
     };
@@ -220,6 +222,40 @@ fn attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
         .iter()
         .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
         .map(|attribute| attribute.value.as_str())
+}
+
+fn parse_poly_points(element: &HtmlElement, close_path: bool) -> Result<Option<Path>, SvgError> {
+    let Some(value) = attribute(element, "points") else {
+        return Ok(None);
+    };
+
+    let values = parse_number_list(value)?;
+
+    if values.len() % 2 != 0 {
+        return Err(SvgError::new(
+            "polygon and polyline points must contain coordinate pairs",
+        ));
+    }
+
+    if values.len() < 4 {
+        return Ok(None);
+    }
+
+    let mut pairs = values.chunks_exact(2);
+    let first = pairs.next().unwrap();
+
+    let mut path = Path::new();
+    path.move_to(Point::new(first[0], first[1]));
+
+    for pair in pairs {
+        path.line_to(Point::new(pair[0], pair[1]));
+    }
+
+    if close_path {
+        path.close();
+    }
+
+    Ok(Some(path))
 }
 
 fn parse_circle(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
@@ -756,5 +792,49 @@ mod tests {
         let document = parse_svg(r#"<svg><circle cx="10" cy="10" r="0"/></svg>"#).unwrap();
 
         assert!(document.shapes.is_empty());
+    }
+
+    #[test]
+    fn parses_polygon_and_polyline_points() {
+        let document = parse_svg(
+            r#"
+                <svg>
+                    <polygon points="1,2 3,4 5,6"/>
+                    <polyline points="10 20, 30 40, 50 60"/>
+                </svg>
+            "#,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes.len(), 2);
+
+        assert_eq!(
+            document.shapes[0].path.commands(),
+            &[
+                PathCommand::MoveTo(Point::new(1.0, 2.0)),
+                PathCommand::LineTo(Point::new(3.0, 4.0)),
+                PathCommand::LineTo(Point::new(5.0, 6.0)),
+                PathCommand::Close,
+            ]
+        );
+
+        assert_eq!(
+            document.shapes[1].path.commands(),
+            &[
+                PathCommand::MoveTo(Point::new(10.0, 20.0)),
+                PathCommand::LineTo(Point::new(30.0, 40.0)),
+                PathCommand::LineTo(Point::new(50.0, 60.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_odd_polygon_coordinate_counts() {
+        let error = parse_svg(r#"<svg><polygon points="1 2 3"/></svg>"#).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "polygon and polyline points must contain coordinate pairs"
+        );
     }
 }
