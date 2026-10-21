@@ -243,7 +243,7 @@ impl<'a> PathDataParser<'a> {
 
             path.cubic_to(control_one, control_two, to);
             self.current = to;
-            self.last_cubic_control = Some(control_one);
+            self.last_cubic_control = Some(control_two);
 
             if !self.has_number() {
                 break;
@@ -270,7 +270,7 @@ impl<'a> PathDataParser<'a> {
 
             path.quadratic_to(control, to);
             self.current = to;
-            self.last_cubic_control = Some(control);
+            self.last_quadratic_control = Some(control);
 
             if !self.has_number() {
                 break;
@@ -488,6 +488,54 @@ mod tests {
                 }
             ]
         )
+    }
+
+    #[test]
+    fn reflects_controls_for_repeated_smooth_curves() {
+        let path = parse_path_data(
+            "M 0 0 \
+            C 1 2 2 4 6 8 \
+            S 10 12 13 15 \
+            S 20 22 24 26 \
+            Q 26 28 30 32 \
+            T 37 39 \
+            T 45 47",
+        )
+            .unwrap();
+
+        assert_eq!(
+            path.commands(),
+            &[
+                PathCommand::MoveTo(Point::new(0.0, 0.0)),
+                PathCommand::CubicTo {
+                    control_one: Point::new(1.0, 2.0),
+                    control_two: Point::new(2.0, 4.0),
+                    to: Point::new(6.0, 8.0),
+                },
+                PathCommand::CubicTo {
+                    control_one: Point::new(10.0, 12.0),
+                    control_two: Point::new(10.0, 12.0),
+                    to: Point::new(13.0, 15.0),
+                },
+                PathCommand::CubicTo {
+                    control_one: Point::new(16.0, 18.0),
+                    control_two: Point::new(20.0, 22.0),
+                    to: Point::new(24.0, 26.0),
+                },
+                PathCommand::QuadraticTo {
+                    control: Point::new(26.0, 28.0),
+                    to: Point::new(30.0, 32.0),
+                },
+                PathCommand::QuadraticTo {
+                    control: Point::new(34.0, 36.0),
+                    to: Point::new(37.0, 39.0),
+                },
+                PathCommand::QuadraticTo {
+                    control: Point::new(40.0, 42.0),
+                    to: Point::new(45.0, 47.0),
+                }
+            ]
+        );
     }
 }
 
