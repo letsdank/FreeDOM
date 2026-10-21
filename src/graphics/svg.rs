@@ -4,7 +4,7 @@ use crate::{
     graphics::{
         flatten::{FlattenError, flatten_path},
         geometry::{Path, Point, Transform},
-        raster::{Color, FillRule, Surface, fill_path},
+        raster::{Color, FillRule, StrokeStyle, Surface, fill_path, stroke_path},
         svg_path::parse_path_data,
         svg_transform::parse_transform_list,
     },
@@ -33,11 +33,26 @@ impl SvgDocument {
             .map(|view_box| view_box_transform(view_box, width, height))
             .unwrap_or(Transform::IDENTITY);
 
+        let viewport_stroke_scale = stroke_scale(viewport_transform);
+
         for shape in &self.shapes {
             let transformed_path = shape.path.transformed(viewport_transform);
             let flattened = flatten_path(&transformed_path, 0.25)?;
 
-            fill_path(&mut surface, &flattened, shape.fill_rule, shape.fill);
+            if let Some(fill) = shape.fill {
+                fill_path(&mut surface, &flattened, shape.fill_rule, fill);
+            }
+
+            if let Some(stroke) = shape.stroke {
+                stroke_path(
+                    &mut surface,
+                    &flattened,
+                    StrokeStyle {
+                        width: shape.stroke_width * viewport_stroke_scale,
+                    },
+                    stroke,
+                );
+            }
         }
 
         Ok(surface)
@@ -55,8 +70,10 @@ pub struct ViewBox {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SvgShape {
     pub path: Path,
-    pub fill: Color,
+    pub fill: Option<Color>,
     pub fill_rule: FillRule,
+    pub stroke: Option<Color>,
+    pub stroke_width: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,6 +141,8 @@ pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
 struct SvgStyle {
     fill: Option<Color>,
     fill_rule: FillRule,
+    stroke: Option<Color>,
+    stroke_width: f32,
 }
 
 impl Default for SvgStyle {
@@ -131,6 +150,8 @@ impl Default for SvgStyle {
         Self {
             fill: Some(Color::BLACK),
             fill_rule: FillRule::NonZero,
+            stroke: None,
+            stroke_width: 1.0,
         }
     }
 }
@@ -169,16 +190,21 @@ fn collect_shapes(
         "ellipse" => parse_ellipse(element)?,
         "polygon" => parse_poly_points(element, true)?,
         "polyline" => parse_poly_points(element, false)?,
+        "line" => parse_line(element)?,
 
         _ => None,
     };
 
-    if let (Some(path), Some(fill)) = (path, style.fill) {
-        shapes.push(SvgShape {
-            path: path.transformed(transform),
-            fill,
-            fill_rule: style.fill_rule,
-        });
+    if let Some(path) = path {
+        if style.fill.is_some() || style.stroke.is_some() {
+            shapes.push(SvgShape {
+                path: path.transformed(transform),
+                fill: style.fill,
+                fill_rule: style.fill_rule,
+                stroke: style.stroke,
+                stroke_width: style.stroke_width,
+            });
+        }
     }
 
     for child in &element.children {
@@ -195,6 +221,14 @@ fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle,
         style.fill = parse_fill(value)?;
     }
 
+    if let Some(value) = attribute(element, "stroke") {
+        style.stroke = parse_fill(value)?;
+    }
+
+    if let Some(value) = attribute(element, "stroke-width") {
+        style.stroke_width = parse_stroke_width(value)?;
+    }
+
     if let Some(value) = attribute(element, "fill-rule") {
         style.fill_rule = parse_fill_rule(value)?;
     }
@@ -208,6 +242,8 @@ fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle,
             match property.trim().to_ascii_lowercase().as_str() {
                 "fill" => style.fill = parse_fill(value)?,
                 "fill-rule" => style.fill_rule = parse_fill_rule(value)?,
+                "stroke" => style.stroke = parse_fill(value)?,
+                "stroke-width" => style.stroke_width = parse_stroke_width(value)?,
                 _ => {}
             }
         }
@@ -222,6 +258,19 @@ fn attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
         .iter()
         .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
         .map(|attribute| attribute.value.as_str())
+}
+
+fn parse_line(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
+    let x1 = number_attribute(element, "x1", 0.0)?;
+    let y1 = number_attribute(element, "y1", 0.0)?;
+    let x2 = number_attribute(element, "x2", 0.0)?;
+    let y2 = number_attribute(element, "y2", 0.0)?;
+
+    let mut path = Path::new();
+    path.move_to(Point::new(x1, y1));
+    path.line_to(Point::new(x2, y2));
+
+    Ok(Some(path))
 }
 
 fn parse_poly_points(element: &HtmlElement, close_path: bool) -> Result<Option<Path>, SvgError> {
@@ -532,6 +581,16 @@ fn hexadecimal_digit(byte: u8) -> Option<u8> {
     }
 }
 
+fn parse_stroke_width(value: &str) -> Result<f32, SvgError> {
+    let values = parse_number_list(value)?;
+
+    if values.len() != 1 || values[0] < 0.0 {
+        return Err(SvgError::new("invalid stroke-width"));
+    }
+
+    Ok(values[0])
+}
+
 fn parse_fill_rule(value: &str) -> Result<FillRule, SvgError> {
     if value.trim().eq_ignore_ascii_case("nonzero") {
         Ok(FillRule::NonZero)
@@ -645,6 +704,13 @@ fn parse_number_list(input: &str) -> Result<Vec<f32>, SvgError> {
     Ok(values)
 }
 
+fn stroke_scale(transform: Transform) -> f32 {
+    let x_axis_scale = (transform.a * transform.a + transform.b * transform.b).sqrt();
+    let y_axis_scale = (transform.c * transform.c + transform.d * transform.d).sqrt();
+
+    (x_axis_scale + y_axis_scale) * 0.5
+}
+
 fn view_box_transform(view_box: ViewBox, width: usize, height: usize) -> Transform {
     if width == 0 || height == 0 {
         return Transform::scale(0.0, 0.0);
@@ -678,7 +744,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
-        assert_eq!(document.shapes[0].fill, Color::rgba(0, 255, 0, 255));
+        assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 255, 0, 255)));
 
         assert_eq!(
             document.shapes[0].path.commands()[0],
@@ -719,7 +785,7 @@ mod tests {
         )
             .unwrap();
 
-        assert_eq!(document.shapes[0].fill, Color::rgba(0, 0, 255, 255));
+        assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 0, 255, 255)));
     }
 
     #[test]
@@ -734,7 +800,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
-        assert_eq!(document.shapes[0].fill, Color::rgba(0x12, 0x34, 0x56, 255));
+        assert_eq!(
+            document.shapes[0].fill,
+            Some(Color::rgba(0x12, 0x34, 0x56, 255))
+        );
 
         assert_eq!(
             document.shapes[0].path.commands(),
@@ -836,5 +905,35 @@ mod tests {
             error.message,
             "polygon and polyline points must contain coordinate pairs"
         );
+    }
+
+    #[test]
+    fn renders_stroked_line_elements() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <line
+                        x1="2"
+                        y1="4"
+                        x2="8"
+                        y2="4"
+                        fill="none"
+                        stroke="#000000"
+                        stroke-width="2"
+                    />
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].fill, None);
+        assert_eq!(document.shapes[0].stroke, Some(Color::BLACK));
+        assert_eq!(document.shapes[0].stroke_width, 2.0);
+
+        let surface = document.render(10, 10, Color::TRANSPARENT).unwrap();
+
+        assert_eq!(surface.pixel(4, 4), Some(Color::BLACK));
+        assert_eq!(surface.pixel(0, 4), Some(Color::TRANSPARENT));
     }
 }
