@@ -29,6 +29,8 @@ struct PathDataParser<'a> {
     current: Point,
     subpath_start: Point,
     has_subpath: bool,
+    last_cubic_control: Option<Point>,
+    last_quadratic_control: Option<Point>,
 }
 
 impl<'a> PathDataParser<'a> {
@@ -39,6 +41,8 @@ impl<'a> PathDataParser<'a> {
             current: Point::new(0.0, 0.0),
             subpath_start: Point::new(0.0, 0.0),
             has_subpath: false,
+            last_cubic_control: None,
+            last_quadratic_control: None,
         }
     }
 
@@ -80,6 +84,12 @@ impl<'a> PathDataParser<'a> {
                 'C' => self.parse_cubic_to(&mut path, false)?,
                 'c' => self.parse_cubic_to(&mut path, true)?,
 
+                'S' => self.parse_smooth_cubic_to(&mut path, false)?,
+                's' => self.parse_smooth_cubic_to(&mut path, true)?,
+
+                'T' => self.parse_smooth_quadratic_to(&mut path, false)?,
+                't' => self.parse_smooth_quadratic_to(&mut path, true)?,
+
                 'Z' | 'z' => {
                     if !self.has_subpath {
                         return Err(self.error("close-path appears before move-to"));
@@ -87,6 +97,8 @@ impl<'a> PathDataParser<'a> {
 
                     path.close();
                     self.current = self.subpath_start;
+                    self.last_cubic_control = None;
+                    self.last_quadratic_control = None;
                     command = None;
                 }
 
@@ -98,6 +110,9 @@ impl<'a> PathDataParser<'a> {
     }
 
     fn parse_move_to(&mut self, path: &mut Path, relative: bool) -> Result<(), SvgPathError> {
+        self.last_cubic_control = None;
+        self.last_quadratic_control = None;
+
         let first = self.parse_point(relative)?;
         path.move_to(first);
 
@@ -115,6 +130,9 @@ impl<'a> PathDataParser<'a> {
     }
 
     fn parse_line_to(&mut self, path: &mut Path, relative: bool) -> Result<(), SvgPathError> {
+        self.last_cubic_control = None;
+        self.last_quadratic_control = None;
+
         loop {
             let to = self.parse_point(relative)?;
             path.line_to(to);
@@ -129,6 +147,9 @@ impl<'a> PathDataParser<'a> {
     }
 
     fn parse_horizontal_to(&mut self, path: &mut Path, relative: bool) -> Result<(), SvgPathError> {
+        self.last_cubic_control = None;
+        self.last_quadratic_control = None;
+
         loop {
             let x = self.parse_number()?;
             let x = if relative { self.current.x + x } else { x };
@@ -146,6 +167,9 @@ impl<'a> PathDataParser<'a> {
     }
 
     fn parse_vertical_to(&mut self, path: &mut Path, relative: bool) -> Result<(), SvgPathError> {
+        self.last_cubic_control = None;
+        self.last_quadratic_control = None;
+
         loop {
             let y = self.parse_number()?;
             let y = if relative { self.current.y + y } else { y };
@@ -163,10 +187,13 @@ impl<'a> PathDataParser<'a> {
     }
 
     fn parse_quadratic_to(&mut self, path: &mut Path, relative: bool) -> Result<(), SvgPathError> {
+        self.last_cubic_control = None;
+
         loop {
             let control = self.parse_point(relative)?;
             let to = self.parse_point(relative)?;
 
+            self.last_quadratic_control = Some(control);
             path.quadratic_to(control, to);
             self.current = to;
 
@@ -179,13 +206,71 @@ impl<'a> PathDataParser<'a> {
     }
 
     fn parse_cubic_to(&mut self, path: &mut Path, relative: bool) -> Result<(), SvgPathError> {
+        self.last_quadratic_control = None;
+
         loop {
             let control_one = self.parse_point(relative)?;
             let control_two = self.parse_point(relative)?;
             let to = self.parse_point(relative)?;
 
+            self.last_cubic_control = Some(control_two);
             path.cubic_to(control_one, control_two, to);
             self.current = to;
+
+            if !self.has_number() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_smooth_cubic_to(
+        &mut self,
+        path: &mut Path,
+        relative: bool,
+    ) -> Result<(), SvgPathError> {
+        self.last_quadratic_control = None;
+
+        loop {
+            let control_one = self
+                .last_cubic_control
+                .map(|previous| reflect_control(previous, self.current))
+                .unwrap_or(self.current);
+
+            let control_two = self.parse_point(relative)?;
+            let to = self.parse_point(relative)?;
+
+            path.cubic_to(control_one, control_two, to);
+            self.current = to;
+            self.last_cubic_control = Some(control_one);
+
+            if !self.has_number() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_smooth_quadratic_to(
+        &mut self,
+        path: &mut Path,
+        relative: bool,
+    ) -> Result<(), SvgPathError> {
+        self.last_cubic_control = None;
+
+        loop {
+            let control = self
+                .last_quadratic_control
+                .map(|previous| reflect_control(previous, self.current))
+                .unwrap_or(self.current);
+
+            let to = self.parse_point(relative)?;
+
+            path.quadratic_to(control, to);
+            self.current = to;
+            self.last_cubic_control = Some(control);
 
             if !self.has_number() {
                 break;
@@ -372,4 +457,40 @@ mod tests {
 
         assert_eq!(error.message, "expected an SVG path command");
     }
+
+    #[test]
+    fn parses_smooth_curve_commands() {
+        let path =
+            parse_path_data("M 10 10 C 12 14 16 18 20 20 S 28 26 30 30 Q 34 36 38 40 T 46 50")
+                .unwrap();
+
+        assert_eq!(
+            path.commands(),
+            &[
+                PathCommand::MoveTo(Point::new(10.0, 10.0)),
+                PathCommand::CubicTo {
+                    control_one: Point::new(12.0, 14.0),
+                    control_two: Point::new(16.0, 18.0),
+                    to: Point::new(20.0, 20.0),
+                },
+                PathCommand::CubicTo {
+                    control_one: Point::new(24.0, 22.0),
+                    control_two: Point::new(28.0, 26.0),
+                    to: Point::new(30.0, 30.0),
+                },
+                PathCommand::QuadraticTo {
+                    control: Point::new(34.0, 36.0),
+                    to: Point::new(38.0, 40.0),
+                },
+                PathCommand::QuadraticTo {
+                    control: Point::new(42.0, 44.0),
+                    to: Point::new(46.0, 50.0),
+                }
+            ]
+        )
+    }
+}
+
+fn reflect_control(control: Point, center: Point) -> Point {
+    Point::new(2.0 * center.x - control.x, 2.0 * center.y - control.y)
 }
