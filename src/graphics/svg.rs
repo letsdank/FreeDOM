@@ -159,18 +159,22 @@ fn collect_shapes(
 
     let transform = local_transform.then(parent_transform);
 
-    if element.name == "path" {
-        if let (Some(data), Some(fill)) = (attribute(element, "d"), style.fill) {
-            let path = parse_path_data(data)
-                .map_err(|error| SvgError::new(error.to_string()))?
-                .transformed(transform);
+    let path = match element.name.as_str() {
+        "path" => attribute(element, "d")
+            .map(|data| parse_path_data(data).map_err(|error| SvgError::new(error.to_string())))
+            .transpose()?,
 
-            shapes.push(SvgShape {
-                path,
-                fill,
-                fill_rule: style.fill_rule,
-            });
-        }
+        "rect" => parse_rect(element)?,
+
+        _ => None,
+    };
+
+    if let (Some(path), Some(fill)) = (path, style.fill) {
+        shapes.push(SvgShape {
+            path: path.transformed(transform),
+            fill,
+            fill_rule: style.fill_rule,
+        });
     }
 
     for child in &element.children {
@@ -214,6 +218,119 @@ fn attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
         .iter()
         .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
         .map(|attribute| attribute.value.as_str())
+}
+
+fn parse_rect(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
+    let x = number_attribute(element, "x", 0.0)?;
+    let y = number_attribute(element, "y", 0.0)?;
+    let width = number_attribute(element, "width", 0.0)?;
+    let height = number_attribute(element, "height", 0.0)?;
+
+    if width < 0.0 || height < 0.0 {
+        return Err(SvgError::new(
+            "rectangle width and height must not be negative",
+        ));
+    }
+
+    if width == 0.0 || height == 0.0 {
+        return Ok(None);
+    }
+
+    let requested_radius_x = optional_number_attribute(element, "rx")?;
+    let requested_radius_y = optional_number_attribute(element, "ry")?;
+
+    let (radius_x, radius_y) = match (requested_radius_x, requested_radius_y) {
+        (None, None) => (0.0, 0.0),
+        (Some(radius_x), None) => (radius_x, radius_x),
+        (None, Some(radius_y)) => (radius_y, radius_y),
+        (Some(radius_x), Some(radius_y)) => (radius_x, radius_y),
+    };
+
+    if radius_x < 0.0 || radius_y < 0.0 {
+        return Err(SvgError::new("rectangle corner radii must not be negative"));
+    }
+
+    let radius_x = radius_x.min(width * 0.5);
+    let radius_y = radius_y.min(height * 0.5);
+
+    let right = x + width;
+    let bottom = y + height;
+
+    if !right.is_finite() || !bottom.is_finite() {
+        return Err(SvgError::new("rectangle geometry is not finite"));
+    }
+
+    let mut path = Path::new();
+
+    if radius_x == 0.0 || radius_y == 0.0 {
+        path.move_to(Point::new(x, y));
+        path.line_to(Point::new(right, y));
+        path.line_to(Point::new(right, bottom));
+        path.line_to(Point::new(x, bottom));
+        path.close();
+
+        return Ok(Some(path));
+    }
+
+    const KAPPA: f32 = 0.552_284_8;
+
+    let control_x = radius_x * KAPPA;
+    let control_y = radius_y * KAPPA;
+
+    path.move_to(Point::new(x + radius_x, y));
+    path.line_to(Point::new(right - radius_x, y));
+    path.cubic_to(
+        Point::new(right - radius_x + control_x, y),
+        Point::new(right, y + radius_y - control_y),
+        Point::new(right, y + radius_y),
+    );
+
+    path.line_to(Point::new(right, bottom - radius_y));
+    path.cubic_to(
+        Point::new(right, bottom - radius_y + control_y),
+        Point::new(right - radius_x + control_x, bottom),
+        Point::new(right - radius_x, bottom),
+    );
+
+    path.line_to(Point::new(x + radius_x, bottom));
+    path.cubic_to(
+        Point::new(x + radius_x - control_x, bottom),
+        Point::new(x, bottom - radius_y + control_y),
+        Point::new(x, bottom - radius_y),
+    );
+
+    path.line_to(Point::new(x, y + radius_y));
+    path.cubic_to(
+        Point::new(x, y + radius_y - control_y),
+        Point::new(x + radius_x - control_y, y),
+        Point::new(x + radius_x, y),
+    );
+
+    path.close();
+
+    Ok(Some(path))
+}
+
+fn number_attribute(element: &HtmlElement, name: &str, default: f32) -> Result<f32, SvgError> {
+    let Some(value) = attribute(element, name) else {
+        return Ok(default);
+    };
+
+    let values = parse_number_list(value)?;
+
+    if values.len() != 1 {
+        return Err(SvgError::new("expected one numeric SVG attribute value"));
+    }
+
+    Ok(values[0])
+}
+
+fn optional_number_attribute(element: &HtmlElement, name: &str) -> Result<Option<f32>, SvgError> {
+    if attribute(element, name).is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(number_attribute(element, name, 0.0)?))
 }
 
 fn parse_fill(value: &str) -> Result<Option<Color>, SvgError> {
@@ -487,5 +604,45 @@ mod tests {
             .unwrap();
 
         assert_eq!(document.shapes[0].fill, Color::rgba(0, 0, 255, 255));
+    }
+
+    #[test]
+    fn parses_svg_rectangles() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <rect x="2" y="3" width="10" height="20" fill="#123456"/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].fill, Color::rgba(0x12, 0x34, 0x56, 255));
+
+        assert_eq!(
+            document.shapes[0].path.commands(),
+            &[
+                PathCommand::MoveTo(Point::new(2.0, 3.0)),
+                PathCommand::LineTo(Point::new(12.0, 3.0)),
+                PathCommand::LineTo(Point::new(12.0, 23.0)),
+                PathCommand::LineTo(Point::new(2.0, 23.0)),
+                PathCommand::Close,
+            ]
+        );
+    }
+
+    #[test]
+    fn converts_rounded_rectangle_to_cubic_curves() {
+        let document = parse_svg(r#"<svg><rect width="20" height="10" rx="3"/></svg>"#).unwrap();
+
+        let commands = document.shapes[0].path.commands();
+
+        assert_eq!(commands.len(), 10);
+        assert!(matches!(commands[2], PathCommand::CubicTo { .. }));
+        assert!(matches!(commands[4], PathCommand::CubicTo { .. }));
+        assert!(matches!(commands[6], PathCommand::CubicTo { .. }));
+        assert!(matches!(commands[8], PathCommand::CubicTo { .. }));
+        assert_eq!(commands[9], PathCommand::Close);
     }
 }
