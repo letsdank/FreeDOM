@@ -58,6 +58,67 @@ impl Transform {
         }
     }
 
+    pub fn rotate(radians: f32) -> Self {
+        let (sin, cos) = radians.sin_cos();
+
+        Self {
+            a: cos,
+            b: sin,
+            c: -sin,
+            d: cos,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    /// Returns a transformation that applies `self` first,
+    /// then applies `after`.
+    pub fn then(self, after: Self) -> Self {
+        Self {
+            a: after.a * self.a + after.c * self.b,
+            b: after.b * self.a + after.d * self.b,
+            c: after.a * self.c + after.c * self.d,
+            d: after.b * self.c + after.d * self.d,
+            e: after.a * self.e + after.c * self.f + after.e,
+            f: after.b * self.e + after.d * self.f + after.f,
+        }
+    }
+
+    pub fn inverse(self) -> Option<Self> {
+        if !self.a.is_finite()
+            || !self.b.is_finite()
+            || !self.c.is_finite()
+            || !self.d.is_finite()
+            || !self.e.is_finite()
+            || !self.f.is_finite()
+        {
+            return None;
+        }
+
+        let determinant = self.a * self.d - self.b * self.c;
+
+        if determinant.abs() <= f32::EPSILON {
+            return None;
+        }
+
+        let inverse = Self {
+            a: self.d / determinant,
+            b: -self.b / determinant,
+            c: -self.c / determinant,
+            d: self.a / determinant,
+            e: (self.c * self.f - self.d * self.e) / determinant,
+            f: (self.b * self.e - self.a * self.f) / determinant,
+        };
+
+        (inverse.a.is_finite()
+            && inverse.b.is_finite()
+            && inverse.c.is_finite()
+            && inverse.d.is_finite()
+            && inverse.e.is_finite()
+            && inverse.f.is_finite())
+            .then_some(inverse)
+    }
+
     pub fn apply_point(self, point: Point) -> Point {
         Point {
             x: self.a * point.x + self.c * point.y + self.e,
@@ -276,5 +337,40 @@ mod tests {
                 PathCommand::Close,
             ]
         )
+    }
+
+    #[test]
+    fn composes_transforms_in_application_order() {
+        let transform = Transform::scale(2.0, 3.0).then(Transform::translate(5.0, -7.0));
+
+        assert_eq!(
+            transform.apply_point(Point::new(1.0, 2.0)),
+            Point::new(7.0, -1.0)
+        );
+    }
+
+    #[test]
+    fn rotates_points_and_inverts_transforms() {
+        let rotation = Transform::rotate(std::f32::consts::FRAC_PI_2);
+        let rotated = rotation.apply_point(Point::new(2.0, 0.0));
+
+        assert!(rotated.x.abs() < 0.000_01);
+        assert!((rotated.y - 2.0).abs() < 0.000_01);
+
+        let transform = Transform::scale(2.0, 3.0).then(Transform::translate(5.0, -7.0));
+
+        let original = Point::new(4.0, -2.0);
+        let restored = transform
+            .inverse()
+            .unwrap()
+            .apply_point(transform.apply_point(original));
+
+        assert!((restored.x - original.x).abs() < 0.000_01);
+        assert!((restored.y - original.y).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn does_not_invert_singular_matrices() {
+        assert!(Transform::scale(0.0, 1.0).inverse().is_none());
     }
 }
