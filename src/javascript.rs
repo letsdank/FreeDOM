@@ -32,7 +32,7 @@ pub enum NativeFunction {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum DocumentMethod {
+pub(crate) enum DocumentMethod {
     GetElementById(DocumentState),
     CreateElement,
     GetElementsByTagName,
@@ -41,7 +41,7 @@ enum DocumentMethod {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum ElementMethod {
+pub(crate) enum ElementMethod {
     GetAttribute(u64),
     SetAttribute(u64),
     AppendChild(u64),
@@ -57,7 +57,7 @@ enum ElementMethod {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum TestContextMethod {
+pub(crate) enum TestContextMethod {
     AddCleanup,
 }
 
@@ -297,7 +297,7 @@ enum Expression {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct UserFunction {
+pub(crate) struct UserFunction {
     parameters: Vec<String>,
     body: Vec<Statement>,
 }
