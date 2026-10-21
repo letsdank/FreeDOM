@@ -91,6 +91,10 @@ impl GlyphLocations {
 
         Some(*self.offsets.get(index)?..*self.offsets.get(index + 1)?)
     }
+
+    pub fn final_offset(&self) -> usize {
+        self.offsets.last().copied().unwrap_or(0)
+    }
 }
 
 fn read_u16(table: &[u8], position: usize, table_offset: usize) -> Result<u16, FontError> {
