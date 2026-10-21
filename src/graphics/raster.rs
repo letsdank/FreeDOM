@@ -34,6 +34,17 @@ pub enum FillRule {
     NonZero,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StrokeStyle {
+    pub width: f32,
+}
+
+impl Default for StrokeStyle {
+    fn default() -> Self {
+        Self { width: 1.0 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Surface {
     width: usize,
@@ -143,7 +154,7 @@ pub fn fill_path(surface: &mut Surface, path: &FlattenedPath, fill_rule: FillRul
         return;
     }
 
-    let Some((start_x, end_x, start_y, end_y)) = pixel_bounds(surface, path) else {
+    let Some((start_x, end_x, start_y, end_y)) = pixel_bounds(surface, path, 1.0) else {
         return;
     };
 
@@ -165,7 +176,40 @@ pub fn fill_path(surface: &mut Surface, path: &FlattenedPath, fill_rule: FillRul
     }
 }
 
-fn pixel_bounds(surface: &Surface, path: &FlattenedPath) -> Option<(usize, usize, usize, usize)> {
+pub fn stroke_path(surface: &mut Surface, path: &FlattenedPath, style: StrokeStyle, color: Color) {
+    if color.alpha == 0 || !style.width.is_finite() || style.width <= 0.0 {
+        return;
+    }
+
+    let radius = style.width * 0.5;
+
+    let Some((start_x, end_x, start_y, end_y)) = pixel_bounds(surface, path, radius + 1.0) else {
+        return;
+    };
+
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            let coverage = SAMPLE_OFFSETS
+                .iter()
+                .filter(|(offset_x, offset_y)| {
+                    let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
+                    sample_is_on_stroke(path, sample, radius)
+                })
+                .count() as f32
+                / SAMPLE_OFFSETS.len() as f32;
+
+            if coverage > 0.0 {
+                surface.blend_pixel(x, y, color, coverage);
+            }
+        }
+    }
+}
+
+fn pixel_bounds(
+    surface: &Surface,
+    path: &FlattenedPath,
+    padding: f32,
+) -> Option<(usize, usize, usize, usize)> {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
@@ -190,12 +234,57 @@ fn pixel_bounds(surface: &Surface, path: &FlattenedPath) -> Option<(usize, usize
         return None;
     }
 
-    let start_x = (min_x.floor() - 1.0).max(0.0) as usize;
-    let start_y = (min_y.floor() - 1.0).max(0.0) as usize;
-    let end_x = (max_x.ceil() + 1.0).max(0.0).min(surface.width as f32) as usize;
-    let end_y = (max_y.ceil() + 1.0).max(0.0).min(surface.height as f32) as usize;
+    if !padding.is_finite() || padding < 0.0 {
+        return None;
+    }
+
+    let start_x = (min_x - padding).floor().max(0.0) as usize;
+    let start_y = (min_y - padding).floor().max(0.0) as usize;
+    let end_x = (max_x + padding).ceil().max(0.0).min(surface.width as f32) as usize;
+    let end_y = (max_y + padding).ceil().max(0.0).min(surface.height as f32) as usize;
 
     (start_x < end_x && start_y < end_y).then_some((start_x, end_x, start_y, end_y))
+}
+
+fn sample_is_on_stroke(path: &FlattenedPath, sample: Point, radius: f32) -> bool {
+    for contour in path.contours() {
+        let points = contour.points();
+
+        for segment in points.windows(2) {
+            if point_is_inside_butt_segment(sample, segment[0], segment[1], radius) {
+                return true;
+            }
+        }
+
+        if contour.is_closed() && points.len() > 1 {
+            if point_is_inside_butt_segment(sample, points[points.len() - 1], points[0], radius) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn point_is_inside_butt_segment(point: Point, from: Point, to: Point, radius: f32) -> bool {
+    let delta_x = to.x - from.x;
+    let delta_y = to.y - from.y;
+    let length_squared = delta_x * delta_x + delta_y * delta_y;
+
+    if length_squared <= f32::EPSILON {
+        return false;
+    }
+
+    let projection = ((point.x - from.x) * delta_x + (point.y - from.y) * delta_y) / length_squared;
+
+    if !(0.0..=1.0).contains(&projection) {
+        return false;
+    }
+
+    let cross_product = (point.x - from.x) * delta_y - (point.y - from.y) * delta_x;
+    let distance = cross_product.abs() / length_squared.sqrt();
+
+    distance <= radius
 }
 
 fn sample_is_inside(path: &FlattenedPath, sample: Point, fill_rule: FillRule) -> bool {
@@ -343,5 +432,25 @@ mod tests {
         surface.blit_xrgb8888(&mut destination, 2, 1, 0, 0);
 
         assert_eq!(destination, vec![0x00_80_00_7f, 0x00_ff_ff_ff]);
+    }
+
+    #[test]
+    fn strokes_open_path_segments() {
+        let mut path = Path::new();
+        path.move_to(Point::new(1.0, 3.0));
+        path.line_to(Point::new(5.0, 3.0));
+
+        let flattened = flatten_path(&path, 0.25).unwrap();
+        let mut surface = Surface::new(7, 7, Color::TRANSPARENT);
+
+        stroke_path(
+            &mut surface,
+            &flattened,
+            StrokeStyle { width: 2.0 },
+            Color::BLACK,
+        );
+
+        assert_eq!(surface.pixel(3, 3), Some(Color::BLACK));
+        assert_eq!(surface.pixel(0, 3), Some(Color::TRANSPARENT));
     }
 }
