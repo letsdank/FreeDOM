@@ -1,4 +1,4 @@
-use crate::graphics::geometry::{Path, Point};
+use crate::graphics::geometry::{Path, Point, Transform};
 
 use super::sfnt::FontError;
 
@@ -8,6 +8,16 @@ const Y_SHORT_VECTOR: u8 = 0x04;
 const REPEAT_FLAG: u8 = 0x08;
 const X_IS_SAME_OR_POSITIVE: u8 = 0x10;
 const Y_IS_SAME_OR_POSITIVE: u8 = 0x20;
+
+const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
+const ARGS_ARE_XY_VALUES: u16 = 0x0002;
+const WE_HAVE_A_SCALE: u16 = 0x0008;
+const MORE_COMPONENTS: u16 = 0x0020;
+const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
+const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
+const SCALED_COMPONENT_OFFSET: u16 = 0x0800;
+const UNSCALED_COMPONENT_OFFSET: u16 = 0x1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GlyphBounds {
@@ -24,9 +34,22 @@ pub struct SimpleGlyph {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct CompoundGlyph {
+    pub bounds: GlyphBounds,
+    pub components: Vec<GlyphComponent>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphComponent {
+    pub glyph_id: u16,
+    pub transform: Transform,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Glyph {
     Empty,
     Simple(SimpleGlyph),
+    Compound(CompoundGlyph),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -46,19 +69,16 @@ pub fn parse_glyph(data: &[u8], file_offset: usize) -> Result<Glyph, FontError> 
 
     let number_of_contours = read_i16(data, 0, file_offset)?;
 
-    if number_of_contours < 0 {
-        return Err(error(
-            file_offset,
-            "compound TrueType glyphs are not supported yet",
-        ));
-    }
-
     let bounds = GlyphBounds {
         x_min: read_i16(data, 2, file_offset)?,
         y_min: read_i16(data, 4, file_offset)?,
         x_max: read_i16(data, 6, file_offset)?,
         y_max: read_i16(data, 8, file_offset)?,
     };
+
+    if number_of_contours < 0 {
+        return parse_compound_glyph(data, file_offset, bounds);
+    }
 
     let contour_count = usize::try_from(number_of_contours)
         .map_err(|_| error(file_offset, "invalid simple glyph contour count"))?;
@@ -165,6 +185,115 @@ pub fn parse_glyph(data: &[u8], file_offset: usize) -> Result<Glyph, FontError> 
     }
 
     Ok(Glyph::Simple(SimpleGlyph { bounds, path }))
+}
+
+fn parse_compound_glyph(
+    data: &[u8],
+    file_offset: usize,
+    bounds: GlyphBounds,
+) -> Result<Glyph, FontError> {
+    let mut cursor = 10;
+    let mut components = Vec::new();
+    let final_flags;
+
+    loop {
+        let flags = read_u16(data, cursor, file_offset)?;
+        cursor += 2;
+
+        let glyph_id = read_u16(data, cursor, file_offset)?;
+        cursor += 2;
+
+        if flags & ARGS_ARE_XY_VALUES == 0 {
+            return Err(error(
+                file_offset + cursor - 4,
+                "point-matched compound glyph components are not supported yet",
+            ));
+        }
+
+        let (x_offset, y_offset) = if flags & ARG_1_AND_2_ARE_WORDS != 0 {
+            let x = f32::from(read_i16(data, cursor, file_offset)?);
+            let y = f32::from(read_i16(data, cursor + 2, file_offset)?);
+            cursor += 4;
+            (x, y)
+        } else {
+            let x = f32::from(read_byte(data, cursor, file_offset)? as i8);
+            let y = f32::from(read_byte(data, cursor + 1, file_offset)? as i8);
+            cursor += 2;
+            (x, y)
+        };
+
+        let transform_flags =
+            flags & (WE_HAVE_A_SCALE | WE_HAVE_AN_X_AND_Y_SCALE | WE_HAVE_A_TWO_BY_TWO);
+
+        if transform_flags.count_ones() > 1 {
+            return Err(error(
+                file_offset + cursor,
+                "compound glyph has incompatible transform flags",
+            ));
+        }
+
+        let (a, b, c, d) = if flags & WE_HAVE_A_SCALE != 0 {
+            let scale = read_f2dot14(data, cursor, file_offset)?;
+            cursor += 2;
+            (scale, 0.0, 0.0, scale)
+        } else if flags & WE_HAVE_AN_X_AND_Y_SCALE != 0 {
+            let x_scale = read_f2dot14(data, cursor, file_offset)?;
+            let y_scale = read_f2dot14(data, cursor + 2, file_offset)?;
+            cursor += 4;
+            (x_scale, 0.0, 0.0, y_scale)
+        } else if flags & WE_HAVE_A_TWO_BY_TWO != 0 {
+            let a = read_f2dot14(data, cursor, file_offset)?;
+            let b = read_f2dot14(data, cursor + 2, file_offset)?;
+            let c = read_f2dot14(data, cursor + 4, file_offset)?;
+            let d = read_f2dot14(data, cursor + 6, file_offset)?;
+            cursor += 8;
+            (a, b, c, d)
+        } else {
+            (1.0, 0.0, 0.0, 1.0)
+        };
+
+        if flags & SCALED_COMPONENT_OFFSET != 0 && flags & UNSCALED_COMPONENT_OFFSET != 0 {
+            return Err(error(
+                file_offset + cursor,
+                "compound glyph has conflicting offset flags",
+            ));
+        }
+
+        let (e, f) = if flags & SCALED_COMPONENT_OFFSET != 0 {
+            (a * x_offset + c * y_offset, b * x_offset + d * y_offset)
+        } else {
+            (x_offset, y_offset)
+        };
+
+        components.push(GlyphComponent {
+            glyph_id,
+            transform: Transform { a, b, c, d, e, f },
+        });
+
+        if components.len() > 4096 {
+            return Err(error(
+                file_offset + cursor,
+                "compound glyph has too many components",
+            ));
+        }
+
+        if flags & MORE_COMPONENTS == 0 {
+            final_flags = flags;
+            break;
+        }
+    }
+
+    if final_flags & WE_HAVE_INSTRUCTIONS != 0 {
+        let instruction_length = usize::from(read_u16(data, cursor, file_offset)?);
+        cursor += 2;
+        read_bytes(data, cursor, instruction_length, file_offset)?;
+    }
+
+    Ok(Glyph::Compound(CompoundGlyph { bounds, components }))
+}
+
+fn read_f2dot14(data: &[u8], offset: usize, file_offset: usize) -> Result<f32, FontError> {
+    Ok(f32::from(read_i16(data, offset, file_offset)?) / 16_384.0)
 }
 
 fn append_contour(path: &mut Path, points: &[GlyphPoint]) {
@@ -350,16 +479,25 @@ mod tests {
     }
 
     #[test]
-    fn reports_compound_glyphs_as_unsupported_for_now() {
-        let mut data = vec![0_u8; 10];
-        data[0..2].copy_from_slice(&(-1_i16).to_be_bytes());
+    fn reads_compound_glyph_components() {
+        let mut data = vec![0_u8; 16];
 
-        let error = parse_glyph(&data, 40).unwrap_err();
+        data[0..2].copy_from_slice(&(-1_i16).to_be_bytes());
+        data[10..12].copy_from_slice(&ARGS_ARE_XY_VALUES.to_be_bytes());
+        data[12..14].copy_from_slice(&5_u16.to_be_bytes());
+        data[14] = 3;
+        data[15] = (-4_i8) as u8;
+
+        let Glyph::Compound(glyph) = parse_glyph(&data, 40).unwrap() else {
+            panic!("expected a compound glyph");
+        };
 
         assert_eq!(
-            error.message,
-            "compound TrueType glyphs are not supported yet"
+            glyph.components,
+            vec![GlyphComponent {
+                glyph_id: 5,
+                transform: Transform::translate(3.0, -4.0),
+            }]
         );
-        assert_eq!(error.offset, 40);
     }
 }
