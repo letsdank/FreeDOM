@@ -183,7 +183,7 @@ impl Interpreter {
                         }
 
                         match self.execute(body)? {
-                            Completion::Normal(value) => result = value,
+                            Completion::Normal(_) => {}
                             Completion::Return(value) => return Ok(Completion::Return(value)),
                             Completion::Break => break,
                             Completion::Continue => {}

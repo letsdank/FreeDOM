@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn official_wpt_document_get_element_by_id_tree_order() {
-        let state = run_document_test(
+        let _state = run_document_test(
             r#"
                 <!DOCTYPE html>
                 <meta charset=utf-8>
