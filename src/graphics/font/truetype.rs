@@ -6,6 +6,8 @@ use super::{
     sfnt::{FontError, SfntFlavor, SfntFont, TableTag},
 };
 
+use crate::graphics::geometry::Path;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexToLocFormat {
     Short,
@@ -147,6 +149,51 @@ impl<'a> TrueTypeFont<'a> {
     pub fn metric(&self, glyph_id: u16) -> Option<HorizontalMetric> {
         self.metrics.metric(glyph_id)
     }
+
+    pub fn glyph_path(&self, glyph_id: u16) -> Result<Path, FontError> {
+        self.glyph_path_inner(glyph_id, &mut Vec::new())
+    }
+
+    pub fn glyph_path_for(&self, character: char) -> Result<Path, FontError> {
+        self.glyph_path(self.glyph_id(character))
+    }
+
+    fn glyph_path_inner(
+        &self,
+        glyph_id: u16,
+        active_glyphs: &mut Vec<u16>,
+    ) -> Result<Path, FontError> {
+        if active_glyphs.contains(&glyph_id) {
+            return Err(FontError {
+                offset: self.glyf_offset,
+                message: "cyclic composite glyph reference".to_owned(),
+            });
+        }
+
+        active_glyphs.push(glyph_id);
+
+        let path = match self.glyph(glyph_id)? {
+            Glyph::Empty => Path::new(),
+            Glyph::Simple(glyph) => glyph.path,
+            Glyph::Compound(glyph) => {
+                let mut path = Path::new();
+
+                for component in glyph.components {
+                    let component_path = self
+                        .glyph_path_inner(component.glyph_id, active_glyphs)?
+                        .transformed(component.transform);
+
+                    path.append(&component_path);
+                }
+
+                path
+            }
+        };
+
+        active_glyphs.pop();
+
+        Ok(path)
+    }
 }
 
 impl HeadTable {
@@ -270,6 +317,7 @@ fn table_error(offset: usize, message: impl Into<String>) -> FontError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graphics::geometry::{PathCommand, Point};
 
     #[test]
     fn reads_true_type_head_and_maxp_tables() {
@@ -278,7 +326,7 @@ mod tests {
 
         assert_eq!(font.head().units_per_em, 1000);
         assert_eq!(font.head().index_to_loc_format, IndexToLocFormat::Long);
-        assert_eq!(font.maxp().num_glyphs, 2);
+        assert_eq!(font.maxp().num_glyphs, 3);
         assert_eq!(font.metric(1).unwrap().advance_width, 600);
     }
 
@@ -325,8 +373,24 @@ mod tests {
         assert_eq!(glyph.path.commands().len(), 4);
     }
 
+    #[test]
+    fn resolves_compound_glyphs_to_vector_paths() {
+        let data = minimal_true_type_font();
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        assert_eq!(
+            font.glyph_path(2).unwrap().commands(),
+            &[
+                PathCommand::MoveTo(Point::new(100.0, 20.0)),
+                PathCommand::LineTo(Point::new(150.0, 20.0)),
+                PathCommand::LineTo(Point::new(125.0, 100.0)),
+                PathCommand::Close,
+            ]
+        );
+    }
+
     fn minimal_true_type_font() -> Vec<u8> {
-        let mut data = vec![0_u8; 330];
+        let mut data = vec![0_u8; 354];
 
         data[0..4].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
         data[4..6].copy_from_slice(&7_u16.to_be_bytes());
@@ -345,19 +409,19 @@ mod tests {
 
         data[60..64].copy_from_slice(b"loca");
         data[68..72].copy_from_slice(&254_u32.to_be_bytes());
-        data[72..76].copy_from_slice(&12_u32.to_be_bytes());
+        data[72..76].copy_from_slice(&16_u32.to_be_bytes());
 
         data[76..80].copy_from_slice(b"glyf");
-        data[84..88].copy_from_slice(&266_u32.to_be_bytes());
-        data[88..92].copy_from_slice(&20_u32.to_be_bytes());
+        data[84..88].copy_from_slice(&270_u32.to_be_bytes());
+        data[88..92].copy_from_slice(&36_u32.to_be_bytes());
 
         data[92..96].copy_from_slice(b"hhea");
-        data[100..104].copy_from_slice(&286_u32.to_be_bytes());
+        data[100..104].copy_from_slice(&306_u32.to_be_bytes());
         data[104..108].copy_from_slice(&36_u32.to_be_bytes());
 
         data[108..112].copy_from_slice(b"hmtx");
-        data[116..120].copy_from_slice(&322_u32.to_be_bytes());
-        data[120..124].copy_from_slice(&8_u32.to_be_bytes());
+        data[116..120].copy_from_slice(&342_u32.to_be_bytes());
+        data[120..124].copy_from_slice(&12_u32.to_be_bytes());
 
         data[136..140].copy_from_slice(&0x5f0f_3cf5_u32.to_be_bytes());
         data[142..144].copy_from_slice(&1000_u16.to_be_bytes());
@@ -365,7 +429,7 @@ mod tests {
         data[176..178].copy_from_slice(&0_i16.to_be_bytes());
 
         data[178..182].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
-        data[182..184].copy_from_slice(&2_u16.to_be_bytes());
+        data[182..184].copy_from_slice(&3_u16.to_be_bytes());
 
         data[210..212].copy_from_slice(&0_u16.to_be_bytes());
         data[212..214].copy_from_slice(&1_u16.to_be_bytes());
@@ -389,23 +453,31 @@ mod tests {
         data[254..258].copy_from_slice(&0_u32.to_be_bytes());
         data[258..262].copy_from_slice(&0_u32.to_be_bytes());
         data[262..266].copy_from_slice(&20_u32.to_be_bytes());
+        data[266..270].copy_from_slice(&36_u32.to_be_bytes());
 
-        data[266..268].copy_from_slice(&1_i16.to_be_bytes());
-        data[276..278].copy_from_slice(&2_u16.to_be_bytes());
+        // Glyph 1: triangle.
+        data[270..272].copy_from_slice(&1_i16.to_be_bytes());
+        data[280..282].copy_from_slice(&2_u16.to_be_bytes());
+        data[284] = 0x31;
+        data[285] = 0x33;
+        data[286] = 0x27;
+        data[287] = 50;
+        data[288] = 25;
+        data[289] = 80;
 
-        data[280] = 0x31;
-        data[281] = 0x33;
-        data[282] = 0x27;
-        data[283] = 50;
-        data[284] = 25;
-        data[285] = 80;
+        // Glyph 2: glyph component 1 with offset (100, 20).
+        data[290..292].copy_from_slice(&(-1_i16).to_be_bytes());
+        data[300..302].copy_from_slice(&0x0002_u16.to_be_bytes());
+        data[302..304].copy_from_slice(&1_u16.to_be_bytes());
+        data[304] = 100;
+        data[305] = 20;
 
-        data[320..322].copy_from_slice(&2_u16.to_be_bytes());
+        data[340..342].copy_from_slice(&3_u16.to_be_bytes());
 
-        data[322..324].copy_from_slice(&600_u16.to_be_bytes());
-        data[324..326].copy_from_slice(&0_i16.to_be_bytes());
-        data[326..328].copy_from_slice(&600_u16.to_be_bytes());
-        data[328..330].copy_from_slice(&0_i16.to_be_bytes());
+        for offset in [342, 346, 350] {
+            data[offset..offset + 2].copy_from_slice(&600_u16.to_be_bytes());
+            data[offset + 2..offset + 4].copy_from_slice(&0_i16.to_be_bytes());
+        }
 
         data
     }

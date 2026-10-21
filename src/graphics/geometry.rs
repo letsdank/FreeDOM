@@ -286,6 +286,10 @@ impl Path {
 
         bounds
     }
+
+    pub fn append(&mut self, other: &Path) {
+        self.commands.extend(other.commands().iter().cloned());
+    }
 }
 
 #[cfg(test)]
