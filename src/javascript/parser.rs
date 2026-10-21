@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::{
-    BinaryOperator, Expression, JsError, NativeFunction, Statement, Token, TokenKind, UserFunction,
+    BinaryOperator, Expression, JsError, Statement, Token, TokenKind, UserFunction,
     Value, tokenize,
 };
 
