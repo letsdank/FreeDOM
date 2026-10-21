@@ -165,6 +165,8 @@ fn collect_shapes(
             .transpose()?,
 
         "rect" => parse_rect(element)?,
+        "circle" => parse_circle(element)?,
+        "ellipse" => parse_ellipse(element)?,
 
         _ => None,
     };
@@ -218,6 +220,84 @@ fn attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
         .iter()
         .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
         .map(|attribute| attribute.value.as_str())
+}
+
+fn parse_circle(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
+    let center_x = number_attribute(element, "cx", 0.0)?;
+    let center_y = number_attribute(element, "cy", 0.0)?;
+    let radius = number_attribute(element, "r", 0.0)?;
+
+    ellipse_path(center_x, center_y, radius, radius)
+}
+
+fn parse_ellipse(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
+    let center_x = number_attribute(element, "cx", 0.0)?;
+    let center_y = number_attribute(element, "cy", 0.0)?;
+    let radius_x = number_attribute(element, "rx", 0.0)?;
+    let radius_y = number_attribute(element, "ry", 0.0)?;
+
+    ellipse_path(center_x, center_y, radius_x, radius_y)
+}
+
+fn ellipse_path(
+    center_x: f32,
+    center_y: f32,
+    radius_x: f32,
+    radius_y: f32,
+) -> Result<Option<Path>, SvgError> {
+    if radius_x < 0.0 || radius_y < 0.0 {
+        return Err(SvgError::new("ellipse radii must not be negative"));
+    }
+
+    if radius_x == 0.0 || radius_y == 0.0 {
+        return Ok(None);
+    }
+
+    let left = center_x - radius_x;
+    let right = center_x + radius_x;
+    let top = center_y - radius_y;
+    let bottom = center_y + radius_y;
+
+    if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
+        return Err(SvgError::new("ellipse geometry is not finite"));
+    }
+
+    const KAPPA: f32 = 0.552_284_8;
+
+    let control_x = radius_x * KAPPA;
+    let control_y = radius_y * KAPPA;
+
+    let mut path = Path::new();
+
+    path.move_to(Point::new(right, center_y));
+
+    path.cubic_to(
+        Point::new(right, center_y + control_y),
+        Point::new(center_x + control_x, bottom),
+        Point::new(center_x, bottom),
+    );
+
+    path.cubic_to(
+        Point::new(center_x - control_x, bottom),
+        Point::new(left, center_y + control_y),
+        Point::new(left, center_y),
+    );
+
+    path.cubic_to(
+        Point::new(left, center_y - control_y),
+        Point::new(center_x - control_x, top),
+        Point::new(center_x, top),
+    );
+
+    path.cubic_to(
+        Point::new(center_x + control_x, top),
+        Point::new(right, center_y - control_y),
+        Point::new(right, center_y),
+    );
+
+    path.close();
+
+    Ok(Some(path))
 }
 
 fn parse_rect(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
@@ -644,5 +724,37 @@ mod tests {
         assert!(matches!(commands[6], PathCommand::CubicTo { .. }));
         assert!(matches!(commands[8], PathCommand::CubicTo { .. }));
         assert_eq!(commands[9], PathCommand::Close);
+    }
+
+    #[test]
+    fn converts_circles_and_ellipses_to_cubic_paths() {
+        let document = parse_svg(
+            r#"
+                <svg>
+                    <circle cx="10" cy="20" r="5"/>
+                    <ellipse cx="30" cy="40" rx="8" ry="3"/>
+                </svg>
+            "#,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes.len(), 2);
+
+        let circle = document.shapes[0].path.commands();
+        assert_eq!(circle.len(), 6);
+        assert_eq!(circle[0], PathCommand::MoveTo(Point::new(15.0, 20.0)));
+        assert!(matches!(circle[1], PathCommand::CubicTo { .. }));
+        assert_eq!(circle[5], PathCommand::Close);
+
+        let ellipse = document.shapes[1].path.commands();
+        assert_eq!(ellipse[0], PathCommand::MoveTo(Point::new(38.0, 40.0)));
+        assert_eq!(ellipse[5], PathCommand::Close);
+    }
+
+    #[test]
+    fn ignores_zero_radius_ellipses() {
+        let document = parse_svg(r#"<svg><circle cx="10" cy="10" r="0"/></svg>"#).unwrap();
+
+        assert!(document.shapes.is_empty());
     }
 }
