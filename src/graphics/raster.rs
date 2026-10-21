@@ -66,6 +66,65 @@ impl Surface {
         self.pixels.fill(color);
     }
 
+    pub fn set_pixel(&mut self, x: usize, y: usize, color: Color) -> bool {
+        let Some(index) = self.index(x, y) else {
+            return false;
+        };
+
+        self.pixels[index] = color;
+        true
+    }
+
+    pub fn blit_xrgb8888(
+        &self,
+        destination: &mut [u32],
+        destination_width: usize,
+        destination_height: usize,
+        origin_x: i32,
+        origin_y: i32,
+    ) {
+        for source_y in 0..self.height {
+            let destination_y = origin_y.saturating_add(source_y as i32);
+
+            if destination_y < 0 || destination_y >= destination_height as i32 {
+                continue;
+            }
+
+            for source_x in 0..self.width {
+                let destination_x = origin_x.saturating_add(source_x as i32);
+
+                if destination_x < 0 || destination_x >= destination_width as i32 {
+                    continue;
+                }
+
+                let source = self.pixels[source_y * self.width + source_x];
+
+                if source.alpha == 0 {
+                    continue;
+                }
+
+                let destination_index =
+                    destination_y as usize * destination_width + destination_x as usize;
+
+                let Some(destination_pixel) = destination.get_mut(destination_index) else {
+                    continue;
+                };
+
+                let background = Color::rgba(
+                    ((*destination_pixel >> 16) & 0xff) as u8,
+                    ((*destination_pixel >> 8) & 0xff) as u8,
+                    (*destination_pixel & 0xff) as u8,
+                    255,
+                );
+
+                let result = blend_source_over(background, source, 1.0);
+
+                *destination_pixel =
+                    (result.red as u32) << 16 | (result.green as u32) << 8 | result.blue as u32;
+            }
+        }
+    }
+
     fn blend_pixel(&mut self, x: usize, y: usize, color: Color, coverage: f32) {
         let Some(index) = self.index(x, y) else {
             return;
@@ -270,5 +329,19 @@ mod tests {
 
         assert_eq!(nonzero.pixel(4, 4), Some(Color::BLACK));
         assert_eq!(evenodd.pixel(4, 4), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn blits_rgba_surface_onto_xrgb8888_pixels() {
+        let mut surface = Surface::new(2, 1, Color::TRANSPARENT);
+
+        assert!(surface.set_pixel(0, 0, Color::rgba(255, 0, 0, 128)));
+        assert!(!surface.set_pixel(2, 0, Color::BLACK));
+
+        let mut destination = vec![0x00_00_00_ff, 0x00_ff_ff_ff];
+
+        surface.blit_xrgb8888(&mut destination, 2, 1, 0, 0);
+
+        assert_eq!(destination, vec![0x00_80_00_7f, 0x00_ff_ff_ff]);
     }
 }
