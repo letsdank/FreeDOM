@@ -1250,6 +1250,10 @@ enum ElementMethod {
     InsertBefore(u64),
     QuerySelector(u64),
     QuerySelectorAll(u64),
+    ClassListContains(u64),
+    ClassListAdd(u64),
+    ClassListRemove(u64),
+    ClassListToggle(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1281,6 +1285,7 @@ pub enum Value {
     ElementConstructor(String),
     TestContextMethod(TestContextMethod),
     NodeList(Vec<u64>),
+    ClassList(u64),
 }
 
 impl Value {
@@ -1315,6 +1320,7 @@ impl Value {
             Self::TestContextMethod(_) => "function".to_owned(),
             Self::ElementMethod(_) => "function".to_owned(),
             Self::NodeList(_) => "[object NodeList]".to_owned(),
+            Self::ClassList(_) => "[object DOMTokenList]".to_owned(),
         }
     }
 
@@ -2695,6 +2701,26 @@ impl Interpreter {
                         Ok(Value::Number(length as f64))
                     }
 
+                    (Value::ClassList(node_id), "length") => {
+                        Ok(Value::Number(self.class_list_tokens(node_id)?.len() as f64))
+                    }
+
+                    (Value::ClassList(node_id), "contains") => Ok(Value::ElementMethod(
+                        ElementMethod::ClassListContains(node_id),
+                    )),
+
+                    (Value::ClassList(node_id), "add") => {
+                        Ok(Value::ElementMethod(ElementMethod::ClassListAdd(node_id)))
+                    }
+
+                    (Value::ClassList(node_id), "remove") => Ok(Value::ElementMethod(
+                        ElementMethod::ClassListRemove(node_id),
+                    )),
+
+                    (Value::ClassList(node_id), "toggle") => Ok(Value::ElementMethod(
+                        ElementMethod::ClassListToggle(node_id),
+                    )),
+
                     (Value::Element(node_id), property) => {
                         let Some(element) = self.current_document_element(node_id) else {
                             return Err(JsError::runtime(
@@ -2787,6 +2813,8 @@ impl Interpreter {
                                     .map(|attribute| attribute.value.clone())
                                     .unwrap_or_default(),
                             )),
+
+                            "classList" => Ok(Value::ClassList(node_id)),
 
                             property => Err(JsError::runtime(format!(
                                 "Element.{property} is not implemented yet"
@@ -3105,6 +3133,7 @@ impl Interpreter {
             | Value::TestContextMethod(_)
             | Value::ElementMethod(_)
             | Value::NodeList(_)
+            | Value::ClassList(_)
             | Value::TestContext => None,
         }
     }
@@ -3390,6 +3419,22 @@ impl Interpreter {
                 self.query_selector_all_within(node_id, values)
             }
 
+            Value::ElementMethod(ElementMethod::ClassListContains(node_id)) => {
+                self.class_list_contains(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::ClassListAdd(node_id)) => {
+                self.class_list_add(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::ClassListRemove(node_id)) => {
+                self.class_list_remove(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::ClassListToggle(node_id)) => {
+                self.class_list_toggle(node_id, values)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => self.call_function(&function, values),
@@ -3661,6 +3706,126 @@ impl Interpreter {
             .unwrap_or_default();
 
         Ok(Value::NodeList(nodes))
+    }
+
+    fn class_list_tokens(&self, node_id: u64) -> Result<Vec<String>, JsError> {
+        let Some(element) = self.current_document_element(node_id) else {
+            return Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ));
+        };
+
+        Ok(element
+            .attributes
+            .iter()
+            .find(|attribute| attribute.name == "class")
+            .map(|attribute| {
+                attribute
+                    .value
+                    .split_ascii_whitespace()
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    fn set_class_list_tokens(&mut self, node_id: u64, tokens: Vec<String>) -> Result<(), JsError> {
+        if self
+            .current_document_mut()?
+            .set_node_attribute(node_id, "class", tokens.join(" "))
+        {
+            Ok(())
+        } else {
+            Err(JsError::runtime(
+                "TypeError: element is no longer available",
+            ))
+        }
+    }
+
+    fn class_list_token(value: &Value) -> Result<String, JsError> {
+        let token = value.to_js_string();
+
+        if token.is_empty()
+            || token
+                .chars()
+                .any(|character| character.is_ascii_whitespace())
+        {
+            return Err(JsError::runtime(
+                "SyntaxError: class token must not be empty or contain whitespace",
+            ));
+        }
+
+        Ok(token)
+    }
+
+    fn class_list_contains(&self, node_id: u64, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: DOMTokenList.contains expects one argument",
+            ));
+        }
+
+        let token = Self::class_list_token(&arguments[0])?;
+        Ok(Value::Boolean(
+            self.class_list_tokens(node_id)?
+                .iter()
+                .any(|item| item == &token),
+        ))
+    }
+
+    fn class_list_add(&mut self, node_id: u64, arguments: Vec<Value>) -> Result<Value, JsError> {
+        let additions = arguments
+            .iter()
+            .map(Self::class_list_token)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut tokens = self.class_list_tokens(node_id)?;
+
+        for token in additions {
+            if !tokens.iter().any(|item| item == &token) {
+                tokens.push(token);
+            }
+        }
+
+        self.set_class_list_tokens(node_id, tokens)?;
+        Ok(Value::Undefined)
+    }
+
+    fn class_list_remove(&mut self, node_id: u64, arguments: Vec<Value>) -> Result<Value, JsError> {
+        let removals = arguments
+            .iter()
+            .map(Self::class_list_token)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut tokens = self.class_list_tokens(node_id)?;
+        tokens.retain(|token| !removals.iter().any(|removal| removal == token));
+
+        self.set_class_list_tokens(node_id, tokens)?;
+        Ok(Value::Undefined)
+    }
+
+    fn class_list_toggle(&mut self, node_id: u64, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.is_empty() || arguments.len() > 2 {
+            return Err(JsError::runtime(
+                "TypeError: DOMTokenList.toggle expects one or two arguments",
+            ));
+        }
+
+        let token = Self::class_list_token(&arguments[0])?;
+        let force = arguments.get(1).map(|value| self.is_truthy(value));
+
+        let mut tokens = self.class_list_tokens(node_id)?;
+        let present = tokens.iter().any(|item| item == &token);
+        let should_be_present = force.unwrap_or(!present);
+
+        if should_be_present && !present {
+            tokens.push(token);
+        } else if !should_be_present && present {
+            tokens.retain(|item| item != &token);
+        }
+
+        self.set_class_list_tokens(node_id, tokens)?;
+        Ok(Value::Boolean(should_be_present))
     }
 
     fn create_document_element(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -4800,6 +4965,39 @@ let base = "https:\/\/example.test\u002Fdocs";
                 assert_equals(card.getAttribute("class"), "card");
                 assert_equals(document.querySelector(".featured"), null);
                 assert_equals(document.querySelector(".card"), card);
+            "#,
+            &mut document,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mutates_classes_through_class_list() {
+        let mut document = DocumentState::default();
+        document.register_body("", String::new());
+
+        evaluate_with_document(
+            r#"
+                const card = document.createElement("article");
+                document.body.appendChild(card);
+
+                card.classList.add("card", "featured", "card");
+
+                assert_equals(card.className, "card featured");
+                assert_equals(card.classList.length, 2);
+                assert_equals(card.classList.contains("featured"), true);
+                assert_equals(document.querySelector(".featured"), card);
+
+                assert_equals(card.classList.toggle("featured"), false);
+                assert_equals(card.classList.contains("featured"), false);
+
+                assert_equals(card.classList.toggle("visible", true), true);
+                assert_equals(card.className, "card visible");
+
+                card.classList.remove("card", "visible");
+
+                assert_equals(card.className, "");
+                assert_equals(card.classList.length, 0);
             "#,
             &mut document,
         )
