@@ -16,6 +16,10 @@ mod wpt_dom;
 
 use crate::{
     freedom_url::Url,
+    graphics::{
+        raster::Color as RasterColor,
+        svg::{SvgDocument, parse_svg_element},
+    },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     javascript::{DocumentState, evaluate_with_document},
 };
@@ -62,6 +66,7 @@ struct Block {
     text: String,
     style: TextStyle,
     link: Option<String>,
+    svg: Option<SvgDocument>,
 }
 
 struct LinkRegion {
@@ -742,6 +747,10 @@ fn extract_blocks(
         return;
     };
 
+    let HtmlNode::Element(dom_element) = node else {
+        unreachable!("element_info возвращает данные только для Element");
+    };
+
     if matches!(
         element.tag.as_str(),
         "script" | "style" | "template" | "head" | "title" | "meta" | "link"
@@ -757,6 +766,21 @@ fn extract_blocks(
     let style = compute_style(&element, inherited_style, rules);
 
     if style.display == Display::None {
+        return;
+    }
+
+    if element.tag == "svg" {
+        flush(blocks, current, inherited_style);
+
+        if let Ok(svg) = parse_svg_element(dom_element) {
+            blocks.push(Block {
+                text: String::new(),
+                svg: Some(svg),
+                style,
+                link: None,
+            });
+        }
+
         return;
     }
 
@@ -784,6 +808,7 @@ fn extract_blocks(
         if !text.is_empty() {
             blocks.push(Block {
                 text,
+                svg: None,
                 style,
                 link: target,
             });
@@ -811,10 +836,6 @@ fn extract_blocks(
 
         return;
     }
-
-    let HtmlNode::Element(dom_element) = node else {
-        unreachable!("element_info возвращает данные только для Element");
-    };
 
     for child in &dom_element.children {
         extract_blocks(child, rules, blocks, current, style, page_url, document);
@@ -874,6 +895,7 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
             | "h2"
             | "h3"
             | "pre"
+            | "svg"
     ) {
         style.display = Display::Block;
     }
@@ -941,6 +963,7 @@ fn flush(blocks: &mut Vec<Block>, current: &mut String, style: TextStyle) {
     if !text.is_empty() {
         blocks.push(Block {
             text,
+            svg: None,
             style,
             link: None,
         });
@@ -1348,6 +1371,20 @@ fn paint(
     let mut link_regions = Vec::new();
 
     for block in &page.blocks {
+        if let Some(svg) = &block.svg {
+            let available_width = width.saturating_sub(32);
+            let (svg_width, svg_height) = svg_block_size(svg, available_width);
+
+            if y + svg_height as i32 > CONTENT_TOP && y < height as i32 {
+                if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT) {
+                    surface.blit_xrgb8888(pixels, width, height, 16, y);
+                }
+            }
+
+            y += svg_height as i32 + block.style.margin_after;
+            continue;
+        }
+
         y = draw_wrapped_text(
             pixels,
             width,
@@ -1371,6 +1408,42 @@ fn paint(
         link_regions,
         max_scroll_y: (document_bottom - height as i32).max(0),
     }
+}
+
+fn svg_block_size(svg: &SvgDocument, available_width: usize) -> (usize, usize) {
+    const DEFAULT_WIDTH: usize = 300;
+    const DEFAULT_HEIGHT: usize = 150;
+    const MAX_HEIGHT: usize = 4096;
+
+    let maximum_width = available_width.max(1);
+
+    let declared_width = svg
+        .width
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.round() as usize);
+
+    let declared_height = svg
+        .height
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.round() as usize);
+
+    let aspect_ratio = svg
+        .view_box
+        .filter(|view_box| view_box.width > 0.0 && view_box.height > 0.0)
+        .map(|view_box| view_box.width / view_box.height);
+
+    let width = declared_width
+        .unwrap_or_else(|| DEFAULT_WIDTH.min(maximum_width))
+        .clamp(1, maximum_width);
+
+    let height = match (declared_height, aspect_ratio) {
+        (Some(height), _) => height,
+        (None, Some(ratio)) => (width as f32 / ratio).round() as usize,
+        (None, None) => DEFAULT_HEIGHT,
+    }
+        .clamp(1, MAX_HEIGHT);
+
+    (width, height)
 }
 
 fn draw_wrapped_text(
@@ -1672,5 +1745,24 @@ mod tests {
         assert_eq!(page.title, "After");
         assert_eq!(page.blocks.len(), 1);
         assert_eq!(page.blocks[0].text, "After");
+    }
+
+    #[test]
+    fn keeps_inline_svg_in_document_flow() {
+        let page = parse_html(
+            "https://example.test",
+            r##"
+                <p>Before</p>
+                <svg viewBox="0 0 10 10">
+                    <path fill="#ff0000" d="M 0 0 H 10 V 10 H 0 Z"/>
+                </svg>
+                <p>After</p>
+            "##,
+        );
+
+        assert_eq!(page.blocks.len(), 3);
+        assert_eq!(page.blocks[0].text, "Before");
+        assert!(page.blocks[1].svg.is_some());
+        assert_eq!(page.blocks[2].text, "After");
     }
 }

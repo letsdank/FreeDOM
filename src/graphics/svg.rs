@@ -86,6 +86,14 @@ pub fn parse_svg(input: &str) -> Result<SvgDocument, SvgError> {
         .first_element("svg")
         .ok_or_else(|| SvgError::new("missing <svg> root element"))?;
 
+    parse_svg_element(root)
+}
+
+pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
+    if !root.name.eq_ignore_ascii_case("svg") {
+        return Err(SvgError::new("expected an <svg> element"));
+    }
+
     let width = match attribute(root, "width") {
         Some(value) => Some(parse_svg_length(value)?),
         None => None,
