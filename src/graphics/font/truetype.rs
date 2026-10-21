@@ -1,4 +1,7 @@
-use super::sfnt::{FontError, SfntFlavor, SfntFont, TableTag};
+use super::{
+    cmap::CmapTable,
+    sfnt::{FontError, SfntFlavor, SfntFont, TableTag},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexToLocFormat {
@@ -22,6 +25,7 @@ pub struct TrueTypeFont<'a> {
     sfnt: SfntFont<'a>,
     head: HeadTable,
     maxp: MaxpTable,
+    cmap: CmapTable,
 }
 
 impl<'a> TrueTypeFont<'a> {
@@ -40,8 +44,14 @@ impl<'a> TrueTypeFont<'a> {
 
         let head = HeadTable::parse(&sfnt)?;
         let maxp = MaxpTable::parse(&sfnt)?;
+        let cmap = CmapTable::parse(&sfnt)?;
 
-        Ok(Self { sfnt, head, maxp })
+        Ok(Self {
+            sfnt,
+            head,
+            maxp,
+            cmap,
+        })
     }
 
     pub fn sfnt(&self) -> &SfntFont<'a> {
@@ -54,6 +64,14 @@ impl<'a> TrueTypeFont<'a> {
 
     pub fn maxp(&self) -> MaxpTable {
         self.maxp
+    }
+
+    pub fn cmap(&self) -> &CmapTable {
+        &self.cmap
+    }
+
+    pub fn glyph_id(&self, character: char) -> u16 {
+        self.cmap.glyph_id(character)
     }
 }
 
@@ -193,7 +211,7 @@ mod tests {
     fn rejects_invalid_index_to_loc_format() {
         let mut data = minimal_true_type_font();
 
-        data[94..96].copy_from_slice(&2_i16.to_be_bytes());
+        data[110..112].copy_from_slice(&2_i16.to_be_bytes());
 
         let error = TrueTypeFont::parse(&data).unwrap_err();
 
@@ -211,27 +229,59 @@ mod tests {
         assert_eq!(error.message, "font does not contain TrueType outlines");
     }
 
+    #[test]
+    fn maps_characters_to_glyph_ids() {
+        let data = minimal_true_type_font();
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        assert_eq!(font.glyph_id('A'), 66);
+        assert_eq!(font.glyph_id('B'), 0);
+    }
+
     fn minimal_true_type_font() -> Vec<u8> {
-        let mut data = vec![0_u8; 130];
+        let mut data = vec![0_u8; 190];
 
         data[0..4].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
-        data[4..6].copy_from_slice(&2_u16.to_be_bytes());
+        data[4..6].copy_from_slice(&3_u16.to_be_bytes());
 
         data[12..16].copy_from_slice(b"head");
-        data[20..24].copy_from_slice(&44_u32.to_be_bytes());
+        data[20..24].copy_from_slice(&60_u32.to_be_bytes());
         data[24..28].copy_from_slice(&54_u32.to_be_bytes());
 
         data[28..32].copy_from_slice(b"maxp");
-        data[36..40].copy_from_slice(&98_u32.to_be_bytes());
+        data[36..40].copy_from_slice(&114_u32.to_be_bytes());
         data[40..44].copy_from_slice(&32_u32.to_be_bytes());
 
-        data[56..60].copy_from_slice(&0x5f0f_3cf5_u32.to_be_bytes());
-        data[62..64].copy_from_slice(&1000_u16.to_be_bytes());
-        data[94..96].copy_from_slice(&1_i16.to_be_bytes());
-        data[96..98].copy_from_slice(&0_i16.to_be_bytes());
+        data[44..48].copy_from_slice(b"cmap");
+        data[52..56].copy_from_slice(&146_u32.to_be_bytes());
+        data[56..60].copy_from_slice(&44_u32.to_be_bytes());
 
-        data[98..102].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
-        data[102..104].copy_from_slice(&42_u16.to_be_bytes());
+        data[72..76].copy_from_slice(&0x5f0f_3cf5_u32.to_be_bytes());
+        data[78..80].copy_from_slice(&1000_u16.to_be_bytes());
+        data[110..112].copy_from_slice(&1_i16.to_be_bytes());
+        data[112..114].copy_from_slice(&0_i16.to_be_bytes());
+
+        data[114..118].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
+        data[118..120].copy_from_slice(&42_u16.to_be_bytes());
+
+        data[146..148].copy_from_slice(&0_u16.to_be_bytes());
+        data[148..150].copy_from_slice(&1_u16.to_be_bytes());
+        data[150..152].copy_from_slice(&3_u16.to_be_bytes());
+        data[152..154].copy_from_slice(&1_u16.to_be_bytes());
+        data[154..158].copy_from_slice(&12_u32.to_be_bytes());
+
+        data[158..160].copy_from_slice(&4_u16.to_be_bytes());
+        data[160..162].copy_from_slice(&32_u16.to_be_bytes());
+        data[164..166].copy_from_slice(&4_u16.to_be_bytes());
+        data[166..168].copy_from_slice(&4_u16.to_be_bytes());
+        data[168..170].copy_from_slice(&1_u16.to_be_bytes());
+
+        data[172..174].copy_from_slice(&0x0041_u16.to_be_bytes());
+        data[174..176].copy_from_slice(&u16::MAX.to_be_bytes());
+        data[178..180].copy_from_slice(&0x0041_u16.to_be_bytes());
+        data[180..182].copy_from_slice(&u16::MAX.to_be_bytes());
+        data[182..184].copy_from_slice(&1_u16.to_be_bytes());
+        data[184..186].copy_from_slice(&1_u16.to_be_bytes());
 
         data
     }
