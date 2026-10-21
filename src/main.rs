@@ -6,6 +6,8 @@ mod html;
 #[allow(dead_code)]
 mod javascript;
 
+pub mod graphics;
+
 #[cfg(test)]
 mod wpt_url;
 
