@@ -62,11 +62,18 @@ enum FontWeight {
     Bold,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FontStyle {
+    Normal,
+    Italic,
+}
+
 #[derive(Clone, Copy)]
 struct TextStyle {
     color: u32,
     font_size: f32,
     font_weight: FontWeight,
+    font_style: FontStyle,
     margin_after: i32,
     display: Display,
 }
@@ -114,6 +121,7 @@ struct Declarations {
     color: Option<u32>,
     font_size: Option<FontSize>,
     font_weight: Option<FontWeight>,
+    font_style: Option<FontStyle>,
     display: Option<Display>,
     margin_after: Option<i32>,
 }
@@ -271,6 +279,7 @@ fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page
         color: TEXT,
         font_size: 16.0,
         font_weight: FontWeight::Normal,
+        font_style: FontStyle::Normal,
         margin_after: 0,
         display: Display::Inline,
     };
@@ -619,6 +628,8 @@ fn parse_declarations(source: &str) -> Declarations {
 
             "font-weight" => declarations.font_weight = parse_font_weight(value),
 
+            "font-style" => declarations.font_style = parse_font_style(value),
+
             "display" => {
                 declarations.display = match value.trim().to_ascii_lowercase().as_str() {
                     "none" => Some(Display::None),
@@ -715,6 +726,14 @@ fn parse_font_weight(value: &str) -> Option<FontWeight> {
                 _ => None,
             }
         }
+    }
+}
+
+fn parse_font_style(value: &str) -> Option<FontStyle> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "norma" => Some(FontStyle::Normal),
+        "italic" | "oblique" => Some(FontStyle::Italic),
+        _ => None,
     }
 }
 
@@ -985,6 +1004,10 @@ fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
 
     if let Some(font_weight) = declarations.font_weight {
         style.font_weight = font_weight;
+    }
+
+    if let Some(font_style) = declarations.font_style {
+        style.font_style = font_style;
     }
 }
 
@@ -1464,6 +1487,7 @@ fn paint(
             &block.text,
             block.style.font_size,
             block.style.font_weight,
+            block.style.font_style,
             block.style.color,
             block.link.as_deref(),
             vector_font.as_ref(),
@@ -1527,6 +1551,7 @@ fn draw_wrapped_text(
     text: &str,
     font_size: f32,
     font_weight: FontWeight,
+    font_style: FontStyle,
     color: u32,
     link_target: Option<&str>,
     vector_font: Option<&TrueTypeFont<'_>>,
@@ -1539,7 +1564,9 @@ fn draw_wrapped_text(
     let bitmap_line_height = (10 * bitmap_scale) as i32;
 
     let character_width = vector_font
-        .and_then(|font| vector_text_width(font, " ", font_size, FontWeight::Normal))
+        .and_then(|font| {
+            vector_text_width(font, " ", font_size, FontWeight::Normal, FontStyle::Normal)
+        })
         .unwrap_or(bitmap_character_width);
 
     let vector_line_metrics = vector_font.and_then(|font| font.line_metrics(font_size));
@@ -1556,7 +1583,7 @@ fn draw_wrapped_text(
 
     for word in text.split_whitespace() {
         let word_width = vector_font
-            .and_then(|font| vector_text_width(font, word, font_size, font_weight))
+            .and_then(|font| vector_text_width(font, word, font_size, font_weight, font_style))
             .unwrap_or_else(|| {
                 word.chars().count() as i32 * bitmap_character_width
                     + i32::from(font_weight == FontWeight::Bold)
@@ -1585,6 +1612,7 @@ fn draw_wrapped_text(
                     word,
                     font_size,
                     font_weight,
+                    font_style,
                     color,
                     font,
                 )
@@ -1629,11 +1657,38 @@ fn vector_text_width(
     text: &str,
     font_size: f32,
     font_weight: FontWeight,
+    font_style: FontStyle,
 ) -> Option<i32> {
     let outline = font.outline_text(text, font_size).ok()?;
-    let extra_width = synthetic_bold_offset(font_size, font_weight);
+
+    let extra_width = synthetic_bold_offset(font_size, font_weight)
+        + synthetic_italic_overhang(font, font_size, font_style);
 
     Some((outline.advance_width + extra_width).ceil().max(1.0) as i32)
+}
+
+fn synthetic_italic_shear(font_style: FontStyle) -> f32 {
+    match font_style {
+        FontStyle::Normal => 0.0,
+        // Glyph outlines above the baseline have negative Y coordinates, so the factor is negative.
+        FontStyle::Italic => -0.212_56,
+    }
+}
+
+fn synthetic_italic_overhang(
+    font: &TrueTypeFont<'_>,
+    font_size: f32,
+    font_style: FontStyle,
+) -> f32 {
+    let shear = synthetic_italic_shear(font_style).abs();
+
+    if shear == 0.0 {
+        return 0.0;
+    }
+
+    font.line_metrics(font_size)
+        .map(|metrics| metrics.ascent * shear)
+        .unwrap_or(font_size * shear)
 }
 
 fn synthetic_bold_offset(font_size: f32, font_weight: FontWeight) -> f32 {
@@ -1653,6 +1708,7 @@ fn draw_vector_text_line(
     text: &str,
     font_size: f32,
     font_weight: FontWeight,
+    font_style: FontStyle,
     color: u32,
     font: &TrueTypeFont<'_>,
 ) -> bool {
@@ -1666,14 +1722,21 @@ fn draw_vector_text_line(
 
     let padding = 2_i32;
     let bold_offset = synthetic_bold_offset(font_size, font_weight);
-    let surface_width = (outline.advance_width + bold_offset).ceil().max(1.0) as usize + 4;
+    let italic_shear = synthetic_italic_shear(font_style);
+    let italic_overhang = synthetic_italic_overhang(font, font_size, font_style);
+    let surface_width = (outline.advance_width + bold_offset + italic_overhang)
+        .ceil()
+        .max(1.0) as usize
+        + 4;
     let surface_height = line_metrics.line_height.ceil().max(1.0) as usize + 4;
 
+    let glyph_transform = Transform::skew_x(italic_shear).then(Transform::translate(
+        padding as f32,
+        line_metrics.ascent + padding as f32,
+    ));
+
     let translated_outline = TextOutline {
-        path: outline.path.transformed(Transform::translate(
-            padding as f32,
-            line_metrics.ascent + padding as f32,
-        )),
+        path: outline.path.transformed(glyph_transform),
         advance_width: outline.advance_width,
     };
 
@@ -1984,5 +2047,13 @@ mod tests {
         assert_eq!(parse_font_weight("bold"), Some(FontWeight::Bold));
         assert_eq!(parse_font_weight("700"), Some(FontWeight::Bold));
         assert_eq!(parse_font_weight("1200"), None);
+    }
+
+    #[test]
+    fn parses_css_font_styles() {
+        assert_eq!(parse_font_style("normal"), Some(FontStyle::Normal));
+        assert_eq!(parse_font_style("italic"), Some(FontStyle::Italic));
+        assert_eq!(parse_font_style("oblique"), Some(FontStyle::Italic));
+        assert_eq!(parse_font_style("oblique 12deg"), None);
     }
 }

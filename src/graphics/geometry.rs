@@ -58,6 +58,14 @@ impl Transform {
         }
     }
 
+    /// Shears X proportionally to Y: x' = x + factor * y.
+    pub const fn skew_x(factor: f32) -> Self {
+        Self {
+            c: factor,
+            ..Self::IDENTITY
+        }
+    }
+
     pub fn rotate(radians: f32) -> Self {
         let (sin, cos) = radians.sin_cos();
 
