@@ -335,15 +335,15 @@ fn collect_shapes(
     }
 
     if element.name.eq_ignore_ascii_case("use") {
-        let Some(reference_id) = use_reference_id(element) else {
+        let Some(reference_id) = use_reference_id(element)? else {
             return Ok(());
         };
 
-        if reference_stack.iter().any(|id| id == reference_id) {
+        if reference_stack.iter().any(|id| id == &reference_id) {
             return Err(SvgError::new("circular SVG use reference"));
         }
 
-        let referenced_element = find_element_by_id(root, reference_id)
+        let referenced_element = find_element_by_id(root, &reference_id)
             .ok_or_else(|| SvgError::new("SVG use target was not found"))?;
 
         let x = number_attribute(element, "x", 0.0)?;
@@ -476,11 +476,55 @@ fn attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
         .map(|attribute| attribute.value.as_str())
 }
 
-fn use_reference_id(element: &HtmlElement) -> Option<&str> {
-    attribute(element, "href")
-        .or_else(|| attribute(element, "xlink:href"))
-        .and_then(|value| value.strip_prefix('#'))
-        .filter(|id| !id.is_empty())
+fn use_reference_id(element: &HtmlElement) -> Result<Option<String>, SvgError> {
+    let Some(value) = attribute(element, "href").or_else(|| attribute(element, "xlink:href"))
+    else {
+        return Ok(None);
+    };
+
+    let Some(fragment) = value.strip_prefix('#') else {
+        return Ok(None);
+    };
+
+    if fragment.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(decode_percent_encoded_fragment(fragment)?))
+}
+
+fn decode_percent_encoded_fragment(value: &str) -> Result<String, SvgError> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'%' {
+            decoded.push(bytes[cursor]);
+            cursor += 1;
+            continue;
+        }
+
+        let Some(&high) = bytes.get(cursor + 1) else {
+            return Err(SvgError::new("incomplete percent-encoded SVG fragment"));
+        };
+
+        let Some(&low) = bytes.get(cursor + 2) else {
+            return Err(SvgError::new("incomplete percent-encoded SVG fragment"));
+        };
+
+        let high = hexadecimal_digit(high)
+            .ok_or_else(|| SvgError::new("invalid percent-encoded SVG fragment"))?;
+
+        let low = hexadecimal_digit(low)
+            .ok_or_else(|| SvgError::new("invalid percent-encoded SVG fragment"))?;
+
+        decoded.push(high * 16 + low);
+        cursor += 3;
+    }
+
+    String::from_utf8(decoded)
+        .map_err(|_| SvgError::new("SVG fragment identifier is not valid UTF-8"))
 }
 
 fn find_element_by_id<'a>(element: &'a HtmlElement, id: &str) -> Option<&'a HtmlElement> {
@@ -1525,5 +1569,23 @@ mod tests {
         let surface = document.render(12, 12, Color::WHITE).unwrap();
 
         assert_eq!(surface.pixel(5, 5), Some(Color::rgba(255, 127, 127, 255)));
+    }
+
+    #[test]
+    fn decodes_percent_encoded_use_fragment_identifiers() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <defs>
+                        <rect id="tile one" width="4" height="5" fill="green"/>
+                    </defs>
+                    <use href="#tile%20one"/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
     }
 }
