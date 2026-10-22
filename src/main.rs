@@ -17,7 +17,9 @@ mod wpt_dom;
 use crate::{
     freedom_url::Url,
     graphics::{
-        raster::Color as RasterColor,
+        font::{layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont},
+        geometry::Transform,
+        raster::{Color as RasterColor, Surface as RasterSurface},
         svg::{SvgDocument, parse_svg_element},
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
@@ -987,11 +989,13 @@ struct App {
     max_scroll_y: i32,
     history: SessionHistory,
     modifiers: ModifiersState,
+    vector_font_data: Option<Vec<u8>>,
 }
 
 impl App {
     fn new(page: Page, event_proxy: EventLoopProxy<AppEvent>) -> Self {
         let initial_url = page.url.clone();
+        let vector_font_data = load_vector_font_from_environment();
 
         Self {
             address: initial_url.clone(),
@@ -1010,6 +1014,7 @@ impl App {
             cursor_position: None,
             scroll_y: 0,
             max_scroll_y: 0,
+            vector_font_data,
         }
     }
 
@@ -1170,6 +1175,7 @@ impl App {
             &self.page,
             &self.address,
             &self.status,
+            self.vector_font_data.as_deref(),
             self.scroll_y,
         );
 
@@ -1186,6 +1192,26 @@ impl App {
         }
 
         Ok(())
+    }
+}
+
+fn load_vector_font_from_environment() -> Option<Vec<u8>> {
+    let path = std::env::var("FREEDOM_FONT").ok()?;
+
+    let data = match std::fs::read(&path) {
+        Ok(data) => data,
+        Err(error) => {
+            eprintln!("не удалось загрузить FREEDOM_FONT {path:?}: {error}");
+            return None;
+        }
+    };
+
+    match TrueTypeFont::parse(&data) {
+        Ok(_) => Some(data),
+        Err(error) => {
+            eprintln!("FREEDOM_FONT {path:?} не поддерживается: {error}");
+            None
+        }
     }
 }
 
@@ -1348,9 +1374,12 @@ fn paint(
     page: &Page,
     address: &str,
     status: &str,
+    vector_font_data: Option<&[u8]>,
     scroll_y: i32,
 ) -> PaintResult {
     pixels.fill(BACKGROUND);
+
+    let vector_font = vector_font_data.and_then(|data| TrueTypeFont::parse(data).ok());
 
     fill_rect(pixels, width, height, 0, 0, width as i32, 70, TOOLBAR);
     fill_rect(
@@ -1396,6 +1425,7 @@ fn paint(
             block.style.scale,
             block.style.color,
             block.link.as_deref(),
+            vector_font.as_ref(),
             &mut link_regions,
         );
 
@@ -1457,15 +1487,36 @@ fn draw_wrapped_text(
     scale: usize,
     color: u32,
     link_target: Option<&str>,
+    vector_font: Option<&TrueTypeFont<'_>>,
     link_regions: &mut Vec<LinkRegion>,
 ) -> i32 {
-    let character_width = (8 * scale) as i32;
-    let glyph_height = (8 * scale) as i32;
-    let line_height = (10 * scale) as i32;
+    let bitmap_character_width = (8 * scale) as i32;
+    let bitmap_glyph_height = (8 * scale) as i32;
+    let bitmap_line_height = (10 * scale) as i32;
+
+    let font_size = 16.0 * scale as f32;
+    let character_width = vector_font
+        .and_then(|font| vector_text_width(font, " ", font_size))
+        .unwrap_or(bitmap_character_width);
+
+    let glyph_height = if vector_font.is_some() {
+        font_size.ceil() as i32
+    } else {
+        bitmap_glyph_height
+    };
+
+    let line_height = if vector_font.is_some() {
+        (font_size * 1.5).ceil() as i32
+    } else {
+        bitmap_line_height
+    };
+
     let mut x = left;
 
     for word in text.split_whitespace() {
-        let word_width = word.chars().count() as i32 * character_width;
+        let word_width = vector_font
+            .and_then(|font| vector_text_width(font, word, font_size))
+            .unwrap_or_else(|| word.chars().count() as i32 * bitmap_character_width);
 
         if x != left && x + character_width + word_width > right {
             x = left;
@@ -1480,7 +1531,15 @@ fn draw_wrapped_text(
         let is_visible = y + glyph_height > CONTENT_TOP && y < height as i32;
 
         if is_visible {
-            draw_text_line(pixels, width, height, word_x, y, word, scale, color);
+            let rendered_with_vector_font = vector_font.is_some_and(|font| {
+                draw_vector_text_line(
+                    pixels, width, height, word_x, y, word, font_size, color, font,
+                )
+            });
+
+            if !rendered_with_vector_font {
+                draw_text_line(pixels, width, height, word_x, y, word, scale, color);
+            }
 
             if let Some(target) = link_target {
                 link_regions.push(LinkRegion {
@@ -1497,6 +1556,60 @@ fn draw_wrapped_text(
     }
 
     y + line_height
+}
+
+fn vector_text_width(font: &TrueTypeFont<'_>, text: &str, font_size: f32) -> Option<i32> {
+    let outline = font.outline_text(text, font_size).ok()?;
+
+    Some(outline.advance_width.ceil().max(1.0) as i32)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_vector_text_line(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    text: &str,
+    font_size: f32,
+    color: u32,
+    font: &TrueTypeFont<'_>,
+) -> bool {
+    let Ok(outline) = font.outline_text(text, font_size) else {
+        return false;
+    };
+
+    let padding = 2_i32;
+    let surface_width = (outline.advance_width.ceil().max(1.0) as usize).saturating_add(4);
+    let surface_height = (font_size * 1.5).ceil().max(1.0) as usize + 4;
+
+    let translated_outline = TextOutline {
+        path: outline.path.transformed(Transform::translate(
+            padding as f32,
+            font_size + padding as f32,
+        )),
+        advance_width: outline.advance_width,
+    };
+
+    let mut surface = RasterSurface::new(surface_width, surface_height, RasterColor::TRANSPARENT);
+
+    if rasterize_text_outline(&mut surface, &translated_outline, raster_color(color)).is_err() {
+        return false;
+    }
+
+    surface.blit_xrgb8888(pixels, width, height, x - padding, y - padding);
+
+    true
+}
+
+fn raster_color(color: u32) -> RasterColor {
+    RasterColor::rgba(
+        ((color >> 16) & 0xff) as u8,
+        ((color >> 8) & 0xff) as u8,
+        (color & 0xff) as u8,
+        255,
+    )
 }
 
 fn draw_text_line(
