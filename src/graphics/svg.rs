@@ -2,7 +2,10 @@ use crate::{
     graphics::{
         flatten::{FlattenError, flatten_path},
         geometry::{Path, Point, Transform},
-        raster::{Color, FillRule, StrokeStyle, Surface, fill_path_clipped, stroke_path_clipped},
+        raster::{
+            Color, FillRule, StrokeLineCap, StrokeStyle, Surface, fill_path_clipped,
+            stroke_path_clipped,
+        },
         svg_path::parse_path_data,
         svg_transform::parse_transform_list,
     },
@@ -67,6 +70,7 @@ impl SvgDocument {
                     &flattened,
                     StrokeStyle {
                         width: shape.stroke_width * viewport_stroke_scale,
+                        line_cap: shape.stroke_line_cap,
                     },
                     stroke,
                     &clip_paths,
@@ -132,6 +136,7 @@ pub struct SvgShape {
     pub stroke: Option<Color>,
     pub stroke_width: f32,
     clip_paths: Vec<Path>,
+    stroke_line_cap: StrokeLineCap,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,6 +228,7 @@ struct SvgStyle {
     stroke_width: f32,
     fill_opacity: f32,
     stroke_opacity: f32,
+    stroke_line_cap: StrokeLineCap,
 }
 
 impl Default for SvgStyle {
@@ -234,6 +240,7 @@ impl Default for SvgStyle {
             stroke_width: 1.0,
             fill_opacity: 1.0,
             stroke_opacity: 1.0,
+            stroke_line_cap: StrokeLineCap::Butt,
         }
     }
 }
@@ -388,6 +395,7 @@ fn collect_shapes(
                     .map(|color| apply_opacity(color, style.stroke_opacity)),
                 stroke_width: style.stroke_width,
                 clip_paths: clip_paths.to_vec(),
+                stroke_line_cap: style.stroke_line_cap,
             });
         }
     }
@@ -434,6 +442,10 @@ fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle,
         style.fill_rule = parse_fill_rule(value)?;
     }
 
+    if let Some(value) = attribute(element, "stroke-linecap") {
+        style.stroke_line_cap = parse_stroke_line_cap(value)?;
+    }
+
     if let Some(value) = attribute(element, "style") {
         for declaration in value.split(';') {
             let Some((property, value)) = declaration.split_once(':') else {
@@ -447,6 +459,7 @@ fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle,
                 "stroke-width" => style.stroke_width = parse_stroke_width(value)?,
                 "fill-opacity" => style.fill_opacity = parse_opacity(value)?,
                 "stroke-opacity" => style.stroke_opacity = parse_opacity(value)?,
+                "stroke-linecap" => style.stroke_line_cap = parse_stroke_line_cap(value)?,
                 _ => {}
             }
         }
@@ -482,6 +495,15 @@ fn find_element_by_id<'a>(element: &'a HtmlElement, id: &str) -> Option<&'a Html
 
         find_element_by_id(child, id)
     })
+}
+
+fn parse_stroke_line_cap(value: &str) -> Result<StrokeLineCap, SvgError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "butt" => Ok(StrokeLineCap::Butt),
+        "round" => Ok(StrokeLineCap::Round),
+        "square" => Ok(StrokeLineCap::Square),
+        _ => Err(SvgError::new("unsupported stroke-linecap")),
+    }
 }
 
 fn parse_opacity(value: &str) -> Result<f32, SvgError> {

@@ -37,11 +37,23 @@ pub enum FillRule {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StrokeStyle {
     pub width: f32,
+    pub line_cap: StrokeLineCap,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StrokeLineCap {
+    #[default]
+    Butt,
+    Round,
+    Square,
 }
 
 impl Default for StrokeStyle {
     fn default() -> Self {
-        Self { width: 1.0 }
+        Self {
+            width: 1.0,
+            line_cap: StrokeLineCap::Butt,
+        }
     }
 }
 
@@ -218,7 +230,7 @@ pub fn stroke_path_clipped(
                 .filter(|(offset_x, offset_y)| {
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
 
-                    sample_is_on_stroke(path, sample, radius)
+                    sample_is_on_stroke(path, sample, radius, style.line_cap)
                         && clips
                         .iter()
                         .all(|clip| sample_is_inside(clip, sample, FillRule::NonZero))
@@ -274,7 +286,12 @@ fn pixel_bounds(
     (start_x < end_x && start_y < end_y).then_some((start_x, end_x, start_y, end_y))
 }
 
-fn sample_is_on_stroke(path: &FlattenedPath, sample: Point, radius: f32) -> bool {
+fn sample_is_on_stroke(
+    path: &FlattenedPath,
+    sample: Point,
+    radius: f32,
+    line_cap: StrokeLineCap,
+) -> bool {
     for contour in path.contours() {
         let points = contour.points();
 
@@ -288,10 +305,81 @@ fn sample_is_on_stroke(path: &FlattenedPath, sample: Point, radius: f32) -> bool
             if point_is_inside_butt_segment(sample, points[points.len() - 1], points[0], radius) {
                 return true;
             }
+
+            continue;
+        }
+
+        if points.len() < 2 {
+            continue;
+        }
+
+        let start = points[0];
+        let second = points[1];
+        let end = points[points.len() - 1];
+        let before_end = points[points.len() - 2];
+
+        match line_cap {
+            StrokeLineCap::Butt => {}
+
+            StrokeLineCap::Round => {
+                if point_is_inside_round_cap(sample, start, radius)
+                    || point_is_inside_round_cap(sample, end, radius)
+                {
+                    return true;
+                }
+            }
+
+            StrokeLineCap::Square => {
+                if point_is_inside_square_cap(sample, start, second, radius, true)
+                    || point_is_inside_square_cap(sample, end, before_end, radius, false)
+                {
+                    return true;
+                }
+            }
         }
     }
 
     false
+}
+
+fn point_is_inside_round_cap(point: Point, center: Point, radius: f32) -> bool {
+    let delta_x = point.x - center.x;
+    let delta_y = point.y - center.y;
+
+    delta_x * delta_x + delta_y * delta_y <= radius * radius
+}
+
+fn point_is_inside_square_cap(
+    point: Point,
+    endpoint: Point,
+    adjacent: Point,
+    radius: f32,
+    is_start: bool,
+) -> bool {
+    let direction_x = adjacent.x - endpoint.x;
+    let direction_y = adjacent.y - endpoint.y;
+    let length = (direction_x * direction_x + direction_y * direction_y).sqrt();
+
+    if length <= f32::EPSILON {
+        return false;
+    }
+
+    let unit_x = direction_x / length;
+    let unit_y = direction_y / length;
+
+    let (from, to) = if is_start {
+        (
+            Point::new(endpoint.x - unit_x * radius, endpoint.y - unit_y * radius),
+            endpoint,
+        )
+    } else {
+        (
+            endpoint,
+            Point::new(endpoint.x + unit_x * radius, endpoint.y - unit_y * radius),
+        )
+    };
+
+    point_is_inside_butt_segment(point, from, to, radius)
 }
 
 fn point_is_inside_butt_segment(point: Point, from: Point, to: Point, radius: f32) -> bool {
@@ -474,7 +562,10 @@ mod tests {
         stroke_path(
             &mut surface,
             &flattened,
-            StrokeStyle { width: 2.0 },
+            StrokeStyle {
+                width: 2.0,
+                ..StrokeStyle::default()
+            },
             Color::BLACK,
         );
 
@@ -514,5 +605,39 @@ mod tests {
         assert_eq!(surface.pixel(1, 3), Some(Color::TRANSPARENT));
         assert_eq!(surface.pixel(3, 3), Some(Color::BLACK));
         assert_eq!(surface.pixel(6, 3), Some(Color::TRANSPARENT))
+    }
+
+    #[test]
+    fn renders_round_line_caps() {
+        let mut path = Path::new();
+        path.move_to(Point::new(3.0, 4.0));
+        path.line_to(Point::new(7.0, 4.0));
+
+        let flattened = flatten_path(&path, 0.25).unwrap();
+
+        let mut butt = Surface::new(10, 10, Color::TRANSPARENT);
+        stroke_path(
+            &mut butt,
+            &flattened,
+            StrokeStyle {
+                width: 2.0,
+                ..StrokeStyle::default()
+            },
+            Color::BLACK,
+        );
+
+        let mut round = Surface::new(10, 10, Color::TRANSPARENT);
+        stroke_path(
+            &mut round,
+            &flattened,
+            StrokeStyle {
+                width: 2.0,
+                line_cap: StrokeLineCap::Round,
+            },
+            Color::BLACK,
+        );
+
+        assert_eq!(butt.pixel(2, 4), Some(Color::TRANSPARENT));
+        assert_ne!(round.pixel(2, 4), Some(Color::TRANSPARENT));
     }
 }
