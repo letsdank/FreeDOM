@@ -5,3 +5,4 @@ pub mod loca;
 pub mod glyf;
 pub mod hmtx;
 pub mod layout;
+pub mod kern;

@@ -2,6 +2,7 @@ use super::{
     cmap::CmapTable,
     glyf::{Glyph, parse_glyph},
     hmtx::{HorizontalMetric, HorizontalMetrics},
+    kern::KerningTable,
     layout::{TextOutline, outline_text},
     loca::GlyphLocations,
     sfnt::{FontError, SfntFlavor, SfntFont, TableTag},
@@ -36,6 +37,7 @@ pub struct TrueTypeFont<'a> {
     glyf: &'a [u8],
     glyf_offset: usize,
     metrics: HorizontalMetrics,
+    kerning: KerningTable,
 }
 
 impl<'a> TrueTypeFont<'a> {
@@ -56,6 +58,7 @@ impl<'a> TrueTypeFont<'a> {
         let maxp = MaxpTable::parse(&sfnt)?;
         let cmap = CmapTable::parse(&sfnt)?;
         let metrics = HorizontalMetrics::parse(&sfnt, maxp.num_glyphs)?;
+        let kerning = KerningTable::parse_optional(&sfnt)?;
 
         let locations = GlyphLocations::parse(&sfnt, head.index_to_loc_format, maxp.num_glyphs)?;
 
@@ -88,6 +91,7 @@ impl<'a> TrueTypeFont<'a> {
             glyf,
             glyf_offset,
             metrics,
+            kerning,
         })
     }
 
@@ -198,6 +202,10 @@ impl<'a> TrueTypeFont<'a> {
 
     pub fn outline_text(&self, text: &str, font_size: f32) -> Result<TextOutline, FontError> {
         outline_text(self, text, font_size)
+    }
+
+    pub fn kerning(&self, left_glyph: u16, right_glyph: u16) -> i16 {
+        self.kerning.adjustment(left_glyph, right_glyph)
     }
 }
 

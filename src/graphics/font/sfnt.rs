@@ -12,6 +12,7 @@ impl TableTag {
     pub const HHEA: Self = Self(*b"hhea");
     pub const HMTX: Self = Self(*b"hmtx");
     pub const NAME: Self = Self(*b"name");
+    pub const KERN: Self = Self(*b"kern");
 
     pub const fn from_bytes(bytes: [u8; 4]) -> Self {
         Self(bytes)

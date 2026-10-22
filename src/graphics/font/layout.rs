@@ -23,6 +23,7 @@ pub fn outline_text(
     let scale = font_size / f32::from(font.head().units_per_em);
     let mut path = Path::new();
     let mut pen_x = 0.0;
+    let mut previous_glyph = None;
 
     for character in text.chars() {
         let glyph_id = font.glyph_id(character);
@@ -31,12 +32,17 @@ pub fn outline_text(
             message: "cmap refers to a glyph outside the font".to_owned(),
         })?;
 
+        if let Some(previous_glyph) = previous_glyph {
+            pen_x += f32::from(font.kerning(previous_glyph, glyph_id)) * scale;
+        }
+
         let glyph_path = font.glyph_path(glyph_id)?;
         let transform = Transform::scale(scale, -scale).then(Transform::translate(pen_x, 0.0));
 
         path.append(&glyph_path.transformed(transform));
 
         pen_x += f32::from(metric.advance_width) * scale;
+        previous_glyph = Some(glyph_id);
     }
 
     Ok(TextOutline {
