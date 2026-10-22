@@ -27,6 +27,14 @@ pub struct MaxpTable {
     pub num_glyphs: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineMetrics {
+    pub ascent: f32,
+    pub descent: f32,
+    pub line_gap: f32,
+    pub line_height: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct TrueTypeFont<'a> {
     sfnt: SfntFont<'a>,
@@ -206,6 +214,27 @@ impl<'a> TrueTypeFont<'a> {
 
     pub fn kerning(&self, left_glyph: u16, right_glyph: u16) -> i16 {
         self.kerning.adjustment(left_glyph, right_glyph)
+    }
+
+    pub fn line_metrics(&self, font_size: f32) -> Option<LineMetrics> {
+        if !font_size.is_finite() || font_size <= 0.0 {
+            return None;
+        }
+
+        let scale = font_size / f32::from(self.head.units_per_em);
+        let header = self.metrics.header();
+
+        let ascent = f32::from(header.ascender).max(0.0) * scale;
+        let descent = -f32::from(header.descender).min(0.0) * scale;
+        let line_gap = f32::from(header.line_gap).max(0.0) * scale;
+        let line_height = (ascent + descent + line_gap).max(font_size);
+
+        Some(LineMetrics {
+            ascent,
+            descent,
+            line_gap,
+            line_height,
+        })
     }
 }
 
@@ -430,6 +459,22 @@ mod tests {
         assert_eq!(error.message, "font size must be finite and positive");
     }
 
+    #[test]
+    fn scales_line_metrics_from_hhea() {
+        let data = minimal_true_type_font();
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        assert_eq!(
+            font.line_metrics(20.0),
+            Some(LineMetrics {
+                ascent: 16.0,
+                descent: 4.0,
+                line_gap: 0.0,
+                line_height: 20.0,
+            })
+        );
+    }
+
     fn minimal_true_type_font() -> Vec<u8> {
         let mut data = vec![0_u8; 354];
 
@@ -512,6 +557,10 @@ mod tests {
         data[302..304].copy_from_slice(&1_u16.to_be_bytes());
         data[304] = 100;
         data[305] = 20;
+
+        data[310..312].copy_from_slice(&800_i16.to_be_bytes());
+        data[312..314].copy_from_slice(&(-200_i16).to_be_bytes());
+        data[314..316].copy_from_slice(&0_i16.to_be_bytes());
 
         data[340..342].copy_from_slice(&3_u16.to_be_bytes());
 

@@ -6,8 +6,17 @@ pub struct HorizontalMetric {
     pub left_side_bearing: i16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HorizontalHeader {
+    pub ascender: i16,
+    pub descender: i16,
+    pub line_gap: i16,
+    pub number_of_h_metrics: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HorizontalMetrics {
+    header: HorizontalHeader,
     metrics: Vec<HorizontalMetric>,
 }
 
@@ -30,7 +39,21 @@ impl HorizontalMetrics {
             ));
         }
 
-        let long_metric_count = usize::from(read_u16(hhea, 34, hhea_record.offset)?);
+        if read_i16(hhea, 32, hhea_record.offset)? != 0 {
+            return Err(error(
+                hhea_record.offset + 32,
+                "unsupported hhea metricDataFormat value",
+            ));
+        }
+
+        let header = HorizontalHeader {
+            ascender: read_i16(hhea, 4, hhea_record.offset)?,
+            descender: read_i16(hhea, 6, hhea_record.offset)?,
+            line_gap: read_i16(hhea, 8, hhea_record.offset)?,
+            number_of_h_metrics: read_u16(hhea, 34, hhea_record.offset)?,
+        };
+
+        let long_metric_count = usize::from(header.number_of_h_metrics);
         let glyph_count = usize::from(num_glyphs);
 
         if long_metric_count == 0 || long_metric_count > glyph_count {
@@ -95,7 +118,7 @@ impl HorizontalMetrics {
             });
         }
 
-        Ok(Self { metrics })
+        Ok(Self { header, metrics })
     }
 
     pub fn glyph_count(&self) -> u16 {
@@ -104,6 +127,10 @@ impl HorizontalMetrics {
 
     pub fn metric(&self, glyph_id: u16) -> Option<HorizontalMetric> {
         self.metrics.get(usize::from(glyph_id)).copied()
+    }
+
+    pub fn header(&self) -> HorizontalHeader {
+        self.header
     }
 }
 
@@ -172,6 +199,15 @@ mod tests {
                 left_side_bearing: 30,
             })
         );
+        assert_eq!(
+            metrics.header(),
+            HorizontalHeader {
+                ascender: 800,
+                descender: -200,
+                line_gap: 0,
+                number_of_h_metrics: 2,
+            }
+        );
     }
 
     #[test]
@@ -197,6 +233,10 @@ mod tests {
         data[28..32].copy_from_slice(b"hmtx");
         data[36..40].copy_from_slice(&80_u32.to_be_bytes());
         data[40..44].copy_from_slice(&(hmtx.len() as u32).to_be_bytes());
+
+        data[48..50].copy_from_slice(&800_i16.to_be_bytes());
+        data[50..52].copy_from_slice(&(-200_i16).to_be_bytes());
+        data[52..54].copy_from_slice(&0_i16.to_be_bytes());
 
         data[78..80].copy_from_slice(&number_of_h_metrics.to_be_bytes());
         data[80..].copy_from_slice(hmtx);

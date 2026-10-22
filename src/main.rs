@@ -1509,17 +1509,15 @@ fn draw_wrapped_text(
         .and_then(|font| vector_text_width(font, " ", font_size))
         .unwrap_or(bitmap_character_width);
 
-    let glyph_height = if vector_font.is_some() {
-        font_size.ceil() as i32
-    } else {
-        bitmap_glyph_height
-    };
+    let vector_line_metrics = vector_font.and_then(|font| font.line_metrics(font_size));
 
-    let line_height = if vector_font.is_some() {
-        (font_size * 1.5).ceil() as i32
-    } else {
-        bitmap_line_height
-    };
+    let glyph_height = vector_line_metrics
+        .map(|metrics| metrics.line_height.ceil() as i32)
+        .unwrap_or(bitmap_glyph_height);
+
+    let line_height = vector_line_metrics
+        .map(|metrics| metrics.line_height.ceil() as i32)
+        .unwrap_or(bitmap_line_height);
 
     let mut x = left;
 
@@ -1590,14 +1588,18 @@ fn draw_vector_text_line(
         return false;
     };
 
+    let Some(line_metrics) = font.line_metrics(font_size) else {
+        return false;
+    };
+
     let padding = 2_i32;
     let surface_width = (outline.advance_width.ceil().max(1.0) as usize).saturating_add(4);
-    let surface_height = (font_size * 1.5).ceil().max(1.0) as usize + 4;
+    let surface_height = line_metrics.line_height.ceil().max(1.0) as usize + 4;
 
     let translated_outline = TextOutline {
         path: outline.path.transformed(Transform::translate(
             padding as f32,
-            font_size + padding as f32,
+            line_metrics.ascent + padding as f32,
         )),
         advance_width: outline.advance_width,
     };
