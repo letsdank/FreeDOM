@@ -331,7 +331,7 @@ fn sample_is_on_stroke(
 
             StrokeLineCap::Square => {
                 if point_is_inside_square_cap(sample, start, second, radius, true)
-                    || point_is_inside_square_cap(sample, end, before_end, radius, false)
+                    || point_is_inside_square_cap(sample, before_end, end, radius, false)
                 {
                     return true;
                 }
@@ -351,31 +351,37 @@ fn point_is_inside_round_cap(point: Point, center: Point, radius: f32) -> bool {
 
 fn point_is_inside_square_cap(
     point: Point,
-    endpoint: Point,
-    adjacent: Point,
+    edge_start: Point,
+    edge_end: Point,
     radius: f32,
-    is_start: bool,
+    at_start: bool,
 ) -> bool {
-    let direction_x = adjacent.x - endpoint.x;
-    let direction_y = adjacent.y - endpoint.y;
-    let length = (direction_x * direction_x + direction_y * direction_y).sqrt();
+    let delta_x = edge_end.x - edge_start.x;
+    let delta_y = edge_end.y - edge_start.y;
+    let length = (delta_x * delta_x + delta_y * delta_y).sqrt();
 
     if length <= f32::EPSILON {
         return false;
     }
 
-    let unit_x = direction_x / length;
-    let unit_y = direction_y / length;
+    let direction_x = delta_x / length;
+    let direction_y = delta_y / length;
 
-    let (from, to) = if is_start {
+    let (from, to) = if at_start {
         (
-            Point::new(endpoint.x - unit_x * radius, endpoint.y - unit_y * radius),
-            endpoint,
+            Point::new(
+                edge_start.x - direction_x * radius,
+                edge_start.y - direction_y * radius,
+            ),
+            edge_start,
         )
     } else {
         (
-            endpoint,
-            Point::new(endpoint.x + unit_x * radius, endpoint.y - unit_y * radius),
+            edge_end,
+            Point::new(
+                edge_end.x + direction_x * radius,
+                edge_end.y + direction_y * radius,
+            ),
         )
     };
 
@@ -639,5 +645,39 @@ mod tests {
 
         assert_eq!(butt.pixel(2, 4), Some(Color::TRANSPARENT));
         assert_ne!(round.pixel(2, 4), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn renders_square_line_caps() {
+        let mut path = Path::new();
+        path.move_to(Point::new(4.0, 3.0));
+        path.line_to(Point::new(4.0, 7.0));
+
+        let flattened = flatten_path(&path, 0.25).unwrap();
+
+        let mut butt = Surface::new(10, 10, Color::TRANSPARENT);
+        stroke_path(
+            &mut butt,
+            &flattened,
+            StrokeStyle {
+                width: 2.0,
+                ..StrokeStyle::default()
+            },
+            Color::BLACK,
+        );
+
+        let mut square = Surface::new(10, 10, Color::TRANSPARENT);
+        stroke_path(
+            &mut square,
+            &flattened,
+            StrokeStyle {
+                width: 2.0,
+                line_cap: StrokeLineCap::Square,
+            },
+            Color::BLACK,
+        );
+
+        assert_eq!(butt.pixel(4, 7), Some(Color::TRANSPARENT));
+        assert_ne!(square.pixel(4, 7), Some(Color::TRANSPARENT));
     }
 }
