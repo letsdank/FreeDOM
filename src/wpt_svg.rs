@@ -103,6 +103,13 @@ fn fixture_path(relative_path: &str) -> String {
     )
 }
 
+fn css_fixture_path(relative_path: &str) -> String {
+    format!(
+        "{}/testdata/wpt/css/{relative_path}",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,5 +332,31 @@ mod tests {
             "SVG reftest differs in {} pixels; maximum channel difference is {}",
             report.different_pixels, report.max_channel_difference
         );
+    }
+
+    #[test]
+    fn official_wpt_svg_clip_path_uses_nonzero_rule() {
+        let test_source = fs::read_to_string(css_fixture_path(
+            "css-masking/clip-path-svg-content/clip-path-clip-rule-002.svg",
+        ))
+            .expect("WPT SVG test fixture is missing");
+
+        let reference_source = fs::read_to_string(css_fixture_path(
+            "css-masking/clip-path-svg-content/reference/clip-path-square-001-ref.svg",
+        ))
+            .expect("WPT SVG reference fixture is missing");
+
+        let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+        eprintln!(
+            "WPT SVG result: {}x{}, {} differing pixels, maximum channel difference {}",
+            report.viewport_width,
+            report.viewport_height,
+            report.different_pixels,
+            report.max_channel_difference
+        );
+
+        assert_eq!(report.different_pixels, 0);
+        assert_eq!(report.max_channel_difference, 0);
     }
 }

@@ -254,8 +254,8 @@ fn collect_shapes(
     shapes: &mut Vec<SvgShape>,
     reference_stack: &mut Vec<String>,
 ) -> Result<(), SvgError> {
-    // FreeDOM does not support SVG paint servers yet. If a paint server
-    // cannot be resolved, SVG uses the optional fallback paint.
+    // SVG conditional processing prevents rendering elements that require an
+    // unspported extension.
     if attribute(element, "requiredextensions").is_some() {
         return Ok(());
     }
@@ -269,14 +269,13 @@ fn collect_shapes(
 
     let style = resolve_style(element, inherited_style)?;
 
-    let local_transform = match attribute(element, "transform") {
-        Some(value) => {
-            parse_transform_list(value).map_err(|error| SvgError::new(error.to_string()))?
-        }
-        None => Transform::IDENTITY,
-    };
+    let transform = element_transform(element)?.then(parent_transform);
 
-    let transform = local_transform.then(parent_transform);
+    let mut element_clip_paths = clip_paths.to_vec();
+
+    if let Some(clip_path) = resolve_clip_path(root, element, transform)? {
+        element_clip_paths.push(clip_path);
+    }
 
     if element.name.eq_ignore_ascii_case("switch") {
         for child in &element.children {
@@ -293,7 +292,7 @@ fn collect_shapes(
                 child,
                 style,
                 transform,
-                clip_paths,
+                &element_clip_paths,
                 shapes,
                 reference_stack,
             )?;
@@ -340,7 +339,7 @@ fn collect_shapes(
             None => placement,
         };
 
-        let mut child_clip_paths = clip_paths.to_vec();
+        let mut child_clip_paths = element_clip_paths;
         child_clip_paths.push(viewport_path(width, height).transformed(placement));
 
         for child in &element.children {
@@ -383,7 +382,7 @@ fn collect_shapes(
             referenced_element,
             style,
             reference_transform,
-            clip_paths,
+            &element_clip_paths,
             shapes,
             reference_stack,
         );
@@ -393,20 +392,7 @@ fn collect_shapes(
         return result;
     }
 
-    let path = match element.name.as_str() {
-        "path" => attribute(element, "d")
-            .map(|data| parse_path_data(data).map_err(|error| SvgError::new(error.to_string())))
-            .transpose()?,
-
-        "rect" => parse_rect(element)?,
-        "circle" => parse_circle(element)?,
-        "ellipse" => parse_ellipse(element)?,
-        "polygon" => parse_poly_points(element, true)?,
-        "polyline" => parse_poly_points(element, false)?,
-        "line" => parse_line(element)?,
-
-        _ => None,
-    };
+    let path = path_for_element(element)?;
 
     if let Some(path) = path {
         if style.fill.is_some() || style.stroke.is_some() {
@@ -420,7 +406,7 @@ fn collect_shapes(
                     .stroke
                     .map(|color| apply_opacity(color, style.stroke_opacity)),
                 stroke_width: style.stroke_width,
-                clip_paths: clip_paths.to_vec(),
+                clip_paths: element_clip_paths.clone(),
                 stroke_line_cap: style.stroke_line_cap,
             });
         }
@@ -433,10 +419,117 @@ fn collect_shapes(
                 child,
                 style,
                 transform,
-                clip_paths,
+                &element_clip_paths,
                 shapes,
                 reference_stack,
             )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn element_transform(element: &HtmlElement) -> Result<Transform, SvgError> {
+    match attribute(element, "transform") {
+        Some(value) => {
+            parse_transform_list(value).map_err(|error| SvgError::new(error.to_string()))
+        }
+        None => Ok(Transform::IDENTITY),
+    }
+}
+
+fn path_for_element(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
+    match element.name.as_str() {
+        "path" => attribute(element, "d")
+            .map(|data| parse_path_data(data).map_err(|error| SvgError::new(error.to_string())))
+            .transpose(),
+
+        "rect" => parse_rect(element),
+        "circle" => parse_circle(element),
+        "ellipse" => parse_ellipse(element),
+        "polygon" => parse_poly_points(element, true),
+        "polyline" => parse_poly_points(element, false),
+        "line" => parse_line(element),
+
+        _ => Ok(None),
+    }
+}
+
+fn resolve_clip_path(
+    root: &HtmlElement,
+    element: &HtmlElement,
+    transform: Transform,
+) -> Result<Option<Path>, SvgError> {
+    let Some(reference_id) = clip_path_reference_id(element)? else {
+        return Ok(None);
+    };
+
+    let clip_path = find_element_by_id(root, &reference_id)
+        .ok_or_else(|| SvgError::new("SVG clip-path target was not found"))?;
+
+    if !clip_path.name.eq_ignore_ascii_case("clippath") {
+        return Err(SvgError::new(
+            "SVG clip-path target is not a clipPath element",
+        ));
+    }
+
+    if let Some(units) = attribute(clip_path, "clippathunits") {
+        if !units.eq_ignore_ascii_case("userspaceonuse") {
+            return Err(SvgError::new("unsupported clipPathUnits value"));
+        }
+    }
+
+    let clip_transform = element_transform(clip_path)?.then(transform);
+    let mut path = Path::new();
+
+    for child in &clip_path.children {
+        if let HtmlNode::Element(child) = child {
+            collect_clip_path_geometry(child, clip_transform, &mut path)?;
+        }
+    }
+
+    Ok(Some(path))
+}
+
+fn clip_path_reference_id(element: &HtmlElement) -> Result<Option<String>, SvgError> {
+    let Some(value) = attribute(element, "clip-path") else {
+        return Ok(None);
+    };
+
+    let value = value.trim();
+
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+
+    let Some(fragment) = value
+        .strip_prefix("url(#")
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return Err(SvgError::new("unsupported clip-path reference"));
+    };
+
+    if fragment.is_empty() {
+        return Err(SvgError::new("clip-path reference is empty"));
+    }
+
+    Ok(Some(decode_percent_encoded_fragment(fragment)?))
+}
+
+fn collect_clip_path_geometry(
+    element: &HtmlElement,
+    parent_transform: Transform,
+    output: &mut Path,
+) -> Result<(), SvgError> {
+    let transform = element_transform(element)?.then(parent_transform);
+
+    if let Some(path) = path_for_element(element)? {
+        output.append(&path.transformed(transform));
+    }
+
+    for child in &element.children {
+        if let HtmlNode::Element(child) = child {
+            collect_clip_path_geometry(child, transform, output)?;
         }
     }
 
@@ -1660,5 +1753,25 @@ mod tests {
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
+    }
+
+    #[test]
+    fn applies_local_clip_paths() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <clipPath id="center">
+                        <rect x="2" y="2" width="4" height="4"/>
+                    </clipPath>
+                    <rect width="8" height="8" fill="red" clip-path="url(#center)"/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        let surface = document.render(8, 8, Color::WHITE).unwrap();
+
+        assert_eq!(surface.pixel(3, 3), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(surface.pixel(1, 1), Some(Color::WHITE));
     }
 }
