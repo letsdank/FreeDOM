@@ -226,9 +226,8 @@ fn collect_shapes(
     shapes: &mut Vec<SvgShape>,
     reference_stack: &mut Vec<String>,
 ) -> Result<(), SvgError> {
-    // FreeDOM does not support SVG extensions yet. Under SVG conditional processing,
-    // an element with requiredExtensions is not rendered when the required
-    // extension is unsupported.
+    // FreeDOM does not support SVG paint servers yet. If a paint server
+    // cannot be resolved, SVG uses the optional fallback paint.
     if attribute(element, "requiredextensions").is_some() {
         return Ok(());
     }

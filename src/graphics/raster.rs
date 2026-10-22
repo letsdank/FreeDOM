@@ -150,6 +150,16 @@ impl Surface {
 }
 
 pub fn fill_path(surface: &mut Surface, path: &FlattenedPath, fill_rule: FillRule, color: Color) {
+    fill_path_clipped(surface, path, fill_rule, color, &[])
+}
+
+pub fn fill_path_clipped(
+    surface: &mut Surface,
+    path: &FlattenedPath,
+    fill_rule: FillRule,
+    color: Color,
+    clips: &[FlattenedPath],
+) {
     if color.alpha == 0 {
         return;
     }
@@ -164,7 +174,11 @@ pub fn fill_path(surface: &mut Surface, path: &FlattenedPath, fill_rule: FillRul
                 .iter()
                 .filter(|(offset_x, offset_y)| {
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
+
                     sample_is_inside(path, sample, fill_rule)
+                        && clips
+                        .iter()
+                        .all(|clip| sample_is_inside(clip, sample, FillRule::NonZero))
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
@@ -177,6 +191,16 @@ pub fn fill_path(surface: &mut Surface, path: &FlattenedPath, fill_rule: FillRul
 }
 
 pub fn stroke_path(surface: &mut Surface, path: &FlattenedPath, style: StrokeStyle, color: Color) {
+    stroke_path_clipped(surface, path, style, color, &[])
+}
+
+pub fn stroke_path_clipped(
+    surface: &mut Surface,
+    path: &FlattenedPath,
+    style: StrokeStyle,
+    color: Color,
+    clips: &[FlattenedPath],
+) {
     if color.alpha == 0 || !style.width.is_finite() || style.width <= 0.0 {
         return;
     }
@@ -193,7 +217,11 @@ pub fn stroke_path(surface: &mut Surface, path: &FlattenedPath, style: StrokeSty
                 .iter()
                 .filter(|(offset_x, offset_y)| {
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
+
                     sample_is_on_stroke(path, sample, radius)
+                        && clips
+                        .iter()
+                        .all(|clip| sample_is_inside(clip, sample, FillRule::NonZero))
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
@@ -452,5 +480,39 @@ mod tests {
 
         assert_eq!(surface.pixel(3, 3), Some(Color::BLACK));
         assert_eq!(surface.pixel(0, 3), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn clips_filled_paths() {
+        let mut painted_path = Path::new();
+        painted_path.move_to(Point::new(0.0, 0.0));
+        painted_path.line_to(Point::new(8.0, 0.0));
+        painted_path.line_to(Point::new(8.0, 8.0));
+        painted_path.line_to(Point::new(0.0, 8.0));
+        painted_path.close();
+
+        let mut clip_path = Path::new();
+        clip_path.move_to(Point::new(2.0, 2.0));
+        clip_path.line_to(Point::new(6.0, 2.0));
+        clip_path.line_to(Point::new(6.0, 6.0));
+        clip_path.line_to(Point::new(2.0, 6.0));
+        clip_path.close();
+
+        let painted_path = flatten_path(&painted_path, 0.25).unwrap();
+        let clip_path = flatten_path(&clip_path, 0.25).unwrap();
+
+        let mut surface = Surface::new(8, 8, Color::TRANSPARENT);
+
+        fill_path_clipped(
+            &mut surface,
+            &painted_path,
+            FillRule::NonZero,
+            Color::BLACK,
+            &[clip_path],
+        );
+
+        assert_eq!(surface.pixel(1, 3), Some(Color::TRANSPARENT));
+        assert_eq!(surface.pixel(3, 3), Some(Color::BLACK));
+        assert_eq!(surface.pixel(6, 3), Some(Color::TRANSPARENT))
     }
 }
