@@ -16,6 +16,7 @@ pub struct SvgDocument {
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub view_box: Option<ViewBox>,
+    view_box_disables_rendering: bool,
     pub shapes: Vec<SvgShape>,
 }
 
@@ -27,6 +28,10 @@ impl SvgDocument {
         background: Color,
     ) -> Result<Surface, FlattenError> {
         let mut surface = Surface::new(width, height, background);
+
+        if self.view_box_disables_rendering {
+            return Ok(surface);
+        }
 
         let viewport_transform = self
             .view_box
@@ -65,6 +70,11 @@ pub struct ViewBox {
     pub min_y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+enum ParsedViewBox {
+    Valid(ViewBox),
+    DisablesRendering,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,9 +131,12 @@ pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
         None => None,
     };
 
-    let view_box = match attribute(root, "viewbox") {
-        Some(value) => Some(parse_view_box(value)?),
-        None => None,
+    let (view_box, view_box_disables_rendering) = match attribute(root, "viewbox") {
+        Some(value) => match parse_view_box(value)? {
+            ParsedViewBox::Valid(view_box) => (Some(view_box), false),
+            ParsedViewBox::DisablesRendering => (None, true),
+        },
+        None => (None, false),
     };
 
     let mut shapes = Vec::new();
@@ -133,6 +146,7 @@ pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
         width,
         height,
         view_box,
+        view_box_disables_rendering,
         shapes,
     })
 }
@@ -620,23 +634,27 @@ fn parse_svg_length(value: &str) -> Result<f32, SvgError> {
     Ok(values[0])
 }
 
-fn parse_view_box(value: &str) -> Result<ViewBox, SvgError> {
+fn parse_view_box(value: &str) -> Result<ParsedViewBox, SvgError> {
     let values = parse_number_list(value)?;
 
     let [min_x, min_y, width, height] = values.as_slice() else {
         return Err(SvgError::new("viewBox must contain four numbers"));
     };
 
-    if *width <= 0.0 || *height <= 0.0 {
-        return Err(SvgError::new("viewBox width and height must be positive"));
+    if *width < 0.0 || *height < 0.0 {
+        return Err(SvgError::new("viewBox width and height cannot be negative"));
     }
 
-    Ok(ViewBox {
+    if *width == 0.0 || *height == 0.0 {
+        return Ok(ParsedViewBox::DisablesRendering);
+    }
+
+    Ok(ParsedViewBox::Valid(ViewBox {
         min_x: *min_x,
         min_y: *min_y,
         width: *width,
         height: *height,
-    })
+    }))
 }
 
 fn parse_number_list(input: &str) -> Result<Vec<f32>, SvgError> {
@@ -956,5 +974,21 @@ mod tests {
             .unwrap();
 
         assert!(document.shapes.is_empty());
+    }
+
+    #[test]
+    fn zero_sized_viewbox_disables_rendering() {
+        let document = parse_svg(
+            r##"
+                <svg viewBox="0 0 0 10">
+                    <rect width="10" height="10" fill="red"/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        let surface = document.render(20, 20, Color::WHITE).unwrap();
+
+        assert_eq!(surface.pixel(10, 10), Some(Color::WHITE));
     }
 }
