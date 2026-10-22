@@ -269,4 +269,25 @@ mod tests {
             report.different_pixels, report.max_channel_difference
         )
     }
+
+    #[test]
+    fn official_wpt_svg_inner_svg_transform_and_viewbox() {
+        let test_source = fs::read_to_string(fixture_path(
+            "struct/reftests/inner-svg-transform-and-viewbox.svg",
+        ))
+            .expect("WPT SVG test fixture is missing");
+
+        let reference_source = fs::read_to_string(fixture_path(
+            "struct/reftests/reference/inner-svg-transform-and-viewbox-ref.svg",
+        ))
+            .expect("WPT SVG reference fixture is missing");
+
+        let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+        assert_eq!(
+            report.different_pixels, 0,
+            "SVG reftest differs in {} pixels; maximum channel difference is {}",
+            report.different_pixels, report.max_channel_difference
+        );
+    }
 }

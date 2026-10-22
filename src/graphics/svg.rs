@@ -2,7 +2,7 @@ use crate::{
     graphics::{
         flatten::{FlattenError, flatten_path},
         geometry::{Path, Point, Transform},
-        raster::{Color, FillRule, StrokeStyle, Surface, fill_path, stroke_path},
+        raster::{Color, FillRule, StrokeStyle, Surface, fill_path_clipped, stroke_path_clipped},
         svg_path::parse_path_data,
         svg_transform::parse_transform_list,
     },
@@ -35,7 +35,14 @@ impl SvgDocument {
 
         let viewport_transform = self
             .view_box
-            .map(|view_box| view_box_transform(view_box, self.preserve_aspect_ratio, width, height))
+            .map(|view_box| {
+                view_box_transform(
+                    view_box,
+                    self.preserve_aspect_ratio,
+                    width as f32,
+                    height as f32,
+                )
+            })
             .unwrap_or(Transform::IDENTITY);
 
         let viewport_stroke_scale = stroke_scale(viewport_transform);
@@ -44,18 +51,25 @@ impl SvgDocument {
             let transformed_path = shape.path.transformed(viewport_transform);
             let flattened = flatten_path(&transformed_path, 0.25)?;
 
+            let clip_paths = shape
+                .clip_paths
+                .iter()
+                .map(|path| flatten_path(&path.transformed(viewport_transform), 0.25))
+                .collect::<Result<Vec<_>, _>>()?;
+
             if let Some(fill) = shape.fill {
-                fill_path(&mut surface, &flattened, shape.fill_rule, fill);
+                fill_path_clipped(&mut surface, &flattened, shape.fill_rule, fill, &clip_paths);
             }
 
             if let Some(stroke) = shape.stroke {
-                stroke_path(
+                stroke_path_clipped(
                     &mut surface,
                     &flattened,
                     StrokeStyle {
                         width: shape.stroke_width * viewport_stroke_scale,
                     },
                     stroke,
+                    &clip_paths,
                 );
             }
         }
@@ -117,6 +131,7 @@ pub struct SvgShape {
     pub fill_rule: FillRule,
     pub stroke: Option<Color>,
     pub stroke_width: f32,
+    clip_paths: Vec<Path>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,6 +200,7 @@ pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
         root,
         SvgStyle::default(),
         Transform::IDENTITY,
+        &[],
         &mut shapes,
         &mut reference_stack,
     )?;
@@ -223,6 +239,7 @@ fn collect_shapes(
     element: &HtmlElement,
     inherited_style: SvgStyle,
     parent_transform: Transform,
+    clip_paths: &[Path],
     shapes: &mut Vec<SvgShape>,
     reference_stack: &mut Vec<String>,
 ) -> Result<(), SvgError> {
@@ -250,6 +267,62 @@ fn collect_shapes(
 
     let transform = local_transform.then(parent_transform);
 
+    if element.name.eq_ignore_ascii_case("svg") && !std::ptr::eq(root, element) {
+        let x = number_attribute(element, "x", 0.0)?;
+        let y = number_attribute(element, "y", 0.0)?;
+
+        let width = attribute(element, "width")
+            .map(parse_svg_length)
+            .transpose()?
+            .unwrap_or(300.0);
+
+        let height = attribute(element, "height")
+            .map(parse_svg_length)
+            .transpose()?
+            .unwrap_or(150.0);
+
+        if width == 0.0 || height == 0.0 {
+            return Ok(());
+        }
+
+        let placement = Transform::translate(x, y).then(transform);
+
+        let child_transform = match attribute(element, "viewbox") {
+            Some(value) => match parse_view_box(value)? {
+                ParsedViewBox::Valid(view_box) => {
+                    let preserve_aspect_ratio = match attribute(element, "preserveaspectratio") {
+                        Some(value) => parse_preserve_aspect_ratio(value)?,
+                        None => PreserveAspectRatio::default(),
+                    };
+
+                    view_box_transform(view_box, preserve_aspect_ratio, width, height)
+                        .then(placement)
+                }
+                ParsedViewBox::DisablesRendering => return Ok(()),
+            },
+            None => placement,
+        };
+
+        let mut child_clip_paths = clip_paths.to_vec();
+        child_clip_paths.push(viewport_path(width, height).transformed(placement));
+
+        for child in &element.children {
+            if let HtmlNode::Element(child) = child {
+                collect_shapes(
+                    root,
+                    child,
+                    style,
+                    child_transform,
+                    &child_clip_paths,
+                    shapes,
+                    reference_stack,
+                )?;
+            }
+        }
+
+        return Ok(());
+    }
+
     if element.name.eq_ignore_ascii_case("use") {
         let Some(reference_id) = use_reference_id(element) else {
             return Ok(());
@@ -273,6 +346,7 @@ fn collect_shapes(
             referenced_element,
             style,
             reference_transform,
+            clip_paths,
             shapes,
             reference_stack,
         );
@@ -305,13 +379,22 @@ fn collect_shapes(
                 fill_rule: style.fill_rule,
                 stroke: style.stroke,
                 stroke_width: style.stroke_width,
+                clip_paths: clip_paths.to_vec(),
             });
         }
     }
 
     for child in &element.children {
         if let HtmlNode::Element(child) = child {
-            collect_shapes(root, child, style, transform, shapes, reference_stack)?;
+            collect_shapes(
+                root,
+                child,
+                style,
+                transform,
+                clip_paths,
+                shapes,
+                reference_stack,
+            )?;
         }
     }
 
@@ -635,9 +718,9 @@ fn parse_fill(value: &str) -> Result<Option<Color>, SvgError> {
 
         let fallback = after_url_start[close + 1..].trim();
 
-        // FreeDOM does not implement SVG extensions yet. An element with
-        // requiredExtensions is not rendered until all requested extensions
-        // are supported.
+        // FreeDOM does not support SVG extensions yet. Under SVG conditional
+        // processing, an element is not rendered when it requires an unsupported
+        // extension.
         return if fallback.is_empty() {
             Ok(None)
         } else {
@@ -918,10 +1001,10 @@ fn stroke_scale(transform: Transform) -> f32 {
 fn view_box_transform(
     view_box: ViewBox,
     preserve_aspect_ratio: PreserveAspectRatio,
-    width: usize,
-    height: usize,
+    width: f32,
+    height: f32,
 ) -> Transform {
-    if width == 0 || height == 0 {
+    if width == 0.0 || height == 0.0 {
         return Transform::scale(0.0, 0.0);
     }
 
@@ -959,6 +1042,16 @@ fn alignment_offset(alignment: ViewBoxAlignment, remaining_space: f32) -> f32 {
         ViewBoxAlignment::Mid => remaining_space * 0.5,
         ViewBoxAlignment::Max => remaining_space,
     }
+}
+
+fn viewport_path(width: f32, height: f32) -> Path {
+    let mut path = Path::new();
+    path.move_to(Point::new(0.0, 0.0));
+    path.line_to(Point::new(width, 0.0));
+    path.line_to(Point::new(width, height));
+    path.line_to(Point::new(0.0, height));
+    path.close();
+    path
 }
 
 #[cfg(test)]
@@ -1269,8 +1362,8 @@ mod tests {
                 vertical: ViewBoxAlignment::Max,
                 meet_or_slice: MeetOrSlice::Meet,
             },
-            20,
-            10,
+            20.0,
+            10.0,
         );
 
         assert_eq!(
@@ -1299,5 +1392,56 @@ mod tests {
             PathCommand::MoveTo(Point::new(2.0, 3.0))
         );
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
+    }
+
+    #[test]
+    fn maps_nested_svg_viewboxes_into_their_viewports() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <svg
+                        x="10"
+                        y="20"
+                        width="20"
+                        height="10"
+                        viewBox="0 0 10 10"
+                        preserveAspectRatio="none"
+                    >
+                        <rect width="10" height="10" fill="green"/>
+                    </svg>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        let surface = document.render(50, 50, Color::WHITE).unwrap();
+
+        assert_eq!(surface.pixel(25, 25), Some(Color::rgba(0, 128, 0, 255)));
+    }
+
+    #[test]
+    fn clips_nested_svg_to_its_viewport() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <svg
+                        x="10"
+                        y="20"
+                        width="20"
+                        height="10"
+                        viewBox="0 0 10 10"
+                        preserveAspectRatio="none"
+                    >
+                        <rect width="20" height="10" fill="red"/>
+                    </svg>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        let surface = document.render(50, 50, Color::WHITE).unwrap();
+
+        assert_eq!(surface.pixel(25, 25), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(surface.pixel(35, 25), Some(Color::WHITE));
     }
 }
