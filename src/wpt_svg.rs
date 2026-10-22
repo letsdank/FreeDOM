@@ -243,4 +243,30 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn official_wpt_svg_use_can_target_a_element() {
+        let test_source = fs::read_to_string(fixture_path("struct/reftests/use-a.svg"))
+            .expect("WPT SVG test fixture is missing");
+
+        let reference_source =
+            fs::read_to_string(fixture_path("struct/reftests/reference/green-100x100.svg"))
+                .expect("WPT SVG reference fixture is missing");
+
+        let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+        eprintln!(
+            "WPT SVG use-a: {}x{}, {} differing pixels, maximum channel difference {}",
+            report.viewport_width,
+            report.viewport_height,
+            report.different_pixels,
+            report.max_channel_difference
+        );
+
+        assert_eq!(
+            report.different_pixels, 0,
+            "SVG reftest differs in {} pixels; maximum channel difference is {}",
+            report.different_pixels, report.max_channel_difference
+        )
+    }
 }

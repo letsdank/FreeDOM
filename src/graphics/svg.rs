@@ -8,7 +8,6 @@ use crate::{
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
 };
-use std::fmt::Alignment;
 use std::{error::Error, fmt};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,7 +178,16 @@ pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
     };
 
     let mut shapes = Vec::new();
-    collect_shapes(root, SvgStyle::default(), Transform::IDENTITY, &mut shapes)?;
+    let mut reference_stack = Vec::new();
+
+    collect_shapes(
+        root,
+        root,
+        SvgStyle::default(),
+        Transform::IDENTITY,
+        &mut shapes,
+        &mut reference_stack,
+    )?;
 
     Ok(SvgDocument {
         width,
@@ -211,10 +219,12 @@ impl Default for SvgStyle {
 }
 
 fn collect_shapes(
+    root: &HtmlElement,
     element: &HtmlElement,
     inherited_style: SvgStyle,
     parent_transform: Transform,
     shapes: &mut Vec<SvgShape>,
+    reference_stack: &mut Vec<String>,
 ) -> Result<(), SvgError> {
     // FreeDOM does not support SVG extensions yet. Under SVG conditional processing,
     // an element with requiredExtensions is not rendered when the required
@@ -240,6 +250,38 @@ fn collect_shapes(
     };
 
     let transform = local_transform.then(parent_transform);
+
+    if element.name.eq_ignore_ascii_case("use") {
+        let Some(reference_id) = use_reference_id(element) else {
+            return Ok(());
+        };
+
+        if reference_stack.iter().any(|id| id == reference_id) {
+            return Err(SvgError::new("circular SVG use reference"));
+        }
+
+        let referenced_element = find_element_by_id(root, reference_id)
+            .ok_or_else(|| SvgError::new("SVG use target was not found"))?;
+
+        let x = number_attribute(element, "x", 0.0)?;
+        let y = number_attribute(element, "y", 0.0)?;
+        let reference_transform = Transform::translate(x, y).then(transform);
+
+        reference_stack.push(reference_id.to_owned());
+
+        let result = collect_shapes(
+            root,
+            referenced_element,
+            style,
+            reference_transform,
+            shapes,
+            reference_stack,
+        );
+
+        reference_stack.pop();
+
+        return result;
+    }
 
     let path = match element.name.as_str() {
         "path" => attribute(element, "d")
@@ -270,7 +312,7 @@ fn collect_shapes(
 
     for child in &element.children {
         if let HtmlNode::Element(child) = child {
-            collect_shapes(child, style, transform, shapes)?;
+            collect_shapes(root, child, style, transform, shapes, reference_stack)?;
         }
     }
 
@@ -319,6 +361,27 @@ fn attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
         .iter()
         .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
         .map(|attribute| attribute.value.as_str())
+}
+
+fn use_reference_id(element: &HtmlElement) -> Option<&str> {
+    attribute(element, "href")
+        .or_else(|| attribute(element, "xlink:href"))
+        .and_then(|value| value.strip_prefix('#'))
+        .filter(|id| !id.is_empty())
+}
+
+fn find_element_by_id<'a>(element: &'a HtmlElement, id: &str) -> Option<&'a HtmlElement> {
+    if attribute(element, "id") == Some(id) {
+        return Some(element);
+    }
+
+    element.children.iter().find_map(|child| {
+        let HtmlNode::Element(child) = child else {
+            return None;
+        };
+
+        find_element_by_id(child, id)
+    })
 }
 
 fn parse_line(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
@@ -1215,5 +1278,27 @@ mod tests {
             transform.apply_point(Point::new(0.0, 0.0)),
             Point::new(10.0, 0.0)
         );
+    }
+
+    #[test]
+    fn expands_local_use_references() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <defs>
+                        <rect id="tile" width="4" height="5" fill="green"/>
+                    </defs>
+                    <use href="#tile" x="2" y="3"/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(
+            document.shapes[0].path.commands()[0],
+            PathCommand::MoveTo(Point::new(2.0, 3.0))
+        );
+        assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
     }
 }
