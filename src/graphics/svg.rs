@@ -278,6 +278,32 @@ fn collect_shapes(
 
     let transform = local_transform.then(parent_transform);
 
+    if element.name.eq_ignore_ascii_case("switch") {
+        for child in &element.children {
+            let HtmlNode::Element(child) = child else {
+                continue;
+            };
+
+            if !switch_child_is_supported(child) {
+                continue;
+            }
+
+            collect_shapes(
+                root,
+                child,
+                style,
+                transform,
+                clip_paths,
+                shapes,
+                reference_stack,
+            )?;
+
+            break;
+        }
+
+        return Ok(());
+    }
+
     if element.name.eq_ignore_ascii_case("svg") && !std::ptr::eq(root, element) {
         let x = number_attribute(element, "x", 0.0)?;
         let y = number_attribute(element, "y", 0.0)?;
@@ -539,6 +565,12 @@ fn find_element_by_id<'a>(element: &'a HtmlElement, id: &str) -> Option<&'a Html
 
         find_element_by_id(child, id)
     })
+}
+
+fn switch_child_is_supported(element: &HtmlElement) -> bool {
+    attribute(element, "requiredextensions").is_none()
+        && attribute(element, "requiredfeatures").is_none()
+        && attribute(element, "systemlanguage").is_none()
 }
 
 fn parse_stroke_line_cap(value: &str) -> Result<StrokeLineCap, SvgError> {
@@ -1580,6 +1612,47 @@ mod tests {
                         <rect id="tile one" width="4" height="5" fill="green"/>
                     </defs>
                     <use href="#tile%20one"/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
+    }
+
+    #[test]
+    fn selects_the_first_supported_switch_child() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <switch>
+                        <rect width="10" height="10" fill="red"/>
+                        <rect width="10" height="10" fill="green"/>
+                    </switch>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].fill, Some(Color::rgba(255, 0, 0, 255)));
+    }
+
+    #[test]
+    fn skips_unsupported_switch_children() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <switch>
+                        <rect
+                            width="10"
+                            height="10"
+                            fill="red"
+                            requiredExtensions="https://example.invalid/extension"
+                        />
+                        <rect width="10" height="10" fill="green"/>
+                    </switch>
                 </svg>
             "##,
         )
