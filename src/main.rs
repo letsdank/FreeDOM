@@ -59,7 +59,7 @@ enum Display {
 #[derive(Clone, Copy)]
 struct TextStyle {
     color: u32,
-    scale: usize,
+    font_size: f32,
     margin_after: i32,
     display: Display,
 }
@@ -96,10 +96,16 @@ struct Page {
     blocks: Vec<Block>,
 }
 
+#[derive(Clone, Copy)]
+enum FontSize {
+    Pixels(f32),
+    Em(f32),
+}
+
 #[derive(Clone, Default)]
 struct Declarations {
     color: Option<u32>,
-    font_scale: Option<usize>,
+    font_size: Option<FontSize>,
     display: Option<Display>,
     margin_after: Option<i32>,
 }
@@ -255,7 +261,7 @@ fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page
     let rules = build_author_rules(stylesheets);
     let base_style = TextStyle {
         color: TEXT,
-        scale: 1,
+        font_size: 16.0,
         margin_after: 0,
         display: Display::Inline,
     };
@@ -600,7 +606,7 @@ fn parse_declarations(source: &str) -> Declarations {
         match property.as_str() {
             "color" => declarations.color = parse_color(value),
 
-            "font-size" => declarations.font_scale = parse_font_scale(value),
+            "font-size" => declarations.font_size = parse_font_size(value),
 
             "display" => {
                 declarations.display = match value.trim().to_ascii_lowercase().as_str() {
@@ -669,17 +675,17 @@ fn parse_color(value: &str) -> Option<u32> {
     None
 }
 
-fn parse_font_scale(value: &str) -> Option<usize> {
+fn parse_font_size(value: &str) -> Option<FontSize> {
     let value = value.trim().to_ascii_lowercase();
 
     if let Some(value) = value.strip_suffix("px") {
         let pixels = value.trim().parse::<f32>().ok()?;
-        return Some(if pixels >= 20.0 { 2 } else { 1 });
+        return (pixels.is_finite() && pixels > 0.0).then_some(FontSize::Pixels(pixels));
     }
 
     if let Some(value) = value.strip_suffix("em") {
         let em = value.trim().parse::<f32>().ok()?;
-        return Some(if em >= 1.5 { 2 } else { 1 });
+        return (em.is_finite() && em > 0.0).then_some(FontSize::Em(em));
     }
 
     None
@@ -904,12 +910,12 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
 
     match tag {
         "h1" => {
-            style.scale = 2;
+            style.font_size = 32.0;
             style.margin_after = 16;
         }
 
         "h2" | "h3" => {
-            style.scale = 1;
+            style.font_size = 16.0;
             style.margin_after = 12;
         }
 
@@ -935,8 +941,11 @@ fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
         style.color = color;
     }
 
-    if let Some(scale) = declarations.font_scale {
-        style.scale = scale;
+    if let Some(font_size) = declarations.font_size {
+        style.font_size = match font_size {
+            FontSize::Pixels(pixels) => pixels,
+            FontSize::Em(em) => style.font_size * em,
+        };
     }
 
     if let Some(display) = declarations.display {
@@ -1422,7 +1431,7 @@ fn paint(
             y,
             width as i32 - 16,
             &block.text,
-            block.style.scale,
+            block.style.font_size,
             block.style.color,
             block.link.as_deref(),
             vector_font.as_ref(),
@@ -1484,17 +1493,18 @@ fn draw_wrapped_text(
     mut y: i32,
     right: i32,
     text: &str,
-    scale: usize,
+    font_size: f32,
     color: u32,
     link_target: Option<&str>,
     vector_font: Option<&TrueTypeFont<'_>>,
     link_regions: &mut Vec<LinkRegion>,
 ) -> i32 {
-    let bitmap_character_width = (8 * scale) as i32;
-    let bitmap_glyph_height = (8 * scale) as i32;
-    let bitmap_line_height = (10 * scale) as i32;
+    let bitmap_scale = if font_size >= 24.0 { 2 } else { 1 };
 
-    let font_size = 16.0 * scale as f32;
+    let bitmap_character_width = (8 * bitmap_scale) as i32;
+    let bitmap_glyph_height = (8 * bitmap_scale) as i32;
+    let bitmap_line_height = (10 * bitmap_scale) as i32;
+
     let character_width = vector_font
         .and_then(|font| vector_text_width(font, " ", font_size))
         .unwrap_or(bitmap_character_width);
@@ -1538,7 +1548,7 @@ fn draw_wrapped_text(
             });
 
             if !rendered_with_vector_font {
-                draw_text_line(pixels, width, height, word_x, y, word, scale, color);
+                draw_text_line(pixels, width, height, word_x, y, word, bitmap_scale, color);
             }
 
             if let Some(target) = link_target {
@@ -1705,7 +1715,7 @@ mod tests {
         assert_eq!(page.blocks.len(), 1);
         assert_eq!(page.blocks[0].text, "Hello");
         assert_eq!(page.blocks[0].style.color, 0x00_12_34_56);
-        assert_eq!(page.blocks[0].style.scale, 2);
+        assert!((page.blocks[0].style.font_size - 24.0).abs() < f32::EPSILON);
     }
 
     #[test]
