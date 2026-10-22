@@ -56,10 +56,17 @@ enum Display {
     None,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FontWeight {
+    Normal,
+    Bold,
+}
+
 #[derive(Clone, Copy)]
 struct TextStyle {
     color: u32,
     font_size: f32,
+    font_weight: FontWeight,
     margin_after: i32,
     display: Display,
 }
@@ -106,6 +113,7 @@ enum FontSize {
 struct Declarations {
     color: Option<u32>,
     font_size: Option<FontSize>,
+    font_weight: Option<FontWeight>,
     display: Option<Display>,
     margin_after: Option<i32>,
 }
@@ -262,6 +270,7 @@ fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page
     let base_style = TextStyle {
         color: TEXT,
         font_size: 16.0,
+        font_weight: FontWeight::Normal,
         margin_after: 0,
         display: Display::Inline,
     };
@@ -608,6 +617,8 @@ fn parse_declarations(source: &str) -> Declarations {
 
             "font-size" => declarations.font_size = parse_font_size(value),
 
+            "font-weight" => declarations.font_weight = parse_font_weight(value),
+
             "display" => {
                 declarations.display = match value.trim().to_ascii_lowercase().as_str() {
                     "none" => Some(Display::None),
@@ -689,6 +700,22 @@ fn parse_font_size(value: &str) -> Option<FontSize> {
     }
 
     None
+}
+
+fn parse_font_weight(value: &str) -> Option<FontWeight> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(FontWeight::Normal),
+        "bold" => Some(FontWeight::Bold),
+        value => {
+            let weight = value.parse::<u16>().ok()?;
+
+            match weight {
+                1..=500 => Some(FontWeight::Normal),
+                501..=1000 => Some(FontWeight::Bold),
+                _ => None,
+            }
+        }
+    }
 }
 
 fn parse_length(value: &str) -> Option<i32> {
@@ -954,6 +981,10 @@ fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
 
     if let Some(margin_after) = declarations.margin_after {
         style.margin_after = margin_after;
+    }
+
+    if let Some(font_weight) = declarations.font_weight {
+        style.font_weight = font_weight;
     }
 }
 
@@ -1432,6 +1463,7 @@ fn paint(
             width as i32 - 16,
             &block.text,
             block.style.font_size,
+            block.style.font_weight,
             block.style.color,
             block.link.as_deref(),
             vector_font.as_ref(),
@@ -1494,6 +1526,7 @@ fn draw_wrapped_text(
     right: i32,
     text: &str,
     font_size: f32,
+    font_weight: FontWeight,
     color: u32,
     link_target: Option<&str>,
     vector_font: Option<&TrueTypeFont<'_>>,
@@ -1506,7 +1539,7 @@ fn draw_wrapped_text(
     let bitmap_line_height = (10 * bitmap_scale) as i32;
 
     let character_width = vector_font
-        .and_then(|font| vector_text_width(font, " ", font_size))
+        .and_then(|font| vector_text_width(font, " ", font_size, FontWeight::Normal))
         .unwrap_or(bitmap_character_width);
 
     let vector_line_metrics = vector_font.and_then(|font| font.line_metrics(font_size));
@@ -1523,8 +1556,11 @@ fn draw_wrapped_text(
 
     for word in text.split_whitespace() {
         let word_width = vector_font
-            .and_then(|font| vector_text_width(font, word, font_size))
-            .unwrap_or_else(|| word.chars().count() as i32 * bitmap_character_width);
+            .and_then(|font| vector_text_width(font, word, font_size, font_weight))
+            .unwrap_or_else(|| {
+                word.chars().count() as i32 * bitmap_character_width
+                    + i32::from(font_weight == FontWeight::Bold)
+            });
 
         if x != left && x + character_width + word_width > right {
             x = left;
@@ -1541,12 +1577,34 @@ fn draw_wrapped_text(
         if is_visible {
             let rendered_with_vector_font = vector_font.is_some_and(|font| {
                 draw_vector_text_line(
-                    pixels, width, height, word_x, y, word, font_size, color, font,
+                    pixels,
+                    width,
+                    height,
+                    word_x,
+                    y,
+                    word,
+                    font_size,
+                    font_weight,
+                    color,
+                    font,
                 )
             });
 
             if !rendered_with_vector_font {
                 draw_text_line(pixels, width, height, word_x, y, word, bitmap_scale, color);
+
+                if font_weight == FontWeight::Bold {
+                    draw_text_line(
+                        pixels,
+                        width,
+                        height,
+                        word_x + 1,
+                        y,
+                        word,
+                        bitmap_scale,
+                        color,
+                    );
+                }
             }
 
             if let Some(target) = link_target {
@@ -1566,10 +1624,23 @@ fn draw_wrapped_text(
     y + line_height
 }
 
-fn vector_text_width(font: &TrueTypeFont<'_>, text: &str, font_size: f32) -> Option<i32> {
+fn vector_text_width(
+    font: &TrueTypeFont<'_>,
+    text: &str,
+    font_size: f32,
+    font_weight: FontWeight,
+) -> Option<i32> {
     let outline = font.outline_text(text, font_size).ok()?;
+    let extra_width = synthetic_bold_offset(font_size, font_weight);
 
-    Some(outline.advance_width.ceil().max(1.0) as i32)
+    Some((outline.advance_width + extra_width).ceil().max(1.0) as i32)
+}
+
+fn synthetic_bold_offset(font_size: f32, font_weight: FontWeight) -> f32 {
+    match font_weight {
+        FontWeight::Normal => 0.0,
+        FontWeight::Bold => (font_size / 24.0).clamp(1.0, 2.0),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1581,6 +1652,7 @@ fn draw_vector_text_line(
     y: i32,
     text: &str,
     font_size: f32,
+    font_weight: FontWeight,
     color: u32,
     font: &TrueTypeFont<'_>,
 ) -> bool {
@@ -1593,7 +1665,8 @@ fn draw_vector_text_line(
     };
 
     let padding = 2_i32;
-    let surface_width = (outline.advance_width.ceil().max(1.0) as usize).saturating_add(4);
+    let bold_offset = synthetic_bold_offset(font_size, font_weight);
+    let surface_width = (outline.advance_width + bold_offset).ceil().max(1.0) as usize + 4;
     let surface_height = line_metrics.line_height.ceil().max(1.0) as usize + 4;
 
     let translated_outline = TextOutline {
@@ -1608,6 +1681,19 @@ fn draw_vector_text_line(
 
     if rasterize_text_outline(&mut surface, &translated_outline, raster_color(color)).is_err() {
         return false;
+    }
+
+    if font_weight == FontWeight::Bold && bold_offset > 0.0 {
+        let bold_outline = TextOutline {
+            path: translated_outline
+                .path
+                .transformed(Transform::translate(bold_offset, 0.0)),
+            advance_width: translated_outline.advance_width,
+        };
+
+        if rasterize_text_outline(&mut surface, &bold_outline, raster_color(color)).is_err() {
+            return false;
+        }
     }
 
     surface.blit_xrgb8888(pixels, width, height, x - padding, y - padding);
@@ -1889,5 +1975,14 @@ mod tests {
         assert_eq!(page.blocks[0].text, "Before");
         assert!(page.blocks[1].svg.is_some());
         assert_eq!(page.blocks[2].text, "After");
+    }
+
+    #[test]
+    fn parses_css_font_weights() {
+        assert_eq!(parse_font_weight("normal"), Some(FontWeight::Normal));
+        assert_eq!(parse_font_weight("400"), Some(FontWeight::Normal));
+        assert_eq!(parse_font_weight("bold"), Some(FontWeight::Bold));
+        assert_eq!(parse_font_weight("700"), Some(FontWeight::Bold));
+        assert_eq!(parse_font_weight("1200"), None);
     }
 }
