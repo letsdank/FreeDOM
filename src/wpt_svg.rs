@@ -128,7 +128,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "download the two WPT SVG fixtures, then run this test with --ignored"]
     fn official_wpt_svg_requiredextensions_empty_string() {
         let test_source = fs::read_to_string(fixture_path(
             "struct/reftests/requiredextensions-empty-string.svg",
@@ -157,7 +156,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "download the two WPT SVG fixtures, then run this test with --ignored"]
     fn official_wpt_svg_viewbox_zero_disables_rendering() {
         let test_source = fs::read_to_string(fixture_path(
             "coordinate-systems/viewBox-zero-disables-rendering-001.svg",
@@ -180,5 +178,37 @@ mod tests {
         );
 
         assert_eq!(report.different_pixels, 0);
+    }
+
+    #[test]
+    fn official_wpt_svg_paint_fallbacks() {
+        let reference_source = fs::read_to_string(fixture_path(
+            "pservers/reftests/reference/green-100x100.svg",
+        ))
+            .expect("WPT SVG reference fixture is missing");
+
+        for fixture in [
+            "painting/reftests/fallback-001.svg",
+            "painting/reftests/fallback-002.svg",
+        ] {
+            let test_source =
+                fs::read_to_string(fixture_path(fixture)).expect("WPT SVG test fixture is missing");
+
+            let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+            eprintln!(
+                "WPT SVG {fixture}: {}x{}, {} differing pixels, maximum channel difference {}",
+                report.viewport_width,
+                report.viewport_height,
+                report.different_pixels,
+                report.max_channel_difference,
+            );
+
+            assert_eq!(
+                report.different_pixels, 0,
+                "{fixture}: {} differing pixels, maximum channel difference {}",
+                report.different_pixels, report.max_channel_difference
+            )
+        }
     }
 }

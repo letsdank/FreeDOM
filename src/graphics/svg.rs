@@ -526,6 +526,23 @@ fn parse_fill(value: &str) -> Result<Option<Color>, SvgError> {
         return Ok(None);
     }
 
+    if let Some(after_url_start) = value.strip_prefix("url(") {
+        let close = after_url_start
+            .find(')')
+            .ok_or_else(|| SvgError::new("unterminated paint server URL"))?;
+
+        let fallback = after_url_start[close + 1..].trim();
+
+        // FreeDOM does not implement SVG extensions yet. An element with
+        // requiredExtensions is not rendered until all requested extensions
+        // are supported.
+        return if fallback.is_empty() {
+            Ok(None)
+        } else {
+            parse_fill(fallback)
+        };
+    }
+
     let color = match value.as_str() {
         "black" => Color::BLACK,
         "white" => Color::WHITE,
@@ -990,5 +1007,24 @@ mod tests {
         let surface = document.render(20, 20, Color::WHITE).unwrap();
 
         assert_eq!(surface.pixel(10, 10), Some(Color::WHITE));
+    }
+
+    #[test]
+    fn uses_fallback_color_when_paint_server_is_unavailable() {
+        let without_fallback =
+            parse_svg(r##"<svg><rect width="10" height="10" fill="url(#missing)"/></svg>"##)
+                .unwrap();
+
+        assert!(without_fallback.shapes.is_empty());
+
+        let with_fallback =
+            parse_svg(r##"<svg><rect width="10" height="10" fill="url(#missing) green"/></svg>"##)
+                .unwrap();
+
+        assert_eq!(with_fallback.shapes.len(), 1);
+        assert_eq!(
+            with_fallback.shapes[0].fill,
+            Some(Color::rgba(0, 128, 0, 255))
+        );
     }
 }

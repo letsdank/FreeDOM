@@ -734,7 +734,7 @@ fn parse_font_weight(value: &str) -> Option<FontWeight> {
 
 fn parse_font_style(value: &str) -> Option<FontStyle> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "norma" => Some(FontStyle::Normal),
+        "normal" => Some(FontStyle::Normal),
         "italic" | "oblique" => Some(FontStyle::Italic),
         _ => None,
     }

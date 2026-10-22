@@ -166,7 +166,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "download urltestdata.json, then run cargo test official_wpt_urltestdata -- --ignored --nocapture"]
     fn official_wpt_urltestdata() {
         let source = fs::read_to_string(fixture_path())
             .expect("WPT fixture is missing; see the project instructions");
