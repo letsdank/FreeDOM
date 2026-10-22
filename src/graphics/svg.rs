@@ -162,6 +162,13 @@ fn collect_shapes(
     parent_transform: Transform,
     shapes: &mut Vec<SvgShape>,
 ) -> Result<(), SvgError> {
+    // FreeDOM does not support SVG extensions yet. Under SVG conditional processing,
+    // an element with requiredExtensions is not rendered when the required
+    // extension is unsupported.
+    if attribute(element, "requiredextensions").is_some() {
+        return Ok(());
+    }
+
     if matches!(
         element.name.as_str(),
         "defs" | "clippath" | "mask" | "lineargradient" | "radialgradient" | "pattern" | "symbol"
@@ -935,5 +942,19 @@ mod tests {
 
         assert_eq!(surface.pixel(4, 4), Some(Color::BLACK));
         assert_eq!(surface.pixel(0, 4), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn skips_elements_that_require_unsupported_extensions() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <rect width="100" height="100" fill="red" requiredExtensions=""/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert!(document.shapes.is_empty());
     }
 }

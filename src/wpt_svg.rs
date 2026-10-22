@@ -1,0 +1,158 @@
+use std::fs;
+
+use crate::graphics::{
+    raster::{Color, Surface},
+    svg::{SvgDocument, parse_svg},
+};
+
+struct SvgReftestReport {
+    viewport_width: usize,
+    viewport_height: usize,
+    different_pixels: usize,
+    max_channel_difference: u8,
+}
+
+fn run_svg_reftest(test_source: &str, reference_source: &str) -> Result<SvgReftestReport, String> {
+    let test = parse_svg(test_source).map_err(|error| error.to_string())?;
+    let reference = parse_svg(reference_source).map_err(|error| error.to_string())?;
+
+    let test_viewport = viewport_size(&test);
+    let reference_viewport = viewport_size(&reference);
+
+    if test_viewport != reference_viewport {
+        return Err(format!(
+            "WPT reftest uses different viewport sizes: test {:?}, reference {:?}",
+            test_viewport, reference_viewport
+        ));
+    }
+
+    let (width, height) = test_viewport;
+
+    let actual = test
+        .render(width, height, Color::WHITE)
+        .map_err(|error| error.to_string())?;
+
+    let expected = reference
+        .render(width, height, Color::WHITE)
+        .map_err(|error| error.to_string())?;
+
+    Ok(compare_surfaces(&actual, &expected))
+}
+
+fn viewport_size(document: &SvgDocument) -> (usize, usize) {
+    let dimension = |value: Option<f32>, fallback| {
+        value
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| value.round() as usize)
+            .unwrap_or(fallback)
+            .clamp(1, 4096)
+    };
+
+    (
+        dimension(document.width, 300),
+        dimension(document.height, 150),
+    )
+}
+
+fn compare_surfaces(actual: &Surface, expected: &Surface) -> SvgReftestReport {
+    assert_eq!(actual.width(), expected.width());
+    assert_eq!(actual.height(), expected.height());
+
+    let mut different_pixels = 0;
+    let mut max_channel_difference = 0;
+
+    for y in 0..actual.height() {
+        for x in 0..actual.width() {
+            let actual_pixel = actual.pixel(x, y).expect("pixel lies in actual surface");
+            let expected_pixel = expected
+                .pixel(x, y)
+                .expect("pixel lies in expected surface");
+
+            if actual_pixel == expected_pixel {
+                continue;
+            }
+
+            different_pixels += 1;
+
+            let difference = [
+                actual_pixel.red.abs_diff(expected_pixel.red),
+                actual_pixel.green.abs_diff(expected_pixel.green),
+                actual_pixel.blue.abs_diff(expected_pixel.blue),
+                actual_pixel.alpha.abs_diff(expected_pixel.alpha),
+            ]
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+
+            max_channel_difference = max_channel_difference.max(difference);
+        }
+    }
+
+    SvgReftestReport {
+        viewport_width: actual.width(),
+        viewport_height: actual.height(),
+        different_pixels,
+        max_channel_difference,
+    }
+}
+
+fn fixture_path(relative_path: &str) -> String {
+    format!(
+        "{}/testdata/wpt/svg/{relative_path}",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compares_equivalent_svg_renderings() {
+        let report = run_svg_reftest(
+            r##"
+                <svg width="8" height="8">
+                    <path fill="#00ff00" d="M 0 0 H 8 V 8 H 0 Z"/>
+                </svg>
+            "##,
+            r##"
+                <svg width="8" height="8">
+                    <rect width="8" height="8" fill="#00ff00"/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert_eq!(report.different_pixels, 0);
+        assert_eq!(report.max_channel_difference, 0);
+    }
+
+    #[test]
+    #[ignore = "download the two WPT SVG fixtures, then run this test with --ignored"]
+    fn official_wpt_svg_requiredextensions_empty_string() {
+        let test_source = fs::read_to_string(fixture_path(
+            "struct/reftests/requiredextensions-empty-string.svg",
+        ))
+            .expect("WPT SVG test fixture is missing");
+
+        let reference_source =
+            fs::read_to_string(fixture_path("struct/scripted/support/blank.svg"))
+                .expect("WPT SVG reference fixture is missing");
+
+        let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+        eprintln!(
+            "WPT SVG result: {}x{}, {} differing pixels, maximum channel different {}",
+            report.viewport_width,
+            report.viewport_height,
+            report.different_pixels,
+            report.max_channel_difference
+        );
+
+        assert_eq!(
+            report.different_pixels, 0,
+            "SVG reftest differs in {} pixels; maximum channel difference is {}",
+            report.different_pixels, report.max_channel_difference
+        );
+    }
+}

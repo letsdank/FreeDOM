@@ -14,6 +14,9 @@ mod wpt_url;
 #[cfg(test)]
 mod wpt_dom;
 
+#[cfg(test)]
+mod wpt_svg;
+
 use crate::{
     freedom_url::Url,
     graphics::{
