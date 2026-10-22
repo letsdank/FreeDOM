@@ -221,6 +221,8 @@ struct SvgStyle {
     fill_rule: FillRule,
     stroke: Option<Color>,
     stroke_width: f32,
+    fill_opacity: f32,
+    stroke_opacity: f32,
 }
 
 impl Default for SvgStyle {
@@ -230,6 +232,8 @@ impl Default for SvgStyle {
             fill_rule: FillRule::NonZero,
             stroke: None,
             stroke_width: 1.0,
+            fill_opacity: 1.0,
+            stroke_opacity: 1.0,
         }
     }
 }
@@ -375,9 +379,13 @@ fn collect_shapes(
         if style.fill.is_some() || style.stroke.is_some() {
             shapes.push(SvgShape {
                 path: path.transformed(transform),
-                fill: style.fill,
+                fill: style
+                    .fill
+                    .map(|color| apply_opacity(color, style.fill_opacity)),
                 fill_rule: style.fill_rule,
-                stroke: style.stroke,
+                stroke: style
+                    .stroke
+                    .map(|color| apply_opacity(color, style.stroke_opacity)),
                 stroke_width: style.stroke_width,
                 clip_paths: clip_paths.to_vec(),
             });
@@ -410,6 +418,14 @@ fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle,
         style.stroke = parse_fill(value)?;
     }
 
+    if let Some(value) = attribute(element, "fill-opacity") {
+        style.fill_opacity = parse_opacity(value)?;
+    }
+
+    if let Some(value) = attribute(element, "stroke-opacity") {
+        style.stroke_opacity = parse_opacity(value)?;
+    }
+
     if let Some(value) = attribute(element, "stroke-width") {
         style.stroke_width = parse_stroke_width(value)?;
     }
@@ -429,6 +445,8 @@ fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle,
                 "fill-rule" => style.fill_rule = parse_fill_rule(value)?,
                 "stroke" => style.stroke = parse_fill(value)?,
                 "stroke-width" => style.stroke_width = parse_stroke_width(value)?,
+                "fill-opacity" => style.fill_opacity = parse_opacity(value)?,
+                "stroke-opacity" => style.stroke_opacity = parse_opacity(value)?,
                 _ => {}
             }
         }
@@ -464,6 +482,21 @@ fn find_element_by_id<'a>(element: &'a HtmlElement, id: &str) -> Option<&'a Html
 
         find_element_by_id(child, id)
     })
+}
+
+fn parse_opacity(value: &str) -> Result<f32, SvgError> {
+    let values = parse_number_list(value)?;
+
+    if values.len() != 1 || !(0.0..=1.0).contains(&values[0]) {
+        return Err(SvgError::new("opacity must be a number from zero to one"));
+    }
+
+    Ok(values[0])
+}
+
+fn apply_opacity(mut color: Color, opacity: f32) -> Color {
+    color.alpha = (color.alpha as f32 * opacity).round() as u8;
+    color
 }
 
 fn parse_line(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
@@ -1443,5 +1476,32 @@ mod tests {
 
         assert_eq!(surface.pixel(25, 25), Some(Color::rgba(255, 0, 0, 255)));
         assert_eq!(surface.pixel(35, 25), Some(Color::WHITE));
+    }
+
+    #[test]
+    fn applies_fill_and_stroke_opacity() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <rect
+                        width="10"
+                        height="10"
+                        fill="red"
+                        fill-opacity="0.5"
+                        stroke="green"
+                        stroke-opacity="0.25"
+                    />
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        assert_eq!(document.shapes[0].fill, Some(Color::rgba(255, 0, 0, 128)));
+
+        assert_eq!(document.shapes[0].stroke, Some(Color::rgba(0, 128, 0, 64)));
+
+        let surface = document.render(12, 12, Color::WHITE).unwrap();
+
+        assert_eq!(surface.pixel(5, 5), Some(Color::rgba(255, 127, 127, 255)));
     }
 }
