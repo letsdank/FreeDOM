@@ -211,4 +211,36 @@ mod tests {
             )
         }
     }
+
+    #[test]
+    fn official_wpt_svg_zero_height_and_zero_sized_viewboxes_disable_rendering() {
+        let reference_source = fs::read_to_string(fixture_path(
+            "coordinate-systems/viewBox-zero-disables-rendering-ref.svg",
+        ))
+            .expect("WPT SVG reference fixture is missing");
+
+        for fixture in [
+            "coordinate-systems/viewBox-zero-disables-rendering-002.svg",
+            "coordinate-systems/viewBox-zero-disables-rendering-003.svg",
+        ] {
+            let test_source =
+                fs::read_to_string(fixture_path(fixture)).expect("WPT SVG test fixture is missing");
+
+            let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+            eprintln!(
+                "WPT SVG {fixture}: {}x{}, {} differing pixels, maximum channel difference {}",
+                report.viewport_width,
+                report.viewport_height,
+                report.different_pixels,
+                report.max_channel_difference,
+            );
+
+            assert_eq!(
+                report.different_pixels, 0,
+                "{fixture}: {} differing pixels, maximum channel difference {}",
+                report.different_pixels, report.max_channel_difference
+            );
+        }
+    }
 }
