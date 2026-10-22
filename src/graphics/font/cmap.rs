@@ -2,7 +2,8 @@ use super::sfnt::{FontError, SfntFont, TableTag};
 
 #[derive(Clone, Debug)]
 pub struct CmapTable {
-    format4: CmapFormat4,
+    format4: Option<CmapFormat4>,
+    format12: Option<CmapFormat12>,
 }
 
 #[derive(Clone, Debug)]
@@ -18,6 +19,18 @@ struct CmapSegment {
     delta: u16,
     range_offset: u16,
     range_offset_position: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CmapFormat12 {
+    groups: Vec<CmapGroup>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CmapGroup {
+    start_character: u32,
+    end_character: u32,
+    start_glyph_id: u32,
 }
 
 impl CmapTable {
@@ -49,7 +62,8 @@ impl CmapTable {
             return Err(error(record.offset, "truncated cmap encoding records"));
         }
 
-        let mut chosen = None;
+        let mut selected_format4 = None;
+        let mut selected_format12 = None;
 
         for index in 0..subtable_count {
             let entry_offset = 4 + index * 8;
@@ -65,71 +79,62 @@ impl CmapTable {
                 continue;
             };
 
-            if format != 4 {
-                continue;
-            }
+            match format {
+                4 if selected_format4
+                    .as_ref()
+                    .is_none_or(|(selected_priority, _)| priority > *selected_priority) =>
+                    {
+                        selected_format4 = Some((priority, subtable_offset));
+                    }
 
-            if chosen
-                .as_ref()
-                .is_none_or(|(chosen_priority, _)| priority > *chosen_priority)
-            {
-                chosen = Some((priority, subtable_offset));
+                12 if selected_format12
+                    .as_ref()
+                    .is_none_or(|(selected_priority, _)| priority > *selected_priority) =>
+                    {
+                        selected_format12 = Some((priority, subtable_offset));
+                    }
+
+                _ => {}
             }
         }
 
-        let Some((_, subtable_offset)) = chosen else {
+        let format4 = selected_format4
+            .map(|(_, offset)| Self::parse_format4(table, offset, record.offset))
+            .transpose()?;
+
+        let format12 = selected_format12
+            .map(|(_, offset)| Self::parse_format12(table, offset, record.offset))
+            .transpose()?;
+
+        if format4.is_none() && format12.is_none() {
             return Err(error(
                 record.offset,
-                "font has not supported Unicode cmap format 4 subtable",
+                "font has no supported Unicode cmap subtable",
             ));
-        };
+        }
 
-        Self::parse_format4(table, subtable_offset, record.offset)
+        Ok(Self { format4, format12 })
     }
 
     pub fn glyph_id(&self, character: char) -> u16 {
-        let Ok(code) = u16::try_from(character as u32) else {
-            return 0;
-        };
+        let code = character as u32;
 
-        let Some(segment) = self
-            .format4
-            .segments
-            .iter()
-            .find(|segment| code <= segment.end)
-        else {
-            return 0;
-        };
-
-        if code < segment.start {
-            return 0;
-        }
-
-        if segment.range_offset == 0 {
-            return code.wrapping_add(segment.delta);
-        }
-
-        let glyph_offset = segment.range_offset_position
-            + usize::from(segment.range_offset)
-            + usize::from(code - segment.start) * 2;
-
-        let glyph_id = u16::from_be_bytes([
-            self.format4.data[glyph_offset],
-            self.format4.data[glyph_offset + 1],
-        ]);
-
-        if glyph_id == 0 {
-            0
-        } else {
-            glyph_id.wrapping_add(segment.delta)
-        }
+        self.format12
+            .as_ref()
+            .and_then(|format| format.glyph_id(code))
+            .or_else(|| {
+                u16::try_from(code)
+                    .ok()
+                    .and_then(|code| self.format4.as_ref()?.glyph_id(code))
+            })
+            .unwrap_or(0)
     }
 
     fn parse_format4(
         table: &[u8],
         subtable_offset: usize,
         table_offset: usize,
-    ) -> Result<Self, FontError> {
+    ) -> Result<CmapFormat4, FontError> {
         let format_length = usize::from(read_u16(table, subtable_offset + 2, table_offset)?);
 
         if format_length < 16 {
@@ -254,12 +259,135 @@ impl CmapTable {
             ));
         }
 
-        Ok(Self {
-            format4: CmapFormat4 {
-                data: format_data,
-                segments,
-            },
+        Ok(CmapFormat4 {
+            data: format_data,
+            segments,
         })
+    }
+
+    fn parse_format12(
+        table: &[u8],
+        subtable_offset: usize,
+        table_offset: usize,
+    ) -> Result<CmapFormat12, FontError> {
+        let format_length = usize::try_from(read_u32(table, subtable_offset + 4, table_offset)?)
+            .map_err(|_| {
+                error(
+                    table_offset + subtable_offset + 4,
+                    "cmap length is too large",
+                )
+            })?;
+
+        if format_length < 16 {
+            return Err(error(
+                table_offset + subtable_offset,
+                "cmap format 12 table is too short",
+            ));
+        }
+
+        let subtable_end = subtable_offset
+            .checked_add(format_length)
+            .ok_or_else(|| error(table_offset + subtable_offset, "cmap length overflows"))?;
+
+        if subtable_end > table.len() {
+            return Err(error(
+                table_offset + subtable_offset,
+                "truncated cmap format 12 table",
+            ));
+        }
+
+        let group_count = usize::try_from(read_u32(table, subtable_offset + 12, table_offset)?)
+            .map_err(|_| error(table_offset + subtable_offset + 12, "too many cmap groups"))?;
+
+        let required_length = 16_usize
+            .checked_add(
+                group_count
+                    .checked_mul(12)
+                    .ok_or_else(|| error(table_offset + subtable_offset, "too many cmap groups"))?,
+            )
+            .ok_or_else(|| error(table_offset + subtable_offset, "too many cmap groups"))?;
+
+        if required_length > format_length {
+            return Err(error(
+                table_offset + subtable_offset,
+                "truncated cmap format 12 groups",
+            ));
+        }
+
+        let mut groups = Vec::with_capacity(group_count);
+        let mut previous_end = None;
+
+        for index in 0..group_count {
+            let group_offset = subtable_offset + 16 + index * 12;
+            let start_character = read_u32(table, group_offset, table_offset)?;
+            let end_character = read_u32(table, group_offset + 4, table_offset)?;
+            let start_glyph_id = read_u32(table, group_offset + 8, table_offset)?;
+
+            if start_character > end_character {
+                return Err(error(
+                    table_offset + group_offset,
+                    "cmap format 12 group start exceeds its end",
+                ));
+            }
+
+            if previous_end.is_some_and(|previous_end| start_character <= previous_end) {
+                return Err(error(
+                    table_offset + group_offset,
+                    "cmap format 12 groups overlap or are unsorted",
+                ));
+            }
+
+            previous_end = Some(end_character);
+
+            groups.push(CmapGroup {
+                start_character,
+                end_character,
+                start_glyph_id,
+            });
+        }
+
+        Ok(CmapFormat12 { groups })
+    }
+}
+
+impl CmapFormat4 {
+    fn glyph_id(&self, code: u16) -> Option<u16> {
+        let segment = self.segments.iter().find(|segment| code <= segment.end)?;
+
+        if code < segment.start {
+            return None;
+        }
+
+        if segment.range_offset == 0 {
+            return Some(code.wrapping_add(segment.delta));
+        }
+
+        let glyph_offset = segment.range_offset_position
+            + usize::from(segment.range_offset)
+            + usize::from(code - segment.start) * 2;
+
+        let glyph_id = u16::from_be_bytes([self.data[glyph_offset], self.data[glyph_offset + 1]]);
+
+        Some(if glyph_id == 0 {
+            0
+        } else {
+            glyph_id.wrapping_add(segment.delta)
+        })
+    }
+}
+
+impl CmapFormat12 {
+    fn glyph_id(&self, code: u32) -> Option<u16> {
+        let group = self
+            .groups
+            .iter()
+            .find(|group| code >= group.start_character && code <= group.end_character)?;
+
+        let glyph_id = group
+            .start_glyph_id
+            .checked_add(code - group.start_character)?;
+
+        Some(u16::try_from(glyph_id).unwrap_or(0))
     }
 }
 
@@ -317,6 +445,16 @@ mod tests {
         assert_eq!(cmap.glyph_id('🦀'), 0);
     }
 
+    #[test]
+    fn maps_astral_unicode_with_a_format_12_table() {
+        let data = cmap_format_12_font();
+        let font = SfntFont::parse(&data).unwrap();
+        let cmap = CmapTable::parse(&font).unwrap();
+
+        assert_eq!(cmap.glyph_id('🦀'), 77);
+        assert_eq!(cmap.glyph_id('A'), 0);
+    }
+
     fn cmap_only_font() -> Vec<u8> {
         let mut data = vec![0_u8; 72];
 
@@ -348,6 +486,35 @@ mod tests {
 
         data[64..66].copy_from_slice(&1_u16.to_be_bytes());
         data[66..68].copy_from_slice(&1_u16.to_be_bytes());
+
+        data
+    }
+
+    fn cmap_format_12_font() -> Vec<u8> {
+        let mut data = vec![0_u8; 68];
+
+        data[0..4].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
+        data[4..6].copy_from_slice(&1_u16.to_be_bytes());
+
+        data[12..16].copy_from_slice(b"cmap");
+        data[20..24].copy_from_slice(&28_u32.to_be_bytes());
+        data[24..28].copy_from_slice(&40_u32.to_be_bytes());
+
+        data[28..30].copy_from_slice(&0_u16.to_be_bytes());
+        data[30..32].copy_from_slice(&1_u16.to_be_bytes());
+
+        data[32..34].copy_from_slice(&0_u16.to_be_bytes());
+        data[34..36].copy_from_slice(&4_u16.to_be_bytes());
+        data[36..40].copy_from_slice(&12_u32.to_be_bytes());
+
+        data[40..42].copy_from_slice(&12_u16.to_be_bytes());
+        data[44..48].copy_from_slice(&28_u32.to_be_bytes());
+        data[52..56].copy_from_slice(&1_u32.to_be_bytes());
+
+        let crab = '🦀' as u32;
+        data[56..60].copy_from_slice(&crab.to_be_bytes());
+        data[60..64].copy_from_slice(&crab.to_be_bytes());
+        data[64..68].copy_from_slice(&77_u32.to_be_bytes());
 
         data
     }
