@@ -2,6 +2,7 @@ use super::{
     cmap::CmapTable,
     glyf::{Glyph, parse_glyph},
     hmtx::{HorizontalMetric, HorizontalMetrics},
+    layout::{TextOutline, outline_text},
     loca::GlyphLocations,
     sfnt::{FontError, SfntFlavor, SfntFont, TableTag},
 };
@@ -193,6 +194,10 @@ impl<'a> TrueTypeFont<'a> {
         active_glyphs.pop();
 
         Ok(path)
+    }
+
+    pub fn outline_text(&self, text: &str, font_size: f32) -> Result<TextOutline, FontError> {
+        outline_text(self, text, font_size)
     }
 }
 
@@ -387,6 +392,34 @@ mod tests {
                 PathCommand::Close,
             ]
         );
+    }
+
+    #[test]
+    fn lays_out_scaled_text_outlines() {
+        let data = minimal_true_type_font();
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        let outline = font.outline_text("AA", 10.0).unwrap();
+
+        assert_eq!(outline.path.commands().len(), 8);
+        assert!((outline.advance_width - 12.0).abs() < f32::EPSILON);
+
+        let PathCommand::MoveTo(second_glyph_start) = outline.path.commands()[4] else {
+            panic!("expected the second glyph to start with MoveTo");
+        };
+
+        assert!((second_glyph_start.x - 6.0).abs() < f32::EPSILON);
+        assert!(second_glyph_start.y.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn rejects_invalid_text_sizes() {
+        let data = minimal_true_type_font();
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        let error = font.outline_text("A", 0.0).unwrap_err();
+
+        assert_eq!(error.message, "font size must be finite and positive");
     }
 
     fn minimal_true_type_font() -> Vec<u8> {
