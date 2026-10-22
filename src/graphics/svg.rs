@@ -1,5 +1,3 @@
-use std::{error::Error, fmt};
-
 use crate::{
     graphics::{
         flatten::{FlattenError, flatten_path},
@@ -10,14 +8,17 @@ use crate::{
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
 };
+use std::fmt::Alignment;
+use std::{error::Error, fmt};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SvgDocument {
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub view_box: Option<ViewBox>,
-    view_box_disables_rendering: bool,
     pub shapes: Vec<SvgShape>,
+    view_box_disables_rendering: bool,
+    preserve_aspect_ratio: PreserveAspectRatio,
 }
 
 impl SvgDocument {
@@ -35,7 +36,7 @@ impl SvgDocument {
 
         let viewport_transform = self
             .view_box
-            .map(|view_box| view_box_transform(view_box, width, height))
+            .map(|view_box| view_box_transform(view_box, self.preserve_aspect_ratio, width, height))
             .unwrap_or(Transform::IDENTITY);
 
         let viewport_stroke_scale = stroke_scale(viewport_transform);
@@ -75,6 +76,39 @@ pub struct ViewBox {
 enum ParsedViewBox {
     Valid(ViewBox),
     DisablesRendering,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreserveAspectRatio {
+    None,
+    Align {
+        horizontal: ViewBoxAlignment,
+        vertical: ViewBoxAlignment,
+        meet_or_slice: MeetOrSlice,
+    },
+}
+
+impl Default for PreserveAspectRatio {
+    fn default() -> Self {
+        Self::Align {
+            horizontal: ViewBoxAlignment::Mid,
+            vertical: ViewBoxAlignment::Mid,
+            meet_or_slice: MeetOrSlice::Meet,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewBoxAlignment {
+    Min,
+    Mid,
+    Max,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeetOrSlice {
+    Meet,
+    Slice,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +173,11 @@ pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
         None => (None, false),
     };
 
+    let preserve_aspect_ratio = match attribute(root, "preserveaspectratio") {
+        Some(value) => parse_preserve_aspect_ratio(value)?,
+        None => PreserveAspectRatio::default(),
+    };
+
     let mut shapes = Vec::new();
     collect_shapes(root, SvgStyle::default(), Transform::IDENTITY, &mut shapes)?;
 
@@ -147,6 +186,7 @@ pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
         height,
         view_box,
         view_box_disables_rendering,
+        preserve_aspect_ratio,
         shapes,
     })
 }
@@ -674,6 +714,66 @@ fn parse_view_box(value: &str) -> Result<ParsedViewBox, SvgError> {
     }))
 }
 
+fn parse_preserve_aspect_ratio(value: &str) -> Result<PreserveAspectRatio, SvgError> {
+    let mut tokens = value.split_ascii_whitespace();
+
+    let mut alignment = tokens
+        .next()
+        .ok_or_else(|| SvgError::new("preserveAspectRatio cannot be empty"))?;
+
+    if alignment.eq_ignore_ascii_case("defer") {
+        alignment = tokens
+            .next()
+            .ok_or_else(|| SvgError::new("expected preserveAspectRatio alignment after defer"))?;
+    }
+
+    let alignment = alignment.to_ascii_lowercase();
+
+    if alignment == "none" {
+        if let Some(mode) = tokens.next() {
+            if !mode.eq_ignore_ascii_case("meet") && !mode.eq_ignore_ascii_case("slice") {
+                return Err(SvgError::new("invalid preserveAspectRatio mode"));
+            }
+        }
+
+        if tokens.next().is_some() {
+            return Err(SvgError::new("too many preserveAspectRatio values"));
+        }
+
+        return Ok(PreserveAspectRatio::None);
+    }
+
+    let (horizontal, vertical) = match alignment.as_str() {
+        "xminymin" => (ViewBoxAlignment::Min, ViewBoxAlignment::Min),
+        "xmidymin" => (ViewBoxAlignment::Mid, ViewBoxAlignment::Min),
+        "xmaxymin" => (ViewBoxAlignment::Max, ViewBoxAlignment::Min),
+        "xminymid" => (ViewBoxAlignment::Min, ViewBoxAlignment::Mid),
+        "xmidymid" => (ViewBoxAlignment::Mid, ViewBoxAlignment::Mid),
+        "xmaxymid" => (ViewBoxAlignment::Max, ViewBoxAlignment::Mid),
+        "xminymax" => (ViewBoxAlignment::Min, ViewBoxAlignment::Max),
+        "xmidymax" => (ViewBoxAlignment::Mid, ViewBoxAlignment::Max),
+        "xmaxymax" => (ViewBoxAlignment::Max, ViewBoxAlignment::Max),
+        _ => return Err(SvgError::new("invalid preserveAspectRatio alignment")),
+    };
+
+    let meet_or_slice = match tokens.next() {
+        None => MeetOrSlice::Meet,
+        Some(value) if value.eq_ignore_ascii_case("meet") => MeetOrSlice::Meet,
+        Some(value) if value.eq_ignore_ascii_case("slice") => MeetOrSlice::Slice,
+        Some(_) => return Err(SvgError::new("invalid preserveAspectRatio mode")),
+    };
+
+    if tokens.next().is_some() {
+        return Err(SvgError::new("too many preserveAspectRatio values"));
+    }
+
+    Ok(PreserveAspectRatio::Align {
+        horizontal,
+        vertical,
+        meet_or_slice,
+    })
+}
+
 fn parse_number_list(input: &str) -> Result<Vec<f32>, SvgError> {
     let mut values = Vec::new();
     let bytes = input.as_bytes();
@@ -753,18 +853,50 @@ fn stroke_scale(transform: Transform) -> f32 {
     (x_axis_scale + y_axis_scale) * 0.5
 }
 
-fn view_box_transform(view_box: ViewBox, width: usize, height: usize) -> Transform {
+fn view_box_transform(
+    view_box: ViewBox,
+    preserve_aspect_ratio: PreserveAspectRatio,
+    width: usize,
+    height: usize,
+) -> Transform {
     if width == 0 || height == 0 {
         return Transform::scale(0.0, 0.0);
     }
 
-    let scale = (width as f32 / view_box.width).min(height as f32 / view_box.height);
-    let offset_x = (width as f32 - view_box.width * scale) * 0.5;
-    let offset_y = (height as f32 - view_box.height * scale) * 0.5;
+    let scale_x = width as f32 / view_box.width;
+    let scale_y = height as f32 / view_box.height;
+
+    let (scale_x, scale_y, offset_x, offset_y) = match preserve_aspect_ratio {
+        PreserveAspectRatio::None => (scale_x, scale_y, 0.0, 0.0),
+
+        PreserveAspectRatio::Align {
+            horizontal,
+            vertical,
+            meet_or_slice,
+        } => {
+            let scale = match meet_or_slice {
+                MeetOrSlice::Meet => scale_x.min(scale_y),
+                MeetOrSlice::Slice => scale_x.max(scale_y),
+            };
+
+            let offset_x = alignment_offset(horizontal, width as f32 - view_box.width * scale);
+            let offset_y = alignment_offset(vertical, height as f32 - view_box.height * scale);
+
+            (scale, scale, offset_x, offset_y)
+        }
+    };
 
     Transform::translate(-view_box.min_x, -view_box.min_y)
-        .then(Transform::scale(scale, scale))
+        .then(Transform::scale(scale_x, scale_y))
         .then(Transform::translate(offset_x, offset_y))
+}
+
+fn alignment_offset(alignment: ViewBoxAlignment, remaining_space: f32) -> f32 {
+    match alignment {
+        ViewBoxAlignment::Min => 0.0,
+        ViewBoxAlignment::Mid => remaining_space * 0.5,
+        ViewBoxAlignment::Max => remaining_space,
+    }
 }
 
 #[cfg(test)]
@@ -1025,6 +1157,63 @@ mod tests {
         assert_eq!(
             with_fallback.shapes[0].fill,
             Some(Color::rgba(0, 128, 0, 255))
+        );
+    }
+
+    #[test]
+    fn parses_preserve_aspect_ratio_values() {
+        assert_eq!(
+            parse_preserve_aspect_ratio("xMaxYMin slice").unwrap(),
+            PreserveAspectRatio::Align {
+                horizontal: ViewBoxAlignment::Max,
+                vertical: ViewBoxAlignment::Min,
+                meet_or_slice: MeetOrSlice::Slice,
+            }
+        );
+
+        assert_eq!(
+            parse_preserve_aspect_ratio("none").unwrap(),
+            PreserveAspectRatio::None
+        );
+    }
+
+    #[test]
+    fn renders_non_uniform_viewbox_with_preserve_aspect_ratio_none() {
+        let document = parse_svg(
+            r##"
+                <svg viewBox="0 0 10 10" preserveAspectRatio="none">
+                    <rect width="10" height="10" fill="red"/>
+                </svg>
+            "##,
+        )
+            .unwrap();
+
+        let surface = document.render(20, 10, Color::WHITE).unwrap();
+
+        assert_eq!(surface.pixel(19, 9), Some(Color::rgba(255, 0, 0, 255)));
+    }
+
+    #[test]
+    fn aligns_meet_viewbox_to_maximum_edges() {
+        let transform = view_box_transform(
+            ViewBox {
+                min_x: 0.0,
+                min_y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            PreserveAspectRatio::Align {
+                horizontal: ViewBoxAlignment::Max,
+                vertical: ViewBoxAlignment::Max,
+                meet_or_slice: MeetOrSlice::Meet,
+            },
+            20,
+            10,
+        );
+
+        assert_eq!(
+            transform.apply_point(Point::new(0.0, 0.0)),
+            Point::new(10.0, 0.0)
         );
     }
 }
