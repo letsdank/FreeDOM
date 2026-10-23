@@ -1,3 +1,4 @@
+mod fetch;
 mod url;
 
 #[allow(dead_code)]
@@ -12,7 +13,7 @@ pub mod graphics;
 mod wpt;
 
 use crate::{
-    url::Url,
+    fetch::Fetcher,
     graphics::{
         font::{layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont},
         geometry::Transform,
@@ -21,12 +22,12 @@ use crate::{
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     javascript::{DocumentState, evaluate_with_document},
+    url::Url,
 };
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
-use reqwest::{blocking::Client, redirect::Policy};
 use softbuffer::{Context as SoftbufferContext, Surface};
-use std::{num::NonZeroU32, rc::Rc, time::Duration};
+use std::{num::NonZeroU32, rc::Rc};
 use winit::keyboard::ModifiersState;
 use winit::{
     application::ApplicationHandler,
@@ -227,25 +228,14 @@ fn load_page(input: &str) -> Result<Page> {
     };
 
     let url = Url::parse(&input)?;
+    let fetcher = Fetcher::new()?;
+    let response = fetcher.get(&url)?;
 
-    if !matches!(url.scheme(), "http" | "https") {
-        bail!("FreeDOM пока поддерживает только http:// и https://");
-    }
-
-    let client = Client::builder()
-        .user_agent("FreeDOM/0.1 (experimental Rust browser)")
-        .timeout(Duration::from_secs(15))
-        .redirect(Policy::limited(10))
-        .build()?;
-
-    let response = client.get(url.to_string()).send()?.error_for_status()?;
-
-    let final_url =
-        Url::parse(response.url().as_str()).context("server returned an invalid final URL")?;
-    let html = response.text()?;
+    let html = response.text_lossy();
+    let final_url = response.url;
 
     let document = HtmlDocument::parse(&html);
-    let stylesheets = load_author_stylesheets(&client, &final_url, &document);
+    let stylesheets = load_author_stylesheets(&fetcher, &final_url, &document);
     let final_url_text = final_url.to_string();
 
     Ok(parse_dom(&final_url_text, &document, &stylesheets))
@@ -445,7 +435,7 @@ fn collect_inline_stylesheets_from_node(node: &HtmlNode, stylesheets: &mut Vec<S
     }
 }
 
-fn load_author_stylesheets(client: &Client, page_url: &Url, root: &HtmlDocument) -> Vec<String> {
+fn load_author_stylesheets(fetcher: &Fetcher, page_url: &Url, root: &HtmlDocument) -> Vec<String> {
     let mut sources = Vec::new();
     collect_stylesheet_sources(root, page_url, &mut sources);
 
@@ -454,22 +444,14 @@ fn load_author_stylesheets(client: &Client, page_url: &Url, root: &HtmlDocument)
         .filter_map(|source| match source {
             StylesheetSource::Inline(css) => Some(css),
 
-            StylesheetSource::External(url) => {
-                let response = client
-                    .get(url.to_string())
-                    .send()
-                    .and_then(|response| response.error_for_status())
-                    .and_then(|response| response.text());
+            StylesheetSource::External(url) => match fetcher.get(&url) {
+                Ok(response) => Some(response.text_lossy()),
 
-                match response {
-                    Ok(css) => Some(css),
-
-                    Err(error) => {
-                        eprintln!("не удалось загрузить stylesheet {url}: {error}");
-                        None
-                    }
+                Err(error) => {
+                    eprintln!("не удалось загрузить stylesheet {url}: {error}");
+                    None
                 }
-            }
+            },
         })
         .collect()
 }
