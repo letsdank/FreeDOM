@@ -18,7 +18,7 @@ use crate::{
         font::{layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont},
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
-        svg::{SvgDocument, parse_svg_element, parse_svg_element_at},
+        svg::{SvgDocument, parse_svg_at, parse_svg_element, parse_svg_element_at},
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     javascript::{DocumentState, evaluate_with_document},
@@ -144,6 +144,7 @@ struct ElementInfo {
     classes: Vec<String>,
     inline_style: Option<String>,
     href: Option<String>,
+    src: Option<String>,
 }
 
 enum StylesheetSource {
@@ -238,7 +239,12 @@ fn load_page(input: &str) -> Result<Page> {
     let stylesheets = load_author_stylesheets(&fetcher, &final_url, &document);
     let final_url_text = final_url.to_string();
 
-    Ok(parse_dom(&final_url_text, &document, &stylesheets))
+    Ok(parse_dom_with_fetcher(
+        &final_url_text,
+        &document,
+        &stylesheets,
+        Some(&fetcher),
+    ))
 }
 
 #[cfg(test)]
@@ -250,6 +256,15 @@ fn parse_html(url: &str, html: &str) -> Page {
 }
 
 fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page {
+    parse_dom_with_fetcher(url, document, stylesheets, None)
+}
+
+fn parse_dom_with_fetcher(
+    url: &str,
+    document: &HtmlDocument,
+    stylesheets: &[String],
+    fetcher: Option<&Fetcher>,
+) -> Page {
     let mut document_state = DocumentState::with_title(find_title(document).unwrap_or_default());
 
     register_document_elements(document, &mut document_state);
@@ -283,6 +298,7 @@ fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page
             &mut current_text,
             base_style,
             page_url.as_ref(),
+            fetcher,
             &document_state,
         );
     }
@@ -454,6 +470,28 @@ fn load_author_stylesheets(fetcher: &Fetcher, page_url: &Url, root: &HtmlDocumen
             },
         })
         .collect()
+}
+
+fn load_svg_image(fetcher: &Fetcher, page_url: &Url, source: &str) -> Option<SvgDocument> {
+    let resource_url = page_url.join(source.trim()).ok()?;
+    let response = fetcher.get(&resource_url).ok()?;
+
+    if response.status >= 400 {
+        return None;
+    }
+
+    if response
+        .content_type
+        .as_ref()
+        .map(|content_type| content_type.mime_type.as_str())
+        != Some("image/svg+xml")
+    {
+        return None;
+    }
+
+    let source = response.text_lossy();
+
+    parse_svg_at(&source, &response.url).ok()
 }
 
 fn collect_stylesheet_sources(
@@ -732,6 +770,7 @@ fn element_info(node: &HtmlNode) -> Option<ElementInfo> {
     let mut classes = Vec::new();
     let mut inline_style = None;
     let mut href = None;
+    let mut src = None;
 
     for attribute in &element.attributes {
         match attribute.name.as_str() {
@@ -749,6 +788,8 @@ fn element_info(node: &HtmlNode) -> Option<ElementInfo> {
 
             "href" => href = Some(attribute.value.clone()),
 
+            "src" => src = Some(attribute.value.clone()),
+
             _ => {}
         }
     }
@@ -759,6 +800,7 @@ fn element_info(node: &HtmlNode) -> Option<ElementInfo> {
         classes,
         inline_style,
         href,
+        src,
     })
 }
 
@@ -769,6 +811,7 @@ fn extract_blocks(
     current: &mut String,
     inherited_style: TextStyle,
     page_url: Option<&Url>,
+    fetcher: Option<&Fetcher>,
     document: &DocumentState,
 ) {
     if let HtmlNode::Text(contents) = node {
@@ -799,6 +842,28 @@ fn extract_blocks(
     let style = compute_style(&element, inherited_style, rules);
 
     if style.display == Display::None {
+        return;
+    }
+
+    if element.tag == "img" {
+        flush(blocks, current, inherited_style);
+
+        let svg = match (fetcher, page_url, element.src.as_deref()) {
+            (Some(fetcher), Some(page_url), Some(source)) => {
+                load_svg_image(fetcher, page_url, source)
+            }
+            _ => None,
+        };
+
+        if let Some(svg) = svg {
+            blocks.push(Block {
+                text: String::new(),
+                svg: Some(svg),
+                style,
+                link: None,
+            });
+        }
+
         return;
     }
 
@@ -876,7 +941,9 @@ fn extract_blocks(
     }
 
     for child in &dom_element.children {
-        extract_blocks(child, rules, blocks, current, style, page_url, document);
+        extract_blocks(
+            child, rules, blocks, current, style, page_url, fetcher, document,
+        );
     }
 
     if is_block {
@@ -1832,6 +1899,11 @@ fn fill_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
 
     #[test]
     fn inline_style_overrides_author_rules() {
@@ -2039,5 +2111,57 @@ mod tests {
         assert_eq!(parse_font_style("italic"), Some(FontStyle::Italic));
         assert_eq!(parse_font_style("oblique"), Some(FontStyle::Italic));
         assert_eq!(parse_font_style("oblique 12deg"), None);
+    }
+
+    #[test]
+    fn renders_external_svg_images_through_fetch_and_url_modules() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            stream.read(&mut request).unwrap();
+
+            let body = r##"
+                <svg>
+                    <defs>
+                        <rect id="tile%20one" width="4" height="5" fill="green"/>
+                    </defs>
+                    <use href="#tile%2520one"/>
+                </svg>
+            "##;
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: image/svg+xml\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
+                body.len(),
+                body,
+            );
+
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let document = HtmlDocument::parse(r#"<img src="assets/icon.svg>">"#);
+        let fetcher = Fetcher::new().unwrap();
+
+        let page = parse_dom_with_fetcher(
+            &format!("http://{address}/page.html"),
+            &document,
+            &[],
+            Some(&fetcher),
+        );
+
+        server.join().unwrap();
+
+        assert_eq!(page.blocks.len(), 1);
+
+        let svg = page.blocks[0].svg.as_ref().unwrap();
+        assert_eq!(svg.shapes.len(), 1);
+        assert_eq!(svg.shapes[0].fill, Some(RasterColor::rgba(0, 128, 0, 255)));
     }
 }

@@ -171,12 +171,18 @@ impl fmt::Display for SvgError {
 impl Error for SvgError {}
 
 pub fn parse_svg(input: &str) -> Result<SvgDocument, SvgError> {
+    let base_url = Url::parse("freedom://inline-svg").expect("inline SVG base URL must be valid");
+
+    parse_svg_at(input, &base_url)
+}
+
+pub fn parse_svg_at(input: &str, base_url: &Url) -> Result<SvgDocument, SvgError> {
     let html = HtmlDocument::parse(input);
     let root = html
         .first_element("svg")
         .ok_or_else(|| SvgError::new("missing <svg> root element"))?;
 
-    parse_svg_element(root)
+    parse_svg_element_at(root, base_url)
 }
 
 pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
