@@ -17,6 +17,7 @@ use crate::{
     graphics::{
         font::{layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont},
         geometry::Transform,
+        image::decode_png,
         raster::{Color as RasterColor, Surface as RasterSurface},
         svg::{SvgDocument, parse_svg_at, parse_svg_element, parse_svg_element_at},
     },
@@ -76,11 +77,39 @@ struct TextStyle {
     display: Display,
 }
 
+enum BlockContent {
+    Text(String),
+    Svg(SvgDocument),
+    Bitmap(RasterSurface),
+}
+
 struct Block {
-    text: String,
+    content: BlockContent,
     style: TextStyle,
     link: Option<String>,
-    svg: Option<SvgDocument>,
+}
+
+impl Block {
+    fn text(&self) -> Option<&str> {
+        match &self.content {
+            BlockContent::Text(text) => Some(text),
+            BlockContent::Svg(_) | BlockContent::Bitmap(_) => None,
+        }
+    }
+
+    fn svg(&self) -> Option<&SvgDocument> {
+        match &self.content {
+            BlockContent::Svg(svg) => Some(svg),
+            BlockContent::Text(_) | BlockContent::Bitmap(_) => None,
+        }
+    }
+
+    fn bitmap(&self) -> Option<&RasterSurface> {
+        match &self.content {
+            BlockContent::Bitmap(bitmap) => Some(bitmap),
+            BlockContent::Text(_) | BlockContent::Svg(_) => None,
+        }
+    }
 }
 
 struct LinkRegion {
@@ -472,7 +501,7 @@ fn load_author_stylesheets(fetcher: &Fetcher, page_url: &Url, root: &HtmlDocumen
         .collect()
 }
 
-fn load_svg_image(fetcher: &Fetcher, page_url: &Url, source: &str) -> Option<SvgDocument> {
+fn load_image(fetcher: &Fetcher, page_url: &Url, source: &str) -> Option<BlockContent> {
     let resource_url = page_url.join(source.trim()).ok()?;
     let response = fetcher.get(&resource_url).ok()?;
 
@@ -480,18 +509,22 @@ fn load_svg_image(fetcher: &Fetcher, page_url: &Url, source: &str) -> Option<Svg
         return None;
     }
 
-    if response
+    match response
         .content_type
         .as_ref()
         .map(|content_type| content_type.mime_type.as_str())
-        != Some("image/svg+xml")
     {
-        return None;
+        Some("image/svg+xml") => {
+            let source = response.text_lossy();
+            parse_svg_at(&source, &response.url)
+                .ok()
+                .map(BlockContent::Svg)
+        }
+
+        Some("image/png") => decode_png(response.bytes()).ok().map(BlockContent::Bitmap),
+
+        _ => None,
     }
-
-    let source = response.text_lossy();
-
-    parse_svg_at(&source, &response.url).ok()
 }
 
 fn collect_stylesheet_sources(
@@ -846,25 +879,18 @@ fn extract_blocks(
     }
 
     if element.tag == "img" {
-        flush(blocks, current, inherited_style);
-
-        let svg = match (fetcher, page_url, element.src.as_deref()) {
-            (Some(fetcher), Some(page_url), Some(source)) => {
-                load_svg_image(fetcher, page_url, source)
-            }
+        let content = match (fetcher, page_url, element.src.as_deref()) {
+            (Some(fetcher), Some(page_url), Some(source)) => load_image(fetcher, page_url, source),
             _ => None,
         };
 
-        if let Some(svg) = svg {
+        if let Some(content) = content {
             blocks.push(Block {
-                text: String::new(),
-                svg: Some(svg),
+                content,
                 style,
                 link: None,
             });
         }
-
-        return;
     }
 
     if element.tag == "svg" {
@@ -877,8 +903,7 @@ fn extract_blocks(
 
         if let Ok(svg) = parsed_svg {
             blocks.push(Block {
-                text: String::new(),
-                svg: Some(svg),
+                content: BlockContent::Svg(svg),
                 style,
                 link: None,
             });
@@ -910,8 +935,7 @@ fn extract_blocks(
 
         if !text.is_empty() {
             blocks.push(Block {
-                text,
-                svg: None,
+                content: BlockContent::Text(text),
                 style,
                 link: target,
             });
@@ -1078,8 +1102,7 @@ fn flush(blocks: &mut Vec<Block>, current: &mut String, style: TextStyle) {
 
     if !text.is_empty() {
         blocks.push(Block {
-            text,
-            svg: None,
+            content: BlockContent::Text(text),
             style,
             link: None,
         });
@@ -1514,38 +1537,61 @@ fn paint(
     let mut link_regions = Vec::new();
 
     for block in &page.blocks {
-        if let Some(svg) = &block.svg {
-            let available_width = width.saturating_sub(32);
-            let (svg_width, svg_height) = svg_block_size(svg, available_width);
+        match &block.content {
+            BlockContent::Svg(svg) => {
+                let available_width = width.saturating_sub(32);
+                let (svg_width, svg_height) = svg_block_size(svg, available_width);
 
-            if y + svg_height as i32 > CONTENT_TOP && y < height as i32 {
-                if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT) {
-                    surface.blit_xrgb8888(pixels, width, height, 16, y);
+                if y + svg_height as i32 > CONTENT_TOP && y < height as i32 {
+                    if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT)
+                    {
+                        surface.blit_xrgb8888(pixels, width, height, 16, y);
+                    }
                 }
+
+                y += svg_height as i32 + block.style.margin_after;
             }
 
-            y += svg_height as i32 + block.style.margin_after;
-            continue;
+            BlockContent::Bitmap(bitmap) => {
+                let available_width = width.saturating_sub(32);
+                let (image_width, image_height) = bitmap_block_size(bitmap, available_width);
+
+                if y + image_height as i32 > CONTENT_TOP && y < height as i32 {
+                    bitmap.blit_scaled_xrgb8888(
+                        pixels,
+                        width,
+                        height,
+                        16,
+                        y,
+                        image_width,
+                        image_height,
+                    );
+                }
+
+                y += image_height as i32 + block.style.margin_after;
+            }
+
+            BlockContent::Text(text) => {
+                y = draw_wrapped_text(
+                    pixels,
+                    width,
+                    height,
+                    16,
+                    y,
+                    width as i32 - 16,
+                    text,
+                    block.style.font_size,
+                    block.style.font_weight,
+                    block.style.font_style,
+                    block.style.color,
+                    block.link.as_deref(),
+                    vector_font.as_ref(),
+                    &mut link_regions,
+                );
+
+                y += block.style.margin_after;
+            }
         }
-
-        y = draw_wrapped_text(
-            pixels,
-            width,
-            height,
-            16,
-            y,
-            width as i32 - 16,
-            &block.text,
-            block.style.font_size,
-            block.style.font_weight,
-            block.style.font_style,
-            block.style.color,
-            block.link.as_deref(),
-            vector_font.as_ref(),
-            &mut link_regions,
-        );
-
-        y += block.style.margin_after;
     }
 
     let document_bottom = y + scroll_y;
@@ -1590,6 +1636,21 @@ fn svg_block_size(svg: &SvgDocument, available_width: usize) -> (usize, usize) {
         .clamp(1, MAX_HEIGHT);
 
     (width, height)
+}
+
+fn bitmap_block_size(bitmap: &RasterSurface, available_width: usize) -> (usize, usize) {
+    const MAX_HEIGHT: usize = 4_096;
+
+    let source_width = bitmap.width().max(1);
+    let source_height = bitmap.height().max(1);
+    let width = source_width.min(available_width.max(1));
+
+    let height = source_height
+        .saturating_mul(width)
+        .saturating_add(source_width - 1)
+        / source_width;
+
+    (width, height.clamp(1, MAX_HEIGHT))
 }
 
 fn draw_wrapped_text(
@@ -1920,7 +1981,7 @@ mod tests {
         );
 
         assert_eq!(page.blocks.len(), 1);
-        assert_eq!(page.blocks[0].text, "Hello");
+        assert_eq!(page.blocks[0].text().unwrap(), "Hello");
         assert_eq!(page.blocks[0].style.color, 0x00_12_34_56);
         assert!((page.blocks[0].style.font_size - 24.0).abs() < f32::EPSILON);
     }
@@ -1937,7 +1998,7 @@ mod tests {
         );
 
         assert_eq!(page.blocks.len(), 1);
-        assert_eq!(page.blocks[0].text, "Visible text");
+        assert_eq!(page.blocks[0].text().unwrap(), "Visible text");
     }
 
     #[test]
@@ -1982,7 +2043,7 @@ mod tests {
         let link = page
             .blocks
             .iter()
-            .find(|block| block.text == "about us")
+            .find(|block| block.text().unwrap() == "about us")
             .unwrap();
 
         assert_eq!(
@@ -2031,7 +2092,7 @@ mod tests {
 
         assert_eq!(page.title, "FreeDOM script test");
         assert_eq!(page.blocks.len(), 1);
-        assert_eq!(page.blocks[0].text, "Visible content");
+        assert_eq!(page.blocks[0].text().unwrap(), "Visible content");
     }
 
     #[test]
@@ -2074,7 +2135,7 @@ mod tests {
 
         assert_eq!(page.title, "After");
         assert_eq!(page.blocks.len(), 1);
-        assert_eq!(page.blocks[0].text, "After");
+        assert_eq!(page.blocks[0].text().unwrap(), "After");
     }
 
     #[test]
@@ -2091,9 +2152,9 @@ mod tests {
         );
 
         assert_eq!(page.blocks.len(), 3);
-        assert_eq!(page.blocks[0].text, "Before");
-        assert!(page.blocks[1].svg.is_some());
-        assert_eq!(page.blocks[2].text, "After");
+        assert_eq!(page.blocks[0].text().unwrap(), "Before");
+        assert!(page.blocks[1].svg().is_some());
+        assert_eq!(page.blocks[2].text().unwrap(), "After");
     }
 
     #[test]
@@ -2160,8 +2221,58 @@ mod tests {
 
         assert_eq!(page.blocks.len(), 1);
 
-        let svg = page.blocks[0].svg.as_ref().unwrap();
+        let svg = page.blocks[0].svg().unwrap();
         assert_eq!(svg.shapes.len(), 1);
         assert_eq!(svg.shapes[0].fill, Some(RasterColor::rgba(0, 128, 0, 255)));
+    }
+
+    #[test]
+    fn decodes_external_png_images_through_fetch_and_renderer_types() {
+        let mut source = RasterSurface::new(2, 1, RasterColor::TRANSPARENT);
+        source.set_pixel(0, 0, RasterColor::rgba(255, 0, 0, 255));
+        source.set_pixel(1, 0, RasterColor::rgba(0, 0, 255, 128));
+
+        let png = crate::graphics::image::encode_png(&source).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            stream.read(&mut request).unwrap();
+
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                Content-Type: image/png\r\n\
+                Content-Length: {}\r\n\
+                Connection: close\r\n\
+                \r\n",
+                png.len()
+            )
+                .into_bytes();
+
+            response.extend_from_slice(&png);
+            stream.write_all(response.as_slice()).unwrap();
+        });
+
+        let document = HtmlDocument::parse(r#"<img src="images/pixel.png">"#);
+        let fetcher = Fetcher::new().unwrap();
+
+        let page = parse_dom_with_fetcher(
+            &format!("http://{address}/page.html"),
+            &document,
+            &[],
+            Some(&fetcher),
+        );
+
+        server.join().unwrap();
+
+        let image = page.blocks[0].bitmap().unwrap();
+
+        assert_eq!(image.width(), 2);
+        assert_eq!(image.height(), 1);
+        assert_eq!(image.pixel(0, 0), Some(RasterColor::rgba(255, 0, 0, 255)));
+        assert_eq!(image.pixel(1, 0), Some(RasterColor::rgba(0, 0, 255, 128)));
     }
 }

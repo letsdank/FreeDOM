@@ -110,20 +110,48 @@ impl Surface {
         origin_x: i32,
         origin_y: i32,
     ) {
-        for source_y in 0..self.height {
-            let destination_y = origin_y.saturating_add(source_y as i32);
+        self.blit_scaled_xrgb8888(
+            destination,
+            destination_width,
+            destination_height,
+            origin_x,
+            origin_y,
+            self.width,
+            self.height,
+        );
+    }
+
+    pub fn blit_scaled_xrgb8888(
+        &self,
+        destination: &mut [u32],
+        destination_width: usize,
+        destination_height: usize,
+        origin_x: i32,
+        origin_y: i32,
+        target_width: usize,
+        target_height: usize,
+    ) {
+        if self.width == 0 || self.height == 0 || target_width == 0 || target_height == 0 {
+            return;
+        }
+
+        for target_y in 0..target_height {
+            let destination_y = origin_y.saturating_add(target_y as i32);
 
             if destination_y < 0 || destination_y >= destination_height as i32 {
                 continue;
             }
 
-            for source_x in 0..self.width {
-                let destination_x = origin_x.saturating_add(source_x as i32);
+            let source_y = target_y * self.height / target_height;
+
+            for target_x in 0..target_width {
+                let destination_x = origin_x.saturating_add(target_x as i32);
 
                 if destination_x < 0 || destination_x >= destination_width as i32 {
                     continue;
                 }
 
+                let source_x = target_x * self.width / target_width;
                 let source = self.pixels[source_y * self.width + source_x];
 
                 if source.alpha == 0 {
@@ -683,5 +711,21 @@ mod tests {
 
         assert_eq!(butt.pixel(4, 7), Some(Color::TRANSPARENT));
         assert_ne!(square.pixel(4, 7), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn scales_surfaces_when_blitting() {
+        let mut source = Surface::new(2, 1, Color::TRANSPARENT);
+        source.set_pixel(0, 0, Color::rgba(255, 0, 0, 255));
+        source.set_pixel(1, 0, Color::rgba(0, 255, 0, 255));
+
+        let mut destination = vec![0; 8];
+
+        source.blit_scaled_xrgb8888(&mut destination, 4, 2, 0, 0, 4, 2);
+
+        assert_eq!(destination[0], 0x00_ff_00_00);
+        assert_eq!(destination[1], 0x00_ff_00_00);
+        assert_eq!(destination[2], 0x00_00_ff_00);
+        assert_eq!(destination[3], 0x00_00_ff_00);
     }
 }
