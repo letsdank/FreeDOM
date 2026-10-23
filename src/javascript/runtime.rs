@@ -4,14 +4,92 @@ use crate::url::Url;
 
 use super::dom::{ElementState, parse_simple_selector};
 use super::{
-    BinaryOperator, Completion, DocumentMethod, DocumentState, ElementMethod, Expression, JsError,
-    NativeFunction, Statement, TestContextMethod, UserFunction, Value, function_local_names,
+    BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression, JsError,
+    NativeFunction, Statement, TestContextMethod, UserFunction, Value,
 };
 
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: UserFunction,
     captured: HashMap<String, Value>,
+}
+
+pub(super) enum Completion {
+    Normal(Value),
+    Return(Value),
+    Break,
+    Continue,
+}
+
+impl Completion {
+    pub(super) fn into_value(self) -> Value {
+        match self {
+            Self::Normal(value) | Self::Return(value) => value,
+            Self::Break | Self::Continue => Value::Undefined,
+        }
+    }
+}
+
+fn function_local_names(statements: &[Statement]) -> Vec<String> {
+    let mut names = Vec::new();
+
+    for statement in statements {
+        match statement {
+            Statement::Declaration { name, .. } => {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                for name in function_local_names(then_body)
+                    .into_iter()
+                    .chain(function_local_names(else_body))
+                {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
+            Statement::While { body, .. } => {
+                for name in function_local_names(body) {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
+            Statement::For {
+                initializer, body, ..
+            } => {
+                if let Some(initializer) = initializer {
+                    for name in function_local_names(std::slice::from_ref(initializer.as_ref())) {
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                }
+
+                for name in function_local_names(body) {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
+            Statement::Expression(_)
+            | Statement::Return(_)
+            | Statement::Break
+            | Statement::Continue => {}
+        }
+    }
+
+    names
 }
 
 pub(super) struct Interpreter {

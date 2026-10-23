@@ -20,7 +20,12 @@ pub use dom::DocumentState;
 #[path = "javascript/runtime.rs"]
 mod runtime;
 
-use runtime::Interpreter;
+#[path = "javascript/ast.rs"]
+mod ast;
+
+pub(crate) use ast::{BinaryOperator, Expression, Statement, UserFunction};
+
+use runtime::{Completion, Interpreter};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeFunction {
@@ -151,174 +156,6 @@ impl Value {
             _ => None,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum Statement {
-    Declaration {
-        name: String,
-        value: Expression,
-    },
-    Expression(Expression),
-    Return(Expression),
-    If {
-        condition: Expression,
-        then_body: Vec<Statement>,
-        else_body: Vec<Statement>,
-    },
-    While {
-        condition: Expression,
-        body: Vec<Statement>,
-    },
-    For {
-        initializer: Option<Box<Statement>>,
-        condition: Option<Expression>,
-        update: Option<Expression>,
-        body: Vec<Statement>,
-    },
-    Break,
-    Continue,
-}
-
-enum Completion {
-    Normal(Value),
-    Return(Value),
-    Break,
-    Continue,
-}
-
-impl Completion {
-    fn into_value(self) -> Value {
-        match self {
-            Self::Normal(value) | Self::Return(value) => value,
-            Self::Break | Self::Continue => Value::Undefined,
-        }
-    }
-}
-
-fn function_local_names(statements: &[Statement]) -> Vec<String> {
-    let mut names = Vec::new();
-
-    for statement in statements {
-        match statement {
-            Statement::Declaration { name, .. } => {
-                if !names.contains(name) {
-                    names.push(name.clone());
-                }
-            }
-
-            Statement::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                for name in function_local_names(then_body)
-                    .into_iter()
-                    .chain(function_local_names(else_body))
-                {
-                    if !names.contains(&name) {
-                        names.push(name);
-                    }
-                }
-            }
-
-            Statement::While { body, .. } => {
-                for name in function_local_names(body) {
-                    if !names.contains(&name) {
-                        names.push(name);
-                    }
-                }
-            }
-
-            Statement::For {
-                initializer, body, ..
-            } => {
-                if let Some(initializer) = initializer {
-                    for name in function_local_names(std::slice::from_ref(initializer.as_ref())) {
-                        if !names.contains(&name) {
-                            names.push(name);
-                        }
-                    }
-                }
-
-                for name in function_local_names(body) {
-                    if !names.contains(&name) {
-                        names.push(name);
-                    }
-                }
-            }
-
-            Statement::Expression(_)
-            | Statement::Return(_)
-            | Statement::Break
-            | Statement::Continue => {}
-        }
-    }
-
-    names
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum Expression {
-    Literal(Value),
-    Identifier(String),
-    New {
-        constructor: String,
-        arguments: Vec<Expression>,
-    },
-    Member {
-        object: Box<Expression>,
-        property: String,
-    },
-    Call {
-        callee: Box<Expression>,
-        arguments: Vec<Expression>,
-    },
-    Assignment {
-        target: Box<Expression>,
-        value: Box<Expression>,
-    },
-    Binary {
-        left: Box<Expression>,
-        operator: BinaryOperator,
-        right: Box<Expression>,
-    },
-    Function(UserFunction),
-    Index {
-        object: Box<Expression>,
-        index: Box<Expression>,
-    },
-    Not(Box<Expression>),
-    Update {
-        target: Box<Expression>,
-        delta: f64,
-        prefix: bool,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct UserFunction {
-    parameters: Vec<String>,
-    body: Vec<Statement>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum BinaryOperator {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Equal,
-    StrictEqual,
-    NotEqual,
-    StrictNotEqual,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
-    Instanceof,
-    And,
-    Or,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
