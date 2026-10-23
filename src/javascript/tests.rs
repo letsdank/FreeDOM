@@ -908,3 +908,21 @@ fn evaluates_for_of_over_array_literals() {
     )
     .unwrap();
 }
+
+#[test]
+fn arrays_preserve_identity_and_support_push_and_pop() {
+    evaluate(
+        r#"
+            const values = [1];
+            const alias = values;
+            
+            assert_equals(alias.push(2, 3), 3);
+            assert_equals(values.length, 3);
+            assert_equals(values[1], 2);
+            
+            assert_equals(values.pop(), 3);
+            assert_equals(alias.length, 2);
+        "#,
+    )
+    .unwrap();
+}

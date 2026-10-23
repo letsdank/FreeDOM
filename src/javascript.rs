@@ -1,5 +1,5 @@
 use crate::url::Url;
-use std::{collections::HashMap, error::Error, fmt};
+use std::{cell::RefCell, collections::HashMap, error::Error, fmt, rc::Rc};
 
 #[path = "javascript/lexer.rs"]
 mod lexer;
@@ -66,6 +66,14 @@ pub(crate) enum TestContextMethod {
     AddCleanup,
 }
 
+pub(crate) type ArrayStorage = Rc<RefCell<Vec<Value>>>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArrayMethodKind {
+    Push,
+    Pop,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Undefined,
@@ -73,7 +81,11 @@ pub enum Value {
     Boolean(bool),
     Number(f64),
     String(String),
-    Array(Vec<Value>),
+    Array(ArrayStorage),
+    ArrayMethod {
+        receiver: ArrayStorage,
+        method: ArrayMethodKind,
+    },
     Object(HashMap<String, Value>),
     Url(Url),
     NativeFunction(NativeFunction),
@@ -82,7 +94,10 @@ pub enum Value {
     HtmlCollection(String),
     ElementChildren(u64),
     Attributes(u64),
-    Attribute { node_id: u64, name: String },
+    Attribute {
+        node_id: u64,
+        name: String,
+    },
     ElementMethod(ElementMethod),
     DocumentMethod(DocumentMethod),
     Function(UserFunction),
@@ -103,10 +118,13 @@ impl Value {
             Self::String(value) => value.clone(),
 
             Self::Array(values) => values
+                .borrow()
                 .iter()
                 .map(|value| value.to_js_string())
                 .collect::<Vec<_>>()
                 .join(","),
+
+            Self::ArrayMethod { .. } => "function".to_owned(),
 
             Self::Object(_) => "[object Object]".to_owned(),
             Self::Url(url) => url.to_string(),
@@ -129,9 +147,13 @@ impl Value {
         }
     }
 
-    pub fn as_array(&self) -> Option<&[Value]> {
+    pub(crate) fn array(values: Vec<Value>) -> Self {
+        Self::Array(Rc::new(RefCell::new(values)))
+    }
+
+    pub fn as_array(&self) -> Option<Vec<Value>> {
         match self {
-            Self::Array(values) => Some(values),
+            Self::Array(values) => Some(values.borrow().clone()),
             _ => None,
         }
     }

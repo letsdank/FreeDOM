@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use crate::url::Url;
 
 use super::{
-    BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression, JsError,
-    NativeFunction, Statement, TestContextMethod, UserFunction, Value,
+    ArrayMethodKind, ArrayStorage, BinaryOperator, DocumentMethod, DocumentState, ElementMethod,
+    Expression, JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
 };
 
 #[path = "runtime/dom.rs"]
@@ -301,6 +301,7 @@ impl Interpreter {
                             "TypeError: for-of currently requires an Array",
                         ));
                     };
+                    let values = values.borrow().clone();
 
                     let previous_binding = self.variables.insert(binding.clone(), Value::Undefined);
 
@@ -350,7 +351,7 @@ impl Interpreter {
                     values.push(self.evaluate_expression(expression)?);
                 }
 
-                Ok(Value::Array(values))
+                Ok(Value::array(values))
             }
 
             Expression::Identifier(name) => {
@@ -372,7 +373,19 @@ impl Interpreter {
                         Ok(Value::TestContextMethod(TestContextMethod::AddCleanup))
                     }
 
-                    (Value::Array(values), "length") => Ok(Value::Number(values.len() as f64)),
+                    (Value::Array(values), "length") => {
+                        Ok(Value::Number(values.borrow().len() as f64))
+                    }
+
+                    (Value::Array(values), "push") => Ok(Value::ArrayMethod {
+                        receiver: values,
+                        method: ArrayMethodKind::Push,
+                    }),
+
+                    (Value::Array(values), "pop") => Ok(Value::ArrayMethod {
+                        receiver: values,
+                        method: ArrayMethodKind::Pop,
+                    }),
 
                     (Value::Url(url), "href") => Ok(Value::String(url.to_string())),
 
@@ -664,6 +677,7 @@ impl Interpreter {
 
         match object {
             Value::Array(values) => Ok(values
+                .borrow()
                 .get(index as usize)
                 .cloned()
                 .unwrap_or(Value::Undefined)),
@@ -860,6 +874,7 @@ impl Interpreter {
             | Value::ElementMethod(_)
             | Value::NodeList(_)
             | Value::ClassList(_)
+            | Value::ArrayMethod { .. }
             | Value::TestContext => None,
         }
     }
@@ -983,6 +998,23 @@ impl Interpreter {
         }
     }
 
+    fn array_push(receiver: ArrayStorage, values: Vec<Value>) -> Result<Value, JsError> {
+        let mut receiver = receiver.borrow_mut();
+        receiver.extend(values);
+
+        Ok(Value::Number(receiver.len() as f64))
+    }
+
+    fn array_pop(receiver: ArrayStorage, values: Vec<Value>) -> Result<Value, JsError> {
+        if !values.is_empty() {
+            return Err(JsError::runtime(
+                "TypeError: Array.pop expects no arguments",
+            ));
+        }
+
+        Ok(receiver.borrow_mut().pop().unwrap_or(Value::Undefined))
+    }
+
     fn evaluate_call(
         &mut self,
         callee: &Expression,
@@ -997,6 +1029,16 @@ impl Interpreter {
         }
 
         match callee {
+            Value::ArrayMethod {
+                receiver,
+                method: ArrayMethodKind::Push,
+            } => Self::array_push(receiver, values),
+
+            Value::ArrayMethod {
+                receiver,
+                method: ArrayMethodKind::Pop,
+            } => Self::array_pop(receiver, values),
+
             Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
 
             Value::NativeFunction(NativeFunction::Test) => self.run_test(values),

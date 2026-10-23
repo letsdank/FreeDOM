@@ -26,7 +26,7 @@ fn run_urltestdata(source: &str) -> Result<WptReport, String> {
         .as_array()
         .ok_or_else(|| "WPT URL fixture root must be an array".to_owned())?;
 
-    let cases = collect_cases(records)?;
+    let cases = collect_cases(&records)?;
 
     let mut report = WptReport {
         total: cases.len(),

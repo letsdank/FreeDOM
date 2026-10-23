@@ -73,7 +73,7 @@ impl JsonParser {
         let mut values = Vec::new();
 
         if self.consume_optional(&TokenKind::RightBracket) {
-            return Ok(Value::Array(values));
+            return Ok(Value::array(values));
         }
 
         loop {
@@ -95,7 +95,7 @@ impl JsonParser {
                 "expected ',' or ']' after JSON array item",
             )?;
 
-            return Ok(Value::Array(values));
+            return Ok(Value::array(values));
         }
     }
 
