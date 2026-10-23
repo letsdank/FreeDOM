@@ -10,7 +10,7 @@ use crate::{
     javascript::{DocumentState, evaluate_with_document},
     url::Url,
 };
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
 pub(crate) enum BlockContent {
     Text(String),
