@@ -505,14 +505,24 @@ fn resolve_clip_paths(
         let clip_transform = element_transform(clip_path)?.then(transform);
         let mut path = Path::new();
         let mut fill_rule = FillRule::NonZero;
+        let mut nested_clip_paths = Vec::new();
 
         for child in &clip_path.children {
             if let HtmlNode::Element(child) = child {
-                collect_clip_path_geometry(child, clip_transform, &mut path, &mut fill_rule)?;
+                collect_clip_path_geometry(
+                    root,
+                    child,
+                    clip_transform,
+                    &mut path,
+                    &mut fill_rule,
+                    &mut nested_clip_paths,
+                    reference_stack,
+                )?;
             }
         }
 
         let mut resolved = vec![ClipPath { path, fill_rule }];
+        resolved.append(&mut nested_clip_paths);
 
         if let Some(mut nested) =
             resolve_clip_paths(root, clip_path, clip_transform, reference_stack)?
@@ -554,12 +564,19 @@ fn clip_path_reference_id(element: &HtmlElement) -> Result<Option<String>, SvgEr
 }
 
 fn collect_clip_path_geometry(
+    root: &HtmlElement,
     element: &HtmlElement,
     parent_transform: Transform,
     output: &mut Path,
     fill_rule: &mut FillRule,
+    nested_clip_paths: &mut Vec<ClipPath>,
+    reference_stack: &mut Vec<String>,
 ) -> Result<(), SvgError> {
     let transform = element_transform(element)?.then(parent_transform);
+
+    if let Some(mut nested) = resolve_clip_paths(root, element, transform, reference_stack)? {
+        nested_clip_paths.append(&mut nested);
+    }
 
     if let Some(value) = attribute(element, "clip-rule") {
         *fill_rule = parse_fill_rule(value)?
@@ -571,7 +588,15 @@ fn collect_clip_path_geometry(
 
     for child in &element.children {
         if let HtmlNode::Element(child) = child {
-            collect_clip_path_geometry(child, transform, output, fill_rule)?;
+            collect_clip_path_geometry(
+                root,
+                child,
+                transform,
+                output,
+                fill_rule,
+                nested_clip_paths,
+                reference_stack,
+            )?;
         }
     }
 
