@@ -160,11 +160,11 @@ struct CssRule {
     declarations: Declarations,
 }
 
-enum Selector {
-    Universal,
-    Tag(String),
-    Class(String),
-    Id(String),
+#[derive(Default)]
+struct Selector {
+    tag: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
 }
 
 struct ElementInfo {
@@ -636,21 +636,86 @@ fn remove_css_comments(source: &str) -> String {
     output
 }
 
-fn parse_selector(selector: &str) -> Option<(Selector, u16)> {
-    if selector == "*" {
-        return Some((Selector::Universal, 0));
+fn parse_selector(input: &str) -> Option<(Selector, u16)> {
+    let input = input.trim();
+
+    if input.is_empty()
+        || input
+            .chars()
+            .any(|character| character.is_ascii_whitespace())
+    {
+        return None;
     }
 
-    if let Some(id) = selector.strip_prefix('#') {
-        return is_css_identifier(id).then(|| (Selector::Id(id.to_owned()), 100));
+    let mut selector = Selector::default();
+    let mut specificity: u16 = 0;
+    let mut remaining = input;
+    let mut saw_universal = false;
+
+    while !remaining.is_empty() {
+        match remaining.as_bytes()[0] {
+            b'*' => {
+                if saw_universal
+                    || selector.tag.is_some()
+                    || selector.id.is_some()
+                    || !selector.classes.is_empty()
+                {
+                    return None;
+                }
+
+                saw_universal = true;
+                remaining = &remaining[1..];
+            }
+
+            b'#' => {
+                let (id, tail) = take_css_identifier(&remaining[1..])?;
+
+                if selector.id.is_some() {
+                    return None;
+                }
+
+                selector.id = Some(id.to_owned());
+                specificity = specificity.saturating_add(100);
+                remaining = tail;
+            }
+
+            b'.' => {
+                let (class, tail) = take_css_identifier(&remaining[1..])?;
+
+                selector.classes.push(class.to_owned());
+                specificity = specificity.saturating_add(10);
+                remaining = tail;
+            }
+
+            _ => {
+                if selector.tag.is_some() || saw_universal {
+                    return None;
+                }
+
+                let (tag, tail) = take_css_identifier(remaining)?;
+
+                selector.tag = Some(tag.to_ascii_lowercase());
+                specificity = specificity.saturating_add(1);
+                remaining = tail;
+            }
+        }
     }
 
-    if let Some(class) = selector.strip_prefix('.') {
-        return is_css_identifier(class).then(|| (Selector::Class(class.to_owned()), 10));
-    }
+    (saw_universal
+        || selector.tag.is_some()
+        || selector.id.is_some()
+        || !selector.classes.is_empty())
+    .then_some((selector, specificity))
+}
 
-    let tag = selector.to_ascii_lowercase();
-    is_css_identifier(&tag).then(|| (Selector::Tag(tag), 1))
+fn take_css_identifier(input: &str) -> Option<(&str, &str)> {
+    let boundary = input
+        .find(|character| matches!(character, '.' | '#'))
+        .unwrap_or(input.len());
+
+    let identifier = &input[..boundary];
+
+    is_css_identifier(identifier).then_some((identifier, &input[boundary..]))
 }
 
 fn is_css_identifier(value: &str) -> bool {
@@ -1049,12 +1114,24 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
 }
 
 fn selector_matches(selector: &Selector, element: &ElementInfo) -> bool {
-    match selector {
-        Selector::Universal => true,
-        Selector::Tag(tag) => element.tag == *tag,
-        Selector::Class(class) => element.classes.iter().any(|item| item == class),
-        Selector::Id(id) => element.id.as_ref() == Some(id),
-    }
+    let tag_matches = selector
+        .tag
+        .as_ref()
+        .map_or(true, |tag| element.tag == *tag);
+
+    let id_matches = selector
+        .id
+        .as_ref()
+        .map_or(true, |id| element.id.as_ref() == Some(id));
+
+    let classes_match = selector.classes.iter().all(|class| {
+        element
+            .classes
+            .iter()
+            .any(|element_class| element_class == class)
+    });
+
+    tag_matches && id_matches && classes_match
 }
 
 fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
@@ -1633,7 +1710,7 @@ fn svg_block_size(svg: &SvgDocument, available_width: usize) -> (usize, usize) {
         (None, Some(ratio)) => (width as f32 / ratio).round() as usize,
         (None, None) => DEFAULT_HEIGHT,
     }
-        .clamp(1, MAX_HEIGHT);
+    .clamp(1, MAX_HEIGHT);
 
     (width, height)
 }
@@ -2250,7 +2327,7 @@ mod tests {
                 \r\n",
                 png.len()
             )
-                .into_bytes();
+            .into_bytes();
 
             response.extend_from_slice(&png);
             stream.write_all(response.as_slice()).unwrap();
@@ -2274,5 +2351,51 @@ mod tests {
         assert_eq!(image.height(), 1);
         assert_eq!(image.pixel(0, 0), Some(RasterColor::rgba(255, 0, 0, 255)));
         assert_eq!(image.pixel(1, 0), Some(RasterColor::rgba(0, 0, 255, 128)));
+    }
+
+    #[test]
+    fn parses_compound_css_selectors_with_correct_specificity() {
+        let (selector, specificity) = parse_selector("p#lead.notice.wide").unwrap();
+
+        assert_eq!(selector.tag.as_deref(), Some("p"));
+        assert_eq!(selector.id.as_deref(), Some("lead"));
+        assert_eq!(selector.classes, ["notice", "wide"]);
+        assert_eq!(specificity, 121);
+
+        let element = ElementInfo {
+            tag: "p".to_owned(),
+            id: Some("lead".to_owned()),
+            classes: vec!["notice".to_owned(), "wide".to_owned()],
+            inline_style: None,
+            href: None,
+            src: None,
+        };
+
+        assert!(selector_matches(&selector, &element));
+    }
+
+    #[test]
+    fn compound_css_selectors_participate_in_the_cascade() {
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <style>
+                    p { color: red, font-size: 12px; }
+                    .notice { color: green; }
+                    p.notice { color: #123456; font-size: 20px; }
+                    p#lead.notice { font-weight: 700; font-style: italic; }
+                </style>
+
+                <p id="lead" class="notice">FreeDOM</p>
+            "#,
+        );
+
+        let style = page.blocks[0].style;
+
+        assert_eq!(page.blocks[0].text(), Some("FreeDOM"));
+        assert_eq!(style.color, 0x00_12_34_56);
+        assert_eq!(style.font_size, 20.0);
+        assert_eq!(style.font_weight, FontWeight::Bold);
+        assert_eq!(style.font_style, FontStyle::Italic);
     }
 }
