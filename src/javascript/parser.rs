@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use super::{
-    BinaryOperator, Expression, JsError, Statement, Token, TokenKind, UserFunction,
-    Value, tokenize,
+    BinaryOperator, Expression, JsError, Statement, Token, TokenKind, UserFunction, Value, tokenize,
 };
 
 pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {

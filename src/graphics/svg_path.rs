@@ -757,7 +757,7 @@ mod tests {
             T 37 39 \
             T 45 47",
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(
             path.commands(),

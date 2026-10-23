@@ -1324,8 +1324,8 @@ impl Interpreter {
 
         if token.is_empty()
             || token
-            .chars()
-            .any(|character| character.is_ascii_whitespace())
+                .chars()
+                .any(|character| character.is_ascii_whitespace())
         {
             return Err(JsError::runtime(
                 "SyntaxError: class token must not be empty or contain whitespace",
@@ -1702,7 +1702,7 @@ impl Interpreter {
 
             Url::parse(&base).and_then(|base_url| base_url.join(&input))
         }
-            .map_err(|error| JsError::runtime(format!("TypeError: invalid URL: {error}")))?;
+        .map_err(|error| JsError::runtime(format!("TypeError: invalid URL: {error}")))?;
 
         Ok(Value::Url(url))
     }

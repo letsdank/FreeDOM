@@ -124,7 +124,7 @@ impl Transform {
             && inverse.d.is_finite()
             && inverse.e.is_finite()
             && inverse.f.is_finite())
-            .then_some(inverse)
+        .then_some(inverse)
     }
 
     pub fn apply_point(self, point: Point) -> Point {

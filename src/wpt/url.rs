@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fs};
 
 use crate::{
-    url::Url,
     javascript::{Value, parse_json},
+    url::Url,
 };
 
 struct UrlCase {

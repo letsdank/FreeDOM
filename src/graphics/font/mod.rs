@@ -1,9 +1,9 @@
-pub mod sfnt;
-pub mod truetype;
 pub mod cmap;
-pub mod loca;
 pub mod glyf;
 pub mod hmtx;
-pub mod layout;
 pub mod kern;
+pub mod layout;
+pub mod loca;
 pub mod render;
+pub mod sfnt;
+pub mod truetype;

@@ -83,16 +83,16 @@ impl CmapTable {
                 4 if selected_format4
                     .as_ref()
                     .is_none_or(|(selected_priority, _)| priority > *selected_priority) =>
-                    {
-                        selected_format4 = Some((priority, subtable_offset));
-                    }
+                {
+                    selected_format4 = Some((priority, subtable_offset));
+                }
 
                 12 if selected_format12
                     .as_ref()
                     .is_none_or(|(selected_priority, _)| priority > *selected_priority) =>
-                    {
-                        selected_format12 = Some((priority, subtable_offset));
-                    }
+                {
+                    selected_format12 = Some((priority, subtable_offset));
+                }
 
                 _ => {}
             }

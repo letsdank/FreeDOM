@@ -80,9 +80,9 @@ fn compare_surfaces(actual: &Surface, expected: &Surface) -> SvgReftestReport {
                 actual_pixel.blue.abs_diff(expected_pixel.blue),
                 actual_pixel.alpha.abs_diff(expected_pixel.alpha),
             ]
-                .into_iter()
-                .max()
-                .unwrap_or(0);
+            .into_iter()
+            .max()
+            .unwrap_or(0);
 
             max_channel_difference = max_channel_difference.max(difference);
         }
@@ -128,7 +128,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(report.different_pixels, 0);
         assert_eq!(report.max_channel_difference, 0);
@@ -139,7 +139,7 @@ mod tests {
         let test_source = fs::read_to_string(fixture_path(
             "struct/reftests/requiredextensions-empty-string.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source =
             fs::read_to_string(fixture_path("struct/scripted/support/blank.svg"))
@@ -167,12 +167,12 @@ mod tests {
         let test_source = fs::read_to_string(fixture_path(
             "coordinate-systems/viewBox-zero-disables-rendering-001.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(fixture_path(
             "coordinate-systems/viewBox-zero-disables-rendering-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 
@@ -192,7 +192,7 @@ mod tests {
         let reference_source = fs::read_to_string(fixture_path(
             "pservers/reftests/reference/green-100x100.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         for fixture in [
             "painting/reftests/fallback-001.svg",
@@ -224,7 +224,7 @@ mod tests {
         let reference_source = fs::read_to_string(fixture_path(
             "coordinate-systems/viewBox-zero-disables-rendering-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         for fixture in [
             "coordinate-systems/viewBox-zero-disables-rendering-002.svg",
@@ -282,12 +282,12 @@ mod tests {
         let test_source = fs::read_to_string(fixture_path(
             "struct/reftests/inner-svg-transform-and-viewbox.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(fixture_path(
             "struct/reftests/reference/inner-svg-transform-and-viewbox-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 
@@ -339,12 +339,12 @@ mod tests {
         let test_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/clip-path-clip-rule-002.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/reference/clip-path-square-001-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 
@@ -365,12 +365,12 @@ mod tests {
         let test_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/clip-path-clip-rule-001.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/reference/clip-path-square-hole-001-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 
@@ -383,12 +383,12 @@ mod tests {
         let test_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/clip-path-clip.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/reference/clip-path-square-002-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 
@@ -401,12 +401,12 @@ mod tests {
         let test_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/clip-path-content-clip-001.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/reference/clip-path-square-002-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 
@@ -419,12 +419,12 @@ mod tests {
         let test_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/clip-path-clip-nested-twice.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/reference/clip-path-square-002-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 
@@ -437,12 +437,12 @@ mod tests {
         let test_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/clip-path-content-use-001.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/reference/clip-path-square-002-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 
@@ -455,12 +455,12 @@ mod tests {
         let test_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/clip-path-content-use-002.svg",
         ))
-            .expect("WPT SVG test fixture is missing");
+        .expect("WPT SVG test fixture is missing");
 
         let reference_source = fs::read_to_string(css_fixture_path(
             "css-masking/clip-path-svg-content/reference/clip-path-square-002-ref.svg",
         ))
-            .expect("WPT SVG reference fixture is missing");
+        .expect("WPT SVG reference fixture is missing");
 
         let report = run_svg_reftest(&test_source, &reference_source).unwrap();
 

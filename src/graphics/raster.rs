@@ -221,8 +221,8 @@ pub fn fill_path_clipped(
 
                     sample_is_inside(path, sample, fill_rule)
                         && clips
-                        .iter()
-                        .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
+                            .iter()
+                            .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
@@ -264,8 +264,8 @@ pub fn stroke_path_clipped(
 
                     sample_is_on_stroke(path, sample, radius, style.line_cap)
                         && clips
-                        .iter()
-                        .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
+                            .iter()
+                            .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;

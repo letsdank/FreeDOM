@@ -1406,7 +1406,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 255, 0, 255)));
@@ -1426,7 +1426,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         let surface = document.render(20, 20, Color::WHITE).unwrap();
 
@@ -1448,7 +1448,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 0, 255, 255)));
     }
@@ -1462,7 +1462,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(
@@ -1506,7 +1506,7 @@ mod tests {
                 </svg>
             "#,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 2);
 
@@ -1538,7 +1538,7 @@ mod tests {
                 </svg>
             "#,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 2);
 
@@ -1589,7 +1589,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].fill, None);
@@ -1611,7 +1611,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert!(document.shapes.is_empty());
     }
@@ -1625,7 +1625,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         let surface = document.render(20, 20, Color::WHITE).unwrap();
 
@@ -1677,7 +1677,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         let surface = document.render(20, 10, Color::WHITE).unwrap();
 
@@ -1720,7 +1720,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(
@@ -1748,7 +1748,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         let surface = document.render(50, 50, Color::WHITE).unwrap();
 
@@ -1773,7 +1773,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         let surface = document.render(50, 50, Color::WHITE).unwrap();
 
@@ -1797,7 +1797,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(255, 0, 0, 128)));
 
@@ -1820,7 +1820,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
@@ -1838,7 +1838,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(255, 0, 0, 255)));
@@ -1861,7 +1861,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
@@ -1879,7 +1879,7 @@ mod tests {
                 </svg>
             "##,
         )
-            .unwrap();
+        .unwrap();
 
         let surface = document.render(8, 8, Color::WHITE).unwrap();
 
