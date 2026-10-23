@@ -57,7 +57,10 @@ impl SvgDocument {
             let clip_paths = shape
                 .clip_paths
                 .iter()
-                .map(|path| flatten_path(&path.transformed(viewport_transform), 0.25))
+                .map(|clip_path| {
+                    flatten_path(&clip_path.path.transformed(viewport_transform), 0.25)
+                        .map(|path| (path, clip_path.fill_rule))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
 
             if let Some(fill) = shape.fill {
@@ -129,13 +132,19 @@ enum MeetOrSlice {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct ClipPath {
+    path: Path,
+    fill_rule: FillRule,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct SvgShape {
     pub path: Path,
     pub fill: Option<Color>,
     pub fill_rule: FillRule,
     pub stroke: Option<Color>,
     pub stroke_width: f32,
-    clip_paths: Vec<Path>,
+    clip_paths: Vec<ClipPath>,
     stroke_line_cap: StrokeLineCap,
 }
 
@@ -250,12 +259,12 @@ fn collect_shapes(
     element: &HtmlElement,
     inherited_style: SvgStyle,
     parent_transform: Transform,
-    clip_paths: &[Path],
+    clip_paths: &[ClipPath],
     shapes: &mut Vec<SvgShape>,
     reference_stack: &mut Vec<String>,
 ) -> Result<(), SvgError> {
     // SVG conditional processing prevents rendering elements that require an
-    // unspported extension.
+    // unsupported extension.
     if attribute(element, "requiredextensions").is_some() {
         return Ok(());
     }
@@ -340,7 +349,10 @@ fn collect_shapes(
         };
 
         let mut child_clip_paths = element_clip_paths;
-        child_clip_paths.push(viewport_path(width, height).transformed(placement));
+        child_clip_paths.push(ClipPath {
+            path: viewport_path(width, height).transformed(placement),
+            fill_rule: FillRule::NonZero,
+        });
 
         for child in &element.children {
             if let HtmlNode::Element(child) = child {
@@ -459,7 +471,7 @@ fn resolve_clip_path(
     root: &HtmlElement,
     element: &HtmlElement,
     transform: Transform,
-) -> Result<Option<Path>, SvgError> {
+) -> Result<Option<ClipPath>, SvgError> {
     let Some(reference_id) = clip_path_reference_id(element)? else {
         return Ok(None);
     };
@@ -481,14 +493,15 @@ fn resolve_clip_path(
 
     let clip_transform = element_transform(clip_path)?.then(transform);
     let mut path = Path::new();
+    let mut fill_rule = FillRule::NonZero;
 
     for child in &clip_path.children {
         if let HtmlNode::Element(child) = child {
-            collect_clip_path_geometry(child, clip_transform, &mut path)?;
+            collect_clip_path_geometry(child, clip_transform, &mut path, &mut fill_rule)?;
         }
     }
 
-    Ok(Some(path))
+    Ok(Some(ClipPath { path, fill_rule }))
 }
 
 fn clip_path_reference_id(element: &HtmlElement) -> Result<Option<String>, SvgError> {
@@ -520,8 +533,13 @@ fn collect_clip_path_geometry(
     element: &HtmlElement,
     parent_transform: Transform,
     output: &mut Path,
+    fill_rule: &mut FillRule,
 ) -> Result<(), SvgError> {
     let transform = element_transform(element)?.then(parent_transform);
+
+    if let Some(value) = attribute(element, "clip-rule") {
+        *fill_rule = parse_fill_rule(value)?
+    }
 
     if let Some(path) = path_for_element(element)? {
         output.append(&path.transformed(transform));
@@ -529,7 +547,7 @@ fn collect_clip_path_geometry(
 
     for child in &element.children {
         if let HtmlNode::Element(child) = child {
-            collect_clip_path_geometry(child, transform, output)?;
+            collect_clip_path_geometry(child, transform, output, fill_rule)?;
         }
     }
 

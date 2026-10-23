@@ -170,7 +170,7 @@ pub fn fill_path_clipped(
     path: &FlattenedPath,
     fill_rule: FillRule,
     color: Color,
-    clips: &[FlattenedPath],
+    clips: &[(FlattenedPath, FillRule)],
 ) {
     if color.alpha == 0 {
         return;
@@ -188,9 +188,9 @@ pub fn fill_path_clipped(
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
 
                     sample_is_inside(path, sample, fill_rule)
-                        && clips
-                        .iter()
-                        .all(|clip| sample_is_inside(clip, sample, FillRule::NonZero))
+                        && clips.iter().all(|(clip, fill_rule)| {
+                        sample_is_inside(clip, sample, *fill_rule)
+                    })
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
@@ -211,7 +211,7 @@ pub fn stroke_path_clipped(
     path: &FlattenedPath,
     style: StrokeStyle,
     color: Color,
-    clips: &[FlattenedPath],
+    clips: &[(FlattenedPath, FillRule)],
 ) {
     if color.alpha == 0 || !style.width.is_finite() || style.width <= 0.0 {
         return;
@@ -231,9 +231,9 @@ pub fn stroke_path_clipped(
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
 
                     sample_is_on_stroke(path, sample, radius, style.line_cap)
-                        && clips
-                        .iter()
-                        .all(|clip| sample_is_inside(clip, sample, FillRule::NonZero))
+                        && clips.iter().all(|(clip, fill_rule)| {
+                        sample_is_inside(clip, sample, *fill_rule)
+                    })
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
@@ -605,7 +605,7 @@ mod tests {
             &painted_path,
             FillRule::NonZero,
             Color::BLACK,
-            &[clip_path],
+            &[(clip_path, FillRule::NonZero)],
         );
 
         assert_eq!(surface.pixel(1, 3), Some(Color::TRANSPARENT));
