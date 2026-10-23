@@ -717,7 +717,36 @@ impl Parser {
                 Ok(expression)
             }
 
+            TokenKind::LeftBracket => self.parse_array_literal(),
+
             _ => Err(JsError::syntax(token.offset, "expected an expression")),
+        }
+    }
+
+    fn parse_array_literal(&mut self) -> Result<Expression, JsError> {
+        let mut values = Vec::new();
+
+        if self.consume_optional(&TokenKind::RightBracket) {
+            return Ok(Expression::Array(values));
+        }
+
+        loop {
+            values.push(self.parse_expression()?);
+
+            if self.consume_optional(&TokenKind::Comma) {
+                if self.consume_optional(&TokenKind::RightBracket) {
+                    return Ok(Expression::Array(values));
+                }
+
+                continue;
+            }
+
+            self.consume(
+                &TokenKind::RightBracket,
+                "expected ',' or ']' after array element",
+            )?;
+
+            return Ok(Expression::Array(values));
         }
     }
 

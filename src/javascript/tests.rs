@@ -868,3 +868,19 @@ fn mutates_classes_through_class_list() {
     )
     .unwrap();
 }
+
+#[test]
+fn evaluates_array_literals_indexing_and_length() {
+    evaluate(
+        r#"
+            const values = [1, "two", 3,];
+
+            assert_equals(values.length, 3);
+            assert_equals(values[0], 1);
+            assert_equals(values[1], "two");
+            assert_equals(values[2], 3);
+            assert_equals(values[3], undefined);
+        "#,
+    )
+    .unwrap();
+}

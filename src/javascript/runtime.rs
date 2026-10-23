@@ -286,6 +286,16 @@ impl Interpreter {
         match expression {
             Expression::Literal(value) => Ok(value.clone()),
 
+            Expression::Array(expressions) => {
+                let mut values = Vec::with_capacity(expressions.len());
+
+                for expression in expressions {
+                    values.push(self.evaluate_expression(expression)?);
+                }
+
+                Ok(Value::Array(values))
+            }
+
             Expression::Identifier(name) => {
                 self.variables.get(name).cloned().ok_or_else(|| {
                     JsError::runtime(format!("ReferenceError: ${name} is not defined"))
@@ -304,6 +314,8 @@ impl Interpreter {
                     (Value::TestContext, "add_cleanup") => {
                         Ok(Value::TestContextMethod(TestContextMethod::AddCleanup))
                     }
+
+                    (Value::Array(values), "length") => Ok(Value::Number(values.len() as f64)),
 
                     (Value::Url(url), "href") => Ok(Value::String(url.to_string())),
 

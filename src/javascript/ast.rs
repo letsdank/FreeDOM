@@ -30,6 +30,7 @@ pub(crate) enum Statement {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Expression {
     Literal(Value),
+    Array(Vec<Expression>),
     Identifier(String),
     New {
         constructor: String,
