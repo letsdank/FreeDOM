@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::freedom_url::Url;
+use crate::url::Url;
 
 use super::dom::{ElementState, parse_simple_selector};
 use super::{

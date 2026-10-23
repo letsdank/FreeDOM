@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fs};
 
 use crate::{
-    freedom_url::Url,
+    url::Url,
     javascript::{Value, parse_json},
 };
 

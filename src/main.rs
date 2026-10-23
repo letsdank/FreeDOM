@@ -1,4 +1,4 @@
-mod freedom_url;
+mod url;
 
 #[allow(dead_code)]
 mod html;
@@ -9,16 +9,10 @@ mod javascript;
 pub mod graphics;
 
 #[cfg(test)]
-mod wpt_url;
-
-#[cfg(test)]
-mod wpt_dom;
-
-#[cfg(test)]
-mod wpt_svg;
+mod wpt;
 
 use crate::{
-    freedom_url::Url,
+    url::Url,
     graphics::{
         font::{layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont},
         geometry::Transform,

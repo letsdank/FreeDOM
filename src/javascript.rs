@@ -1,4 +1,4 @@
-use crate::freedom_url::Url;
+use crate::url::Url;
 use std::{collections::HashMap, error::Error, fmt};
 
 #[path = "javascript/lexer.rs"]
