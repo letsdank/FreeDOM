@@ -281,9 +281,12 @@ fn collect_shapes(
     let transform = element_transform(element)?.then(parent_transform);
 
     let mut element_clip_paths = clip_paths.to_vec();
+    let mut clip_path_references = Vec::new();
 
-    if let Some(clip_path) = resolve_clip_path(root, element, transform)? {
-        element_clip_paths.push(clip_path);
+    if let Some(clip_paths) =
+        resolve_clip_paths(root, element, transform, &mut clip_path_references)?
+    {
+        element_clip_paths.extend(clip_paths);
     }
 
     if element.name.eq_ignore_ascii_case("switch") {
@@ -467,41 +470,62 @@ fn path_for_element(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
     }
 }
 
-fn resolve_clip_path(
+fn resolve_clip_paths(
     root: &HtmlElement,
     element: &HtmlElement,
     transform: Transform,
-) -> Result<Option<ClipPath>, SvgError> {
+    reference_stack: &mut Vec<String>,
+) -> Result<Option<Vec<ClipPath>>, SvgError> {
     let Some(reference_id) = clip_path_reference_id(element)? else {
         return Ok(None);
     };
 
-    let clip_path = find_element_by_id(root, &reference_id)
-        .ok_or_else(|| SvgError::new("SVG clip-path target was not found"))?;
-
-    if !clip_path.name.eq_ignore_ascii_case("clippath") {
-        return Err(SvgError::new(
-            "SVG clip-path target is not a clipPath element",
-        ));
+    if reference_stack.iter().any(|id| id == &reference_id) {
+        return Err(SvgError::new("circular SVG clip-path reference"));
     }
 
-    if let Some(units) = attribute(clip_path, "clippathunits") {
-        if !units.eq_ignore_ascii_case("userspaceonuse") {
-            return Err(SvgError::new("unsupported clipPathUnits value"));
+    reference_stack.push(reference_id.clone());
+
+    let result = (|| -> Result<Option<Vec<ClipPath>>, SvgError> {
+        let clip_path = find_element_by_id(root, &reference_id)
+            .ok_or_else(|| SvgError::new("SVG clip-path target was not found"))?;
+
+        if !clip_path.name.eq_ignore_ascii_case("clippath") {
+            return Err(SvgError::new(
+                "SVG clip-path target is not a clipPath element",
+            ));
         }
-    }
 
-    let clip_transform = element_transform(clip_path)?.then(transform);
-    let mut path = Path::new();
-    let mut fill_rule = FillRule::NonZero;
-
-    for child in &clip_path.children {
-        if let HtmlNode::Element(child) = child {
-            collect_clip_path_geometry(child, clip_transform, &mut path, &mut fill_rule)?;
+        if let Some(units) = attribute(clip_path, "clippathunits") {
+            if !units.eq_ignore_ascii_case("userspaceonuse") {
+                return Err(SvgError::new("unsupported clipPathUnits value"));
+            }
         }
-    }
 
-    Ok(Some(ClipPath { path, fill_rule }))
+        let clip_transform = element_transform(clip_path)?.then(transform);
+        let mut path = Path::new();
+        let mut fill_rule = FillRule::NonZero;
+
+        for child in &clip_path.children {
+            if let HtmlNode::Element(child) = child {
+                collect_clip_path_geometry(child, clip_transform, &mut path, &mut fill_rule)?;
+            }
+        }
+
+        let mut resolved = vec![ClipPath { path, fill_rule }];
+
+        if let Some(mut nested) =
+            resolve_clip_paths(root, clip_path, clip_transform, reference_stack)?
+        {
+            resolved.append(&mut nested);
+        }
+
+        Ok(Some(resolved))
+    })();
+
+    reference_stack.pop();
+
+    result
 }
 
 fn clip_path_reference_id(element: &HtmlElement) -> Result<Option<String>, SvgError> {
