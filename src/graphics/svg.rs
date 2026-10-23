@@ -574,6 +574,39 @@ fn collect_clip_path_geometry(
 ) -> Result<(), SvgError> {
     let transform = element_transform(element)?.then(parent_transform);
 
+    if element.name.eq_ignore_ascii_case("use") {
+        let Some(reference_id) = use_reference_id(element)? else {
+            return Ok(());
+        };
+
+        if reference_stack.iter().any(|id| id == &reference_id) {
+            return Err(SvgError::new("circular SVG use reference in clipPath"));
+        }
+
+        let reference_element = find_element_by_id(root, &reference_id)
+            .ok_or_else(|| SvgError::new("SVG use target was not found"))?;
+
+        let x = number_attribute(element, "x", 0.0)?;
+        let y = number_attribute(element, "y", 0.0)?;
+        let reference_transform = Transform::translate(x, y).then(transform);
+
+        reference_stack.push(reference_id);
+
+        let result = collect_clip_path_geometry(
+            root,
+            reference_element,
+            reference_transform,
+            output,
+            fill_rule,
+            nested_clip_paths,
+            reference_stack,
+        );
+
+        reference_stack.pop();
+
+        return result;
+    }
+
     if let Some(mut nested) = resolve_clip_paths(root, element, transform, reference_stack)? {
         nested_clip_paths.append(&mut nested);
     }

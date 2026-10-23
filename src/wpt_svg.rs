@@ -431,4 +431,22 @@ mod tests {
         assert_eq!(report.different_pixels, 0);
         assert_eq!(report.max_channel_difference, 0);
     }
+
+    #[test]
+    fn official_wpt_svg_clip_path_expands_use_content() {
+        let test_source = fs::read_to_string(css_fixture_path(
+            "css-masking/clip-path-svg-content/clip-path-content-use-001.svg",
+        ))
+            .expect("WPT SVG test fixture is missing");
+
+        let reference_source = fs::read_to_string(css_fixture_path(
+            "css-masking/clip-path-svg-content/reference/clip-path-square-002-ref.svg",
+        ))
+            .expect("WPT SVG reference fixture is missing");
+
+        let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+        assert_eq!(report.different_pixels, 0);
+        assert_eq!(report.max_channel_difference, 0);
+    }
 }
