@@ -1,2 +1,3 @@
 /target
 /artifacts/wpt/*.json
+/artifacts/wpt/index.html

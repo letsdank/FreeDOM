@@ -157,6 +157,14 @@ def main():
         encoding="utf-8",
     )
 
+    dashboard = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "wpt_dashboard.py")],
+        cwd=ROOT,
+    )
+
+    if dashboard.returncode != 0:
+        return dashboard.returncode
+
     print(
         "WPT summary: "
         f"{totals['passed']}/{totals['tests']} passed, "
