@@ -103,7 +103,7 @@ impl JsonParser {
         let mut values = HashMap::new();
 
         if self.consume_optional(&TokenKind::RightBrace) {
-            return Ok(Value::Object(values));
+            return Ok(Value::object(values));
         }
 
         loop {
@@ -137,7 +137,7 @@ impl JsonParser {
                 "expected ',' or '}' after JSON object property",
             )?;
 
-            return Ok(Value::Object(values));
+            return Ok(Value::object(values));
         }
     }
 
@@ -759,6 +759,8 @@ impl Parser {
 
             TokenKind::LeftBracket => self.parse_array_literal(),
 
+            TokenKind::LeftBrace => self.parse_object_literal(),
+
             _ => Err(JsError::syntax(token.offset, "expected an expression")),
         }
     }
@@ -787,6 +789,48 @@ impl Parser {
             )?;
 
             return Ok(Expression::Array(values));
+        }
+    }
+
+    fn parse_object_literal(&mut self) -> Result<Expression, JsError> {
+        let mut properties = Vec::new();
+
+        if self.consume_optional(&TokenKind::RightBrace) {
+            return Ok(Expression::Object(properties));
+        }
+
+        loop {
+            let token = self.advance();
+
+            let name = match token.kind {
+                TokenKind::Identifier(name) | TokenKind::String(name) => name,
+                _ => {
+                    return Err(JsError::syntax(
+                        token.offset,
+                        "expected an object property name",
+                    ));
+                }
+            };
+
+            self.consume(&TokenKind::Colon, "expected ':' after object property name")?;
+
+            let value = self.parse_expression()?;
+            properties.push((name, value));
+
+            if self.consume_optional(&TokenKind::Comma) {
+                if self.consume_optional(&TokenKind::RightBrace) {
+                    return Ok(Expression::Object(properties));
+                }
+
+                continue;
+            }
+
+            self.consume(
+                &TokenKind::RightBrace,
+                "expected ',' or '}' after object property",
+            )?;
+
+            return Ok(Expression::Object(properties));
         }
     }
 

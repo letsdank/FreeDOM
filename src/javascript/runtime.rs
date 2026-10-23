@@ -354,6 +354,16 @@ impl Interpreter {
                 Ok(Value::array(values))
             }
 
+            Expression::Object(properties) => {
+                let mut values = HashMap::new();
+
+                for (name, expression) in properties {
+                    values.insert(name.clone(), self.evaluate_expression(expression)?);
+                }
+
+                Ok(Value::object(values))
+            }
+
             Expression::Identifier(name) => {
                 self.variables.get(name).cloned().ok_or_else(|| {
                     JsError::runtime(format!("ReferenceError: ${name} is not defined"))
@@ -386,6 +396,12 @@ impl Interpreter {
                         receiver: values,
                         method: ArrayMethodKind::Pop,
                     }),
+
+                    (Value::Object(values), property) => Ok(values
+                        .borrow()
+                        .get(property)
+                        .cloned()
+                        .unwrap_or(Value::Undefined)),
 
                     (Value::Url(url), "href") => Ok(Value::String(url.to_string())),
 
@@ -665,6 +681,14 @@ impl Interpreter {
     }
 
     fn index_value(&self, object: Value, index: Value) -> Result<Value, JsError> {
+        if let Value::Object(values) = object {
+            return Ok(values
+                .borrow()
+                .get(&index.to_js_string())
+                .cloned()
+                .unwrap_or(Value::Undefined));
+        }
+
         let Some(index) = self.to_number(&index) else {
             return Err(JsError::runtime(
                 "TypeError: collection index must be numeric",
@@ -935,6 +959,11 @@ impl Interpreter {
                 let object = self.evaluate_expression(object)?;
 
                 match object {
+                    Value::Object(values) => {
+                        values.borrow_mut().insert(property.clone(), value);
+                        Ok(())
+                    }
+
                     Value::Element(node_id) if property == "textContent" => {
                         self.set_document_element_text_content(node_id, value.to_js_string())
                     }

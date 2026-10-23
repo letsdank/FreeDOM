@@ -926,3 +926,28 @@ fn arrays_preserve_identity_and_support_push_and_pop() {
     )
     .unwrap();
 }
+
+#[test]
+fn evaluates_object_literals_and_shared_property_updates() {
+    evaluate(
+        r#"
+            const options = {
+                enabled: true,
+                label: "FreeDOM",
+                count: 1,
+            };
+            
+            const alias = options;
+            alias.count = 2;
+            alias.values = [options.count, 3];
+            
+            assert_true(options.enabled);
+            assert_equals(options.label, "FreeDOM");
+            assert_equals(options.count, 2);
+            assert_equals(options.values.length, 2);
+            assert_equals(options.values[0], 2);
+            assert_equals(options.missing, undefined);
+        "#,
+    )
+    .unwrap();
+}

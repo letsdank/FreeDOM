@@ -36,6 +36,7 @@ pub(crate) enum Statement {
 pub(crate) enum Expression {
     Literal(Value),
     Array(Vec<Expression>),
+    Object(Vec<(String, Expression)>),
     Identifier(String),
     New {
         constructor: String,

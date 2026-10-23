@@ -87,7 +87,7 @@ fn collect_cases(records: &[Value]) -> Result<Vec<UrlCase>, String> {
             continue;
         };
 
-        let Some(input) = object_string(object, "input") else {
+        let Some(input) = object_string(&object, "input") else {
             continue;
         };
 
@@ -96,7 +96,7 @@ fn collect_cases(records: &[Value]) -> Result<Vec<UrlCase>, String> {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let expected_href = object_string(object, "href").map(str::to_owned);
+        let expected_href = object_string(&object, "href").map(str::to_owned);
 
         if !expected_failure && expected_href.is_none() {
             return Err(format!(
@@ -107,7 +107,7 @@ fn collect_cases(records: &[Value]) -> Result<Vec<UrlCase>, String> {
         cases.push(UrlCase {
             fixture_index,
             input: input.to_owned(),
-            base: object_string(object, "base").map(str::to_owned),
+            base: object_string(&object, "base").map(str::to_owned),
             expected_href,
             expected_failure,
         });

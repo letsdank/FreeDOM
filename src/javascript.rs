@@ -67,6 +67,7 @@ pub(crate) enum TestContextMethod {
 }
 
 pub(crate) type ArrayStorage = Rc<RefCell<Vec<Value>>>;
+pub(crate) type ObjectStorage = Rc<RefCell<HashMap<String, Value>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArrayMethodKind {
@@ -86,7 +87,7 @@ pub enum Value {
         receiver: ArrayStorage,
         method: ArrayMethodKind,
     },
-    Object(HashMap<String, Value>),
+    Object(ObjectStorage),
     Url(Url),
     NativeFunction(NativeFunction),
     Document(DocumentState),
@@ -151,6 +152,10 @@ impl Value {
         Self::Array(Rc::new(RefCell::new(values)))
     }
 
+    pub(crate) fn object(values: HashMap<String, Value>) -> Self {
+        Self::Object(Rc::new(RefCell::new(values)))
+    }
+
     pub fn as_array(&self) -> Option<Vec<Value>> {
         match self {
             Self::Array(values) => Some(values.borrow().clone()),
@@ -158,9 +163,9 @@ impl Value {
         }
     }
 
-    pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
+    pub fn as_object(&self) -> Option<HashMap<String, Value>> {
         match self {
-            Self::Object(values) => Some(values),
+            Self::Object(values) => Some(values.borrow().clone()),
             _ => None,
         }
     }
