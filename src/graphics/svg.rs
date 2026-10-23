@@ -10,6 +10,7 @@ use crate::{
         svg_transform::parse_transform_list,
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
+    url::Url,
 };
 use std::{error::Error, fmt};
 
@@ -179,6 +180,12 @@ pub fn parse_svg(input: &str) -> Result<SvgDocument, SvgError> {
 }
 
 pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
+    let base_url = Url::parse("freedom://inline-svg/").expect("inline SVG base URL must be valid");
+
+    parse_svg_element_at(root, &base_url)
+}
+
+pub fn parse_svg_element_at(root: &HtmlElement, base_url: &Url) -> Result<SvgDocument, SvgError> {
     if !root.name.eq_ignore_ascii_case("svg") {
         return Err(SvgError::new("expected an <svg> element"));
     }
@@ -212,6 +219,7 @@ pub fn parse_svg_element(root: &HtmlElement) -> Result<SvgDocument, SvgError> {
     collect_shapes(
         root,
         root,
+        base_url,
         SvgStyle::default(),
         Transform::IDENTITY,
         &[],
@@ -257,6 +265,7 @@ impl Default for SvgStyle {
 fn collect_shapes(
     root: &HtmlElement,
     element: &HtmlElement,
+    base_url: &Url,
     inherited_style: SvgStyle,
     parent_transform: Transform,
     clip_paths: &[ClipPath],
@@ -283,9 +292,13 @@ fn collect_shapes(
     let mut element_clip_paths = clip_paths.to_vec();
     let mut clip_path_references = Vec::new();
 
-    if let Some(clip_paths) =
-        resolve_clip_paths(root, element, transform, &mut clip_path_references)?
-    {
+    if let Some(clip_paths) = resolve_clip_paths(
+        root,
+        element,
+        base_url,
+        transform,
+        &mut clip_path_references,
+    )? {
         element_clip_paths.extend(clip_paths);
     }
 
@@ -302,6 +315,7 @@ fn collect_shapes(
             collect_shapes(
                 root,
                 child,
+                base_url,
                 style,
                 transform,
                 &element_clip_paths,
@@ -362,6 +376,7 @@ fn collect_shapes(
                 collect_shapes(
                     root,
                     child,
+                    base_url,
                     style,
                     child_transform,
                     &child_clip_paths,
@@ -375,7 +390,7 @@ fn collect_shapes(
     }
 
     if element.name.eq_ignore_ascii_case("use") {
-        let Some(reference_id) = use_reference_id(element)? else {
+        let Some(reference_id) = use_reference_id(base_url, element)? else {
             return Ok(());
         };
 
@@ -395,6 +410,7 @@ fn collect_shapes(
         let result = collect_shapes(
             root,
             referenced_element,
+            base_url,
             style,
             reference_transform,
             &element_clip_paths,
@@ -432,6 +448,7 @@ fn collect_shapes(
             collect_shapes(
                 root,
                 child,
+                base_url,
                 style,
                 transform,
                 &element_clip_paths,
@@ -473,10 +490,11 @@ fn path_for_element(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
 fn resolve_clip_paths(
     root: &HtmlElement,
     element: &HtmlElement,
+    base_url: &Url,
     transform: Transform,
     reference_stack: &mut Vec<String>,
 ) -> Result<Option<Vec<ClipPath>>, SvgError> {
-    let Some(reference_id) = clip_path_reference_id(element)? else {
+    let Some(reference_id) = clip_path_reference_id(base_url, element)? else {
         return Ok(None);
     };
 
@@ -512,6 +530,7 @@ fn resolve_clip_paths(
                 collect_clip_path_geometry(
                     root,
                     child,
+                    base_url,
                     clip_transform,
                     &mut path,
                     &mut fill_rule,
@@ -525,7 +544,7 @@ fn resolve_clip_paths(
         resolved.append(&mut nested_clip_paths);
 
         if let Some(mut nested) =
-            resolve_clip_paths(root, clip_path, clip_transform, reference_stack)?
+            resolve_clip_paths(root, clip_path, base_url, clip_transform, reference_stack)?
         {
             resolved.append(&mut nested);
         }
@@ -538,7 +557,10 @@ fn resolve_clip_paths(
     result
 }
 
-fn clip_path_reference_id(element: &HtmlElement) -> Result<Option<String>, SvgError> {
+fn clip_path_reference_id(
+    base_url: &Url,
+    element: &HtmlElement,
+) -> Result<Option<String>, SvgError> {
     let Some(value) = attribute(element, "clip-path") else {
         return Ok(None);
     };
@@ -549,23 +571,53 @@ fn clip_path_reference_id(element: &HtmlElement) -> Result<Option<String>, SvgEr
         return Ok(None);
     }
 
-    let Some(fragment) = value
-        .strip_prefix("url(#")
+    let Some(reference) = value
+        .strip_prefix("url(")
         .and_then(|value| value.strip_suffix(')'))
     else {
         return Err(SvgError::new("unsupported clip-path reference"));
     };
 
-    if fragment.is_empty() {
+    let Some(reference_id) = local_reference_id(base_url, reference.trim())? else {
+        return Err(SvgError::new(
+            "external SVG clip-path references are not supported",
+        ));
+    };
+
+    if reference_id.is_empty() {
         return Err(SvgError::new("clip-path reference is empty"));
     }
 
-    Ok(Some(decode_percent_encoded_fragment(fragment)?))
+    Ok(Some(reference_id))
+}
+
+fn use_reference_id(base_url: &Url, element: &HtmlElement) -> Result<Option<String>, SvgError> {
+    let Some(value) = attribute(element, "href").or_else(|| attribute(element, "xlink:href"))
+    else {
+        return Ok(None);
+    };
+
+    let Some(reference_id) = local_reference_id(base_url, value.trim())? else {
+        return Ok(None);
+    };
+
+    if reference_id.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(reference_id))
+}
+
+fn local_reference_id(base_url: &Url, reference: &str) -> Result<Option<String>, SvgError> {
+    base_url
+        .local_fragment(reference)
+        .map_err(|error| SvgError::new(format!("invalid SVG reference URL: {error}")))
 }
 
 fn collect_clip_path_geometry(
     root: &HtmlElement,
     element: &HtmlElement,
+    base_url: &Url,
     parent_transform: Transform,
     output: &mut Path,
     fill_rule: &mut FillRule,
@@ -575,7 +627,7 @@ fn collect_clip_path_geometry(
     let transform = element_transform(element)?.then(parent_transform);
 
     if element.name.eq_ignore_ascii_case("use") {
-        let Some(reference_id) = use_reference_id(element)? else {
+        let Some(reference_id) = use_reference_id(base_url, element)? else {
             return Ok(());
         };
 
@@ -595,6 +647,7 @@ fn collect_clip_path_geometry(
         let result = collect_clip_path_geometry(
             root,
             reference_element,
+            base_url,
             reference_transform,
             output,
             fill_rule,
@@ -607,7 +660,9 @@ fn collect_clip_path_geometry(
         return result;
     }
 
-    if let Some(mut nested) = resolve_clip_paths(root, element, transform, reference_stack)? {
+    if let Some(mut nested) =
+        resolve_clip_paths(root, element, base_url, transform, reference_stack)?
+    {
         nested_clip_paths.append(&mut nested);
     }
 
@@ -624,6 +679,7 @@ fn collect_clip_path_geometry(
             collect_clip_path_geometry(
                 root,
                 child,
+                base_url,
                 transform,
                 output,
                 fill_rule,
@@ -693,57 +749,6 @@ fn attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
         .iter()
         .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
         .map(|attribute| attribute.value.as_str())
-}
-
-fn use_reference_id(element: &HtmlElement) -> Result<Option<String>, SvgError> {
-    let Some(value) = attribute(element, "href").or_else(|| attribute(element, "xlink:href"))
-    else {
-        return Ok(None);
-    };
-
-    let Some(fragment) = value.strip_prefix('#') else {
-        return Ok(None);
-    };
-
-    if fragment.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(decode_percent_encoded_fragment(fragment)?))
-}
-
-fn decode_percent_encoded_fragment(value: &str) -> Result<String, SvgError> {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut cursor = 0;
-
-    while cursor < bytes.len() {
-        if bytes[cursor] != b'%' {
-            decoded.push(bytes[cursor]);
-            cursor += 1;
-            continue;
-        }
-
-        let Some(&high) = bytes.get(cursor + 1) else {
-            return Err(SvgError::new("incomplete percent-encoded SVG fragment"));
-        };
-
-        let Some(&low) = bytes.get(cursor + 2) else {
-            return Err(SvgError::new("incomplete percent-encoded SVG fragment"));
-        };
-
-        let high = hexadecimal_digit(high)
-            .ok_or_else(|| SvgError::new("invalid percent-encoded SVG fragment"))?;
-
-        let low = hexadecimal_digit(low)
-            .ok_or_else(|| SvgError::new("invalid percent-encoded SVG fragment"))?;
-
-        decoded.push(high * 16 + low);
-        cursor += 3;
-    }
-
-    String::from_utf8(decoded)
-        .map_err(|_| SvgError::new("SVG fragment identifier is not valid UTF-8"))
 }
 
 fn find_element_by_id<'a>(element: &'a HtmlElement, id: &str) -> Option<&'a HtmlElement> {
@@ -1382,6 +1387,7 @@ fn viewport_path(width: f32, height: f32) -> Path {
 mod tests {
     use super::*;
     use crate::graphics::geometry::PathCommand;
+    use crate::url::Url;
 
     #[test]
     fn parses_path_fill_and_group_transform() {
@@ -1873,5 +1879,27 @@ mod tests {
 
         assert_eq!(surface.pixel(3, 3), Some(Color::rgba(255, 0, 0, 255)));
         assert_eq!(surface.pixel(1, 1), Some(Color::WHITE));
+    }
+
+    #[test]
+    fn resolves_double_encoded_use_identifiers_through_document_url() {
+        let html = crate::html::Document::parse(
+            r##"
+                <svg>
+                    <defs>
+                        <rect id="tile%20one" width="4" height="5" fill="green"/>
+                    </defs>
+                    <use href="#tile%2520one"/>
+                </svg>
+            "##,
+        );
+
+        let root = html.first_element("svg").unwrap();
+        let base_url = Url::parse("https://example.test/assets/scene.svg").unwrap();
+
+        let document = parse_svg_element_at(root, &base_url).unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
     }
 }

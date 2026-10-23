@@ -29,6 +29,7 @@ pub enum UrlError {
     InvalidHost,
     InvalidPort,
     InvalidBase,
+    InvalidPercentEncoding,
 }
 
 impl fmt::Display for UrlError {
@@ -40,6 +41,9 @@ impl fmt::Display for UrlError {
             Self::InvalidHost => write!(f, "invalid URL host"),
             Self::InvalidPort => write!(f, "invalid URL port"),
             Self::InvalidBase => write!(f, "URL cannot be used as a relative base"),
+            Self::InvalidPercentEncoding => {
+                write!(f, "invalid percent-encoded URL component")
+            }
         }
     }
 }
@@ -285,6 +289,22 @@ impl Url {
 
     pub fn scheme(&self) -> &str {
         &self.scheme
+    }
+
+    pub fn local_fragment(&self, reference: &str) -> Result<Option<String>, UrlError> {
+        let resolved = self.join(reference)?;
+        let current_resource = self.join("")?;
+        let referenced_resource = resolved.join("")?;
+
+        if current_resource != referenced_resource {
+            return Ok(None);
+        }
+
+        let Some(fragment) = resolved.fragment.as_deref() else {
+            return Ok(None);
+        };
+
+        percent_decode(fragment).map(Some)
     }
 }
 
@@ -633,7 +653,7 @@ fn contains_forbidden_opaque_host_escape(host: &str) -> bool {
 }
 
 fn preprocess_special_host(host: &str) -> Result<String, UrlError> {
-    let decoded = percent_decode_host(host)?;
+    let decoded = percent_decode(host).map_err(|_| UrlError::InvalidHost)?;
     let mut mapped = String::new();
 
     for character in decoded.chars() {
@@ -667,8 +687,8 @@ fn preprocess_special_host(host: &str) -> Result<String, UrlError> {
     Ok(mapped)
 }
 
-fn percent_decode_host(host: &str) -> Result<String, UrlError> {
-    let bytes = host.as_bytes();
+fn percent_decode(value: &str) -> Result<String, UrlError> {
+    let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
 
@@ -683,14 +703,14 @@ fn percent_decode_host(host: &str) -> Result<String, UrlError> {
             return Err(UrlError::InvalidHost);
         }
 
-        let high = hex_value(bytes[index + 1]).ok_or(UrlError::InvalidHost)?;
-        let low = hex_value(bytes[index + 2]).ok_or(UrlError::InvalidHost)?;
+        let high = hex_value(bytes[index + 1]).ok_or(UrlError::InvalidPercentEncoding)?;
+        let low = hex_value(bytes[index + 2]).ok_or(UrlError::InvalidPercentEncoding)?;
 
         decoded.push((high << 4) | low);
         index += 3;
     }
 
-    String::from_utf8(decoded).map_err(|_| UrlError::InvalidHost)
+    String::from_utf8(decoded).map_err(|_| UrlError::InvalidPercentEncoding)
 }
 
 fn hex_value(byte: u8) -> Option<u8> {
@@ -1592,5 +1612,20 @@ mod tests {
         assert_eq!(base.join(r"\a").unwrap().to_string(), r"foo://foo/\a");
         assert_eq!(base.join(r"\/a").unwrap().to_string(), r"foo://foo/\/a");
         assert_eq!(base.join(r"\\a").unwrap().to_string(), r"foo://foo/\\a");
+    }
+
+    #[test]
+    fn resolves_local_fragments_without_double_decoding() {
+        let base = Url::parse("https://example.test/assets/scene.svg").unwrap();
+
+        assert_eq!(
+            base.local_fragment("#tile%2520one").unwrap().as_deref(),
+            Some("tile%20one")
+        );
+        assert_eq!(
+            base.local_fragment("#tile%20one").unwrap().as_deref(),
+            Some("tile one")
+        );
+        assert_eq!(base.local_fragment("other.svg#tile").unwrap(), None);
     }
 }

@@ -18,7 +18,7 @@ use crate::{
         font::{layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont},
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
-        svg::{SvgDocument, parse_svg_element},
+        svg::{SvgDocument, parse_svg_element, parse_svg_element_at},
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     javascript::{DocumentState, evaluate_with_document},
@@ -805,7 +805,12 @@ fn extract_blocks(
     if element.tag == "svg" {
         flush(blocks, current, inherited_style);
 
-        if let Ok(svg) = parse_svg_element(dom_element) {
+        let parsed_svg = match page_url {
+            Some(page_url) => parse_svg_element_at(dom_element, page_url),
+            None => parse_svg_element(dom_element),
+        };
+
+        if let Ok(svg) = parsed_svg {
             blocks.push(Block {
                 text: String::new(),
                 svg: Some(svg),
