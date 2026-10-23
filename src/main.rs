@@ -2146,7 +2146,7 @@ mod tests {
             stream.write_all(response.as_bytes()).unwrap();
         });
 
-        let document = HtmlDocument::parse(r#"<img src="assets/icon.svg>">"#);
+        let document = HtmlDocument::parse(r#"<img src="assets/icon.svg">"#);
         let fetcher = Fetcher::new().unwrap();
 
         let page = parse_dom_with_fetcher(

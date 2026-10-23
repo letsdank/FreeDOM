@@ -73,6 +73,10 @@ impl Surface {
         }
     }
 
+    pub fn pixels(&self) -> &[Color] {
+        &self.pixels
+    }
+
     pub fn width(&self) -> usize {
         self.width
     }
@@ -188,9 +192,9 @@ pub fn fill_path_clipped(
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
 
                     sample_is_inside(path, sample, fill_rule)
-                        && clips.iter().all(|(clip, fill_rule)| {
-                        sample_is_inside(clip, sample, *fill_rule)
-                    })
+                        && clips
+                        .iter()
+                        .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
@@ -231,9 +235,9 @@ pub fn stroke_path_clipped(
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
 
                     sample_is_on_stroke(path, sample, radius, style.line_cap)
-                        && clips.iter().all(|(clip, fill_rule)| {
-                        sample_is_inside(clip, sample, *fill_rule)
-                    })
+                        && clips
+                        .iter()
+                        .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
