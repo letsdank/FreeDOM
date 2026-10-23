@@ -248,14 +248,72 @@ impl Parser {
     fn parse_for_statement(&mut self) -> Result<Statement, JsError> {
         self.consume(&TokenKind::LeftParen, "expected '(' after for")?;
 
-        let initializer = if self.consume_optional(&TokenKind::Semicolon) {
-            None
-        } else if matches!(
+        if matches!(
             self.peek().kind,
-            TokenKind::Let | TokenKind::Const | TokenKind::For
+            TokenKind::Let | TokenKind::Const | TokenKind::Var
         ) {
             self.advance();
-            Some(Box::new(self.parse_for_declaration()?))
+
+            let (name, offset) = self.consume_identifier("expected a variable name")?;
+
+            if self.consume_contextual_keyword("of") {
+                if name.is_empty() {
+                    return Err(JsError::syntax(offset, "variable name cannot be empty"));
+                }
+
+                let iterable = self.parse_expression()?;
+
+                self.consume(&TokenKind::RightParen, "expected ')' after for-of iterable")?;
+
+                let body = self.parse_statement_body()?;
+
+                return Ok(Statement::ForOf {
+                    binding: name,
+                    iterable,
+                    body,
+                });
+            }
+
+            let value = if self.consume_optional(&TokenKind::Assign) {
+                self.parse_expression()?
+            } else {
+                Expression::Literal(Value::Undefined)
+            };
+
+            self.consume(&TokenKind::Semicolon, "expected ';' after for declaration")?;
+
+            let initializer = Some(Box::new(Statement::Declaration { name, value }));
+
+            let condition = if self.consume_optional(&TokenKind::Semicolon) {
+                None
+            } else {
+                let condition = self.parse_expression()?;
+
+                self.consume(&TokenKind::Semicolon, "expected ';' after for condition")?;
+
+                Some(condition)
+            };
+
+            let update = if self.check(&TokenKind::RightParen) {
+                None
+            } else {
+                Some(self.parse_expression()?)
+            };
+
+            self.consume(&TokenKind::RightParen, "expected ')' after for clauses")?;
+
+            let body = self.parse_statement_body()?;
+
+            return Ok(Statement::For {
+                initializer,
+                condition,
+                update,
+                body,
+            });
+        }
+
+        let initializer = if self.consume_optional(&TokenKind::Semicolon) {
+            None
         } else {
             let expression = self.parse_expression()?;
 
@@ -290,24 +348,6 @@ impl Parser {
             update,
             body,
         })
-    }
-
-    fn parse_for_declaration(&mut self) -> Result<Statement, JsError> {
-        let (name, offset) = self.consume_identifier("expected a variable name")?;
-
-        let value = if self.consume_optional(&TokenKind::Assign) {
-            self.parse_expression()?
-        } else {
-            Expression::Literal(Value::Undefined)
-        };
-
-        self.consume(&TokenKind::Semicolon, "expected ';' after for declaration")?;
-
-        if name.is_empty() {
-            return Err(JsError::syntax(offset, "variable name cannot be empty"));
-        }
-
-        Ok(Statement::Declaration { name, value })
     }
 
     fn parse_while_statement(&mut self) -> Result<Statement, JsError> {
@@ -852,6 +892,16 @@ impl Parser {
         match token.kind {
             TokenKind::Identifier(name) => Ok((name, token.offset)),
             _ => Err(JsError::syntax(token.offset, message)),
+        }
+    }
+
+    fn consume_contextual_keyword(&mut self, keyword: &str) -> bool {
+        match &self.peek().kind {
+            TokenKind::Identifier(identifier) if identifier == keyword => {
+                self.advance();
+                true
+            }
+            _ => false,
         }
     }
 

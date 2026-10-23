@@ -884,3 +884,27 @@ fn evaluates_array_literals_indexing_and_length() {
     )
     .unwrap();
 }
+
+#[test]
+fn evaluates_for_of_over_array_literals() {
+    evaluate(
+        r#"
+            const of = 7;
+            let sum = 0;
+            let visits = 0;
+            
+            for (const value of [1, 2, 3, 4]) {
+                if (value === 2) continue;
+                if (value === 4) break;
+                
+                sum = sum + value;
+                visits = visits + 1;
+            }
+            
+            assert_equals(of, 7);
+            assert_equals(sum, 4);
+            assert_equals(visits, 2);
+        "#,
+    )
+    .unwrap();
+}

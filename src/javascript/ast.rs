@@ -23,6 +23,11 @@ pub(crate) enum Statement {
         update: Option<Expression>,
         body: Vec<Statement>,
     },
+    ForOf {
+        binding: String,
+        iterable: Expression,
+        body: Vec<Statement>,
+    },
     Break,
     Continue,
 }

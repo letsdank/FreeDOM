@@ -84,6 +84,18 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
+            Statement::ForOf { binding, body, .. } => {
+                if !names.contains(binding) {
+                    names.push(binding.clone());
+                }
+
+                for name in function_local_names(body) {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
             Statement::Expression(_)
             | Statement::Return(_)
             | Statement::Break
@@ -275,6 +287,51 @@ impl Interpreter {
                     }
 
                     Value::Undefined
+                }
+
+                Statement::ForOf {
+                    binding,
+                    iterable,
+                    body,
+                } => {
+                    let iterable = self.evaluate_expression(iterable)?;
+
+                    let Value::Array(values) = iterable else {
+                        return Err(JsError::runtime(
+                            "TypeError: for-of currently requires an Array",
+                        ));
+                    };
+
+                    let previous_binding = self.variables.insert(binding.clone(), Value::Undefined);
+
+                    let completion = (|| -> Result<Completion, JsError> {
+                        for value in values {
+                            self.variables.insert(binding.clone(), value);
+
+                            match self.execute(body)? {
+                                Completion::Normal(_) | Completion::Continue => {}
+                                Completion::Break => {
+                                    return Ok(Completion::Normal(Value::Undefined));
+                                }
+                                Completion::Return(value) => return Ok(Completion::Return(value)),
+                            }
+                        }
+
+                        Ok(Completion::Normal(Value::Undefined))
+                    })();
+
+                    if let Some(value) = previous_binding {
+                        self.variables.insert(binding.clone(), value);
+                    } else {
+                        self.variables.remove(binding);
+                    }
+
+                    match completion? {
+                        Completion::Normal(value) => value,
+                        Completion::Return(value) => return Ok(Completion::Return(value)),
+                        Completion::Break => return Ok(Completion::Break),
+                        Completion::Continue => return Ok(Completion::Continue),
+                    }
                 }
             };
         }
