@@ -179,6 +179,13 @@ mod tests {
             report.failures.len()
         );
 
+        println!(
+            "FREEDOM_WPT_METRIC {{\"suite\":\"url\",\"kind\":\"cases\",\"passed\":{},\"total\":{},\"failed\":{}}}",
+            report.passed,
+            report.total,
+            report.failures.len()
+        );
+
         assert!(
             report.failures.is_empty(),
             "first failures:\n{}",

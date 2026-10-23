@@ -12,6 +12,7 @@ OUTPUT_DIRECTORY = ROOT / "artifacts" / "wpt"
 LATEST_REPORT = OUTPUT_DIRECTORY / "latest.json"
 HISTORY_REPORT = OUTPUT_DIRECTORY / "history.json"
 CARGO = os.environ.get("CARGO", "cargo")
+METRIC_PREFIX = "FREEDOM_WPT_METRIC "
 
 
 def git_revision():
@@ -53,6 +54,40 @@ def print_process_output(result):
         sys.stderr.write(result.stderr)
 
 
+def extract_metrics(output):
+    metrics = []
+
+    for output_line in output.splitlines():
+        line = output_line.strip()
+
+        if not line.startswith(METRIC_PREFIX):
+            continue
+
+        try:
+            metric = json.loads(line.removeprefix(METRIC_PREFIX))
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(metric, dict):
+            continue
+
+        if not isinstance(metric.get("suite"), str):
+            continue
+
+        if not isinstance(metric.get("kind"), str):
+            continue
+
+        if not all(
+            isinstance(metric.get(field), int)
+            for field in ("passed", "total", "failed")
+        ):
+            continue
+
+        metrics.append(metric)
+
+    return metrics
+
+
 def list_wpt_tests():
     result = subprocess.run(
         [CARGO, "test", "--", "--list"],
@@ -89,6 +124,7 @@ def main():
 
     suites = {}
     failures = []
+    measurements = {}
 
     for test_name in test_names:
         suite_name = test_name.split("::")[1]
@@ -97,11 +133,15 @@ def main():
         print(f"Running {test_name}")
 
         result = subprocess.run(
-            [CARGO, "test", "--no-fail-fast", test_name, "--", "--exact"],
+            [CARGO, "test", "--no-fail-fast", test_name, "--", "--exact", "--nocapture"],
             cwd=ROOT,
             text=True,
             capture_output=True,
         )
+
+        for metric in extract_metrics(f"{result.stdout}\n{result.stderr}"):
+            measurement_id = f"{metric['suite']}_{metric['kind']}"
+            measurements[measurement_id] = metric
 
         suite["tests"] += 1
 
@@ -121,7 +161,7 @@ def main():
             totals[field] += suite[field]
 
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc)
         .replace(microsecond=0)
         .isoformat()
@@ -139,6 +179,7 @@ def main():
         "exit_code": 0 if not failures else 1,
         "totals": totals,
         "suites": dict(sorted(suites.items())),
+        "measurements": dict(sorted(measurements.items())),
         "failures": failures,
     }
 

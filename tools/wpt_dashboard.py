@@ -39,6 +39,36 @@ def pass_rate(report):
     return count(totals, "passed") * 100.0 / tests
 
 
+def measurement_cards(report):
+    measurements = report.get("measurements", {})
+
+    if not isinstance(measurements, dict):
+        return ""
+
+    cards = []
+
+    for name in sorted(measurements):
+        measurement = measurements[name]
+
+        if not isinstance(measurement, dict):
+            continue
+
+        passed = count(measurement, "passed")
+        total = count(measurement, "total")
+        failed = count(measurement, "failed")
+        color = "pass" if failed == 0 else "fail"
+        label = escape(name.replace("_", " ").upper())
+
+        cards.append(
+            '<div class="card">'
+            f"<span>{label}</span>"
+            f'<strong class="{color}">{passed}/{total}</strong>'
+            "</div>"
+        )
+
+    return "\n".join(cards)
+
+
 def history_chart(history):
     reports = [
         report
@@ -147,7 +177,7 @@ def render_dashboard(report, history):
     rate = pass_rate(report)
     revision = escape(str(report.get("git_revision", "unknown")))
     timestamp = escape(str(report.get("generated_at", "unknown time")))
-    status = "pending" if report.get("exit_code") == 0 else "failing"
+    status = "passing" if report.get("exit_code") == 0 else "failing"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -280,6 +310,7 @@ def render_dashboard(report, history):
 
     <div class="cards">
       <div class="card"><span>WPT test units</span><strong>{tests}</strong></div>
+      {measurement_cards(report)}
       <div class="card"><span>Passed</span><strong class="pass">{passed}</strong></div>
       <div class="card"><span>Failed</span><strong class="fail">{failed}</strong></div>
       <div class="card"><span>Pass rate</span><strong>{rate:.1f}%</strong></div>
