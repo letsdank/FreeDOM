@@ -146,7 +146,7 @@ fn parse_dom_with_fetcher(
             &rules,
             &mut blocks,
             &mut current_text,
-            base_style,
+            base_style.clone(),
             page_url.as_ref(),
             fetcher,
             &document_state,
@@ -474,7 +474,7 @@ fn extract_blocks(
         return;
     }
 
-    let style = compute_style(&element.css_element(), inherited_style, rules);
+    let style = compute_style(&element.css_element(), inherited_style.clone(), rules);
 
     if style.display == Display::None {
         return;
@@ -493,6 +493,8 @@ fn extract_blocks(
                 link: None,
             });
         }
+
+        return;
     }
 
     if element.tag == "svg" {
@@ -549,7 +551,7 @@ fn extract_blocks(
     let is_block = style.display == Display::Block;
 
     if is_block {
-        flush(blocks, current, inherited_style);
+        flush(blocks, current, inherited_style.clone());
     }
 
     if let Some(contents) = element
@@ -568,7 +570,14 @@ fn extract_blocks(
 
     for child in &dom_element.children {
         extract_blocks(
-            child, rules, blocks, current, style, page_url, fetcher, document,
+            child,
+            rules,
+            blocks,
+            current,
+            style.clone(),
+            page_url,
+            fetcher,
+            document,
         );
     }
 
@@ -903,7 +912,7 @@ mod tests {
             "#,
         );
 
-        let style = page.blocks[0].style;
+        let style = page.blocks[0].style.clone();
 
         assert_eq!(page.blocks[0].text(), Some("FreeDOM"));
         assert_eq!(style.color, 0x00_12_34_56);

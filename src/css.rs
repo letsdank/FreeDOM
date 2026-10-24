@@ -20,12 +20,13 @@ pub(crate) enum FontStyle {
     Italic,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct TextStyle {
     pub(crate) color: u32,
     pub(crate) font_size: f32,
     pub(crate) font_weight: FontWeight,
     pub(crate) font_style: FontStyle,
+    pub(crate) font_family: Option<String>,
     pub(crate) margin_after: i32,
     pub(crate) display: Display,
 }
@@ -36,6 +37,7 @@ impl TextStyle {
             color: DEFAULT_TEXT_COLOR,
             font_size: 16.0,
             font_weight: FontWeight::Normal,
+            font_family: None,
             font_style: FontStyle::Normal,
             margin_after: 0,
             display: Display::Inline,
@@ -54,6 +56,7 @@ struct Declarations {
     color: Option<u32>,
     font_size: Option<FontSize>,
     font_weight: Option<FontWeight>,
+    font_family: Option<String>,
     font_style: Option<FontStyle>,
     display: Option<Display>,
     margin_after: Option<i32>,
@@ -191,6 +194,11 @@ fn parse_font_face_family(value: &str) -> Option<String> {
     };
 
     (!value.is_empty() && !value.contains(',')).then(|| value.to_owned())
+}
+
+fn parse_text_font_family(value: &str) -> Option<String> {
+    let first_family = value.split(',').next()?.trim();
+    parse_font_face_family(first_family)
 }
 
 fn parse_font_face_sources(value: &str) -> Vec<String> {
@@ -403,6 +411,7 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
             "color" => parsed.color = parse_color(&declaration.value),
             "font-size" => parsed.font_size = parse_font_size(&declaration.value),
             "font-weight" => parsed.font_weight = parse_font_weight(&declaration.value),
+            "font-family" => parsed.font_family = parse_text_font_family(&declaration.value),
             "font-style" => parsed.font_style = parse_font_style(&declaration.value),
 
             "display" => {
@@ -658,6 +667,10 @@ fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
     if let Some(font_style) = declarations.font_style {
         style.font_style = font_style;
     }
+
+    if let Some(font_family) = &declarations.font_family {
+        style.font_family = Some(font_family.clone())
+    }
 }
 
 pub(crate) struct Element<'a> {
@@ -761,5 +774,23 @@ mod tests {
         );
         assert_eq!(faces[0].font_weight, FontWeight::Bold);
         assert_eq!(faces[0].font_style, FontStyle::Italic);
+    }
+
+    #[test]
+    fn cascades_the_first_font_family_name() {
+        let stylesheets = vec![r#"p { font-family: "FreeDOM Sans", sans-serif; }"#.to_owned()];
+        let rules = build_author_rules(&stylesheets);
+        let classes = Vec::new();
+
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(style.font_family.as_deref(), Some("FreeDOM Sans"));
     }
 }

@@ -1,5 +1,5 @@
 use super::{
-    reader::{read_bytes, read_u16, read_u32},
+    reader::{read_u16, read_u32},
     sfnt::{FontError, SfntFont, TableTag},
 };
 
