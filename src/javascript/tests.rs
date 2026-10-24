@@ -974,3 +974,20 @@ fn assigns_object_properties_and_array_indices() {
     )
     .unwrap();
 }
+
+#[test]
+fn preserves_object_property_order_and_joins_array_values() {
+    evaluate(
+        r#"
+            const details = { first: 1, second: 2 };
+            details.first = 3;
+            details.third = 4;
+            
+            const keys = Object.keys(details);
+            
+            assert_equals(keys.join(","), "first,second,third");
+            assert_equals([1, null, undefined, 4].join("|"), "1|||4");
+        "#,
+    )
+    .unwrap();
+}

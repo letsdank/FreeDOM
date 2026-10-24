@@ -148,6 +148,8 @@ impl Interpreter {
             Value::ElementConstructor("div".to_owned()),
         );
 
+        variables.insert("Object".to_owned(), Value::ObjectConstructor);
+
         Self {
             variables,
             cleanups: Vec::new(),
@@ -355,10 +357,10 @@ impl Interpreter {
             }
 
             Expression::Object(properties) => {
-                let mut values = HashMap::new();
+                let mut values = Vec::with_capacity(properties.len());
 
                 for (name, expression) in properties {
-                    values.insert(name.clone(), self.evaluate_expression(expression)?);
+                    values.push((name.clone(), self.evaluate_expression(expression)?));
                 }
 
                 Ok(Value::object(values))
@@ -395,6 +397,11 @@ impl Interpreter {
                     (Value::Array(values), "pop") => Ok(Value::ArrayMethod {
                         receiver: values,
                         method: ArrayMethodKind::Pop,
+                    }),
+
+                    (Value::Array(values), "join") => Ok(Value::ArrayMethod {
+                        receiver: values,
+                        method: ArrayMethodKind::Join,
                     }),
 
                     (Value::Object(values), property) => Ok(values
@@ -595,6 +602,10 @@ impl Interpreter {
                         };
 
                         Ok(Value::String(attribute.value.clone()))
+                    }
+
+                    (Value::ObjectConstructor, "keys") => {
+                        Ok(Value::NativeFunction(NativeFunction::ObjectKeys))
                     }
 
                     (Value::Url(_), property) => Err(JsError::runtime(format!(
@@ -899,6 +910,7 @@ impl Interpreter {
             | Value::NodeList(_)
             | Value::ClassList(_)
             | Value::ArrayMethod { .. }
+            | Value::ObjectConstructor
             | Value::TestContext => None,
         }
     }
@@ -960,7 +972,7 @@ impl Interpreter {
 
                 match object {
                     Value::Object(values) => {
-                        values.borrow_mut().insert(property.clone(), value);
+                        values.borrow_mut().set(property.clone(), value);
                         Ok(())
                     }
 
@@ -1027,7 +1039,7 @@ impl Interpreter {
 
                 match object {
                     Value::Object(values) => {
-                        values.borrow_mut().insert(index.to_js_string(), value);
+                        values.borrow_mut().set(index.to_js_string(), value);
 
                         Ok(())
                     }
@@ -1084,6 +1096,54 @@ impl Interpreter {
         Ok(receiver.borrow_mut().pop().unwrap_or(Value::Undefined))
     }
 
+    fn object_keys(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: Object.keys expects one argument",
+            ));
+        }
+
+        let Value::Object(object) = &arguments[0] else {
+            return Err(JsError::runtime(
+                "TypeError: Object.keys currently requires an object",
+            ));
+        };
+
+        Ok(Value::array(
+            object
+                .borrow()
+                .keys()
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ))
+    }
+
+    fn array_join(receiver: ArrayStorage, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.len() > 1 {
+            return Err(JsError::runtime(
+                "TypeError: Array.join expects zero or one argument",
+            ));
+        }
+
+        let separator = match arguments.first() {
+            None | Some(Value::Undefined) => ",".to_owned(),
+            Some(value) => value.to_js_string(),
+        };
+
+        let joined = receiver
+            .borrow()
+            .iter()
+            .map(|value| match value {
+                Value::Undefined | Value::Null => String::new(),
+                value => value.to_js_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(&separator);
+
+        Ok(Value::String(joined))
+    }
+
     fn evaluate_call(
         &mut self,
         callee: &Expression,
@@ -1108,6 +1168,11 @@ impl Interpreter {
                 method: ArrayMethodKind::Pop,
             } => Self::array_pop(receiver, values),
 
+            Value::ArrayMethod {
+                receiver,
+                method: ArrayMethodKind::Join,
+            } => Self::array_join(receiver, values),
+
             Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
 
             Value::NativeFunction(NativeFunction::Test) => self.run_test(values),
@@ -1119,6 +1184,8 @@ impl Interpreter {
             Value::NativeFunction(NativeFunction::AssertNotEquals) => {
                 self.assert_not_equals(values)
             }
+
+            Value::NativeFunction(NativeFunction::ObjectKeys) => self.object_keys(values),
 
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)

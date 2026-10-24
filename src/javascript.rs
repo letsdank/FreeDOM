@@ -34,6 +34,7 @@ pub enum NativeFunction {
     AssertTrue,
     AssertFalse,
     AssertNotEquals,
+    ObjectKeys,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,13 +67,61 @@ pub(crate) enum TestContextMethod {
     AddCleanup,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ObjectState {
+    properties: Vec<(String, Value)>,
+}
+
+impl ObjectState {
+    fn from_entries(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
+        let mut state = Self::default();
+
+        for (name, value) in entries {
+            state.set(name, value);
+        }
+
+        state
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<&Value> {
+        self.properties
+            .iter()
+            .find(|(property, _)| property == name)
+            .map(|(_, value)| value)
+    }
+
+    pub(crate) fn set(&mut self, name: String, value: Value) {
+        if let Some((_, existing_value)) = self
+            .properties
+            .iter_mut()
+            .find(|(property, _)| property == &name)
+        {
+            *existing_value = value;
+        } else {
+            self.properties.push((name, value));
+        }
+    }
+
+    pub(crate) fn keys(&self) -> Vec<String> {
+        self.properties
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    fn as_hash_map(&self) -> HashMap<String, Value> {
+        self.properties.iter().cloned().collect()
+    }
+}
+
 pub(crate) type ArrayStorage = Rc<RefCell<Vec<Value>>>;
-pub(crate) type ObjectStorage = Rc<RefCell<HashMap<String, Value>>>;
+pub(crate) type ObjectStorage = Rc<RefCell<ObjectState>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArrayMethodKind {
     Push,
     Pop,
+    Join,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +156,7 @@ pub enum Value {
     TestContextMethod(TestContextMethod),
     NodeList(Vec<u64>),
     ClassList(u64),
+    ObjectConstructor,
 }
 
 impl Value {
@@ -145,6 +195,7 @@ impl Value {
             Self::ElementMethod(_) => "function".to_owned(),
             Self::NodeList(_) => "[object NodeList]".to_owned(),
             Self::ClassList(_) => "[object DOMTokenList]".to_owned(),
+            Self::ObjectConstructor => "function".to_owned(),
         }
     }
 
@@ -152,8 +203,8 @@ impl Value {
         Self::Array(Rc::new(RefCell::new(values)))
     }
 
-    pub(crate) fn object(values: HashMap<String, Value>) -> Self {
-        Self::Object(Rc::new(RefCell::new(values)))
+    pub(crate) fn object(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
+        Self::Object(Rc::new(RefCell::new(ObjectState::from_entries(entries))))
     }
 
     pub fn as_array(&self) -> Option<Vec<Value>> {
@@ -165,7 +216,7 @@ impl Value {
 
     pub fn as_object(&self) -> Option<HashMap<String, Value>> {
         match self {
-            Self::Object(values) => Some(values.borrow().clone()),
+            Self::Object(values) => Some(values.borrow().as_hash_map()),
             _ => None,
         }
     }
