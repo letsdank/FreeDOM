@@ -26,6 +26,106 @@ impl Color {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradientStop {
+    pub offset: f32,
+    pub color: Color,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinearGradient {
+    pub start: Point,
+    pub end: Point,
+    pub stops: Vec<GradientStop>,
+}
+
+impl LinearGradient {
+    pub fn new(start: Point, end: Point, mut stops: Vec<GradientStop>) -> Option<Self> {
+        if !start.x.is_finite()
+            || !start.y.is_finite()
+            || !end.x.is_finite()
+            || !end.y.is_finite()
+            || stops.is_empty()
+            || stops
+                .iter()
+                .any(|stop| !stop.offset.is_finite() || !(0.0..=1.0).contains(&stop.offset))
+        {
+            return None;
+        }
+
+        stops.sort_by(|left, right| left.offset.total_cmp(&right.offset));
+
+        Some(Self { start, end, stops })
+    }
+
+    pub fn sample(&self, point: Point) -> Color {
+        let delta_x = self.end.x - self.start.x;
+        let delta_y = self.end.y - self.start.y;
+        let length_squared = delta_x * delta_x + delta_y * delta_y;
+
+        if length_squared <= f32::EPSILON {
+            return self.stops.last().expect("gradient has stops").color;
+        }
+
+        let position = ((point.x - self.start.x) * delta_x + (point.y - self.start.y) * delta_y)
+            / length_squared;
+
+        let position = position.clamp(0.0, 1.0);
+
+        if position <= self.stops[0].offset {
+            return self.stops[0].color;
+        }
+
+        for stops in self.stops.windows(2) {
+            let start = &stops[0];
+            let end = &stops[1];
+
+            if position <= end.offset {
+                let span = end.offset - start.offset;
+                let progress = if span <= f32::EPSILON {
+                    1.0
+                } else {
+                    (position - start.offset) / span
+                };
+
+                return interpolate_color(start.color, end.color, progress);
+            }
+        }
+
+        self.stops.last().expect("gradient has stops").color
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Paint {
+    Solid(Color),
+    LinearGradient(LinearGradient),
+}
+
+impl Paint {
+    fn color_at(&self, point: Point) -> Color {
+        match self {
+            Self::Solid(color) => *color,
+            Self::LinearGradient(gradient) => gradient.sample(point),
+        }
+    }
+}
+
+fn interpolate_color(from: Color, to: Color, progress: f32) -> Color {
+    let component = |from: u8, to: u8| {
+        (from as f32 + (to as f32 - from as f32) * progress)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+
+    Color::rgba(
+        component(from.red, to.red),
+        component(from.green, to.green),
+        component(from.blue, to.blue),
+        component(from.alpha, to.alpha),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FillRule {
     EvenOdd,
@@ -210,7 +310,16 @@ impl Surface {
 }
 
 pub fn fill_path(surface: &mut Surface, path: &FlattenedPath, fill_rule: FillRule, color: Color) {
-    fill_path_clipped(surface, path, fill_rule, color, &[])
+    fill_path_with_paint(surface, path, fill_rule, &Paint::Solid(color));
+}
+
+pub fn fill_path_with_paint(
+    surface: &mut Surface,
+    path: &FlattenedPath,
+    fill_rule: FillRule,
+    paint: &Paint,
+) {
+    fill_path_with_paint_clipped(surface, path, fill_rule, paint, &[]);
 }
 
 pub fn fill_path_clipped(
@@ -220,10 +329,16 @@ pub fn fill_path_clipped(
     color: Color,
     clips: &[(FlattenedPath, FillRule)],
 ) {
-    if color.alpha == 0 {
-        return;
-    }
+    fill_path_with_paint_clipped(surface, path, fill_rule, &Paint::Solid(color), clips);
+}
 
+pub fn fill_path_with_paint_clipped(
+    surface: &mut Surface,
+    path: &FlattenedPath,
+    fill_rule: FillRule,
+    paint: &Paint,
+    clips: &[(FlattenedPath, FillRule)],
+) {
     let Some((start_x, end_x, start_y, end_y)) = pixel_bounds(surface, path, 1.0) else {
         return;
     };
@@ -243,7 +358,9 @@ pub fn fill_path_clipped(
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
 
-            if coverage > 0.0 {
+            let color = paint.color_at(Point::new(x as f32 + 0.5, y as f32 + 0.5));
+
+            if coverage > 0.0 && color.alpha > 0 {
                 surface.blend_pixel(x, y, color, coverage);
             }
         }
@@ -1132,5 +1249,55 @@ mod tests {
         assert_ne!(surface.pixel(2, 5), Some(Color::TRANSPARENT));
         assert_eq!(surface.pixel(5, 5), Some(Color::TRANSPARENT));
         assert_ne!(surface.pixel(7, 5), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn fills_paths_with_a_linear_gradient() {
+        let gradient = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Color::BLACK,
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Color::WHITE,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(gradient.sample(Point::new(0.0, 0.0)), Color::BLACK);
+        assert_eq!(
+            gradient.sample(Point::new(5.0, 0.0)),
+            Color::rgba(128, 128, 128, 255)
+        );
+        assert_eq!(gradient.sample(Point::new(10.0, 0.0)), Color::WHITE);
+
+        let mut path = Path::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(10.0, 0.0));
+        path.line_to(Point::new(10.0, 2.0));
+        path.line_to(Point::new(0.0, 2.0));
+        path.close();
+
+        let flattened = flatten_path(&path, 0.25).unwrap();
+        let mut surface = Surface::new(10, 2, Color::TRANSPARENT);
+
+        fill_path_with_paint(
+            &mut surface,
+            &flattened,
+            FillRule::NonZero,
+            &Paint::LinearGradient(gradient),
+        );
+
+        let left = surface.pixel(1, 1).unwrap();
+        let right = surface.pixel(8, 1).unwrap();
+
+        assert!(left.red < right.red);
+        assert_eq!(left.red, left.green);
+        assert_eq!(right.green, right.blue);
     }
 }

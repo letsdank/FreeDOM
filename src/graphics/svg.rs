@@ -7,8 +7,9 @@ use crate::{
         flatten::{FlattenError, FlattenedPath, flatten_path},
         geometry::{Path, Point, Transform},
         raster::{
-            Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle, Surface,
-            fill_path_clipped, stroke_path_clipped,
+            Color, FillRule, GradientStop, LinearGradient, Paint, StrokeLineCap, StrokeLineJoin,
+            StrokeStyle, Surface, fill_path_clipped, fill_path_with_paint_clipped,
+            stroke_path_clipped,
         },
         svg_path::parse_path_data,
         svg_transform::parse_transform_list,
@@ -68,7 +69,22 @@ impl SvgDocument {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            if let Some(fill) = shape.fill {
+            if let Some(gradient) = &shape.fill_gradient {
+                let gradient = LinearGradient::new(
+                    viewport_transform.apply_point(gradient.start),
+                    viewport_transform.apply_point(gradient.end),
+                    gradient.stops.clone(),
+                )
+                .expect("validated SVG gradient must stay valid after viewport transform");
+
+                fill_path_with_paint_clipped(
+                    &mut surface,
+                    &flattened,
+                    shape.fill_rule,
+                    &Paint::LinearGradient(gradient),
+                    &clip_paths,
+                );
+            } else if let Some(fill) = shape.fill {
                 fill_path_clipped(&mut surface, &flattened, shape.fill_rule, fill, &clip_paths);
             }
 
@@ -181,9 +197,25 @@ impl StrokeLength {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+enum SvgPaintReference {
+    Solid(Color),
+    Url {
+        reference: String,
+        fallback: Option<Color>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GradientUnits {
+    ObjectBoundingBox,
+    UserSpaceOnUse,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct SvgShape {
     pub path: Path,
     pub fill: Option<Color>,
+    fill_gradient: Option<LinearGradient>,
     pub fill_rule: FillRule,
     pub stroke: Option<Color>,
     pub stroke_width: f32,
@@ -298,9 +330,9 @@ pub fn parse_svg_element_at(root: &HtmlElement, base_url: &Url) -> Result<SvgDoc
 
 #[derive(Clone)]
 struct SvgStyle {
-    fill: Option<Color>,
+    fill: Option<SvgPaintReference>,
     fill_rule: FillRule,
-    stroke: Option<Color>,
+    stroke: Option<SvgPaintReference>,
     stroke_width: StrokeLength,
     fill_opacity: f32,
     stroke_opacity: f32,
@@ -314,7 +346,7 @@ struct SvgStyle {
 impl Default for SvgStyle {
     fn default() -> Self {
         Self {
-            fill: Some(Color::BLACK),
+            fill: Some(SvgPaintReference::Solid(Color::BLACK)),
             fill_rule: FillRule::NonZero,
             stroke: None,
             stroke_width: StrokeLength::UserUnits(1.0),
@@ -520,16 +552,31 @@ fn collect_shapes(
     let path = path_for_element(element)?;
 
     if let Some(path) = path {
-        if style.fill.is_some() || style.stroke.is_some() {
+        let (fill, fill_gradient) = resolve_paint(
+            root,
+            base_url,
+            &style.fill,
+            &path,
+            transform,
+            style.fill_opacity,
+        )?;
+
+        let (stroke, _) = resolve_paint(
+            root,
+            base_url,
+            &style.stroke,
+            &path,
+            transform,
+            style.stroke_opacity,
+        )?;
+
+        if fill.is_some() || fill_gradient.is_some() || stroke.is_some() {
             shapes.push(SvgShape {
                 path: path.transformed(transform),
-                fill: style
-                    .fill
-                    .map(|color| apply_opacity(color, style.fill_opacity)),
+                fill,
+                fill_gradient,
                 fill_rule: style.fill_rule,
-                stroke: style
-                    .stroke
-                    .map(|color| apply_opacity(color, style.stroke_opacity)),
+                stroke,
                 stroke_width: style.stroke_width.resolve(stroke_percentage_basis),
                 stroke_transform_scale: stroke_scale(transform),
                 clip_paths: element_clip_paths.clone(),
@@ -565,6 +612,200 @@ fn collect_shapes(
     }
 
     Ok(())
+}
+
+fn resolve_paint(
+    root: &HtmlElement,
+    base_url: &Url,
+    paint: &Option<SvgPaintReference>,
+    object_path: &Path,
+    transform: Transform,
+    opacity: f32,
+) -> Result<(Option<Color>, Option<LinearGradient>), SvgError> {
+    let Some(paint) = paint else {
+        return Ok((None, None));
+    };
+
+    match paint {
+        SvgPaintReference::Solid(color) => Ok((Some(apply_opacity(*color, opacity)), None)),
+
+        SvgPaintReference::Url {
+            reference,
+            fallback,
+        } => {
+            let fallback = fallback.map(|color| apply_opacity(color, opacity));
+
+            let Some(reference_id) = local_reference_id(base_url, reference)? else {
+                return Ok((fallback, None));
+            };
+
+            let Some(gradient) =
+                resolve_linear_gradient(root, &reference_id, object_path, transform, opacity)?
+            else {
+                return Ok((fallback, None));
+            };
+
+            Ok((None, Some(gradient)))
+        }
+    }
+}
+
+fn resolve_linear_gradient(
+    root: &HtmlElement,
+    reference_id: &str,
+    object_path: &Path,
+    transform: Transform,
+    opacity: f32,
+) -> Result<Option<LinearGradient>, SvgError> {
+    let Some(element) = find_element_by_id(root, reference_id) else {
+        return Ok(None);
+    };
+
+    if !element.name.eq_ignore_ascii_case("lineargradient") {
+        return Ok(None);
+    }
+
+    let units = match attribute(element, "gradientunits") {
+        None => GradientUnits::ObjectBoundingBox,
+
+        Some(value) if value.trim().eq_ignore_ascii_case("objectboundingbox") => {
+            GradientUnits::ObjectBoundingBox
+        }
+
+        Some(value) if value.trim().eq_ignore_ascii_case("userspaceonuse") => {
+            GradientUnits::UserSpaceOnUse
+        }
+
+        Some(_) => return Err(SvgError::new("unsupported gradientUnits value")),
+    };
+
+    let gradient_transform = match attribute(element, "gradienttransform") {
+        Some(value) => {
+            parse_transform_list(value).map_err(|error| SvgError::new(error.to_string()))?
+        }
+        None => Transform::IDENTITY,
+    };
+
+    if gradient_transform.inverse().is_none() {
+        return Ok(None);
+    }
+
+    let (start, end) = match units {
+        GradientUnits::UserSpaceOnUse => (
+            Point::new(
+                number_attribute(element, "x1", 0.0)?,
+                number_attribute(element, "y1", 0.0)?,
+            ),
+            Point::new(
+                number_attribute(element, "x2", 1.0)?,
+                number_attribute(element, "y2", 0.0)?,
+            ),
+        ),
+
+        GradientUnits::ObjectBoundingBox => {
+            let Some(bounds) = object_path.control_bounds() else {
+                return Ok(None);
+            };
+
+            let x1 = object_bounding_box_coordinate(element, "x1", 0.0)?;
+            let y1 = object_bounding_box_coordinate(element, "y1", 0.0)?;
+            let x2 = object_bounding_box_coordinate(element, "x2", 1.0)?;
+            let y2 = object_bounding_box_coordinate(element, "y2", 0.0)?;
+
+            (
+                Point::new(
+                    bounds.min.x + x1 * bounds.width(),
+                    bounds.min.y + y1 * bounds.height(),
+                ),
+                Point::new(
+                    bounds.min.x + x2 * bounds.width(),
+                    bounds.min.y + y2 * bounds.height(),
+                ),
+            )
+        }
+    };
+
+    let gradient_transform = gradient_transform.then(transform);
+
+    let mut stops = Vec::new();
+
+    for child in &element.children {
+        let HtmlNode::Element(child) = child else {
+            continue;
+        };
+
+        if child.name.eq_ignore_ascii_case("stop") {
+            stops.push(parse_gradient_stop(child)?);
+        }
+    }
+
+    let Some(mut gradient) = LinearGradient::new(
+        gradient_transform.apply_point(start),
+        gradient_transform.apply_point(end),
+        stops,
+    ) else {
+        return Ok(None);
+    };
+
+    for stop in &mut gradient.stops {
+        stop.color = apply_opacity(stop.color, opacity);
+    }
+
+    Ok(Some(gradient))
+}
+
+fn parse_gradient_stop(element: &HtmlElement) -> Result<GradientStop, SvgError> {
+    let mut color = attribute(element, "stop-color")
+        .map(parse_solid_color)
+        .transpose()?
+        .flatten()
+        .unwrap_or(Color::BLACK);
+
+    let mut opacity = attribute(element, "stop-opacity")
+        .map(parse_opacity)
+        .transpose()?
+        .unwrap_or(1.0);
+
+    if let Some(style) = attribute(element, "style") {
+        for declaration in parse_declaration_list(style) {
+            match declaration.name.as_str() {
+                "stop-color" => {
+                    color = parse_solid_color(&declaration.value)?.unwrap_or(Color::TRANSPARENT);
+                }
+                "stop-opacity" => opacity = parse_opacity(&declaration.value)?,
+                _ => {}
+            }
+        }
+    }
+
+    let offset = attribute(element, "offset")
+        .map(parse_gradient_stop_offset)
+        .transpose()?
+        .unwrap_or(0.0);
+
+    Ok(GradientStop {
+        offset,
+        color: apply_opacity(color, opacity),
+    })
+}
+
+fn parse_gradient_stop_offset(value: &str) -> Result<f32, SvgError> {
+    let value = value.trim();
+
+    let values = if let Some(percent) = value.strip_suffix('%') {
+        parse_number_list(percent)?
+            .into_iter()
+            .map(|value| value / 100.0)
+            .collect::<Vec<_>>()
+    } else {
+        parse_number_list(value)?
+    };
+
+    let [offset] = values.as_slice() else {
+        return Err(SvgError::new("invalid gradient stop offset"));
+    };
+
+    Ok(offset.clamp(0.0, 1.0))
 }
 
 fn element_transform(element: &HtmlElement) -> Result<Transform, SvgError> {
@@ -856,9 +1097,9 @@ fn apply_svg_declaration(
     value: &str,
 ) -> Result<(), SvgError> {
     match property {
-        "fill" => style.fill = parse_fill(value)?,
+        "fill" => style.fill = parse_paint(value)?,
         "fill-rule" => style.fill_rule = parse_fill_rule(value)?,
-        "stroke" => style.stroke = parse_fill(value)?,
+        "stroke" => style.stroke = parse_paint(value)?,
         "stroke-width" => style.stroke_width = parse_stroke_width(value)?,
         "fill-opacity" => style.fill_opacity = parse_opacity(value)?,
         "stroke-opacity" => style.stroke_opacity = parse_opacity(value)?,
@@ -1267,6 +1508,33 @@ fn parse_rect(element: &HtmlElement) -> Result<Option<Path>, SvgError> {
     Ok(Some(path))
 }
 
+fn object_bounding_box_coordinate(
+    element: &HtmlElement,
+    name: &str,
+    default: f32,
+) -> Result<f32, SvgError> {
+    let Some(value) = attribute(element, name) else {
+        return Ok(default);
+    };
+
+    let value = value.trim();
+
+    let (number_source, scale) = match value.strip_suffix('%') {
+        Some(percent) => (percent, 0.01),
+        None => (value, 1.0),
+    };
+
+    let values = parse_number_list(number_source)?;
+
+    if values.len() != 1 || !values[0].is_finite() {
+        return Err(SvgError::new(
+            "expected one finite objectBoundingBox gradient coordinate",
+        ));
+    }
+
+    Ok(values[0] * scale)
+}
+
 fn number_attribute(element: &HtmlElement, name: &str, default: f32) -> Result<f32, SvgError> {
     let Some(value) = attribute(element, name) else {
         return Ok(default);
@@ -1289,28 +1557,43 @@ fn optional_number_attribute(element: &HtmlElement, name: &str) -> Result<Option
     Ok(Some(number_attribute(element, name, 0.0)?))
 }
 
-fn parse_fill(value: &str) -> Result<Option<Color>, SvgError> {
-    let value = value.trim().to_ascii_lowercase();
+fn parse_paint(value: &str) -> Result<Option<SvgPaintReference>, SvgError> {
+    let value = value.trim();
 
-    if value == "none" {
-        return Ok(None);
-    }
-
-    if let Some(after_url_start) = value.strip_prefix("url(") {
+    if value
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("url("))
+    {
+        let after_url_start = &value[4..];
         let close = after_url_start
             .find(')')
             .ok_or_else(|| SvgError::new("unterminated paint server URL"))?;
 
+        let reference = after_url_start[..close]
+            .trim()
+            .trim_matches(['"', '\''])
+            .to_owned();
+
         let fallback = after_url_start[close + 1..].trim();
 
-        // FreeDOM does not support SVG extensions yet. Under SVG conditional
-        // processing, an element is not rendered when it requires an unsupported
-        // extension.
-        return if fallback.is_empty() {
-            Ok(None)
-        } else {
-            parse_fill(fallback)
-        };
+        return Ok(Some(SvgPaintReference::Url {
+            reference,
+            fallback: if fallback.is_empty() {
+                None
+            } else {
+                parse_solid_color(fallback)?
+            },
+        }));
+    }
+
+    Ok(parse_solid_color(value)?.map(SvgPaintReference::Solid))
+}
+
+fn parse_solid_color(value: &str) -> Result<Option<Color>, SvgError> {
+    let value = value.trim().to_ascii_lowercase();
+
+    if value == "none" {
+        return Ok(None);
     }
 
     let color = match value.as_str() {
@@ -2298,5 +2581,66 @@ mod tests {
         assert_eq!(document.shapes[0].stroke_dash_array, vec![3.0, 1.0]);
         assert_eq!(document.shapes[0].stroke_dash_offset, 2.0);
         assert_eq!(document.shapes[0].path_length, Some(25.0));
+    }
+
+    #[test]
+    fn renders_user_space_linear_gradients() {
+        let document = parse_svg(
+            r#"
+                <svg width="10" height="2">
+                    <defs>
+                        <linearGradient
+                            id="sky"
+                            gradientUnits="userSpaceOnUse"
+                            x1="0"
+                            y1="0"
+                            x2="10"
+                            y2="0"
+                        >
+                            <stop offset="0" stop-color="red"/>
+                            <stop offset="1" style="stop-color: blue"/>
+                        </linearGradient>
+                    </defs>
+                    <rect width="10" height="2" fill="url(#sky)"/>
+                </svg>
+            "#,
+        )
+        .unwrap();
+
+        let surface = document.render(10, 2, Color::TRANSPARENT).unwrap();
+
+        let left = surface.pixel(1, 1).unwrap();
+        let right = surface.pixel(8, 1).unwrap();
+
+        assert!(left.red > left.blue);
+        assert!(right.blue > right.red);
+    }
+
+    #[test]
+    fn renders_object_bounding_box_linear_gradients() {
+        let document = parse_svg(
+            r#"
+                <svg width="10" height="2">
+                    <defs>
+                        <linearGradient id="sky">
+                            <stop offset="0" stop-color="red"/>
+                            <stop offset="1" stop-color="blue"/>
+                        </linearGradient>
+                    </defs>
+                    <rect x="2" y="0" width="6" height="2" fill="url(#sky)"/>
+                </svg>
+            "#,
+        )
+        .unwrap();
+
+        let surface = document.render(10, 2, Color::TRANSPARENT).unwrap();
+
+        assert_eq!(surface.pixel(1, 1), Some(Color::TRANSPARENT));
+
+        let left = surface.pixel(3, 1).unwrap();
+        let right = surface.pixel(7, 1).unwrap();
+
+        assert!(left.red > left.blue);
+        assert!(right.blue > right.red);
     }
 }
