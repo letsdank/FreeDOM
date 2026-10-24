@@ -32,15 +32,38 @@ pub struct GradientStop {
     pub color: Color,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GradientSpread {
+    Pad,
+    Repeat,
+    Reflect,
+}
+
+impl Default for GradientSpread {
+    fn default() -> Self {
+        Self::Pad
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinearGradient {
     pub start: Point,
     pub end: Point,
     pub stops: Vec<GradientStop>,
+    pub spread: GradientSpread,
 }
 
 impl LinearGradient {
-    pub fn new(start: Point, end: Point, mut stops: Vec<GradientStop>) -> Option<Self> {
+    pub fn new(start: Point, end: Point, stops: Vec<GradientStop>) -> Option<Self> {
+        Self::with_spread(start, end, stops, GradientSpread::Pad)
+    }
+
+    pub fn with_spread(
+        start: Point,
+        end: Point,
+        mut stops: Vec<GradientStop>,
+        spread: GradientSpread,
+    ) -> Option<Self> {
         if !start.x.is_finite()
             || !start.y.is_finite()
             || !end.x.is_finite()
@@ -55,7 +78,12 @@ impl LinearGradient {
 
         stops.sort_by(|left, right| left.offset.total_cmp(&right.offset));
 
-        Some(Self { start, end, stops })
+        Some(Self {
+            start,
+            end,
+            stops,
+            spread,
+        })
     }
 
     pub fn sample(&self, point: Point) -> Color {
@@ -70,7 +98,19 @@ impl LinearGradient {
         let position = ((point.x - self.start.x) * delta_x + (point.y - self.start.y) * delta_y)
             / length_squared;
 
-        let position = position.clamp(0.0, 1.0);
+        let position = match self.spread {
+            GradientSpread::Pad => position.clamp(0.0, 1.0),
+            GradientSpread::Repeat => position.rem_euclid(1.0),
+            GradientSpread::Reflect => {
+                let position = position.rem_euclid(2.0);
+
+                if position > 1.0 {
+                    2.0 - position
+                } else {
+                    position
+                }
+            }
+        };
 
         if position <= self.stops[0].offset {
             return self.stops[0].color;
@@ -1299,5 +1339,41 @@ mod tests {
         assert!(left.red < right.red);
         assert_eq!(left.red, left.green);
         assert_eq!(right.green, right.blue);
+    }
+
+    #[test]
+    fn samples_repeating_and_reflecting_linear_gradients() {
+        let stops = vec![
+            GradientStop {
+                offset: 0.0,
+                color: Color::rgba(255, 0, 0, 255),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color::rgba(0, 0, 255, 255),
+            },
+        ];
+
+        let repeated = LinearGradient::with_spread(
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            stops.clone(),
+            GradientSpread::Repeat,
+        )
+        .unwrap();
+
+        let reflected = LinearGradient::with_spread(
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            stops,
+            GradientSpread::Reflect,
+        )
+        .unwrap();
+
+        let repeated_color = repeated.sample(Point::new(12.0, 0.0));
+        let reflected_color = reflected.sample(Point::new(12.0, 0.0));
+
+        assert!(repeated_color.red > repeated_color.blue);
+        assert!(reflected_color.blue > reflected_color.red);
     }
 }

@@ -1,4 +1,3 @@
-use crate::page::BlockContent::Svg;
 use crate::{
     css::{
         CascadeRule, Element as CssElement, build_cascade_rules, matching_declarations,
@@ -8,8 +7,8 @@ use crate::{
         flatten::{FlattenError, FlattenedPath, flatten_path},
         geometry::{Path, Point, Transform},
         raster::{
-            Color, FillRule, GradientStop, LinearGradient, Paint, StrokeLineCap, StrokeLineJoin,
-            StrokeStyle, Surface, fill_path_clipped, fill_path_with_paint_clipped,
+            Color, FillRule, GradientSpread, GradientStop, LinearGradient, Paint, StrokeLineCap,
+            StrokeLineJoin, StrokeStyle, Surface, fill_path_clipped, fill_path_with_paint_clipped,
             stroke_path_clipped,
         },
         svg_path::parse_path_data,
@@ -71,10 +70,11 @@ impl SvgDocument {
                 .collect::<Result<Vec<_>, _>>()?;
 
             if let Some(gradient) = &shape.fill_gradient {
-                let gradient = LinearGradient::new(
+                let gradient = LinearGradient::with_spread(
                     viewport_transform.apply_point(gradient.start),
                     viewport_transform.apply_point(gradient.end),
                     gradient.stops.clone(),
+                    gradient.spread,
                 )
                 .expect("validated SVG gradient must stay valid after viewport transform");
 
@@ -674,6 +674,7 @@ fn resolve_linear_gradient(
     };
 
     let units = inherited_gradient_units(&gradients)?;
+    let spread = inherited_gradient_spread(&gradients)?;
 
     let gradient_transform = inherited_gradient_attribute(&gradients, "gradienttransform")
         .map(|value| parse_transform_list(value).map_err(|error| SvgError::new(error.to_string())))
@@ -723,10 +724,11 @@ fn resolve_linear_gradient(
 
     let gradient_transform = gradient_transform.then(transform);
 
-    let Some(mut gradient) = LinearGradient::new(
+    let Some(mut gradient) = LinearGradient::with_spread(
         gradient_transform.apply_point(start),
         gradient_transform.apply_point(end),
         stops,
+        spread,
     ) else {
         return Ok(None);
     };
@@ -801,6 +803,20 @@ fn inherited_gradient_units(gradients: &[&HtmlElement]) -> Result<GradientUnits,
         }
 
         Some(_) => Err(SvgError::new("unsupported gradientUnits value")),
+    }
+}
+
+fn inherited_gradient_spread(gradients: &[&HtmlElement]) -> Result<GradientSpread, SvgError> {
+    match inherited_gradient_attribute(gradients, "spreadmethod") {
+        None => Ok(GradientSpread::Pad),
+
+        Some(value) if value.trim().eq_ignore_ascii_case("pad") => Ok(GradientSpread::Pad),
+
+        Some(value) if value.trim().eq_ignore_ascii_case("repeat") => Ok(GradientSpread::Repeat),
+
+        Some(value) if value.trim().eq_ignore_ascii_case("reflect") => Ok(GradientSpread::Reflect),
+
+        Some(_) => Err(SvgError::new("unsupported gradient spreadMethod value")),
     }
 }
 
@@ -2785,5 +2801,42 @@ mod tests {
 
         assert!(left.red > left.blue);
         assert!(right.blue > right.red);
+    }
+
+    #[test]
+    fn inherits_gradient_spread_method() {
+        let document = parse_svg(
+            r##"
+                <svg width="12" height="4">
+                    <defs>
+                        <linearGradient
+                            id="base"
+                            gradientUnits="userSpaceOnUse"
+                            x1="0"
+                            y1="0"
+                            x2="4"
+                            y2="0"
+                            spreadMethod="repeat"
+                        >
+                            <stop offset="0" stop-color="red"/>
+                            <stop offset="1" stop-color="blue"/>
+                        </linearGradient>
+                        <linearGradient id="reflected" href="#base" spreadMethod="reflect"/>
+                    </defs>
+
+                    <rect width="12" height="2" fill="url(#base)"/>
+                    <rect y="2" width="12" height="2" fill="url(#reflected)"/>
+                </svg>
+            "##,
+        )
+        .unwrap();
+
+        let surface = document.render(12, 4, Color::TRANSPARENT).unwrap();
+
+        let repeated = surface.pixel(5, 1).unwrap();
+        let reflected = surface.pixel(5, 3).unwrap();
+
+        assert!(repeated.red > repeated.blue);
+        assert!(reflected.blue > reflected.red);
     }
 }
