@@ -73,6 +73,7 @@ impl SvgDocument {
             }
 
             if let Some(stroke) = shape.stroke {
+                let shape_stroke_scale = shape.stroke_transform_scale * viewport_stroke_scale;
                 let dash_scale = match shape.path_length {
                     Some(path_length) => {
                         let actual_length = flattened_path_length(&flattened);
@@ -84,14 +85,14 @@ impl SvgDocument {
                         }
                     }
 
-                    None => viewport_stroke_scale,
+                    None => shape_stroke_scale,
                 };
 
                 stroke_path_clipped(
                     &mut surface,
                     &flattened,
                     StrokeStyle {
-                        width: shape.stroke_width * viewport_stroke_scale,
+                        width: shape.stroke_width * shape_stroke_scale,
                         line_cap: shape.stroke_line_cap,
                         line_join: shape.stroke_line_join,
                         miter_limit: shape.stroke_miter_limit,
@@ -164,6 +165,21 @@ struct ClipPath {
     fill_rule: FillRule,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StrokeLength {
+    UserUnits(f32),
+    Percentage(f32),
+}
+
+impl StrokeLength {
+    fn resolve(self, percentage_basis: f32) -> f32 {
+        match self {
+            Self::UserUnits(value) => value,
+            Self::Percentage(value) => value * percentage_basis,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SvgShape {
     pub path: Path,
@@ -171,6 +187,7 @@ pub struct SvgShape {
     pub fill_rule: FillRule,
     pub stroke: Option<Color>,
     pub stroke_width: f32,
+    stroke_transform_scale: f32,
     clip_paths: Vec<ClipPath>,
     stroke_line_cap: StrokeLineCap,
     stroke_line_join: StrokeLineJoin,
@@ -254,6 +271,7 @@ pub fn parse_svg_element_at(root: &HtmlElement, base_url: &Url) -> Result<SvgDoc
     let css_rules = build_cascade_rules(&stylesheets);
     let mut shapes = Vec::new();
     let mut reference_stack = Vec::new();
+    let stroke_percentage_basis = normalized_viewport_diagonal(view_box, width, height);
 
     collect_shapes(
         root,
@@ -262,6 +280,7 @@ pub fn parse_svg_element_at(root: &HtmlElement, base_url: &Url) -> Result<SvgDoc
         &css_rules,
         SvgStyle::default(),
         Transform::IDENTITY,
+        stroke_percentage_basis,
         &[],
         &mut shapes,
         &mut reference_stack,
@@ -282,14 +301,14 @@ struct SvgStyle {
     fill: Option<Color>,
     fill_rule: FillRule,
     stroke: Option<Color>,
-    stroke_width: f32,
+    stroke_width: StrokeLength,
     fill_opacity: f32,
     stroke_opacity: f32,
     stroke_line_cap: StrokeLineCap,
     stroke_line_join: StrokeLineJoin,
     stroke_miter_limit: f32,
-    stroke_dash_array: Vec<f32>,
-    stroke_dash_offset: f32,
+    stroke_dash_array: Vec<StrokeLength>,
+    stroke_dash_offset: StrokeLength,
 }
 
 impl Default for SvgStyle {
@@ -298,16 +317,32 @@ impl Default for SvgStyle {
             fill: Some(Color::BLACK),
             fill_rule: FillRule::NonZero,
             stroke: None,
-            stroke_width: 1.0,
+            stroke_width: StrokeLength::UserUnits(1.0),
             fill_opacity: 1.0,
             stroke_opacity: 1.0,
             stroke_line_cap: StrokeLineCap::Butt,
             stroke_line_join: StrokeLineJoin::Miter,
             stroke_miter_limit: 4.0,
             stroke_dash_array: Vec::new(),
-            stroke_dash_offset: 0.0,
+            stroke_dash_offset: StrokeLength::UserUnits(0.0),
         }
     }
+}
+
+fn normalized_viewport_diagonal(
+    view_box: Option<ViewBox>,
+    width: Option<f32>,
+    height: Option<f32>,
+) -> f32 {
+    let (width, height) = view_box
+        .map(|view_box| (view_box.width, view_box.height))
+        .unwrap_or((width.unwrap_or(300.0), height.unwrap_or(150.0)));
+
+    normalized_diagonal(width, height)
+}
+
+fn normalized_diagonal(width: f32, height: f32) -> f32 {
+    ((width * width + height * height) * 0.5).sqrt()
 }
 
 fn collect_shapes(
@@ -317,6 +352,7 @@ fn collect_shapes(
     css_rules: &[CascadeRule],
     inherited_style: SvgStyle,
     parent_transform: Transform,
+    stroke_percentage_basis: f32,
     clip_paths: &[ClipPath],
     shapes: &mut Vec<SvgShape>,
     reference_stack: &mut Vec<String>,
@@ -368,6 +404,7 @@ fn collect_shapes(
                 css_rules,
                 style,
                 transform,
+                stroke_percentage_basis,
                 &element_clip_paths,
                 shapes,
                 reference_stack,
@@ -399,7 +436,7 @@ fn collect_shapes(
 
         let placement = Transform::translate(x, y).then(transform);
 
-        let child_transform = match attribute(element, "viewbox") {
+        let (child_transform, child_stroke_percentage_basis) = match attribute(element, "viewbox") {
             Some(value) => match parse_view_box(value)? {
                 ParsedViewBox::Valid(view_box) => {
                     let preserve_aspect_ratio = match attribute(element, "preserveaspectratio") {
@@ -407,12 +444,15 @@ fn collect_shapes(
                         None => PreserveAspectRatio::default(),
                     };
 
-                    view_box_transform(view_box, preserve_aspect_ratio, width, height)
-                        .then(placement)
+                    (
+                        view_box_transform(view_box, preserve_aspect_ratio, width, height)
+                            .then(placement),
+                        normalized_diagonal(view_box.width, view_box.height),
+                    )
                 }
                 ParsedViewBox::DisablesRendering => return Ok(()),
             },
-            None => placement,
+            None => (placement, normalized_diagonal(width, height)),
         };
 
         let mut child_clip_paths = element_clip_paths;
@@ -430,6 +470,7 @@ fn collect_shapes(
                     css_rules,
                     style.clone(),
                     child_transform,
+                    child_stroke_percentage_basis,
                     &child_clip_paths,
                     shapes,
                     reference_stack,
@@ -465,6 +506,7 @@ fn collect_shapes(
             css_rules,
             style,
             reference_transform,
+            stroke_percentage_basis,
             &element_clip_paths,
             shapes,
             reference_stack,
@@ -488,13 +530,18 @@ fn collect_shapes(
                 stroke: style
                     .stroke
                     .map(|color| apply_opacity(color, style.stroke_opacity)),
-                stroke_width: style.stroke_width,
+                stroke_width: style.stroke_width.resolve(stroke_percentage_basis),
+                stroke_transform_scale: stroke_scale(transform),
                 clip_paths: element_clip_paths.clone(),
                 stroke_line_cap: style.stroke_line_cap,
                 stroke_line_join: style.stroke_line_join,
                 stroke_miter_limit: style.stroke_miter_limit,
-                stroke_dash_array: style.stroke_dash_array.clone(),
-                stroke_dash_offset: style.stroke_dash_offset,
+                stroke_dash_array: style
+                    .stroke_dash_array
+                    .iter()
+                    .map(|length| length.resolve(stroke_percentage_basis))
+                    .collect(),
+                stroke_dash_offset: style.stroke_dash_offset.resolve(stroke_percentage_basis),
                 path_length: path_length_attribute(element)?,
             });
         }
@@ -509,6 +556,7 @@ fn collect_shapes(
                 css_rules,
                 style.clone(),
                 transform,
+                stroke_percentage_basis,
                 &element_clip_paths,
                 shapes,
                 reference_stack,
@@ -925,32 +973,28 @@ fn parse_stroke_miter_limit(value: &str) -> Result<f32, SvgError> {
     Ok(values[0])
 }
 
-fn parse_stroke_dash_array(value: &str) -> Result<Vec<f32>, SvgError> {
+fn parse_stroke_dash_array(value: &str) -> Result<Vec<StrokeLength>, SvgError> {
     if value.trim().eq_ignore_ascii_case("none") {
         return Ok(Vec::new());
     }
 
-    let values = parse_number_list(value)?;
+    let values = parse_stroke_length_list(value, false)?;
 
-    if values.is_empty()
-        || values
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-    {
+    if values.is_empty() {
         return Err(SvgError::new("invalid stroke-dasharray"));
     }
 
     Ok(values)
 }
 
-fn parse_stroke_dash_offset(value: &str) -> Result<f32, SvgError> {
-    let values = parse_number_list(value)?;
+fn parse_stroke_dash_offset(value: &str) -> Result<StrokeLength, SvgError> {
+    let values = parse_stroke_length_list(value, true)?;
 
-    if values.len() != 1 || !values[0].is_finite() {
+    let [value] = values.as_slice() else {
         return Err(SvgError::new("invalid stroke-dashoffset"));
-    }
+    };
 
-    Ok(values[0])
+    Ok(*value)
 }
 
 fn path_length_attribute(element: &HtmlElement) -> Result<Option<f32>, SvgError> {
@@ -1345,8 +1389,14 @@ fn hexadecimal_digit(byte: u8) -> Option<u8> {
     }
 }
 
-fn parse_stroke_width(value: &str) -> Result<f32, SvgError> {
-    parse_svg_length(value)
+fn parse_stroke_width(value: &str) -> Result<StrokeLength, SvgError> {
+    let values = parse_stroke_length_list(value, false)?;
+
+    let [value] = values.as_slice() else {
+        return Err(SvgError::new("invalid stroke-width"));
+    };
+
+    Ok(*value)
 }
 
 fn parse_fill_rule(value: &str) -> Result<FillRule, SvgError> {
@@ -1470,76 +1520,136 @@ fn parse_preserve_aspect_ratio(value: &str) -> Result<PreserveAspectRatio, SvgEr
     })
 }
 
-fn parse_number_list(input: &str) -> Result<Vec<f32>, SvgError> {
+fn parse_stroke_length_list(
+    input: &str,
+    allows_negative: bool,
+) -> Result<Vec<StrokeLength>, SvgError> {
     let mut values = Vec::new();
-    let bytes = input.as_bytes();
     let mut cursor = 0;
 
-    while cursor < bytes.len() {
-        while cursor < bytes.len() && (bytes[cursor].is_ascii_whitespace() || bytes[cursor] == b',')
-        {
-            cursor += 1;
-        }
+    while cursor < input.len() {
+        skip_svg_number_separators(input, &mut cursor);
 
-        if cursor == bytes.len() {
+        if cursor == input.len() {
             break;
         }
 
-        let start = cursor;
+        let value = parse_svg_number(input, &mut cursor)?;
+        let bytes = input.as_bytes();
 
-        if matches!(bytes.get(cursor), Some(b'+' | b'-')) {
+        let length = if bytes.get(cursor) == Some(&b'%') {
             cursor += 1;
+            StrokeLength::Percentage(value / 100.0)
+        } else if matches!(bytes.get(cursor), Some(b'p' | b'P'))
+            && matches!(bytes.get(cursor + 1), Some(b'x' | b'X'))
+        {
+            cursor += 2;
+            StrokeLength::UserUnits(value)
+        } else {
+            StrokeLength::UserUnits(value)
+        };
+
+        let numeric_value = match length {
+            StrokeLength::UserUnits(value) => value,
+            StrokeLength::Percentage(value) => value,
+        };
+
+        if !numeric_value.is_finite() || (!allows_negative && numeric_value < 0.0) {
+            return Err(SvgError::new("invalid SVG stroke length"));
         }
 
-        let integer_start = cursor;
-        while matches!(bytes.get(cursor),Some(byte)if byte.is_ascii_digit()) {
-            cursor += 1;
-        }
-        let has_integer = cursor != integer_start;
-
-        if bytes.get(cursor) == Some(&b'.') {
-            cursor += 1;
-        }
-
-        let fraction_start = cursor;
-        while matches!(bytes.get(cursor),Some(byte)if byte.is_ascii_digit()) {
-            cursor += 1;
-        }
-        let has_fraction = cursor != fraction_start;
-
-        if !has_integer && !has_fraction {
-            return Err(SvgError::new("expected SVG number"));
-        }
-
-        if matches!(bytes.get(cursor), Some(b'e' | b'E')) {
-            cursor += 1;
-
-            if matches!(bytes.get(cursor), Some(b'+' | b'-')) {
-                cursor += 1;
-            }
-
-            let exponent_start = cursor;
-            while matches!(bytes.get(cursor),Some(byte)if byte.is_ascii_digit()) {
-                cursor += 1;
-            }
-
-            if cursor == exponent_start {
-                return Err(SvgError::new("expected exponent digits"));
-            }
-        }
-
-        let value = input[start..cursor]
-            .parse::<f32>()
-            .map_err(|_| SvgError::new("invalid SVG number"))?;
-
-        if !value.is_finite() {
-            return Err(SvgError::new("SVG number must be finite"));
-        }
-
-        values.push(value);
+        values.push(length);
     }
 
     Ok(values)
+}
+
+fn parse_number_list(input: &str) -> Result<Vec<f32>, SvgError> {
+    let mut values = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < input.len() {
+        skip_svg_number_separators(input, &mut cursor);
+
+        if cursor == input.len() {
+            break;
+        }
+
+        values.push(parse_svg_number(input, &mut cursor)?);
+    }
+
+    Ok(values)
+}
+
+fn skip_svg_number_separators(input: &str, cursor: &mut usize) {
+    while input
+        .as_bytes()
+        .get(*cursor)
+        .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b',')
+    {
+        *cursor += 1;
+    }
+}
+
+fn parse_svg_number(input: &str, cursor: &mut usize) -> Result<f32, SvgError> {
+    let bytes = input.as_bytes();
+    let start = *cursor;
+
+    if matches!(bytes.get(*cursor), Some(b'+' | b'-')) {
+        *cursor += 1;
+    }
+
+    let integer_start = *cursor;
+
+    while matches!(bytes.get(*cursor),Some(byte)if byte.is_ascii_digit()) {
+        *cursor += 1;
+    }
+
+    let has_integer = *cursor != integer_start;
+
+    if bytes.get(*cursor) == Some(&b'.') {
+        *cursor += 1;
+    }
+
+    let fraction_start = *cursor;
+
+    while matches!(bytes.get(*cursor),Some(byte)if byte.is_ascii_digit()) {
+        *cursor += 1;
+    }
+
+    let has_fraction = *cursor != fraction_start;
+
+    if !has_integer && !has_fraction {
+        return Err(SvgError::new("expected SVG number"));
+    }
+
+    if matches!(bytes.get(*cursor), Some(b'e' | b'E')) {
+        *cursor += 1;
+
+        if matches!(bytes.get(*cursor), Some(b'+' | b'-')) {
+            *cursor += 1;
+        }
+
+        let exponent_start = *cursor;
+
+        while matches!(bytes.get(*cursor), Some(byte)if byte.is_ascii_digit()) {
+            *cursor += 1;
+        }
+
+        if *cursor == exponent_start {
+            return Err(SvgError::new("expected exponent digits"));
+        }
+    }
+
+    let value = input[start..*cursor]
+        .parse::<f32>()
+        .map_err(|_| SvgError::new("invalid SVG number"))?;
+
+    if !value.is_finite() {
+        return Err(SvgError::new("SVG number must be finite"));
+    }
+
+    Ok(value)
 }
 
 fn stroke_scale(transform: Transform) -> f32 {

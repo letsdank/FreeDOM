@@ -694,4 +694,40 @@ mod tests {
             report.max_channel_difference,
         );
     }
+
+    #[test]
+    fn official_wpt_svg_resolves_percentage_stroke_dimensions() {
+        let fixtures = [
+            "painting/reftests/percentage.svg",
+            "painting/reftests/percentage-attribute.svg",
+        ];
+
+        let reference_source =
+            fs::read_to_string(fixture_path("painting/reftests/percentage-ref.svg"))
+                .expect("WPT SVG reference fixture is missing");
+
+        for fixture in fixtures {
+            let test_source =
+                fs::read_to_string(fixture_path(fixture)).expect("WPT SVG test fixture is missing");
+
+            let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+            eprintln!(
+                "WPT SVG {fixture}: {}x{}, {} differing pixels, maximum channel different {}",
+                report.viewport_width,
+                report.viewport_height,
+                report.different_pixels,
+                report.max_channel_difference,
+            );
+
+            assert_eq!(
+                report.different_pixels, 0,
+                "{fixture} differs from the WPT reference",
+            );
+            assert_eq!(
+                report.max_channel_difference, 0,
+                "{fixture} differs from the WPT reference",
+            );
+        }
+    }
 }
