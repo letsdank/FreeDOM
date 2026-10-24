@@ -10,3 +10,4 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 softbuffer = "0.4"
 winit = "0.30"
 png = "=0.17.16"
+flate2 = "=1.1.10"

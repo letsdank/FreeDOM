@@ -573,6 +573,7 @@ name = "freedom"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "font8x8",
  "png",
  "reqwest",

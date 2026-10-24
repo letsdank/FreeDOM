@@ -7,3 +7,4 @@ pub mod loca;
 pub mod render;
 pub mod sfnt;
 pub mod truetype;
+pub mod woff;
