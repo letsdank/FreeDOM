@@ -13,6 +13,19 @@ impl FlattenedPath {
     pub fn contours(&self) -> &[FlattenedContour] {
         &self.contours
     }
+
+    pub(crate) fn from_open_contours(contours: Vec<Vec<Point>>) -> Self {
+        Self {
+            contours: contours
+                .into_iter()
+                .filter(|points| points.len() >= 2)
+                .map(|points| FlattenedContour {
+                    points,
+                    closed: false,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

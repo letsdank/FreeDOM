@@ -34,12 +34,14 @@ pub enum FillRule {
     NonZero,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StrokeStyle {
     pub width: f32,
     pub line_cap: StrokeLineCap,
     pub line_join: StrokeLineJoin,
     pub miter_limit: f32,
+    pub dash_array: Vec<f32>,
+    pub dash_offset: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,6 +67,8 @@ impl Default for StrokeStyle {
             line_cap: StrokeLineCap::Butt,
             line_join: StrokeLineJoin::Miter,
             miter_limit: 4.0,
+            dash_array: Vec::new(),
+            dash_offset: 0.0,
         }
     }
 }
@@ -261,6 +265,8 @@ pub fn stroke_path_clipped(
         return;
     }
 
+    let dashed_path = dash_path(path, &style.dash_array, style.dash_offset);
+    let path = dashed_path.as_ref().unwrap_or(path);
     let radius = style.width * 0.5;
     let miter_limit = sanitized_miter_limit(style.miter_limit);
 
@@ -299,6 +305,153 @@ pub fn stroke_path_clipped(
                 surface.blend_pixel(x, y, color, coverage);
             }
         }
+    }
+}
+
+fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Option<FlattenedPath> {
+    let dash_array = normalized_dash_array(dash_array)?;
+    let mut output = Vec::new();
+
+    for contour in path.contours() {
+        let points = contour.points();
+
+        if points.len() < 2 {
+            continue;
+        }
+
+        let mut state = DashState::new(&dash_array, dash_offset);
+        let mut visible_contour = Vec::new();
+        let segment_count = points.len() - 1 + usize::from(contour.is_closed());
+
+        for index in 0..segment_count {
+            let from = points[index];
+            let to = points[(index + 1) % points.len()];
+
+            append_dashed_segment(from, to, &mut state, &mut visible_contour, &mut output);
+        }
+
+        finish_dash_contour(&mut visible_contour, &mut output);
+    }
+
+    Some(FlattenedPath::from_open_contours(output))
+}
+
+fn normalized_dash_array(dash_array: &[f32]) -> Option<Vec<f32>> {
+    if dash_array.is_empty()
+        || dash_array
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return None;
+    }
+
+    let mut normalized = dash_array.to_vec();
+
+    if normalized.len() % 2 == 1 {
+        normalized.extend_from_within(..);
+    }
+
+    Some(normalized)
+}
+
+struct DashState<'a> {
+    pattern: &'a [f32],
+    index: usize,
+    remaining: f32,
+}
+
+impl<'a> DashState<'a> {
+    fn new(pattern: &'a [f32], offset: f32) -> Self {
+        let total_length: f32 = pattern.iter().sum();
+        let mut position = if offset.is_finite() {
+            offset.rem_euclid(total_length)
+        } else {
+            0.0
+        };
+
+        let mut index = 0;
+
+        while position >= pattern[index] {
+            position -= pattern[index];
+            index = (index + 1) % pattern.len();
+        }
+
+        Self {
+            pattern,
+            index,
+            remaining: pattern[index] - position,
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        self.index % 2 == 0
+    }
+
+    fn advance(&mut self, amount: f32) {
+        self.remaining -= amount;
+
+        if self.remaining > 0.000_01 {
+            return;
+        }
+
+        self.index = (self.index + 1) % self.pattern.len();
+        self.remaining = self.pattern[self.index];
+    }
+}
+
+fn append_dashed_segment(
+    from: Point,
+    to: Point,
+    state: &mut DashState<'_>,
+    visible_contour: &mut Vec<Point>,
+    output: &mut Vec<Vec<Point>>,
+) {
+    let delta_x = to.x - from.x;
+    let delta_y = to.y - from.y;
+    let length = (delta_x * delta_x + delta_y * delta_y).sqrt();
+
+    if length <= f32::EPSILON {
+        return;
+    }
+
+    let direction_x = delta_x / length;
+    let direction_y = delta_y / length;
+    let mut consumed = 0.0;
+
+    while consumed < length {
+        let piece_length = (length - consumed).min(state.remaining);
+        let piece_start = Point::new(
+            from.x + direction_x * consumed,
+            from.y + direction_y * consumed,
+        );
+        let piece_end = Point::new(
+            from.x + direction_x * (consumed + piece_length),
+            from.y + direction_y * (consumed + piece_length),
+        );
+
+        if state.is_visible() {
+            if visible_contour.last().copied() != Some(piece_start) {
+                finish_dash_contour(visible_contour, output);
+                visible_contour.push(piece_start);
+            }
+
+            if visible_contour.last().copied() != Some(piece_end) {
+                visible_contour.push(piece_end);
+            }
+        } else {
+            finish_dash_contour(visible_contour, output);
+        }
+
+        consumed += piece_length;
+        state.advance(piece_length);
+    }
+}
+
+fn finish_dash_contour(contour: &mut Vec<Point>, output: &mut Vec<Vec<Point>>) {
+    if contour.len() >= 2 {
+        output.push(std::mem::take(contour));
+    } else {
+        contour.clear();
     }
 }
 
@@ -954,5 +1107,30 @@ mod tests {
             StrokeLineJoin::Miter,
             4.0,
         ));
+    }
+
+    #[test]
+    fn renders_dashed_strokes() {
+        let mut path = Path::new();
+        path.move_to(Point::new(1.0, 5.0));
+        path.line_to(Point::new(15.0, 5.0));
+
+        let flattened = flatten_path(&path, 0.25).unwrap();
+        let mut surface = Surface::new(20, 10, Color::TRANSPARENT);
+
+        stroke_path(
+            &mut surface,
+            &flattened,
+            StrokeStyle {
+                width: 2.0,
+                dash_array: vec![3.0, 2.0],
+                ..StrokeStyle::default()
+            },
+            Color::BLACK,
+        );
+
+        assert_ne!(surface.pixel(2, 5), Some(Color::TRANSPARENT));
+        assert_eq!(surface.pixel(5, 5), Some(Color::TRANSPARENT));
+        assert_ne!(surface.pixel(7, 5), Some(Color::TRANSPARENT));
     }
 }

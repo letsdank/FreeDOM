@@ -81,6 +81,8 @@ impl SvgDocument {
                         line_cap: shape.stroke_line_cap,
                         line_join: shape.stroke_line_join,
                         miter_limit: shape.stroke_miter_limit,
+                        dash_array: Vec::new(),
+                        dash_offset: 0.0,
                     },
                     stroke,
                     &clip_paths,
