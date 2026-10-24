@@ -1,4 +1,8 @@
 use crate::{
+    css::{
+        CascadeRule, Element as CssElement, build_cascade_rules, matching_declarations,
+        parse_declaration_list,
+    },
     graphics::{
         flatten::{FlattenError, flatten_path},
         geometry::{Path, Point, Transform},
@@ -223,6 +227,8 @@ pub fn parse_svg_element_at(root: &HtmlElement, base_url: &Url) -> Result<SvgDoc
         None => PreserveAspectRatio::default(),
     };
 
+    let stylesheets = collect_svg_stylesheets(root);
+    let css_rules = build_cascade_rules(&stylesheets);
     let mut shapes = Vec::new();
     let mut reference_stack = Vec::new();
 
@@ -230,6 +236,7 @@ pub fn parse_svg_element_at(root: &HtmlElement, base_url: &Url) -> Result<SvgDoc
         root,
         root,
         base_url,
+        &css_rules,
         SvgStyle::default(),
         Transform::IDENTITY,
         &[],
@@ -280,6 +287,7 @@ fn collect_shapes(
     root: &HtmlElement,
     element: &HtmlElement,
     base_url: &Url,
+    css_rules: &[CascadeRule],
     inherited_style: SvgStyle,
     parent_transform: Transform,
     clip_paths: &[ClipPath],
@@ -299,7 +307,7 @@ fn collect_shapes(
         return Ok(());
     }
 
-    let style = resolve_style(element, inherited_style)?;
+    let style = resolve_style(element, inherited_style, css_rules)?;
 
     let transform = element_transform(element)?.then(parent_transform);
 
@@ -330,6 +338,7 @@ fn collect_shapes(
                 root,
                 child,
                 base_url,
+                css_rules,
                 style,
                 transform,
                 &element_clip_paths,
@@ -391,6 +400,7 @@ fn collect_shapes(
                     root,
                     child,
                     base_url,
+                    css_rules,
                     style,
                     child_transform,
                     &child_clip_paths,
@@ -425,6 +435,7 @@ fn collect_shapes(
             root,
             referenced_element,
             base_url,
+            css_rules,
             style,
             reference_transform,
             &element_clip_paths,
@@ -465,6 +476,7 @@ fn collect_shapes(
                 root,
                 child,
                 base_url,
+                css_rules,
                 style,
                 transform,
                 &element_clip_paths,
@@ -708,65 +720,117 @@ fn collect_clip_path_geometry(
     Ok(())
 }
 
-fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle, SvgError> {
-    if let Some(value) = attribute(element, "fill") {
-        style.fill = parse_fill(value)?;
+fn resolve_style(
+    element: &HtmlElement,
+    mut style: SvgStyle,
+    css_rules: &[CascadeRule],
+) -> Result<SvgStyle, SvgError> {
+    for property in [
+        "fill",
+        "fill-rule",
+        "stroke",
+        "stroke-width",
+        "fill-opacity",
+        "stroke-opacity",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "stroke-miterlimit",
+    ] {
+        if let Some(value) = attribute(element, property) {
+            apply_svg_declaration(&mut style, property, value)?;
+        }
     }
 
-    if let Some(value) = attribute(element, "stroke") {
-        style.stroke = parse_fill(value)?;
-    }
+    let classes: Vec<String> = attribute(element, "class")
+        .map(|value| {
+            value
+                .split_ascii_whitespace()
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
 
-    if let Some(value) = attribute(element, "fill-opacity") {
-        style.fill_opacity = parse_opacity(value)?;
-    }
+    let css_element = CssElement {
+        tag: &element.name,
+        id: attribute(element, "id"),
+        classes: &classes,
+        inline_style: None,
+    };
 
-    if let Some(value) = attribute(element, "stroke-opacity") {
-        style.stroke_opacity = parse_opacity(value)?;
-    }
-
-    if let Some(value) = attribute(element, "stroke-width") {
-        style.stroke_width = parse_stroke_width(value)?;
-    }
-
-    if let Some(value) = attribute(element, "fill-rule") {
-        style.fill_rule = parse_fill_rule(value)?;
-    }
-
-    if let Some(value) = attribute(element, "stroke-linecap") {
-        style.stroke_line_cap = parse_stroke_line_cap(value)?;
-    }
-
-    if let Some(value) = attribute(element, "stroke-linejoin") {
-        style.stroke_line_join = parse_stroke_line_join(value)?;
-    }
-
-    if let Some(value) = attribute(element, "stroke-miterlimit") {
-        style.stroke_miter_limit = parse_stroke_miter_limit(value)?;
+    for declaration in matching_declarations(css_rules, &css_element) {
+        apply_svg_declaration(&mut style, &declaration.name, &declaration.value)?;
     }
 
     if let Some(value) = attribute(element, "style") {
-        for declaration in value.split(';') {
-            let Some((property, value)) = declaration.split_once(':') else {
-                continue;
-            };
-
-            match property.trim().to_ascii_lowercase().as_str() {
-                "fill" => style.fill = parse_fill(value)?,
-                "fill-rule" => style.fill_rule = parse_fill_rule(value)?,
-                "stroke" => style.stroke = parse_fill(value)?,
-                "stroke-width" => style.stroke_width = parse_stroke_width(value)?,
-                "fill-opacity" => style.fill_opacity = parse_opacity(value)?,
-                "stroke-opacity" => style.stroke_opacity = parse_opacity(value)?,
-                "stroke-linecap" => style.stroke_line_cap = parse_stroke_line_cap(value)?,
-                "stroke-linejoin" => style.stroke_line_join = parse_stroke_line_join(value)?,
-                "stroke-miterlimit" => style.stroke_miter_limit = parse_stroke_miter_limit(value)?,
-                _ => {}
-            }
+        for declaration in parse_declaration_list(value) {
+            apply_svg_declaration(&mut style, &declaration.name, &declaration.value)?;
         }
     }
 
     Ok(style)
+}
+
+fn apply_svg_declaration(
+    style: &mut SvgStyle,
+    property: &str,
+    value: &str,
+) -> Result<(), SvgError> {
+    match property {
+        "fill" => style.fill = parse_fill(value)?,
+        "fill-rule" => style.fill_rule = parse_fill_rule(value)?,
+        "stroke" => style.stroke = parse_fill(value)?,
+        "stroke-width" => style.stroke_width = parse_stroke_width(value)?,
+        "fill-opacity" => style.fill_opacity = parse_opacity(value)?,
+        "stroke-opacity" => style.stroke_opacity = parse_opacity(value)?,
+        "stroke-linecap" => style.stroke_line_cap = parse_stroke_line_cap(value)?,
+        "stroke-linejoin" => style.stroke_line_join = parse_stroke_line_join(value)?,
+        "stroke-miterlimit" => style.stroke_miter_limit = parse_stroke_miter_limit(value)?,
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn collect_svg_stylesheets(root: &HtmlElement) -> Vec<String> {
+    let mut stylesheets = Vec::new();
+    collect_svg_stylesheets_from_element(root, &mut stylesheets);
+    stylesheets
+}
+
+fn collect_svg_stylesheets_from_element(element: &HtmlElement, stylesheets: &mut Vec<String>) {
+    if element.name.eq_ignore_ascii_case("style") {
+        stylesheets.push(svg_element_text_content(element));
+    }
+
+    for child in &element.children {
+        if let HtmlNode::Element(child) = child {
+            collect_svg_stylesheets_from_element(child, stylesheets);
+        }
+    }
+}
+
+fn svg_element_text_content(element: &HtmlElement) -> String {
+    let mut output = String::new();
+
+    for child in &element.children {
+        append_svg_node_text(child, &mut output);
+    }
+
+    output
+}
+
+fn append_svg_node_text(node: &HtmlNode, output: &mut String) {
+    match node {
+        HtmlNode::Text(text) => output.push_str(text),
+
+        HtmlNode::Element(element) => {
+            for child in &element.children {
+                append_svg_node_text(child, output);
+            }
+        }
+
+        HtmlNode::Doctype(_) | HtmlNode::Comment(_) => {}
+    }
 }
 
 fn attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
@@ -1986,5 +2050,25 @@ mod tests {
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].stroke_line_join, StrokeLineJoin::Round);
         assert_eq!(document.shapes[0].stroke_miter_limit, 7.0);
+    }
+
+    #[test]
+    fn applies_embedded_stylesheet_rules() {
+        let document = parse_svg(
+            r#"
+                <svg>
+                    <style>
+                        line { stroke: red; stroke-width: 2; }
+                        #target { stroke: blue; stroke-width: 4; }
+                    </style>
+                    <line id="target" x1="1" y1="1" x2="9" y2="1"/>
+                </svg>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].stroke, Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(document.shapes[0].stroke_width, 4.0);
     }
 }

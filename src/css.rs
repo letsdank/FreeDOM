@@ -66,7 +66,20 @@ pub(crate) struct CssRule {
     declarations: Declarations,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CssDeclaration {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+pub(crate) struct CascadeRule {
+    selector: Selector,
+    specificity: u16,
+    source_order: usize,
+    declarations: Vec<CssDeclaration>,
+}
+
+#[derive(Clone, Default)]
 struct Selector {
     tag: Option<String>,
     id: Option<String>,
@@ -74,6 +87,18 @@ struct Selector {
 }
 
 pub(crate) fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
+    build_cascade_rules(stylesheets)
+        .into_iter()
+        .map(|rule| CssRule {
+            selector: rule.selector,
+            specificity: rule.specificity,
+            source_order: rule.source_order,
+            declarations: parse_text_declarations(&rule.declarations),
+        })
+        .collect()
+}
+
+pub(crate) fn build_cascade_rules(stylesheets: &[String]) -> Vec<CascadeRule> {
     let mut rules = Vec::new();
     let mut source_order = 0;
 
@@ -84,7 +109,7 @@ pub(crate) fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
     rules
 }
 
-fn parse_stylesheet(source: &str, rules: &mut Vec<CssRule>, source_order: &mut usize) {
+fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &mut usize) {
     let source = remove_css_comments(source);
 
     for rule_text in source.split('}') {
@@ -92,14 +117,14 @@ fn parse_stylesheet(source: &str, rules: &mut Vec<CssRule>, source_order: &mut u
             continue;
         };
 
-        let declarations = parse_declarations(declaration_text);
+        let declarations = parse_declaration_list(declaration_text);
 
         for selector_text in selector_text.split(',') {
             let Some((selector, specificity)) = parse_selector(selector_text.trim()) else {
                 continue;
             };
 
-            rules.push(CssRule {
+            rules.push(CascadeRule {
                 selector,
                 specificity,
                 source_order: *source_order,
@@ -224,28 +249,33 @@ fn is_css_identifier(value: &str) -> bool {
             .all(|character| character.is_alphanumeric() || character == '-' || character == '_')
 }
 
-fn parse_declarations(source: &str) -> Declarations {
-    let mut declarations = Declarations::default();
+pub(crate) fn parse_declaration_list(source: &str) -> Vec<CssDeclaration> {
+    source
+        .split(';')
+        .filter_map(|declaration| {
+            let (name, value) = declaration.split_once(':')?;
+            let name = name.trim().to_ascii_lowercase();
 
-    for declaration in source.split(';') {
-        let Some((property, value)) = declaration.split_once(':') else {
-            continue;
-        };
+            (!name.is_empty()).then_some(CssDeclaration {
+                name,
+                value: value.trim().to_owned(),
+            })
+        })
+        .collect()
+}
 
-        let property = property.trim().to_ascii_lowercase();
-        let value = value.trim();
+fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
+    let mut parsed = Declarations::default();
 
-        match property.as_str() {
-            "color" => declarations.color = parse_color(value),
-
-            "font-size" => declarations.font_size = parse_font_size(value),
-
-            "font-weight" => declarations.font_weight = parse_font_weight(value),
-
-            "font-style" => declarations.font_style = parse_font_style(value),
+    for declaration in declarations {
+        match declaration.name.as_str() {
+            "color" => parsed.color = parse_color(&declaration.value),
+            "font-size" => parsed.font_size = parse_font_size(&declaration.value),
+            "font-weight" => parsed.font_weight = parse_font_weight(&declaration.value),
+            "font-style" => parsed.font_style = parse_font_style(&declaration.value),
 
             "display" => {
-                declarations.display = match value.trim().to_ascii_lowercase().as_str() {
+                parsed.display = match declaration.value.to_ascii_lowercase().as_str() {
                     "none" => Some(Display::None),
                     "block" => Some(Display::Block),
                     "inline" => Some(Display::Inline),
@@ -253,15 +283,15 @@ fn parse_declarations(source: &str) -> Declarations {
                 };
             }
 
-            "margin-bottom" => declarations.margin_after = parse_length(value),
-
-            "margin" => declarations.margin_after = parse_length(value),
+            "margin-bottom" | "margin" => {
+                parsed.margin_after = parse_length(&declaration.value);
+            }
 
             _ => {}
         }
     }
 
-    declarations
+    parsed
 }
 
 fn parse_color(value: &str) -> Option<u32> {
@@ -377,7 +407,8 @@ pub(crate) fn compute_style(
     }
 
     if let Some(inline_style) = &element.inline_style {
-        apply_declarations(&mut style, &parse_declarations(inline_style));
+        let declarations = parse_declaration_list(inline_style);
+        apply_declarations(&mut style, &parse_text_declarations(&declarations));
     }
 
     style
@@ -450,6 +481,23 @@ fn selector_matches(selector: &Selector, element: &Element<'_>) -> bool {
     });
 
     tag_matches && id_matches && classes_match
+}
+
+pub(crate) fn matching_declarations<'a>(
+    rules: &'a [CascadeRule],
+    element: &Element<'_>,
+) -> Vec<&'a CssDeclaration> {
+    let mut matching_rules: Vec<&CascadeRule> = rules
+        .iter()
+        .filter(|rule| selector_matches(&rule.selector, element))
+        .collect();
+
+    matching_rules.sort_by_key(|rule| (rule.specificity, rule.source_order));
+
+    matching_rules
+        .into_iter()
+        .flat_map(|rule| rule.declarations.iter())
+        .collect()
 }
 
 fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
@@ -528,5 +576,30 @@ mod tests {
         };
 
         assert!(selector_matches(&selector, &element));
+    }
+
+    #[test]
+    fn exposes_cascaded_declarations_for_other_renderers() {
+        let stylesheets =
+            vec!["line { stroke: red; } #target { stroke: blue; stroke-width: 4; }".to_owned()];
+        let rules = build_cascade_rules(&stylesheets);
+        let classes = Vec::new();
+
+        let element = Element {
+            tag: "line",
+            id: Some("target"),
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let declarations = matching_declarations(&rules, &element)
+            .into_iter()
+            .map(|declaration| (declaration.name.as_str(), declaration.value.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            declarations,
+            vec![("stroke", "red"), ("stroke", "blue"), ("stroke-width", "4")]
+        );
     }
 }
