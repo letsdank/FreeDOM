@@ -72,6 +72,14 @@ pub(crate) struct CssDeclaration {
     pub(crate) value: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FontFaceRule {
+    pub(crate) family: String,
+    pub(crate) sources: Vec<String>,
+    pub(crate) font_weight: FontWeight,
+    pub(crate) font_style: FontStyle,
+}
+
 pub(crate) struct CascadeRule {
     selector: Selector,
     specificity: u16,
@@ -107,6 +115,129 @@ pub(crate) fn build_cascade_rules(stylesheets: &[String]) -> Vec<CascadeRule> {
     }
 
     rules
+}
+
+pub(crate) fn parse_font_faces(stylesheets: &[String]) -> Vec<FontFaceRule> {
+    stylesheets
+        .iter()
+        .flat_map(|stylesheet| parse_font_faces_in_stylesheet(stylesheet))
+        .collect()
+}
+
+fn parse_font_faces_in_stylesheet(source: &str) -> Vec<FontFaceRule> {
+    let source = remove_css_comments(source);
+    let mut faces = Vec::new();
+
+    for rule_text in source.split('}') {
+        let Some((selector_text, declaration_text)) = rule_text.split_once('{') else {
+            continue;
+        };
+
+        if !selector_text.trim().eq_ignore_ascii_case("@font-face") {
+            continue;
+        }
+
+        let declarations = parse_declaration_list(declaration_text);
+
+        let Some(family) =
+            declaration_value(&declarations, "font-family").and_then(parse_font_face_family)
+        else {
+            continue;
+        };
+
+        let sources = declaration_value(&declarations, "src")
+            .map(parse_font_face_sources)
+            .unwrap_or_default();
+
+        if sources.is_empty() {
+            continue;
+        }
+
+        let font_weight = declaration_value(&declarations, "font-weight")
+            .and_then(parse_font_weight)
+            .unwrap_or(FontWeight::Normal);
+
+        let font_style = declaration_value(&declarations, "font-style")
+            .and_then(parse_font_style)
+            .unwrap_or(FontStyle::Normal);
+
+        faces.push(FontFaceRule {
+            family,
+            sources,
+            font_weight,
+            font_style,
+        });
+    }
+
+    faces
+}
+
+fn declaration_value<'a>(declarations: &'a [CssDeclaration], name: &str) -> Option<&'a str> {
+    declarations
+        .iter()
+        .rev()
+        .find(|declaration| declaration.name == name)
+        .map(|declaration| declaration.value.as_str())
+}
+
+fn parse_font_face_family(value: &str) -> Option<String> {
+    let value = value.trim();
+
+    let value = match (value.as_bytes().first(), value.as_bytes().last()) {
+        (Some(b'"'), Some(b'"')) | (Some(b'\''), Some(b'\'')) if value.len() >= 2 => {
+            &value[1..value.len() - 1]
+        }
+        _ => value,
+    };
+
+    (!value.is_empty() && !value.contains(',')).then(|| value.to_owned())
+}
+
+fn parse_font_face_sources(value: &str) -> Vec<String> {
+    let mut sources = Vec::new();
+    let mut remaining = value;
+
+    loop {
+        let lowercase = remaining.to_ascii_lowercase();
+        let Some(position) = lowercase.find("url(") else {
+            break;
+        };
+
+        let after_opening_parenthesis = &remaining[position + 4..];
+
+        let Some((url, tail)) = take_font_face_url(after_opening_parenthesis) else {
+            break;
+        };
+
+        if !url.is_empty() {
+            sources.push(url.to_owned());
+        }
+
+        remaining = tail;
+    }
+
+    sources
+}
+
+fn take_font_face_url(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    let first = *input.as_bytes().first()?;
+
+    if first == b'"' || first == b'\'' {
+        let quote = first as char;
+        let content = &input[1..];
+        let closing_quote = content.find(quote)?;
+        let url = &content[..closing_quote];
+        let after_quote = content[closing_quote + 1..].trim_start();
+        let tail = after_quote.strip_prefix(')')?;
+
+        return Some((url, tail));
+    }
+
+    let closing_parenthesis = input.find(')')?;
+    let url = input[..closing_parenthesis].trim();
+
+    Some((url, &input[closing_parenthesis + 1..]))
 }
 
 fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &mut usize) {
@@ -601,5 +732,34 @@ mod tests {
             declarations,
             vec![("stroke", "red"), ("stroke", "blue"), ("stroke-width", "4")]
         );
+    }
+
+    #[test]
+    fn parses_font_face_woff_sources() {
+        let stylesheets = [r#"
+            @font-face {
+                font-family: "FreeDOM Sans";
+                src: local("FreeDOM Sans"),
+                     url("fonts/freedom.woff") format("woff"),
+                     url('fonts/fallback.ttf') format("truetype");
+                font-weight: bold;
+                font-style: italic;
+            }
+        "#
+        .to_owned()];
+
+        let faces = parse_font_faces(&stylesheets);
+
+        assert_eq!(faces.len(), 1);
+        assert_eq!(faces[0].family, "FreeDOM Sans");
+        assert_eq!(
+            faces[0].sources,
+            vec![
+                "fonts/freedom.woff".to_owned(),
+                "fonts/fallback.ttf".to_owned(),
+            ]
+        );
+        assert_eq!(faces[0].font_weight, FontWeight::Bold);
+        assert_eq!(faces[0].font_style, FontStyle::Italic);
     }
 }
