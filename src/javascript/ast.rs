@@ -70,6 +70,11 @@ pub(crate) enum Expression {
         delta: f64,
         prefix: bool,
     },
+    Conditional {
+        condition: Box<Expression>,
+        consequent: Box<Expression>,
+        alternate: Box<Expression>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -429,6 +429,29 @@ impl Parser {
         self.parse_assignment_expression()
     }
 
+    fn parse_conditional_expression(&mut self) -> Result<Expression, JsError> {
+        let condition = self.parse_logical_or_expression()?;
+
+        if !self.consume_optional(&TokenKind::Question) {
+            return Ok(condition);
+        }
+
+        let consequent = self.parse_assignment_expression()?;
+
+        self.consume(
+            &TokenKind::Colon,
+            "expected ':' after conditional expression",
+        )?;
+
+        let alternate = self.parse_assignment_expression()?;
+
+        Ok(Expression::Conditional {
+            condition: Box::new(condition),
+            consequent: Box::new(consequent),
+            alternate: Box::new(alternate),
+        })
+    }
+
     fn parse_assignment_expression(&mut self) -> Result<Expression, JsError> {
         if let TokenKind::Identifier(parameter) = self.peek().kind.clone() {
             let is_arrow = self
@@ -447,7 +470,7 @@ impl Parser {
             }
         }
 
-        let expression = self.parse_logical_or_expression()?;
+        let expression = self.parse_conditional_expression()?;
 
         if self.consume_optional(&TokenKind::Assign) {
             let value = self.parse_assignment_expression()?;

@@ -991,3 +991,22 @@ fn preserves_object_property_order_and_joins_array_values() {
     )
     .unwrap();
 }
+
+#[test]
+fn evaluates_conditional_expressions_lazily() {
+    evaluate(
+        r#"
+            let evaluated = 0;
+
+            assert_equals(true ? "yes" : "no", "yes");
+            assert_equals(false ? "yes" : "no", "no");
+
+            const selected = false ? (evaluated = 1) : 42;
+            assert_equals(selected, 42);
+            assert_equals(evaluated, 0);
+
+            assert_equals(false ? 1 : true ? 2 : 3, 2);
+        "#,
+    )
+    .unwrap();
+}

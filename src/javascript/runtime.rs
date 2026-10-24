@@ -688,6 +688,20 @@ impl Interpreter {
                 delta,
                 prefix,
             } => self.evaluate_update(target, *delta, *prefix),
+
+            Expression::Conditional {
+                condition,
+                consequent,
+                alternate,
+            } => {
+                let condition = self.evaluate_expression(condition)?;
+
+                if self.is_truthy(&condition) {
+                    self.evaluate_expression(consequent)
+                } else {
+                    self.evaluate_expression(alternate)
+                }
+            }
         }
     }
 
