@@ -1,3 +1,4 @@
+use crate::page::BlockContent::Svg;
 use crate::{
     css::{
         CascadeRule, Element as CssElement, build_cascade_rules, matching_declarations,
@@ -639,8 +640,14 @@ fn resolve_paint(
                 return Ok((fallback, None));
             };
 
-            let Some(gradient) =
-                resolve_linear_gradient(root, &reference_id, object_path, transform, opacity)?
+            let Some(gradient) = resolve_linear_gradient(
+                root,
+                base_url,
+                &reference_id,
+                object_path,
+                transform,
+                opacity,
+            )?
             else {
                 return Ok((fallback, None));
             };
@@ -652,39 +659,26 @@ fn resolve_paint(
 
 fn resolve_linear_gradient(
     root: &HtmlElement,
+    base_url: &Url,
     reference_id: &str,
     object_path: &Path,
     transform: Transform,
     opacity: f32,
 ) -> Result<Option<LinearGradient>, SvgError> {
-    let Some(element) = find_element_by_id(root, reference_id) else {
+    let mut reference_stack = Vec::new();
+
+    let Some(gradients) =
+        linear_gradient_chain(root, base_url, reference_id, &mut reference_stack)?
+    else {
         return Ok(None);
     };
 
-    if !element.name.eq_ignore_ascii_case("lineargradient") {
-        return Ok(None);
-    }
+    let units = inherited_gradient_units(&gradients)?;
 
-    let units = match attribute(element, "gradientunits") {
-        None => GradientUnits::ObjectBoundingBox,
-
-        Some(value) if value.trim().eq_ignore_ascii_case("objectboundingbox") => {
-            GradientUnits::ObjectBoundingBox
-        }
-
-        Some(value) if value.trim().eq_ignore_ascii_case("userspaceonuse") => {
-            GradientUnits::UserSpaceOnUse
-        }
-
-        Some(_) => return Err(SvgError::new("unsupported gradientUnits value")),
-    };
-
-    let gradient_transform = match attribute(element, "gradienttransform") {
-        Some(value) => {
-            parse_transform_list(value).map_err(|error| SvgError::new(error.to_string()))?
-        }
-        None => Transform::IDENTITY,
-    };
+    let gradient_transform = inherited_gradient_attribute(&gradients, "gradienttransform")
+        .map(|value| parse_transform_list(value).map_err(|error| SvgError::new(error.to_string())))
+        .transpose()?
+        .unwrap_or(Transform::IDENTITY);
 
     if gradient_transform.inverse().is_none() {
         return Ok(None);
@@ -693,12 +687,12 @@ fn resolve_linear_gradient(
     let (start, end) = match units {
         GradientUnits::UserSpaceOnUse => (
             Point::new(
-                number_attribute(element, "x1", 0.0)?,
-                number_attribute(element, "y1", 0.0)?,
+                inherited_gradient_number(&gradients, "x1", 0.0)?,
+                inherited_gradient_number(&gradients, "y1", 0.0)?,
             ),
             Point::new(
-                number_attribute(element, "x2", 1.0)?,
-                number_attribute(element, "y2", 0.0)?,
+                inherited_gradient_number(&gradients, "x2", 1.0)?,
+                inherited_gradient_number(&gradients, "y2", 0.0)?,
             ),
         ),
 
@@ -707,10 +701,10 @@ fn resolve_linear_gradient(
                 return Ok(None);
             };
 
-            let x1 = object_bounding_box_coordinate(element, "x1", 0.0)?;
-            let y1 = object_bounding_box_coordinate(element, "y1", 0.0)?;
-            let x2 = object_bounding_box_coordinate(element, "x2", 1.0)?;
-            let y2 = object_bounding_box_coordinate(element, "y2", 0.0)?;
+            let x1 = inherited_object_bounding_box_coordinate(&gradients, "x1", 0.0)?;
+            let y1 = inherited_object_bounding_box_coordinate(&gradients, "y1", 0.0)?;
+            let x2 = inherited_object_bounding_box_coordinate(&gradients, "x2", 1.0)?;
+            let y2 = inherited_object_bounding_box_coordinate(&gradients, "y2", 0.0)?;
 
             (
                 Point::new(
@@ -725,19 +719,9 @@ fn resolve_linear_gradient(
         }
     };
 
+    let stops = inherited_gradient_stops(&gradients)?;
+
     let gradient_transform = gradient_transform.then(transform);
-
-    let mut stops = Vec::new();
-
-    for child in &element.children {
-        let HtmlNode::Element(child) = child else {
-            continue;
-        };
-
-        if child.name.eq_ignore_ascii_case("stop") {
-            stops.push(parse_gradient_stop(child)?);
-        }
-    }
 
     let Some(mut gradient) = LinearGradient::new(
         gradient_transform.apply_point(start),
@@ -752,6 +736,138 @@ fn resolve_linear_gradient(
     }
 
     Ok(Some(gradient))
+}
+
+fn linear_gradient_chain<'a>(
+    root: &'a HtmlElement,
+    base_url: &Url,
+    reference_id: &str,
+    reference_stack: &mut Vec<String>,
+) -> Result<Option<Vec<&'a HtmlElement>>, SvgError> {
+    if reference_stack.iter().any(|id| id == reference_id) {
+        return Err(SvgError::new("circular linearGradient reference"));
+    }
+
+    let Some(element) = find_element_by_id(root, reference_id) else {
+        return Ok(None);
+    };
+
+    if !element.name.eq_ignore_ascii_case("lineargradient") {
+        return Ok(None);
+    }
+
+    reference_stack.push(reference_id.to_owned());
+
+    let result = (|| {
+        let mut gradients = vec![element];
+
+        let href = attribute(element, "href").or_else(|| attribute(element, "xlink:href"));
+
+        if let Some(href) = href
+            && let Some(parent_id) = local_reference_id(base_url, href)?
+        {
+            let Some(parent_gradients) =
+                linear_gradient_chain(root, base_url, &parent_id, reference_stack)?
+            else {
+                return Ok(None);
+            };
+
+            gradients.extend(parent_gradients);
+        }
+
+        Ok(Some(gradients))
+    })();
+
+    reference_stack.pop();
+    result
+}
+
+fn inherited_gradient_attribute<'a>(gradients: &[&'a HtmlElement], name: &str) -> Option<&'a str> {
+    gradients
+        .iter()
+        .find_map(|gradient| attribute(gradient, name))
+}
+
+fn inherited_gradient_units(gradients: &[&HtmlElement]) -> Result<GradientUnits, SvgError> {
+    match inherited_gradient_attribute(gradients, "gradientunits") {
+        None => Ok(GradientUnits::ObjectBoundingBox),
+
+        Some(value) if value.trim().eq_ignore_ascii_case("objectboundingbox") => {
+            Ok(GradientUnits::ObjectBoundingBox)
+        }
+
+        Some(value) if value.trim().eq_ignore_ascii_case("userspaceonuse") => {
+            Ok(GradientUnits::UserSpaceOnUse)
+        }
+
+        Some(_) => Err(SvgError::new("unsupported gradientUnits value")),
+    }
+}
+
+fn inherited_gradient_number(
+    gradients: &[&HtmlElement],
+    name: &str,
+    default: f32,
+) -> Result<f32, SvgError> {
+    let Some(value) = inherited_gradient_attribute(gradients, name) else {
+        return Ok(default);
+    };
+
+    let values = parse_number_list(value)?;
+
+    if values.len() != 1 || !values[0].is_finite() {
+        return Err(SvgError::new("expected one finite SVG gradient coordinate"));
+    }
+
+    Ok(values[0])
+}
+
+fn inherited_object_bounding_box_coordinate(
+    gradients: &[&HtmlElement],
+    name: &str,
+    default: f32,
+) -> Result<f32, SvgError> {
+    let Some(value) = inherited_gradient_attribute(gradients, name) else {
+        return Ok(default);
+    };
+
+    let value = value.trim();
+
+    let (number_source, scale) = match value.strip_suffix('%') {
+        Some(percent) => (percent, 0.01),
+        None => (value, 1.0),
+    };
+
+    let values = parse_number_list(number_source)?;
+
+    if values.len() != 1 || !values[0].is_finite() {
+        return Err(SvgError::new(
+            "expected one finite objectBoundingBox gradient coordinate",
+        ));
+    }
+
+    Ok(values[0] * scale)
+}
+
+fn inherited_gradient_stops(gradients: &[&HtmlElement]) -> Result<Vec<GradientStop>, SvgError> {
+    for gradient in gradients {
+        let stops = gradient
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                HtmlNode::Element(element) if element.name.eq_ignore_ascii_case("stop") => {
+                    Some(parse_gradient_stop(element))
+                }
+                _ => None,
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if !stops.is_empty() {
+            return Ok(stops);
+        }
+    }
+
+    Ok(Vec::new())
 }
 
 fn parse_gradient_stop(element: &HtmlElement) -> Result<GradientStop, SvgError> {
@@ -2639,6 +2755,33 @@ mod tests {
 
         let left = surface.pixel(3, 1).unwrap();
         let right = surface.pixel(7, 1).unwrap();
+
+        assert!(left.red > left.blue);
+        assert!(right.blue > right.red);
+    }
+
+    #[test]
+    fn inherits_linear_gradient_definitions() {
+        let document = parse_svg(
+            r##"
+                <svg width="10" height="2">
+                    <defs>
+                        <linearGradient id="base" x1="0" y1="0" x2="1" y2="0">
+                            <stop offset="0" stop-color="red"/>
+                            <stop offset="1" stop-color="blue"/>
+                        </linearGradient>
+                        <linearGradient id="derived" href="#base"/>
+                    </defs>
+                    <rect width="10" height="2" fill="url(#derived)"/>
+                </svg>
+            "##,
+        )
+        .unwrap();
+
+        let surface = document.render(10, 2, Color::TRANSPARENT).unwrap();
+
+        let left = surface.pixel(1, 1).unwrap();
+        let right = surface.pixel(8, 1).unwrap();
 
         assert!(left.red > left.blue);
         assert!(right.blue > right.red);
