@@ -3,8 +3,8 @@ use crate::{
         flatten::{FlattenError, flatten_path},
         geometry::{Path, Point, Transform},
         raster::{
-            Color, FillRule, StrokeLineCap, StrokeStyle, Surface, fill_path_clipped,
-            stroke_path_clipped,
+            Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle, Surface,
+            fill_path_clipped, stroke_path_clipped,
         },
         svg_path::parse_path_data,
         svg_transform::parse_transform_list,
@@ -75,6 +75,8 @@ impl SvgDocument {
                     StrokeStyle {
                         width: shape.stroke_width * viewport_stroke_scale,
                         line_cap: shape.stroke_line_cap,
+                        line_join: shape.stroke_line_join,
+                        miter_limit: shape.stroke_miter_limit,
                     },
                     stroke,
                     &clip_paths,
@@ -147,6 +149,8 @@ pub struct SvgShape {
     pub stroke_width: f32,
     clip_paths: Vec<ClipPath>,
     stroke_line_cap: StrokeLineCap,
+    stroke_line_join: StrokeLineJoin,
+    stroke_miter_limit: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -252,6 +256,8 @@ struct SvgStyle {
     fill_opacity: f32,
     stroke_opacity: f32,
     stroke_line_cap: StrokeLineCap,
+    stroke_line_join: StrokeLineJoin,
+    stroke_miter_limit: f32,
 }
 
 impl Default for SvgStyle {
@@ -264,6 +270,8 @@ impl Default for SvgStyle {
             fill_opacity: 1.0,
             stroke_opacity: 1.0,
             stroke_line_cap: StrokeLineCap::Butt,
+            stroke_line_join: StrokeLineJoin::Miter,
+            stroke_miter_limit: 4.0,
         }
     }
 }
@@ -445,6 +453,8 @@ fn collect_shapes(
                 stroke_width: style.stroke_width,
                 clip_paths: element_clip_paths.clone(),
                 stroke_line_cap: style.stroke_line_cap,
+                stroke_line_join: style.stroke_line_join,
+                stroke_miter_limit: style.stroke_miter_limit,
             });
         }
     }
@@ -727,6 +737,14 @@ fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle,
         style.stroke_line_cap = parse_stroke_line_cap(value)?;
     }
 
+    if let Some(value) = attribute(element, "stroke-linejoin") {
+        style.stroke_line_join = parse_stroke_line_join(value)?;
+    }
+
+    if let Some(value) = attribute(element, "stroke-miterlimit") {
+        style.stroke_miter_limit = parse_stroke_miter_limit(value)?;
+    }
+
     if let Some(value) = attribute(element, "style") {
         for declaration in value.split(';') {
             let Some((property, value)) = declaration.split_once(':') else {
@@ -741,6 +759,8 @@ fn resolve_style(element: &HtmlElement, mut style: SvgStyle) -> Result<SvgStyle,
                 "fill-opacity" => style.fill_opacity = parse_opacity(value)?,
                 "stroke-opacity" => style.stroke_opacity = parse_opacity(value)?,
                 "stroke-linecap" => style.stroke_line_cap = parse_stroke_line_cap(value)?,
+                "stroke-linejoin" => style.stroke_line_join = parse_stroke_line_join(value)?,
+                "stroke-miterlimit" => style.stroke_miter_limit = parse_stroke_miter_limit(value)?,
                 _ => {}
             }
         }
@@ -784,6 +804,27 @@ fn parse_stroke_line_cap(value: &str) -> Result<StrokeLineCap, SvgError> {
         "square" => Ok(StrokeLineCap::Square),
         _ => Err(SvgError::new("unsupported stroke-linecap")),
     }
+}
+
+fn parse_stroke_line_join(value: &str) -> Result<StrokeLineJoin, SvgError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "miter" => Ok(StrokeLineJoin::Miter),
+        "round" => Ok(StrokeLineJoin::Round),
+        "bevel" => Ok(StrokeLineJoin::Bevel),
+        _ => Err(SvgError::new("unsupported stroke-linejoin")),
+    }
+}
+
+fn parse_stroke_miter_limit(value: &str) -> Result<f32, SvgError> {
+    let values = parse_number_list(value)?;
+
+    if values.len() != 1 || !values[0].is_finite() || values[0] < 1.0 {
+        return Err(SvgError::new(
+            "stroke-miterlimit must be a finite number no smaller than one",
+        ));
+    }
+
+    Ok(values[0])
 }
 
 fn parse_opacity(value: &str) -> Result<f32, SvgError> {
@@ -1907,5 +1948,27 @@ mod tests {
 
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
+    }
+
+    #[test]
+    fn parses_stroke_join_properties() {
+        let document = parse_svg(
+            r#"
+                <svg>
+                    <path
+                        d="M 2 6 L 5 2 L 8 6"
+                        fill="none"
+                        stroke="black"
+                        stroke-linejoin="round"
+                        style="stroke-miterlimit: 7"
+                    />
+                </svg>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].stroke_line_join, StrokeLineJoin::Round);
+        assert_eq!(document.shapes[0].stroke_miter_limit, 7.0);
     }
 }

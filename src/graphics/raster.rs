@@ -38,6 +38,8 @@ pub enum FillRule {
 pub struct StrokeStyle {
     pub width: f32,
     pub line_cap: StrokeLineCap,
+    pub line_join: StrokeLineJoin,
+    pub miter_limit: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,11 +50,21 @@ pub enum StrokeLineCap {
     Square,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StrokeLineJoin {
+    #[default]
+    Miter,
+    Round,
+    Bevel,
+}
+
 impl Default for StrokeStyle {
     fn default() -> Self {
         Self {
             width: 1.0,
             line_cap: StrokeLineCap::Butt,
+            line_join: StrokeLineJoin::Miter,
+            miter_limit: 4.0,
         }
     }
 }
@@ -250,8 +262,15 @@ pub fn stroke_path_clipped(
     }
 
     let radius = style.width * 0.5;
+    let miter_limit = sanitized_miter_limit(style.miter_limit);
 
-    let Some((start_x, end_x, start_y, end_y)) = pixel_bounds(surface, path, radius + 1.0) else {
+    let join_padding = match style.line_join {
+        StrokeLineJoin::Miter => radius * miter_limit,
+        StrokeLineJoin::Round | StrokeLineJoin::Bevel => radius,
+    };
+
+    let Some((start_x, end_x, start_y, end_y)) = pixel_bounds(surface, path, join_padding + 1.0)
+    else {
         return;
     };
 
@@ -262,10 +281,16 @@ pub fn stroke_path_clipped(
                 .filter(|(offset_x, offset_y)| {
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
 
-                    sample_is_on_stroke(path, sample, radius, style.line_cap)
-                        && clips
-                            .iter()
-                            .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
+                    sample_is_on_stroke(
+                        path,
+                        sample,
+                        radius,
+                        style.line_cap,
+                        style.line_join,
+                        miter_limit,
+                    ) && clips
+                        .iter()
+                        .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
@@ -274,6 +299,14 @@ pub fn stroke_path_clipped(
                 surface.blend_pixel(x, y, color, coverage);
             }
         }
+    }
+}
+
+fn sanitized_miter_limit(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(1.0)
+    } else {
+        1.0
     }
 }
 
@@ -323,6 +356,8 @@ fn sample_is_on_stroke(
     sample: Point,
     radius: f32,
     line_cap: StrokeLineCap,
+    line_join: StrokeLineJoin,
+    miter_limit: f32,
 ) -> bool {
     for contour in path.contours() {
         let points = contour.points();
@@ -341,7 +376,43 @@ fn sample_is_on_stroke(
             continue;
         }
 
-        if points.len() < 2 {
+        if points.len() >= 3 {
+            if contour.is_closed() {
+                for index in 0..points.len() {
+                    let previous = points[(index + points.len() - 1) % points.len()];
+                    let vertex = points[index];
+                    let next = points[(index + 1) % points.len()];
+
+                    if point_is_inside_line_join(
+                        sample,
+                        previous,
+                        vertex,
+                        next,
+                        radius,
+                        line_join,
+                        miter_limit,
+                    ) {
+                        return true;
+                    }
+                }
+            } else {
+                for points in points.windows(3) {
+                    if point_is_inside_line_join(
+                        sample,
+                        points[0],
+                        points[1],
+                        points[2],
+                        radius,
+                        line_join,
+                        miter_limit,
+                    ) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if contour.is_closed() || points.len() < 2 {
             continue;
         }
 
@@ -372,6 +443,122 @@ fn sample_is_on_stroke(
     }
 
     false
+}
+
+fn point_is_inside_line_join(
+    sample: Point,
+    previous: Point,
+    vertex: Point,
+    next: Point,
+    radius: f32,
+    line_join: StrokeLineJoin,
+    miter_limit: f32,
+) -> bool {
+    let Some((incoming_x, incoming_y)) = unit_direction(previous, vertex) else {
+        return false;
+    };
+    let Some((outgoing_x, outgoing_y)) = unit_direction(vertex, next) else {
+        return false;
+    };
+
+    let turn = incoming_x * outgoing_y - incoming_y * outgoing_x;
+
+    if turn.abs() <= f32::EPSILON {
+        return false;
+    }
+
+    if line_join == StrokeLineJoin::Round {
+        return point_is_inside_round_cap(sample, vertex, radius);
+    }
+
+    let (incoming_normal_x, incoming_normal_y) = outer_normal(incoming_x, incoming_y, turn);
+    let (outgoing_normal_x, outgoing_normal_y) = outer_normal(outgoing_x, outgoing_y, turn);
+
+    let outer_from = Point::new(
+        vertex.x + incoming_normal_x * radius,
+        vertex.y + incoming_normal_y * radius,
+    );
+    let outer_to = Point::new(
+        vertex.x + outgoing_normal_x * radius,
+        vertex.y + outgoing_normal_y * radius,
+    );
+
+    if line_join == StrokeLineJoin::Bevel {
+        return point_is_inside_triangle(sample, vertex, outer_from, outer_to);
+    }
+
+    let Some(miter) = line_intersection(
+        outer_from,
+        (incoming_x, incoming_y),
+        outer_to,
+        (outgoing_x, outgoing_y),
+    ) else {
+        return point_is_inside_triangle(sample, vertex, outer_from, outer_to);
+    };
+
+    let distance_x = miter.x - vertex.x;
+    let distance_y = miter.y - vertex.y;
+    let miter_length = (distance_x * distance_x + distance_y * distance_y).sqrt();
+
+    if miter_length > radius * miter_limit {
+        return point_is_inside_triangle(sample, vertex, outer_from, outer_to);
+    }
+
+    point_is_inside_triangle(sample, outer_from, miter, outer_to)
+}
+
+fn unit_direction(from: Point, to: Point) -> Option<(f32, f32)> {
+    let delta_x = to.x - from.x;
+    let delta_y = to.y - from.y;
+    let length = (delta_x * delta_x + delta_y * delta_y).sqrt();
+
+    (length > f32::EPSILON).then_some((delta_x / length, delta_y / length))
+}
+
+fn outer_normal(direction_x: f32, direction_y: f32, turn: f32) -> (f32, f32) {
+    if turn > 0.0 {
+        (direction_y, -direction_x)
+    } else {
+        (-direction_y, direction_x)
+    }
+}
+
+fn line_intersection(
+    first_point: Point,
+    first_direction: (f32, f32),
+    second_point: Point,
+    second_direction: (f32, f32),
+) -> Option<Point> {
+    let denominator =
+        first_direction.0 * second_direction.1 - first_direction.1 * second_direction.0;
+
+    if denominator.abs() <= f32::EPSILON {
+        return None;
+    }
+
+    let between_x = second_point.x - first_point.x;
+    let between_y = second_point.y - first_point.y;
+    let distance = (between_x * second_direction.1 - between_y * second_direction.0) / denominator;
+
+    Some(Point::new(
+        first_point.x + first_direction.0 * distance,
+        first_point.y + first_direction.1 * distance,
+    ))
+}
+
+fn point_is_inside_triangle(point: Point, first: Point, second: Point, third: Point) -> bool {
+    let first_side = oriented_area(first, second, point);
+    let second_side = oriented_area(second, third, point);
+    let third_side = oriented_area(third, first, point);
+
+    let has_negative = first_side < 0.0 || second_side < 0.0 || third_side < 0.0;
+    let has_positive = first_side > 0.0 || second_side > 0.0 || third_side > 0.0;
+
+    !(has_negative && has_positive)
+}
+
+fn oriented_area(from: Point, to: Point, point: Point) -> f32 {
+    (to.x - from.x) * (point.y - from.y) - (to.y - from.y) * (point.x - from.x)
 }
 
 fn point_is_inside_round_cap(point: Point, center: Point, radius: f32) -> bool {
@@ -671,6 +858,7 @@ mod tests {
             StrokeStyle {
                 width: 2.0,
                 line_cap: StrokeLineCap::Round,
+                ..StrokeStyle::default()
             },
             Color::BLACK,
         );
@@ -705,6 +893,7 @@ mod tests {
             StrokeStyle {
                 width: 2.0,
                 line_cap: StrokeLineCap::Square,
+                ..StrokeStyle::default()
             },
             Color::BLACK,
         );
@@ -727,5 +916,43 @@ mod tests {
         assert_eq!(destination[1], 0x00_ff_00_00);
         assert_eq!(destination[2], 0x00_00_ff_00);
         assert_eq!(destination[3], 0x00_00_ff_00);
+    }
+
+    #[test]
+    fn covers_outer_corner_for_round_and_miter_joins() {
+        let previous = Point::new(2.0, 6.0);
+        let vertex = Point::new(5.0, 2.0);
+        let next = Point::new(8.0, 6.0);
+        let sample = Point::new(5.0, 0.5);
+
+        assert!(!point_is_inside_line_join(
+            sample,
+            previous,
+            vertex,
+            next,
+            2.0,
+            StrokeLineJoin::Bevel,
+            4.0,
+        ));
+
+        assert!(point_is_inside_line_join(
+            sample,
+            previous,
+            vertex,
+            next,
+            2.0,
+            StrokeLineJoin::Round,
+            4.0,
+        ));
+
+        assert!(point_is_inside_line_join(
+            sample,
+            previous,
+            vertex,
+            next,
+            2.0,
+            StrokeLineJoin::Miter,
+            4.0,
+        ));
     }
 }
