@@ -29,6 +29,20 @@ pub struct SvgDocument {
     preserve_aspect_ratio: PreserveAspectRatio,
 }
 
+fn transform_paint_for_viewport(paint: &Paint, transform: Transform) -> Option<Paint> {
+    match paint {
+        Paint::Solid(color) => Some(Paint::Solid(*color)),
+
+        Paint::LinearGradient(gradient) => LinearGradient::with_spread(
+            transform.apply_point(gradient.start),
+            transform.apply_point(gradient.end),
+            gradient.stops.clone(),
+            gradient.spread,
+        )
+        .map(Paint::LinearGradient),
+    }
+}
+
 impl SvgDocument {
     pub fn render(
         &self,
@@ -69,20 +83,15 @@ impl SvgDocument {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            if let Some(gradient) = &shape.fill_gradient {
-                let gradient = LinearGradient::with_spread(
-                    viewport_transform.apply_point(gradient.start),
-                    viewport_transform.apply_point(gradient.end),
-                    gradient.stops.clone(),
-                    gradient.spread,
-                )
-                .expect("validated SVG gradient must stay valid after viewport transform");
+            if let Some(paint) = &shape.fill_paint {
+                let paint = transform_paint_for_viewport(paint, viewport_transform)
+                    .expect("validated SVG paint must stay valid after viewport transform");
 
                 fill_path_with_paint_clipped(
                     &mut surface,
                     &flattened,
                     shape.fill_rule,
-                    &Paint::LinearGradient(gradient),
+                    &paint,
                     &clip_paths,
                 );
             } else if let Some(fill) = shape.fill {
@@ -216,7 +225,7 @@ enum GradientUnits {
 pub struct SvgShape {
     pub path: Path,
     pub fill: Option<Color>,
-    fill_gradient: Option<LinearGradient>,
+    fill_paint: Option<Paint>,
     pub fill_rule: FillRule,
     pub stroke: Option<Color>,
     pub stroke_width: f32,
@@ -553,7 +562,7 @@ fn collect_shapes(
     let path = path_for_element(element)?;
 
     if let Some(path) = path {
-        let (fill, fill_gradient) = resolve_paint(
+        let (fill, fill_paint) = resolve_paint(
             root,
             base_url,
             &style.fill,
@@ -571,11 +580,11 @@ fn collect_shapes(
             style.stroke_opacity,
         )?;
 
-        if fill.is_some() || fill_gradient.is_some() || stroke.is_some() {
+        if fill.is_some() || fill_paint.is_some() || stroke.is_some() {
             shapes.push(SvgShape {
                 path: path.transformed(transform),
                 fill,
-                fill_gradient,
+                fill_paint,
                 fill_rule: style.fill_rule,
                 stroke,
                 stroke_width: style.stroke_width.resolve(stroke_percentage_basis),
@@ -622,7 +631,7 @@ fn resolve_paint(
     object_path: &Path,
     transform: Transform,
     opacity: f32,
-) -> Result<(Option<Color>, Option<LinearGradient>), SvgError> {
+) -> Result<(Option<Color>, Option<Paint>), SvgError> {
     let Some(paint) = paint else {
         return Ok((None, None));
     };
@@ -652,7 +661,7 @@ fn resolve_paint(
                 return Ok((fallback, None));
             };
 
-            Ok((None, Some(gradient)))
+            Ok((None, Some(Paint::LinearGradient(gradient))))
         }
     }
 }
@@ -2838,5 +2847,28 @@ mod tests {
 
         assert!(repeated.red > repeated.blue);
         assert!(reflected.blue > reflected.red);
+    }
+
+    #[test]
+    fn stores_linear_gradients_as_fill_paints() {
+        let document = parse_svg(
+            r##"
+                <svg>
+                    <defs>
+                        <linearGradient id="sky">
+                            <stop offset="0" stop-color="red"/>
+                            <stop offset="1" stop-color="blue"/>
+                        </linearGradient>
+                    </defs>
+                    <rect width="10" height="10" fill="url(#sky)"/>
+                </svg>
+            "##,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &document.shapes[0].fill_paint,
+            Some(Paint::LinearGradient(_))
+        ));
     }
 }
