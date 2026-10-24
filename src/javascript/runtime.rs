@@ -702,6 +702,11 @@ impl Interpreter {
                     self.evaluate_expression(alternate)
                 }
             }
+
+            Expression::TypeOf(expression) => {
+                let value = self.evaluate_expression(expression)?;
+                Ok(Value::String(Self::type_of(&value).to_owned()))
+            }
         }
     }
 
@@ -886,6 +891,38 @@ impl Interpreter {
             Value::Number(value) => *value != 0.0 && !value.is_nan(),
             Value::String(value) => !value.is_empty(),
             _ => true,
+        }
+    }
+
+    fn type_of(value: &Value) -> &'static str {
+        match value {
+            Value::Undefined => "undefined",
+            Value::Null
+            | Value::Array(_)
+            | Value::Object(_)
+            | Value::Url(_)
+            | Value::Document(_)
+            | Value::Element(_)
+            | Value::HtmlCollection(_)
+            | Value::ElementChildren(_)
+            | Value::Attributes(_)
+            | Value::Attribute { .. }
+            | Value::NodeList(_)
+            | Value::ClassList(_)
+            | Value::TestContext => "object",
+
+            Value::Boolean(_) => "boolean",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+
+            Value::NativeFunction(_)
+            | Value::DocumentMethod(_)
+            | Value::ElementMethod(_)
+            | Value::Function(_)
+            | Value::ElementConstructor(_)
+            | Value::ObjectConstructor
+            | Value::TestContextMethod(_)
+            | Value::ArrayMethod { .. } => "function",
         }
     }
 

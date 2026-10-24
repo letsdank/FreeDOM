@@ -13,6 +13,7 @@ pub enum TokenKind {
     True,
     False,
     Null,
+    Typeof,
 
     LeftParen,
     RightParen,
@@ -344,6 +345,7 @@ impl<'source> Lexer<'source> {
             "for" => TokenKind::For,
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
+            "typeof" => TokenKind::Typeof,
             _ => TokenKind::Identifier(identifier.to_owned()),
         };
 

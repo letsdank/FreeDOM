@@ -75,6 +75,7 @@ pub(crate) enum Expression {
         consequent: Box<Expression>,
         alternate: Box<Expression>,
     },
+    TypeOf(Box<Expression>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

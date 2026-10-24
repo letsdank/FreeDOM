@@ -639,6 +639,10 @@ impl Parser {
             });
         }
 
+        if self.consume_optional(&TokenKind::Typeof) {
+            return Ok(Expression::TypeOf(Box::new(self.parse_unary_expression()?)));
+        }
+
         if self.consume_optional(&TokenKind::Not) {
             return Ok(Expression::Not(Box::new(self.parse_unary_expression()?)));
         }

@@ -1010,3 +1010,21 @@ fn evaluates_conditional_expressions_lazily() {
     )
     .unwrap();
 }
+
+#[test]
+fn evaluates_typeof_expressions() {
+    evaluate(
+        r#"
+            assert_equals(typeof undefined, "undefined");
+            assert_equals(typeof null, "object");
+            assert_equals(typeof true, "boolean");
+            assert_equals(typeof 42, "number");
+            assert_equals(typeof "FreeDOM", "string");
+            assert_equals(typeof [], "object");
+            assert_equals(typeof {}, "object");
+            assert_equals(typeof Object.keys, "function");
+            assert_equals(typeof function() {}, "function");
+        "#,
+    )
+    .unwrap();
+}
