@@ -518,4 +518,44 @@ mod tests {
         assert_eq!(report.different_pixels, 0);
         assert_eq!(report.max_channel_difference, 0);
     }
+
+    #[test]
+    fn official_wpt_svg_path_length_on_shapes() {
+        let fixtures = [
+            (
+                "shapes/reftests/pathlength-001.svg",
+                "shapes/reftests/pathlength-001-ref.svg",
+            ),
+            (
+                "shapes/reftests/pathlength-004a.svg",
+                "shapes/reftests/pathlength-004-ref.svg",
+            ),
+        ];
+
+        for (test_fixture, reference_fixture) in fixtures {
+            let test_source = fs::read_to_string(fixture_path(test_fixture))
+                .expect("WPT SVG test fixture is missing");
+            let reference_source = fs::read_to_string(fixture_path(reference_fixture))
+                .expect("WPT SVG reference fixture is missing");
+
+            let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+            eprintln!(
+                "WPT SVG {test_fixture}: {}x{}, {} differing pixels, maximum channel difference {}",
+                report.viewport_width,
+                report.viewport_height,
+                report.different_pixels,
+                report.max_channel_difference,
+            );
+
+            assert_eq!(
+                report.different_pixels, 0,
+                "{test_fixture} differs from {reference_fixture}",
+            );
+            assert_eq!(
+                report.max_channel_difference, 0,
+                "{test_fixture} differs from {reference_fixture}",
+            );
+        }
+    }
 }

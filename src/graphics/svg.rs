@@ -1346,13 +1346,7 @@ fn hexadecimal_digit(byte: u8) -> Option<u8> {
 }
 
 fn parse_stroke_width(value: &str) -> Result<f32, SvgError> {
-    let values = parse_number_list(value)?;
-
-    if values.len() != 1 || values[0] < 0.0 {
-        return Err(SvgError::new("invalid stroke-width"));
-    }
-
-    Ok(values[0])
+    parse_svg_length(value)
 }
 
 fn parse_fill_rule(value: &str) -> Result<FillRule, SvgError> {
@@ -2160,7 +2154,7 @@ mod tests {
                 <svg>
                     <style>
                         line { stroke: red; stroke-width: 2; }
-                        #target { stroke: blue; stroke-width: 4; }
+                        #target { stroke: blue; stroke-width: 4px; }
                     </style>
                     <line id="target" x1="1" y1="1" x2="9" y2="1"/>
                 </svg>
