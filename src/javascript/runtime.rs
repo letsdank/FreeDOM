@@ -1021,6 +1021,46 @@ impl Interpreter {
                 }
             }
 
+            Expression::Index { object, index } => {
+                let object = self.evaluate_expression(object)?;
+                let index = self.evaluate_expression(index)?;
+
+                match object {
+                    Value::Object(values) => {
+                        values.borrow_mut().insert(index.to_js_string(), value);
+
+                        Ok(())
+                    }
+
+                    Value::Array(values) => {
+                        let Some(index) = self.to_number(&index) else {
+                            return Err(JsError::runtime("TypeError: array index must be numeric"));
+                        };
+
+                        if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
+                            return Err(JsError::runtime(
+                                "RangeError: array index must be a non-negative integer",
+                            ));
+                        }
+
+                        let index = index as usize;
+                        let mut values = values.borrow_mut();
+
+                        if index >= values.len() {
+                            values.resize(index + 1, Value::Undefined);
+                        }
+
+                        values[index] = value;
+
+                        Ok(())
+                    }
+
+                    _ => Err(JsError::runtime(
+                        "TypeError: indexed assignment target is not supported",
+                    )),
+                }
+            }
+
             _ => Err(JsError::runtime(
                 "TypeError: assignment target is not supported",
             )),

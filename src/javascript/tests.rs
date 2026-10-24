@@ -951,3 +951,26 @@ fn evaluates_object_literals_and_shared_property_updates() {
     )
     .unwrap();
 }
+
+#[test]
+fn assigns_object_properties_and_array_indices() {
+    evaluate(
+        r#"
+            const settings = {};
+            const property = "title";
+            
+            settings[property] = "FreeDOM";
+            assert_equals(settings.title, "FreeDOM");
+            
+            const values = [1];
+            values[2] = 3;
+            values[0]++;
+            
+            assert_equals(values.length, 3);
+            assert_equals(values[0], 2);
+            assert_equals(values[1], undefined);
+            assert_equals(values[2], 3);
+        "#,
+    )
+    .unwrap();
+}
