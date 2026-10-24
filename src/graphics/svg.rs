@@ -4,7 +4,7 @@ use crate::{
         parse_declaration_list,
     },
     graphics::{
-        flatten::{FlattenError, flatten_path},
+        flatten::{FlattenError, FlattenedPath, flatten_path},
         geometry::{Path, Point, Transform},
         raster::{
             Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle, Surface,
@@ -73,6 +73,20 @@ impl SvgDocument {
             }
 
             if let Some(stroke) = shape.stroke {
+                let dash_scale = match shape.path_length {
+                    Some(path_length) => {
+                        let actual_length = flattened_path_length(&flattened);
+
+                        if actual_length.is_finite() && actual_length > 0.0 {
+                            actual_length / path_length
+                        } else {
+                            0.0
+                        }
+                    }
+
+                    None => viewport_stroke_scale,
+                };
+
                 stroke_path_clipped(
                     &mut surface,
                     &flattened,
@@ -81,8 +95,12 @@ impl SvgDocument {
                         line_cap: shape.stroke_line_cap,
                         line_join: shape.stroke_line_join,
                         miter_limit: shape.stroke_miter_limit,
-                        dash_array: Vec::new(),
-                        dash_offset: 0.0,
+                        dash_array: shape
+                            .stroke_dash_array
+                            .iter()
+                            .map(|length| length * dash_scale)
+                            .collect(),
+                        dash_offset: shape.stroke_dash_offset * dash_scale,
                     },
                     stroke,
                     &clip_paths,
@@ -157,6 +175,9 @@ pub struct SvgShape {
     stroke_line_cap: StrokeLineCap,
     stroke_line_join: StrokeLineJoin,
     stroke_miter_limit: f32,
+    stroke_dash_array: Vec<f32>,
+    stroke_dash_offset: f32,
+    path_length: Option<f32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,7 +277,7 @@ pub fn parse_svg_element_at(root: &HtmlElement, base_url: &Url) -> Result<SvgDoc
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SvgStyle {
     fill: Option<Color>,
     fill_rule: FillRule,
@@ -267,6 +288,8 @@ struct SvgStyle {
     stroke_line_cap: StrokeLineCap,
     stroke_line_join: StrokeLineJoin,
     stroke_miter_limit: f32,
+    stroke_dash_array: Vec<f32>,
+    stroke_dash_offset: f32,
 }
 
 impl Default for SvgStyle {
@@ -281,6 +304,8 @@ impl Default for SvgStyle {
             stroke_line_cap: StrokeLineCap::Butt,
             stroke_line_join: StrokeLineJoin::Miter,
             stroke_miter_limit: 4.0,
+            stroke_dash_array: Vec::new(),
+            stroke_dash_offset: 0.0,
         }
     }
 }
@@ -403,7 +428,7 @@ fn collect_shapes(
                     child,
                     base_url,
                     css_rules,
-                    style,
+                    style.clone(),
                     child_transform,
                     &child_clip_paths,
                     shapes,
@@ -468,6 +493,9 @@ fn collect_shapes(
                 stroke_line_cap: style.stroke_line_cap,
                 stroke_line_join: style.stroke_line_join,
                 stroke_miter_limit: style.stroke_miter_limit,
+                stroke_dash_array: style.stroke_dash_array.clone(),
+                stroke_dash_offset: style.stroke_dash_offset,
+                path_length: path_length_attribute(element)?,
             });
         }
     }
@@ -479,7 +507,7 @@ fn collect_shapes(
                 child,
                 base_url,
                 css_rules,
-                style,
+                style.clone(),
                 transform,
                 &element_clip_paths,
                 shapes,
@@ -737,6 +765,8 @@ fn resolve_style(
         "stroke-linecap",
         "stroke-linejoin",
         "stroke-miterlimit",
+        "stroke-dasharray",
+        "stroke-dashoffset",
     ] {
         if let Some(value) = attribute(element, property) {
             apply_svg_declaration(&mut style, property, value)?;
@@ -787,6 +817,8 @@ fn apply_svg_declaration(
         "stroke-linecap" => style.stroke_line_cap = parse_stroke_line_cap(value)?,
         "stroke-linejoin" => style.stroke_line_join = parse_stroke_line_join(value)?,
         "stroke-miterlimit" => style.stroke_miter_limit = parse_stroke_miter_limit(value)?,
+        "stroke-dasharray" => style.stroke_dash_array = parse_stroke_dash_array(value)?,
+        "stroke-dashoffset" => style.stroke_dash_offset = parse_stroke_dash_offset(value)?,
         _ => {}
     }
 
@@ -891,6 +923,73 @@ fn parse_stroke_miter_limit(value: &str) -> Result<f32, SvgError> {
     }
 
     Ok(values[0])
+}
+
+fn parse_stroke_dash_array(value: &str) -> Result<Vec<f32>, SvgError> {
+    if value.trim().eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+
+    let values = parse_number_list(value)?;
+
+    if values.is_empty()
+        || values
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return Err(SvgError::new("invalid stroke-dasharray"));
+    }
+
+    Ok(values)
+}
+
+fn parse_stroke_dash_offset(value: &str) -> Result<f32, SvgError> {
+    let values = parse_number_list(value)?;
+
+    if values.len() != 1 || !values[0].is_finite() {
+        return Err(SvgError::new("invalid stroke-dashoffset"));
+    }
+
+    Ok(values[0])
+}
+
+fn path_length_attribute(element: &HtmlElement) -> Result<Option<f32>, SvgError> {
+    let Some(value) = attribute(element, "pathlength") else {
+        return Ok(None);
+    };
+
+    let values = parse_number_list(value)?;
+
+    if values.len() != 1 || !values[0].is_finite() || values[0] <= 0.0 {
+        return Err(SvgError::new("pathLength must be a positive finite number"));
+    }
+
+    Ok(Some(values[0]))
+}
+
+fn flattened_path_length(path: &FlattenedPath) -> f32 {
+    let mut total = 0.0;
+
+    for contour in path.contours() {
+        let points = contour.points();
+
+        for segment in points.windows(2) {
+            total += point_distance(segment[0], segment[1]);
+        }
+
+        if contour.is_closed() && points.len() > 1 {
+            total += point_distance(points[points.len() - 1], points[0]);
+        }
+    }
+
+    total
+}
+
+fn point_distance(from: Point, to: Point) -> f32 {
+    let delta_x = to.x - from.x;
+    let delta_y = to.y - from.y;
+
+    (delta_x * delta_x + delta_y * delta_y).sqrt()
 }
 
 fn parse_opacity(value: &str) -> Result<f32, SvgError> {
@@ -2072,5 +2171,28 @@ mod tests {
         assert_eq!(document.shapes.len(), 1);
         assert_eq!(document.shapes[0].stroke, Some(Color::rgba(0, 0, 255, 255)));
         assert_eq!(document.shapes[0].stroke_width, 4.0);
+    }
+
+    #[test]
+    fn parses_dash_properties_and_path_length() {
+        let document = parse_svg(
+            r#"
+                <svg>
+                    <path
+                        d="M 0 0 H 100"
+                        fill="none"
+                        stroke="blue"
+                        pathLength="25"
+                        style="stroke-dasharray: 3 1; stroke-dashoffset: 2"
+                    />
+                </svg>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(document.shapes.len(), 1);
+        assert_eq!(document.shapes[0].stroke_dash_array, vec![3.0, 1.0]);
+        assert_eq!(document.shapes[0].stroke_dash_offset, 2.0);
+        assert_eq!(document.shapes[0].path_length, Some(25.0));
     }
 }
