@@ -1,7 +1,10 @@
 use crate::{
     css::{FontStyle, FontWeight},
     graphics::{
-        font::{layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont},
+        font::{
+            layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont,
+            woff::normalize_font_container,
+        },
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
         svg::SvgDocument,
@@ -43,10 +46,18 @@ impl LinkRegion {
 pub(crate) fn load_vector_font_from_environment() -> Option<Vec<u8>> {
     let path = std::env::var("FREEDOM_FONT").ok()?;
 
-    let data = match std::fs::read(&path) {
+    let raw_data = match std::fs::read(&path) {
         Ok(data) => data,
         Err(error) => {
-            eprintln!("не удалось загрузить FREEDOM_FONT {path:?}: {error}");
+            eprintln!("Could not read FREEDOM_FONT {path:?}: {error}");
+            return None;
+        }
+    };
+
+    let data = match normalize_font_container(raw_data) {
+        Ok(data) => data,
+        Err(error) => {
+            eprintln!("Could not decode FREEDOM_FONT {path:?}: {error}");
             return None;
         }
     };
@@ -54,7 +65,7 @@ pub(crate) fn load_vector_font_from_environment() -> Option<Vec<u8>> {
     match TrueTypeFont::parse(&data) {
         Ok(_) => Some(data),
         Err(error) => {
-            eprintln!("FREEDOM_FONT {path:?} не поддерживается: {error}");
+            eprintln!("FREEDOM_FONT {path:?} is not a supported TrueType font: {error}");
             None
         }
     }

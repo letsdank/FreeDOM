@@ -206,6 +206,16 @@ pub fn decode_woff(data: &[u8]) -> Result<Vec<u8>, FontError> {
     Ok(sfnt)
 }
 
+/// Converts a supported web-font container to SFNT data.
+///
+/// SFNT input is returned unchanged. WOFF 1.0 input is decoded into SFNT.
+pub fn normalize_font_container(data: Vec<u8>) -> Result<Vec<u8>, FontError> {
+    match data.get(..4) {
+        Some(signature) if signature == b"wOFF" || signature == b"wOF2" => decode_woff(&data),
+        _ => Ok(data),
+    }
+}
+
 fn decompress_table(
     compressed: &[u8],
     original_length: usize,
@@ -414,6 +424,24 @@ mod tests {
             error.message,
             "WOFF table overlaps the header or table directory"
         );
+    }
+
+    #[test]
+    fn preserves_sfnt_container_bytes() {
+        let sfnt = vec![0x00, 0x01, 0x00, 0x00];
+
+        assert_eq!(normalize_font_container(sfnt.clone()).unwrap(), sfnt);
+    }
+
+    #[test]
+    fn normalizes_woff_containers() {
+        let original_table = vec![0_u8; 32];
+        let woff = woff_with_table(&original_table, true);
+
+        let sfnt_data = normalize_font_container(woff).unwrap();
+        let font = SfntFont::parse(&sfnt_data).unwrap();
+
+        assert_eq!(font.table(TableTag::NAME), Some(original_table.as_slice()));
     }
 
     fn woff_with_table(table: &[u8], compress: bool) -> Vec<u8> {
