@@ -4,6 +4,7 @@ pub mod hmtx;
 pub mod kern;
 pub mod layout;
 pub mod loca;
+pub(crate) mod reader;
 pub mod render;
 pub mod sfnt;
 pub mod truetype;

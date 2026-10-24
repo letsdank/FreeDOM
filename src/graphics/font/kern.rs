@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use super::sfnt::{FontError, SfntFont, TableTag};
+use super::{
+    reader::{read_i16, read_u16},
+    sfnt::{FontError, SfntFont, TableTag},
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KerningTable {
@@ -131,30 +134,6 @@ impl KerningTable {
 
         Ok(())
     }
-}
-
-fn read_u16(data: &[u8], offset: usize, file_offset: usize) -> Result<u16, FontError> {
-    let bytes = read_bytes(data, offset, 2, file_offset)?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_i16(data: &[u8], offset: usize, file_offset: usize) -> Result<i16, FontError> {
-    let bytes = read_bytes(data, offset, 2, file_offset)?;
-    Ok(i16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_bytes<'a>(
-    data: &'a [u8],
-    offset: usize,
-    length: usize,
-    file_offset: usize,
-) -> Result<&'a [u8], FontError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| error(file_offset + offset, "kern offset overflows"))?;
-
-    data.get(offset..end)
-        .ok_or_else(|| error(file_offset + offset, "truncated kern table"))
 }
 
 fn error(offset: usize, message: impl Into<String>) -> FontError {

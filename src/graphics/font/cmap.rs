@@ -1,4 +1,7 @@
-use super::sfnt::{FontError, SfntFont, TableTag};
+use super::{
+    reader::{read_bytes, read_u16, read_u32},
+    sfnt::{FontError, SfntFont, TableTag},
+};
 
 #[derive(Clone, Debug)]
 pub struct CmapTable {
@@ -397,30 +400,6 @@ fn unicode_priority(platform_id: u16, encoding_id: u16) -> Option<u8> {
         (3, 1 | 10) => Some(2),
         _ => None,
     }
-}
-
-fn read_u16(data: &[u8], offset: usize, base_offset: usize) -> Result<u16, FontError> {
-    let bytes = read_bytes(data, offset, 2, base_offset)?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_u32(data: &[u8], offset: usize, base_offset: usize) -> Result<u32, FontError> {
-    let bytes = read_bytes(data, offset, 4, base_offset)?;
-    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn read_bytes<'a>(
-    data: &'a [u8],
-    offset: usize,
-    length: usize,
-    base_offset: usize,
-) -> Result<&'a [u8], FontError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| error(base_offset + offset, "cmap offset overflows"))?;
-
-    data.get(offset..end)
-        .ok_or_else(|| error(base_offset + offset, "truncated cmap table"))
 }
 
 fn error(offset: usize, message: impl Into<String>) -> FontError {

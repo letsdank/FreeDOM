@@ -1,6 +1,9 @@
 use crate::graphics::geometry::{Path, Point, Transform};
 
-use super::sfnt::FontError;
+use super::{
+    reader::{read_bytes, read_i16, read_u16},
+    sfnt::FontError,
+};
 
 const ON_CURVE_POINT: u8 = 0x01;
 const X_SHORT_VECTOR: u8 = 0x02;
@@ -374,30 +377,6 @@ fn read_coordinate_delta(
 fn read_byte(data: &[u8], offset: usize, file_offset: usize) -> Result<u8, FontError> {
     data.get(offset)
         .copied()
-        .ok_or_else(|| error(file_offset + offset, "truncated glyph data"))
-}
-
-fn read_u16(data: &[u8], offset: usize, file_offset: usize) -> Result<u16, FontError> {
-    let bytes = read_bytes(data, offset, 2, file_offset)?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_i16(data: &[u8], offset: usize, file_offset: usize) -> Result<i16, FontError> {
-    let bytes = read_bytes(data, offset, 2, file_offset)?;
-    Ok(i16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_bytes<'a>(
-    data: &'a [u8],
-    offset: usize,
-    length: usize,
-    file_offset: usize,
-) -> Result<&'a [u8], FontError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| error(file_offset + length, "glyph offset overflows"))?;
-
-    data.get(offset..end)
         .ok_or_else(|| error(file_offset + offset, "truncated glyph data"))
 }
 

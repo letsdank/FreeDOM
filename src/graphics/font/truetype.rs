@@ -5,6 +5,7 @@ use super::{
     kern::KerningTable,
     layout::{TextOutline, outline_text},
     loca::GlyphLocations,
+    reader::{read_i16, read_u16, read_u32},
     sfnt::{FontError, SfntFlavor, SfntFont, TableTag},
 };
 
@@ -317,36 +318,6 @@ fn required_table<'a>(
     })?;
 
     Ok((table, record.offset))
-}
-
-fn read_u16(table: &[u8], relative_offset: usize, table_offset: usize) -> Result<u16, FontError> {
-    let bytes = read_bytes(table, relative_offset, 2, table_offset)?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_i16(table: &[u8], relative_offset: usize, table_offset: usize) -> Result<i16, FontError> {
-    let bytes = read_bytes(table, relative_offset, 2, table_offset)?;
-    Ok(i16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_u32(table: &[u8], relative_offset: usize, table_offset: usize) -> Result<u32, FontError> {
-    let bytes = read_bytes(table, relative_offset, 4, table_offset)?;
-    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn read_bytes<'a>(
-    table: &'a [u8],
-    relative_offset: usize,
-    length: usize,
-    table_offset: usize,
-) -> Result<&'a [u8], FontError> {
-    let end = relative_offset
-        .checked_add(length)
-        .ok_or_else(|| table_error(table_offset, "table offset overflow"))?;
-
-    table
-        .get(relative_offset..end)
-        .ok_or_else(|| table_error(table_offset + relative_offset, "truncated table"))
 }
 
 fn table_error(offset: usize, message: impl Into<String>) -> FontError {

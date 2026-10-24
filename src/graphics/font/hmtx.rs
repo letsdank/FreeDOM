@@ -1,4 +1,7 @@
-use super::sfnt::{FontError, SfntFont, TableTag};
+use super::{
+    reader::{read_i16, read_u16},
+    sfnt::{FontError, SfntFont, TableTag},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HorizontalMetric {
@@ -132,31 +135,6 @@ impl HorizontalMetrics {
     pub fn header(&self) -> HorizontalHeader {
         self.header
     }
-}
-
-fn read_u16(table: &[u8], offset: usize, table_offset: usize) -> Result<u16, FontError> {
-    let bytes = read_bytes(table, offset, 2, table_offset)?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_i16(table: &[u8], offset: usize, table_offset: usize) -> Result<i16, FontError> {
-    let bytes = read_bytes(table, offset, 2, table_offset)?;
-    Ok(i16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_bytes<'a>(
-    table: &'a [u8],
-    offset: usize,
-    length: usize,
-    table_offset: usize,
-) -> Result<&'a [u8], FontError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| error(table_offset + offset, "hmtx offset overflows"))?;
-
-    table
-        .get(offset..end)
-        .ok_or_else(|| error(table_offset + offset, "truncated hmtx table"))
 }
 
 fn error(offset: usize, message: impl Into<String>) -> FontError {

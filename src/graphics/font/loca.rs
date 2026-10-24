@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use super::{
+    reader::{read_u16, read_u32},
     sfnt::{FontError, SfntFont, TableTag},
     truetype::IndexToLocFormat,
 };
@@ -95,31 +96,6 @@ impl GlyphLocations {
     pub fn final_offset(&self) -> usize {
         self.offsets.last().copied().unwrap_or(0)
     }
-}
-
-fn read_u16(table: &[u8], position: usize, table_offset: usize) -> Result<u16, FontError> {
-    let bytes = read_bytes(table, position, 2, table_offset)?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_u32(table: &[u8], position: usize, table_offset: usize) -> Result<u32, FontError> {
-    let bytes = read_bytes(table, position, 4, table_offset)?;
-    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn read_bytes<'a>(
-    table: &'a [u8],
-    position: usize,
-    length: usize,
-    table_offset: usize,
-) -> Result<&'a [u8], FontError> {
-    let end = position
-        .checked_add(length)
-        .ok_or_else(|| table_error(table_offset + position, "loca offset overflows"))?;
-
-    table
-        .get(position..end)
-        .ok_or_else(|| table_error(table_offset + position, "truncated loca table"))
 }
 
 fn table_error(offset: usize, message: impl Into<String>) -> FontError {
