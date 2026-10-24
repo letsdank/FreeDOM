@@ -201,12 +201,12 @@ pub fn parse_svg_element_at(root: &HtmlElement, base_url: &Url) -> Result<SvgDoc
     }
 
     let width = match attribute(root, "width") {
-        Some(value) => Some(parse_svg_length(value)?),
+        Some(value) => parse_svg_viewport_dimension(value)?,
         None => None,
     };
 
     let height = match attribute(root, "height") {
-        Some(value) => Some(parse_svg_length(value)?),
+        Some(value) => parse_svg_viewport_dimension(value)?,
         None => None,
     };
 
@@ -1198,6 +1198,22 @@ fn parse_fill_rule(value: &str) -> Result<FillRule, SvgError> {
     } else {
         Err(SvgError::new("unsupported fill-rule"))
     }
+}
+
+fn parse_svg_viewport_dimension(value: &str) -> Result<Option<f32>, SvgError> {
+    let value = value.trim();
+
+    if let Some(percent) = value.strip_suffix('%') {
+        let values = parse_number_list(percent)?;
+
+        if values.len() != 1 || !values[0].is_finite() || values[0] < 0.0 {
+            return Err(SvgError::new("invalid SVG viewport dimension"));
+        }
+
+        return Ok(None);
+    }
+
+    parse_svg_length(value).map(Some)
 }
 
 fn parse_svg_length(value: &str) -> Result<f32, SvgError> {

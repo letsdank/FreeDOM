@@ -467,4 +467,33 @@ mod tests {
         assert_eq!(report.different_pixels, 0);
         assert_eq!(report.max_channel_difference, 0);
     }
+
+    #[test]
+    fn official_wpt_svg_stroke_miter_limit_threshold() {
+        let source = fs::read_to_string(fixture_path("import/painting-stroke-07-t-manual.svg"))
+            .expect("WPT SVG test fixture is missing");
+
+        let document = parse_svg(&source).unwrap();
+
+        assert_eq!(document.width, None);
+        assert_eq!(document.height, None);
+
+        let surface = document.render(480, 360, Color::WHITE).unwrap();
+
+        for y in [72, 108] {
+            assert_eq!(
+                surface.pixel(380, y),
+                Some(Color::BLACK),
+                "stroke-miterlimit at y={y} should preserve the miter",
+            );
+        }
+
+        for y in [144, 180, 216, 252] {
+            assert_eq!(
+                surface.pixel(380, y),
+                Some(Color::WHITE),
+                "stroke-miterlimit at y={y} should fall back to a bevel join",
+            );
+        }
+    }
 }
