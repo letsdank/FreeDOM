@@ -1,5 +1,7 @@
 use std::fs;
 
+use crate::html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode};
+
 use crate::graphics::{
     raster::{Color, Surface},
     svg::{SvgDocument, parse_svg},
@@ -10,6 +12,85 @@ struct SvgReftestReport {
     viewport_height: usize,
     different_pixels: usize,
     max_channel_difference: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SvgReftestTolerance {
+    max_channel_difference: u8,
+    max_different_pixels: usize,
+}
+
+impl SvgReftestTolerance {
+    const EXACT: Self = Self {
+        max_channel_difference: 0,
+        max_different_pixels: 0,
+    };
+}
+
+fn wpt_svg_reftest_tolerance(source: &str) -> Result<SvgReftestTolerance, String> {
+    let document = HtmlDocument::parse(source);
+
+    let Some(value) = find_wpt_fuzzy_metadata(&document.children) else {
+        return Ok(SvgReftestTolerance::EXACT);
+    };
+
+    let (difference_range, pixel_range) = value
+        .split_once(';')
+        .ok_or_else(|| format!("invalid WPT fuzzy metadata: {value}"))?;
+
+    let max_channel_difference = fuzzy_range_upper_bound(difference_range)?
+        .parse::<u8>()
+        .map_err(|_| format!("invalid WPT fuzzy channel difference: {value}"))?;
+
+    let max_different_pixels = fuzzy_range_upper_bound(pixel_range)?
+        .parse::<usize>()
+        .map_err(|_| format!("invalid WPT fuzzy pixel count: {value}"))?;
+
+    Ok(SvgReftestTolerance {
+        max_channel_difference,
+        max_different_pixels,
+    })
+}
+
+fn fuzzy_range_upper_bound(value: &str) -> Result<&str, String> {
+    let (_, maximum) = value
+        .trim()
+        .split_once('-')
+        .ok_or_else(|| format!("invalid WPT fuzzy range: {value}"))?;
+
+    Ok(maximum.trim())
+}
+
+fn find_wpt_fuzzy_metadata(nodes: &[HtmlNode]) -> Option<&str> {
+    for node in nodes {
+        let HtmlNode::Element(element) = node else {
+            continue;
+        };
+
+        let is_meta = element.name == "meta" || element.name.ends_with(":meta");
+
+        if is_meta
+            && html_attribute(element, "name")
+                .is_some_and(|name| name.eq_ignore_ascii_case("fuzzy"))
+            && let Some(content) = html_attribute(element, "content")
+        {
+            return Some(content);
+        }
+
+        if let Some(content) = find_wpt_fuzzy_metadata(&element.children) {
+            return Some(content);
+        }
+    }
+
+    None
+}
+
+fn html_attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
+    element
+        .attributes
+        .iter()
+        .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
+        .map(|attribute| attribute.value.as_str())
 }
 
 fn run_svg_reftest(test_source: &str, reference_source: &str) -> Result<SvgReftestReport, String> {
@@ -132,6 +213,26 @@ mod tests {
 
         assert_eq!(report.different_pixels, 0);
         assert_eq!(report.max_channel_difference, 0);
+    }
+
+    #[test]
+    fn reads_wpt_fuzzy_reftest_metadata() {
+        let tolerance = wpt_svg_reftest_tolerance(
+            r#"
+                <svg>
+                    <html:meta name="fuzzy" content="0-1;0-50"/>
+                </svg>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            tolerance,
+            SvgReftestTolerance {
+                max_channel_difference: 1,
+                max_different_pixels: 50,
+            },
+        );
     }
 
     #[test]
@@ -557,5 +658,40 @@ mod tests {
                 "{test_fixture} differs from {reference_fixture}",
             );
         }
+    }
+
+    #[test]
+    fn official_wpt_svg_path_length_scales_circular_strokes() {
+        let test_source = fs::read_to_string(fixture_path("shapes/reftests/pathlength-002.svg"))
+            .expect("WPT SVG test fixture is missing");
+
+        let reference_source =
+            fs::read_to_string(fixture_path("shapes/reftests/pathlength-002-ref.svg"))
+                .expect("WPT SVG reference fixture is missing");
+
+        let tolerance = wpt_svg_reftest_tolerance(&test_source).unwrap();
+        let report = run_svg_reftest(&test_source, &reference_source).unwrap();
+
+        eprintln!(
+            "WPT SVG circular pathLength: {}x{}, {} differing pixels, maximum channel difference {}",
+            report.viewport_width,
+            report.viewport_height,
+            report.different_pixels,
+            report.max_channel_difference,
+        );
+
+        assert!(
+            report.different_pixels <= tolerance.max_different_pixels,
+            "expected at most {} differing pixels, got {}",
+            tolerance.max_different_pixels,
+            report.different_pixels,
+        );
+
+        assert!(
+            report.max_channel_difference <= tolerance.max_channel_difference,
+            "expected maximum channel difference {}, got {}",
+            tolerance.max_channel_difference,
+            report.max_channel_difference,
+        );
     }
 }
