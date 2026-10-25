@@ -1093,4 +1093,101 @@ mod tests {
             Some([1, 2, 3].as_slice())
         );
     }
+
+    #[test]
+    fn loads_a_woff_font_face_through_css_and_fetch() {
+        let table = [0_u8, 1, 2, 3];
+        let woff = woff_with_name_table(&table);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+
+            stream.read(&mut request).unwrap();
+
+            assert!(String::from_utf8_lossy(&request).contains("GET /fonts/test.woff "));
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                Content-Type: font/woff\r\n\
+                Content-Length: {}\r\n\
+                Connection: close\r\n\
+                \r\n",
+                woff.len(),
+            );
+
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(&woff).unwrap();
+        });
+
+        let page_url = format!("http://{address}/page.html");
+        let base_url = Url::parse(&page_url).unwrap();
+        let document = HtmlDocument::parse("<p>FreeDOM</p>");
+        let stylesheets = vec![Stylesheet {
+            source: r#"
+                @font-face {
+                    font-family: Test;
+                    src: url("fonts/test.woff");
+                }
+
+                p {
+                    font-family: Test;
+                }
+            "#
+            .to_owned(),
+            base_url,
+        }];
+        let fetcher = Fetcher::new().unwrap();
+
+        let page = parse_dom_with_fetcher(&page_url, &document, &stylesheets, Some(&fetcher));
+
+        server.join().unwrap();
+
+        assert_eq!(page.blocks[0].style.font_family.as_deref(), Some("Test"));
+
+        let font_data = page
+            .font_data_for(Some("Test"), FontWeight::Normal, FontStyle::Normal)
+            .unwrap();
+
+        let font = crate::graphics::font::sfnt::SfntFont::parse(font_data).unwrap();
+
+        assert_eq!(
+            font.table(crate::graphics::font::sfnt::TableTag::NAME),
+            Some(table.as_slice())
+        );
+    }
+
+    fn woff_with_name_table(table: &[u8]) -> Vec<u8> {
+        assert_eq!(table.len() % 4, 0);
+
+        const WOFF_HEADER_LENGTH: usize = 44;
+        const WOFF_TABLE_DIRECTORY_ENTRY_LENGTH: usize = 20;
+        const SFNT_HEADER_LENGTH: usize = 12;
+        const SFNT_TABLE_DIRECTORY_ENTRY_LENGTH: usize = 16;
+
+        let table_offset = WOFF_HEADER_LENGTH + WOFF_TABLE_DIRECTORY_ENTRY_LENGTH;
+        let file_length = table_offset + table.len();
+        let total_sfnt_size = SFNT_HEADER_LENGTH + SFNT_TABLE_DIRECTORY_ENTRY_LENGTH + table.len();
+
+        let mut data = vec![0_u8; file_length];
+
+        data[0..4].copy_from_slice(b"wOFF");
+        data[4..8].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
+        data[8..12].copy_from_slice(&(file_length as u32).to_be_bytes());
+        data[12..14].copy_from_slice(&1_u16.to_be_bytes());
+        data[16..20].copy_from_slice(&(total_sfnt_size as u32).to_be_bytes());
+        data[20..22].copy_from_slice(&1_u16.to_be_bytes());
+
+        data[44..48].copy_from_slice(b"name");
+        data[48..52].copy_from_slice(&(table_offset as u32).to_be_bytes());
+        data[52..56].copy_from_slice(&(table.len() as u32).to_be_bytes());
+        data[56..60].copy_from_slice(&(table.len() as u32).to_be_bytes());
+
+        data[table_offset..].copy_from_slice(table);
+
+        data
+    }
 }
