@@ -36,6 +36,7 @@ pub(crate) struct PaintResult {
 
 const MAX_TEXT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TEXT_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const TEXT_CACHE_PREFETCH_BLOCKS: usize = 1;
 
 pub(crate) struct TextBlockCache {
     entries: Vec<TextBlockCacheEntry>,
@@ -218,6 +219,107 @@ pub(crate) fn load_vector_font_from_environment() -> Option<Vec<u8>> {
     }
 }
 
+fn cache_text_block<'cache>(
+    text_cache: &'cache mut TextBlockCache,
+    page: &Page,
+    layout: &PageLayout,
+    index: usize,
+    viewport_width: usize,
+    fallback_font: Option<&TrueTypeFont<'_>>,
+) -> Option<&'cache CachedTextBlock> {
+    let already_cached = text_cache.cached(index).is_some();
+
+    if already_cached {
+        return text_cache.cached(index);
+    }
+
+    let block = page.blocks.get(index)?;
+    let BlockContent::Text(text) = &block.content else {
+        return None;
+    };
+
+    let content_width = viewport_width.saturating_sub(32).max(1);
+    let block_height = usize::try_from(layout.block_height(index).max(0)).unwrap_or(0);
+
+    let page_font = page
+        .font_data_for(
+            block.style.font_family.as_deref(),
+            block.style.font_weight,
+            block.style.font_style,
+        )
+        .and_then(|data| TrueTypeFont::parse(data).ok());
+
+    let vector_font = page_font.as_ref().or(fallback_font);
+
+    text_cache.get_or_render(
+        index,
+        content_width,
+        block_height,
+        |cache_pixels, cache_width, cache_height, cache_links| {
+            draw_wrapped_text(
+                cache_pixels,
+                cache_width,
+                cache_height,
+                0,
+                0,
+                cache_width as i32,
+                text,
+                block.style.font_size,
+                block.style.font_weight,
+                block.style.font_style,
+                block.style.color,
+                block.link.as_deref(),
+                vector_font,
+                0,
+                cache_links,
+            );
+        },
+    )
+}
+
+fn prefetch_text_blocks_after_viewport(
+    text_cache: &mut TextBlockCache,
+    page: &Page,
+    layout: &PageLayout,
+    viewport_width: usize,
+    viewport_height: usize,
+    scroll_y: i32,
+    fallback_font: Option<&TrueTypeFont<'_>>,
+) {
+    let visible_height = i32::try_from(viewport_height)
+        .unwrap_or(i32::MAX)
+        .saturating_sub(CONTENT_TOP)
+        .max(0);
+
+    let viewport_bottom = scroll_y.saturating_add(visible_height);
+    let mut prefetched = 0;
+
+    for index in 0..page.blocks.len() {
+        if layout.block_top(index) < viewport_bottom {
+            continue;
+        }
+
+        if !matches!(&page.blocks[index].content, BlockContent::Text(_)) {
+            continue;
+        }
+
+        let _ = cache_text_block(
+            text_cache,
+            page,
+            layout,
+            index,
+            viewport_width,
+            fallback_font,
+        );
+
+        prefetched += 1;
+
+        if prefetched == TEXT_CACHE_PREFETCH_BLOCKS {
+            break;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint(
     pixels: &mut [u32],
@@ -285,52 +387,27 @@ pub(crate) fn paint(
             }
 
             BlockContent::Text(text) => {
-                let content_width = width.saturating_sub(32).max(1);
-                let block_height = usize::try_from(layout.block_height(index).max(0)).unwrap_or(0);
-
-                if let Some(cached) = text_cache.cached(index) {
-                    cached.blit_to(pixels, width, height, 16, y);
-                    cached.append_link_regions(&mut link_regions, 16, y);
-                    continue;
-                }
-
-                let page_font = page
-                    .font_data_for(
-                        block.style.font_family.as_deref(),
-                        block.style.font_weight,
-                        block.style.font_style,
-                    )
-                    .and_then(|data| TrueTypeFont::parse(data).ok());
-
-                let vector_font = page_font.as_ref().or(fallback_font.as_ref());
-
-                if let Some(cached) = text_cache.get_or_render(
+                if let Some(cached) = cache_text_block(
+                    text_cache,
+                    page,
+                    layout,
                     index,
-                    content_width,
-                    block_height,
-                    |cache_pixels, cache_width, cache_height, cache_links| {
-                        draw_wrapped_text(
-                            cache_pixels,
-                            cache_width,
-                            cache_height,
-                            0,
-                            0,
-                            cache_width as i32,
-                            text,
-                            block.style.font_size,
-                            block.style.font_weight,
-                            block.style.font_style,
-                            block.style.color,
-                            block.link.as_deref(),
-                            vector_font,
-                            0,
-                            cache_links,
-                        );
-                    },
+                    width,
+                    fallback_font.as_ref(),
                 ) {
                     cached.blit_to(pixels, width, height, 16, y);
                     cached.append_link_regions(&mut link_regions, 16, y);
                 } else {
+                    let page_font = page
+                        .font_data_for(
+                            block.style.font_family.as_deref(),
+                            block.style.font_weight,
+                            block.style.font_style,
+                        )
+                        .and_then(|data| TrueTypeFont::parse(data).ok());
+
+                    let vector_font = page_font.as_ref().or(fallback_font.as_ref());
+
                     draw_wrapped_text(
                         pixels,
                         width,
@@ -352,6 +429,16 @@ pub(crate) fn paint(
             }
         }
     }
+
+    prefetch_text_blocks_after_viewport(
+        text_cache,
+        page,
+        layout,
+        width,
+        height,
+        scroll_y,
+        fallback_font.as_ref(),
+    );
 
     let content_viewport_height = (height as i32).saturating_sub(CONTENT_TOP).max(0);
 
