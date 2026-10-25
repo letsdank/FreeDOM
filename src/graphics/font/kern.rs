@@ -1,13 +1,41 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     reader::{read_i16, read_u16},
     sfnt::{FontError, SfntFont, TableTag},
 };
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClassKerning {
+    first_coverage: BTreeSet<u16>,
+    first_classes: BTreeMap<u16, u16>,
+    second_classes: BTreeMap<u16, u16>,
+    class2_count: usize,
+    adjustments: Vec<i16>,
+}
+
+impl ClassKerning {
+    fn adjustment(&self, left_glyph: u16, right_glyph: u16) -> Option<i16> {
+        if !self.first_coverage.contains(&left_glyph) {
+            return None;
+        }
+
+        let first_class = usize::from(self.first_classes.get(&left_glyph).copied().unwrap_or(0));
+
+        let second_class = usize::from(self.second_classes.get(&right_glyph).copied().unwrap_or(0));
+
+        let index = first_class
+            .checked_mul(self.class2_count)?
+            .checked_add(second_class)?;
+
+        self.adjustments.get(index).copied()
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KerningTable {
     adjustments: BTreeMap<(u16, u16), i16>,
+    class_adjustments: Vec<ClassKerning>,
 }
 
 impl KerningTable {
@@ -70,14 +98,26 @@ impl KerningTable {
             cursor = subtable_end;
         }
 
-        Ok(Self { adjustments })
+        Ok(Self {
+            adjustments,
+            class_adjustments: Vec::new(),
+        })
     }
 
     pub fn adjustment(&self, left_glyph: u16, right_glyph: u16) -> i16 {
-        self.adjustments
+        let mut adjustment = self
+            .adjustments
             .get(&(left_glyph, right_glyph))
             .copied()
-            .unwrap_or(0)
+            .unwrap_or(0);
+
+        for class_kerning in &self.class_adjustments {
+            if let Some(value) = class_kerning.adjustment(left_glyph, right_glyph) {
+                adjustment = value;
+            }
+        }
+
+        adjustment
     }
 
     pub(crate) fn override_adjustment(
@@ -88,6 +128,23 @@ impl KerningTable {
     ) {
         self.adjustments
             .insert((left_glyph, right_glyph), adjustment);
+    }
+
+    pub(crate) fn add_class_adjustment(
+        &mut self,
+        first_coverage: BTreeSet<u16>,
+        first_classes: BTreeMap<u16, u16>,
+        second_classes: BTreeMap<u16, u16>,
+        class2_count: usize,
+        adjustments: Vec<i16>,
+    ) {
+        self.class_adjustments.push(ClassKerning {
+            first_coverage,
+            first_classes,
+            second_classes,
+            class2_count,
+            adjustments,
+        });
     }
 
     fn parse_format_0(

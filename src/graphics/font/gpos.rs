@@ -3,6 +3,7 @@ use super::{
     reader::{read_bytes, read_i16, read_u16},
     sfnt::{FontError, SfntFont, TableTag},
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 const X_ADVANCE: u16 = 0x0004;
 const SUPPORTED_VALUE_FORMAT: u16 = 0x00ff;
@@ -247,12 +248,19 @@ fn apply_pair_positioning(
     subtable_offset: usize,
     kerning: &mut KerningTable,
 ) -> Result<(), FontError> {
-    let format = read_u16(table, subtable_offset, table_offset)?;
-
-    if format != 1 {
-        return Ok(());
+    match read_u16(table, subtable_offset, table_offset)? {
+        1 => apply_pair_positioning_format_1(table, table_offset, subtable_offset, kerning),
+        2 => apply_pair_positioning_format_2(table, table_offset, subtable_offset, kerning),
+        _ => Ok(()),
     }
+}
 
+fn apply_pair_positioning_format_1(
+    table: &[u8],
+    table_offset: usize,
+    subtable_offset: usize,
+    kerning: &mut KerningTable,
+) -> Result<(), FontError> {
     let coverage_offset = child_offset(
         table,
         table_offset,
@@ -313,6 +321,292 @@ fn apply_pair_positioning(
             value_format_2,
             kerning,
         )?;
+    }
+
+    Ok(())
+}
+
+fn apply_pair_positioning_format_2(
+    table: &[u8],
+    table_offset: usize,
+    subtable_offset: usize,
+    kerning: &mut KerningTable,
+) -> Result<(), FontError> {
+    let coverage_offset = child_offset(
+        table,
+        table_offset,
+        subtable_offset,
+        usize::from(read_u16(table, subtable_offset + 2, table_offset)?),
+        "class pair positioning coverage table",
+    )?;
+
+    let value_format_1 = read_u16(table, subtable_offset + 4, table_offset)?;
+    let value_format_2 = read_u16(table, subtable_offset + 6, table_offset)?;
+
+    if value_format_1 & !SUPPORTED_VALUE_FORMAT != 0
+        || value_format_2 & !SUPPORTED_VALUE_FORMAT != 0
+    {
+        return Err(error(
+            table_offset,
+            subtable_offset,
+            "unsupported GPOS value record format",
+        ));
+    }
+
+    let class_def_1_offset = child_offset(
+        table,
+        table_offset,
+        subtable_offset,
+        usize::from(read_u16(table, subtable_offset + 8, table_offset)?),
+        "first class definition",
+    )?;
+
+    let class_def_2_offset = child_offset(
+        table,
+        table_offset,
+        subtable_offset,
+        usize::from(read_u16(table, subtable_offset + 10, table_offset)?),
+        "second class definition",
+    )?;
+
+    let class1_count = usize::from(read_u16(table, subtable_offset + 12, table_offset)?);
+    let class2_count = usize::from(read_u16(table, subtable_offset + 14, table_offset)?);
+
+    if class1_count == 0 || class2_count == 0 {
+        return Err(error(
+            table_offset,
+            subtable_offset,
+            "GPOS class pair positioning has an empty class matrix",
+        ));
+    }
+
+    let first_coverage = coverage_glyphs(table, table_offset, coverage_offset)?;
+    let first_classes = class_definitions(table, table_offset, class_def_1_offset)?;
+    let second_classes = class_definitions(table, table_offset, class_def_2_offset)?;
+
+    validate_class_values(
+        &first_classes,
+        class1_count,
+        table_offset,
+        class_def_1_offset,
+        "first",
+    )?;
+
+    validate_class_values(
+        &second_classes,
+        class2_count,
+        table_offset,
+        class_def_2_offset,
+        "second",
+    )?;
+
+    let record_count = class1_count.checked_mul(class2_count).ok_or_else(|| {
+        error(
+            table_offset,
+            subtable_offset,
+            "GPOS class matrix is too large",
+        )
+    })?;
+
+    let value_field_count = (value_format_1.count_ones() + value_format_2.count_ones()) as usize;
+
+    let record_size = value_field_count.checked_mul(2).ok_or_else(|| {
+        error(
+            table_offset,
+            subtable_offset,
+            "GPOS value record is too large",
+        )
+    })?;
+
+    if record_size == 0 {
+        return Ok(());
+    }
+
+    let values_offset = subtable_offset + 16;
+    let values_length = record_count.checked_mul(record_size).ok_or_else(|| {
+        error(
+            table_offset,
+            values_offset,
+            "GPOS class matrix is too large",
+        )
+    })?;
+
+    read_bytes(table, values_offset, values_length, table_offset)?;
+
+    let has_x_advance = value_format_1 & X_ADVANCE != 0;
+    let mut adjustments = if has_x_advance {
+        Vec::with_capacity(record_count)
+    } else {
+        Vec::new()
+    };
+
+    let mut cursor = values_offset;
+
+    for _ in 0..record_count {
+        let (x_advance, next_cursor) =
+            read_value_record(table, table_offset, cursor, value_format_1)?;
+        cursor = next_cursor;
+
+        let (_, next_cursor) = read_value_record(table, table_offset, cursor, value_format_2)?;
+        cursor = next_cursor;
+
+        if has_x_advance {
+            adjustments.push(x_advance);
+        }
+    }
+
+    if has_x_advance {
+        kerning.add_class_adjustment(
+            first_coverage,
+            first_classes,
+            second_classes,
+            class2_count,
+            adjustments,
+        );
+    }
+
+    Ok(())
+}
+
+fn coverage_glyphs(
+    table: &[u8],
+    table_offset: usize,
+    coverage_offset: usize,
+) -> Result<BTreeSet<u16>, FontError> {
+    let mut glyphs = BTreeSet::new();
+
+    match read_u16(table, coverage_offset, table_offset)? {
+        1 => {
+            let glyph_count = usize::from(read_u16(table, coverage_offset + 2, table_offset)?);
+            read_bytes(table, coverage_offset + 4, glyph_count * 2, table_offset)?;
+
+            for index in 0..glyph_count {
+                glyphs.insert(read_u16(
+                    table,
+                    coverage_offset + 4 + index * 2,
+                    table_offset,
+                )?);
+            }
+        }
+        2 => {
+            let range_count = usize::from(read_u16(table, coverage_offset + 2, table_offset)?);
+            read_bytes(table, coverage_offset + 4, range_count * 6, table_offset)?;
+
+            for index in 0..range_count {
+                let range_offset = coverage_offset + 4 + index * 6;
+                let first = read_u16(table, range_offset, table_offset)?;
+                let last = read_u16(table, range_offset + 2, table_offset)?;
+
+                if first > last {
+                    return Err(error(
+                        table_offset,
+                        range_offset,
+                        "GPOS coverage range is reversed",
+                    ));
+                }
+
+                glyphs.extend(first..=last);
+            }
+        }
+        _ => {
+            return Err(error(
+                table_offset,
+                coverage_offset,
+                "unsupported GPOS coverage format",
+            ));
+        }
+    }
+
+    Ok(glyphs)
+}
+
+fn class_definitions(
+    table: &[u8],
+    table_offset: usize,
+    class_def_offset: usize,
+) -> Result<BTreeMap<u16, u16>, FontError> {
+    let mut classes = BTreeMap::new();
+
+    match read_u16(table, class_def_offset, table_offset)? {
+        1 => {
+            let first_glyph = read_u16(table, class_def_offset + 2, table_offset)?;
+            let glyph_count = usize::from(read_u16(table, class_def_offset + 4, table_offset)?);
+
+            read_bytes(table, class_def_offset + 6, glyph_count * 2, table_offset)?;
+
+            for index in 0..glyph_count {
+                let class = read_u16(table, class_def_offset + 6 + index * 2, table_offset)?;
+
+                if class != 0 {
+                    let glyph = first_glyph.checked_add(index as u16).ok_or_else(|| {
+                        error(
+                            table_offset,
+                            class_def_offset,
+                            "GPOS class definition glyph ID overflows",
+                        )
+                    })?;
+
+                    classes.insert(glyph, class);
+                }
+            }
+        }
+        2 => {
+            let range_count = usize::from(read_u16(table, class_def_offset + 2, table_offset)?);
+            read_bytes(table, class_def_offset + 4, range_count * 6, table_offset)?;
+
+            let mut previous_last = None;
+
+            for index in 0..range_count {
+                let range_offset = class_def_offset + 4 + index * 6;
+                let first = read_u16(table, range_offset, table_offset)?;
+                let last = read_u16(table, range_offset + 2, table_offset)?;
+                let class = read_u16(table, range_offset + 4, table_offset)?;
+
+                if first > last || previous_last.is_some_and(|previous| first <= previous) {
+                    return Err(error(
+                        table_offset,
+                        range_offset,
+                        "GPOS class definition ranges overlap or are reversed",
+                    ));
+                }
+
+                previous_last = Some(last);
+
+                if class != 0 {
+                    for glyph in first..=last {
+                        classes.insert(glyph, class);
+                    }
+                }
+            }
+        }
+        _ => {
+            return Err(error(
+                table_offset,
+                class_def_offset,
+                "unsupported GPOS class definition format",
+            ));
+        }
+    }
+
+    Ok(classes)
+}
+
+fn validate_class_values(
+    classes: &BTreeMap<u16, u16>,
+    class_count: usize,
+    table_offset: usize,
+    class_def_offset: usize,
+    name: &str,
+) -> Result<(), FontError> {
+    if classes
+        .values()
+        .any(|class| usize::from(*class) >= class_count)
+    {
+        return Err(error(
+            table_offset,
+            class_def_offset,
+            format!("GPOS {name} class definition refers to a missing class"),
+        ));
     }
 
     Ok(())
