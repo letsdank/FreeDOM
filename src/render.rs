@@ -359,44 +359,6 @@ fn cache_page_block<'cache>(
     }
 }
 
-fn prefetch_next_text_block(
-    block_raster_cache: &mut BlockRasterCache,
-    page: &Page,
-    layout: &PageLayout,
-    viewport_width: usize,
-    viewport_height: usize,
-    scroll_y: i32,
-    fallback_font: Option<&TrueTypeFont<'_>>,
-) {
-    let visible_height = i32::try_from(viewport_height)
-        .unwrap_or(i32::MAX)
-        .saturating_sub(CONTENT_TOP)
-        .max(0);
-
-    let viewport_bottom = scroll_y.saturating_add(visible_height);
-
-    for index in 0..page.blocks.len() {
-        if layout.block_top(index) < viewport_bottom {
-            continue;
-        }
-
-        if !matches!(&page.blocks[index].content, BlockContent::Text(_)) {
-            continue;
-        }
-
-        let _ = cache_text_block(
-            block_raster_cache,
-            page,
-            layout,
-            index,
-            viewport_width,
-            fallback_font,
-        );
-
-        break;
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint(
     pixels: &mut [u32],
@@ -535,29 +497,6 @@ pub(crate) fn paint(
                     elapsed.as_secs_f64() * 1_000.0,
                 );
             }
-        }
-    }
-
-    let prefetch_started = profiling.then(Instant::now);
-
-    prefetch_next_text_block(
-        block_raster_cache,
-        page,
-        layout,
-        width,
-        height,
-        scroll_y,
-        fallback_font.as_ref(),
-    );
-
-    if let Some(prefetch_started) = prefetch_started {
-        let elapsed = prefetch_started.elapsed();
-
-        if elapsed >= slow_block_threshold {
-            eprintln!(
-                "FreeDOM slow prefetch: {:.2} ms",
-                elapsed.as_secs_f64() * 1_000.0,
-            );
         }
     }
 
