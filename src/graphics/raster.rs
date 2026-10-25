@@ -383,14 +383,26 @@ pub fn fill_path_with_paint_clipped(
         return;
     };
 
+    let fill_edges = FillEdges::from_path(path);
+    let mut upper_edges = Vec::new();
+    let mut lower_edges = Vec::new();
+
     for y in start_y..end_y {
+        fill_edges.collect_at_scanline(y as f32 + 0.25, &mut upper_edges);
+        fill_edges.collect_at_scanline(y as f32 + 0.75, &mut lower_edges);
+
         for x in start_x..end_x {
             let coverage = SAMPLE_OFFSETS
                 .iter()
                 .filter(|(offset_x, offset_y)| {
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
+                    let edges = if *offset_y < 0.5 {
+                        &upper_edges
+                    } else {
+                        &lower_edges
+                    };
 
-                    sample_is_inside(path, sample, fill_rule)
+                    sample_is_inside_edges(edges, sample, fill_rule)
                         && clips
                             .iter()
                             .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
@@ -938,6 +950,80 @@ fn point_is_inside_butt_segment(point: Point, from: Point, to: Point, radius: f3
     distance <= radius
 }
 
+#[derive(Clone, Copy)]
+struct FillEdge {
+    from: Point,
+    to: Point,
+}
+
+struct FillEdges {
+    edges: Vec<FillEdge>,
+}
+
+impl FillEdges {
+    fn from_path(path: &FlattenedPath) -> Self {
+        let mut edges = Vec::new();
+
+        for contour in path.contours() {
+            let points = contour.points();
+
+            if points.len() < 2 {
+                continue;
+            }
+
+            for index in 0..points.len() {
+                edges.push(FillEdge {
+                    from: points[index],
+                    to: points[(index + 1) % points.len()],
+                });
+            }
+        }
+
+        Self { edges }
+    }
+
+    fn collect_at_scanline(&self, scanline_y: f32, output: &mut Vec<FillEdge>) {
+        output.clear();
+        output.extend(
+            self.edges
+                .iter()
+                .copied()
+                .filter(|edge| segment_crosses_scanline(scanline_y, edge.from, edge.to)),
+        );
+    }
+}
+
+fn sample_is_inside_edges(edges: &[FillEdge], sample: Point, fill_rule: FillRule) -> bool {
+    let mut winding_number = 0_i32;
+    let mut crossings = 0_u32;
+
+    for edge in edges {
+        let crossing_x = edge.from.x
+            + (sample.y - edge.from.y) * (edge.to.x - edge.from.x) / (edge.to.y - edge.from.y);
+
+        if crossing_x <= sample.x {
+            continue;
+        }
+
+        crossings += 1;
+
+        if edge.to.y > edge.from.y {
+            winding_number += 1;
+        } else {
+            winding_number -= 1;
+        }
+    }
+
+    match fill_rule {
+        FillRule::EvenOdd => crossings % 2 == 1,
+        FillRule::NonZero => winding_number != 0,
+    }
+}
+
+fn segment_crosses_scanline(scanline_y: f32, from: Point, to: Point) -> bool {
+    (from.y <= scanline_y && to.y > scanline_y) || (to.y <= scanline_y && from.y > scanline_y)
+}
+
 fn sample_is_inside(path: &FlattenedPath, sample: Point, fill_rule: FillRule) -> bool {
     let mut winding_number = 0_i32;
     let mut crossings = 0_u32;
@@ -974,10 +1060,7 @@ fn sample_is_inside(path: &FlattenedPath, sample: Point, fill_rule: FillRule) ->
 }
 
 fn ray_crosses_segment(sample: Point, from: Point, to: Point) -> bool {
-    let crosses_scanline =
-        (from.y <= sample.y && to.y > sample.y) || (to.y <= sample.y && from.y > sample.y);
-
-    if !crosses_scanline {
+    if !segment_crosses_scanline(sample.y, from, to) {
         return false;
     }
 
@@ -1375,5 +1458,43 @@ mod tests {
 
         assert!(repeated_color.red > repeated_color.blue);
         assert!(reflected_color.blue > reflected_color.red);
+    }
+
+    #[test]
+    fn active_edges_match_full_path_tests() {
+        let mut path = Path::new();
+        path.move_to(Point::new(1.0, 1.0));
+        path.line_to(Point::new(9.0, 1.0));
+        path.line_to(Point::new(9.0, 9.0));
+        path.line_to(Point::new(1.0, 9.0));
+        path.close();
+
+        path.move_to(Point::new(3.0, 3.0));
+        path.line_to(Point::new(7.0, 3.0));
+        path.line_to(Point::new(7.0, 7.0));
+        path.line_to(Point::new(3.0, 7.0));
+        path.close();
+
+        let flattened = flatten_path(&path, 0.25).unwrap();
+        let edges = FillEdges::from_path(&flattened);
+        let mut active_edges = Vec::new();
+
+        for y in 0..10 {
+            for offset_y in [0.25, 0.75] {
+                let sample_y = y as f32 + offset_y;
+                edges.collect_at_scanline(sample_y, &mut active_edges);
+
+                for x in 0..10 {
+                    let sample = Point::new(x as f32 + 0.25, sample_y);
+
+                    for fill_rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                        assert_eq!(
+                            sample_is_inside(&flattened, sample, fill_rule),
+                            sample_is_inside_edges(&active_edges, sample, fill_rule),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
