@@ -84,7 +84,7 @@ pub(crate) fn paint(
 ) -> PaintResult {
     pixels.fill(BACKGROUND);
 
-    let vector_font = vector_font_data.and_then(|data| TrueTypeFont::parse(data).ok());
+    let fallback_font = vector_font_data.and_then(|data| TrueTypeFont::parse(data).ok());
 
     fill_rect(pixels, width, height, 0, 0, width as i32, 70, TOOLBAR);
     fill_rect(
@@ -140,6 +140,16 @@ pub(crate) fn paint(
             }
 
             BlockContent::Text(text) => {
+                let page_font = page
+                    .font_data_for(
+                        block.style.font_family.as_deref(),
+                        block.style.font_weight,
+                        block.style.font_style,
+                    )
+                    .and_then(|data| TrueTypeFont::parse(data).ok());
+
+                let vector_font = page_font.as_ref().or(fallback_font.as_ref());
+
                 y = draw_wrapped_text(
                     pixels,
                     width,
@@ -153,7 +163,7 @@ pub(crate) fn paint(
                     block.style.font_style,
                     block.style.color,
                     block.link.as_deref(),
-                    vector_font.as_ref(),
+                    vector_font,
                     &mut link_regions,
                 );
 

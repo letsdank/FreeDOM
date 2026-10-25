@@ -1,7 +1,11 @@
 use crate::{
-    css::{CssRule, Display, Element as CssElement, TextStyle, build_author_rules, compute_style},
+    css::{
+        CssRule, Display, Element as CssElement, FontFaceRule, FontStyle, FontWeight, TextStyle,
+        build_author_rules, compute_style, parse_font_faces,
+    },
     fetch::Fetcher,
     graphics::{
+        font::woff::normalize_font_container,
         image::decode_png,
         raster::Surface as RasterSurface,
         svg::{SvgDocument, parse_svg_at, parse_svg_element, parse_svg_element_at},
@@ -47,10 +51,48 @@ impl Block {
     }
 }
 
+struct Stylesheet {
+    source: String,
+    base_url: Url,
+}
+
+struct LoadedFontFace {
+    family: String,
+    font_weight: FontWeight,
+    font_style: FontStyle,
+    data: Vec<u8>,
+}
+
 pub(crate) struct Page {
     pub(crate) url: String,
     pub(crate) title: String,
     pub(crate) blocks: Vec<Block>,
+    font_faces: Vec<LoadedFontFace>,
+}
+
+impl Page {
+    pub(crate) fn font_data_for(
+        &self,
+        family: Option<&str>,
+        font_weight: FontWeight,
+        font_style: FontStyle,
+    ) -> Option<&[u8]> {
+        let family = family?;
+
+        self.font_faces
+            .iter()
+            .find(|face| {
+                face.family.eq_ignore_ascii_case(family)
+                    && face.font_weight == font_weight
+                    && face.font_style == font_style
+            })
+            .or_else(|| {
+                self.font_faces
+                    .iter()
+                    .find(|face| face.family.eq_ignore_ascii_case(family))
+            })
+            .map(|face| face.data.as_slice())
+    }
 }
 
 struct ElementInfo {
@@ -112,14 +154,27 @@ fn parse_html(url: &str, html: &str) -> Page {
     parse_dom(url, &document, &stylesheets)
 }
 
-fn parse_dom(url: &str, document: &HtmlDocument, stylesheets: &[String]) -> Page {
-    parse_dom_with_fetcher(url, document, stylesheets, None)
+fn parse_dom(url: &str, document: &HtmlDocument, stylesheet_sources: &[String]) -> Page {
+    let stylesheets: Vec<Stylesheet> = Url::parse(url)
+        .map(|base_url| {
+            stylesheet_sources
+                .iter()
+                .cloned()
+                .map(|source| Stylesheet {
+                    source,
+                    base_url: base_url.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    parse_dom_with_fetcher(url, document, &stylesheets, None)
 }
 
 fn parse_dom_with_fetcher(
     url: &str,
     document: &HtmlDocument,
-    stylesheets: &[String],
+    stylesheets: &[Stylesheet],
     fetcher: Option<&Fetcher>,
 ) -> Page {
     let mut document_state = DocumentState::with_title(find_title(document).unwrap_or_default());
@@ -133,7 +188,15 @@ fn parse_dom_with_fetcher(
         document_state.title.clone()
     };
 
-    let rules = build_author_rules(stylesheets);
+    let stylesheets_texts: Vec<String> = stylesheets
+        .iter()
+        .map(|stylesheet| stylesheet.source.clone())
+        .collect();
+
+    let rules = build_author_rules(&stylesheets_texts);
+    let font_faces = fetcher
+        .map(|fetcher| load_author_fonts(fetcher, stylesheets))
+        .unwrap_or_default();
     let base_style = TextStyle::initial();
 
     let mut blocks = Vec::new();
@@ -159,6 +222,7 @@ fn parse_dom_with_fetcher(
         url: url.to_owned(),
         title,
         blocks,
+        font_faces,
     }
 }
 
@@ -291,17 +355,39 @@ fn collect_inline_stylesheets_from_node(node: &HtmlNode, stylesheets: &mut Vec<S
     }
 }
 
-fn load_author_stylesheets(fetcher: &Fetcher, page_url: &Url, root: &HtmlDocument) -> Vec<String> {
+fn load_author_stylesheets(
+    fetcher: &Fetcher,
+    page_url: &Url,
+    root: &HtmlDocument,
+) -> Vec<Stylesheet> {
     let mut sources = Vec::new();
     collect_stylesheet_sources(root, page_url, &mut sources);
 
     sources
         .into_iter()
         .filter_map(|source| match source {
-            StylesheetSource::Inline(css) => Some(css),
+            StylesheetSource::Inline(source) => Some(Stylesheet {
+                source,
+                base_url: page_url.clone(),
+            }),
 
             StylesheetSource::External(url) => match fetcher.get(&url) {
-                Ok(response) => Some(response.text_lossy()),
+                Ok(response) if response.status < 400 => {
+                    let source = response.text_lossy();
+
+                    Some(Stylesheet {
+                        source,
+                        base_url: response.url,
+                    })
+                }
+
+                Ok(response) => {
+                    eprintln!(
+                        "FreeDOM: stylesheet {url} returned HTTP status {}",
+                        response.status
+                    );
+                    None
+                }
 
                 Err(error) => {
                     eprintln!("FreeDOM: failed to load stylesheet {url}: {error}");
@@ -310,6 +396,73 @@ fn load_author_stylesheets(fetcher: &Fetcher, page_url: &Url, root: &HtmlDocumen
             },
         })
         .collect()
+}
+
+fn load_author_fonts(fetcher: &Fetcher, stylesheets: &[Stylesheet]) -> Vec<LoadedFontFace> {
+    let mut loaded_fonts = Vec::new();
+
+    for stylesheet in stylesheets {
+        for face in parse_font_faces(std::slice::from_ref(&stylesheet.source)) {
+            let Some(data) = load_font_face(fetcher, stylesheet, &face) else {
+                continue;
+            };
+
+            loaded_fonts.push(LoadedFontFace {
+                family: face.family,
+                font_weight: face.font_weight,
+                font_style: face.font_style,
+                data,
+            });
+        }
+    }
+
+    loaded_fonts
+}
+
+fn load_font_face(
+    fetcher: &Fetcher,
+    stylesheet: &Stylesheet,
+    face: &FontFaceRule,
+) -> Option<Vec<u8>> {
+    for source in &face.sources {
+        let Ok(url) = stylesheet.base_url.join(source) else {
+            continue;
+        };
+
+        if !Fetcher::supports(&url) {
+            continue;
+        }
+
+        let response = match fetcher.get(&url) {
+            Ok(response) if response.status < 400 => response,
+
+            Ok(response) => {
+                eprintln!(
+                    "FreeDOM: font {url} returned HTTP status {}",
+                    response.status
+                );
+                continue;
+            }
+
+            Err(error) => {
+                eprintln!("FreeDOM: failed to load font {url}: {error}");
+                continue;
+            }
+        };
+
+        let data = match normalize_font_container(response.bytes().to_vec()) {
+            Ok(data) => data,
+
+            Err(error) => {
+                eprintln!("FreeDOM: failed to decode font {url}: {error}");
+                continue;
+            }
+        };
+
+        return Some(data);
+    }
+
+    None
 }
 
 fn load_image(fetcher: &Fetcher, page_url: &Url, source: &str) -> Option<BlockContent> {
@@ -919,5 +1072,25 @@ mod tests {
         assert_eq!(style.font_size, 20.0);
         assert_eq!(style.font_weight, FontWeight::Bold);
         assert_eq!(style.font_style, FontStyle::Italic);
+    }
+
+    #[test]
+    fn selects_a_matching_loaded_font_face() {
+        let page = Page {
+            url: "https://example.test/".to_owned(),
+            title: String::new(),
+            blocks: Vec::new(),
+            font_faces: vec![LoadedFontFace {
+                family: "FreeDOM Sans".to_owned(),
+                font_weight: FontWeight::Normal,
+                font_style: FontStyle::Normal,
+                data: vec![1, 2, 3],
+            }],
+        };
+
+        assert_eq!(
+            page.font_data_for(Some("freedom sans"), FontWeight::Normal, FontStyle::Normal,),
+            Some([1, 2, 3].as_slice())
+        );
     }
 }
