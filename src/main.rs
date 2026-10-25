@@ -1,6 +1,7 @@
 mod css;
 mod fetch;
 mod page;
+mod page_layout;
 mod render;
 mod url;
 
@@ -17,6 +18,7 @@ mod wpt;
 
 use crate::{
     page::{Page, load_page},
+    page_layout::PageLayout,
     render::{LinkRegion, load_vector_font_from_environment, paint},
 };
 use anyhow::{Context as _, Result};
@@ -119,6 +121,7 @@ struct App {
     history: SessionHistory,
     modifiers: ModifiersState,
     vector_font_data: Option<Vec<u8>>,
+    layout: Option<PageLayout>,
 }
 
 impl App {
@@ -144,6 +147,7 @@ impl App {
             scroll_y: 0,
             max_scroll_y: 0,
             vector_font_data,
+            layout: None,
         }
     }
 
@@ -283,6 +287,22 @@ impl App {
 
         let width = size.width.max(1);
         let height = size.height.max(1);
+        let viewport_width = width as usize;
+
+        let rebuild_layout = match &self.layout {
+            Some(layout) => layout.viewport_width() != viewport_width,
+            None => true,
+        };
+
+        if rebuild_layout {
+            self.layout = Some(PageLayout::build(
+                &self.page,
+                viewport_width,
+                self.vector_font_data.as_deref(),
+            ));
+        }
+
+        let layout = self.layout.as_ref().expect("page layout must exist");
 
         let surface = self.surface.as_mut().context("surface еще не создан")?;
 
@@ -302,6 +322,7 @@ impl App {
             width as usize,
             height as usize,
             &self.page,
+            layout,
             &self.address,
             &self.status,
             self.vector_font_data.as_deref(),
@@ -413,6 +434,7 @@ impl ApplicationHandler<AppEvent> for App {
                         self.max_scroll_y = 0;
                         self.link_regions.clear();
                         self.page = page;
+                        self.layout = None;
                     }
 
                     Err(error) => {

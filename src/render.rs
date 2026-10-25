@@ -10,6 +10,10 @@ use crate::{
         svg::SvgDocument,
     },
     page::{BlockContent, Page},
+    page_layout::{
+        CONTENT_TOP, PageLayout, bitmap_block_size, svg_block_size, synthetic_bold_offset,
+        synthetic_italic_overhang, synthetic_italic_shear, text_metrics, text_word_width,
+    },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
@@ -17,8 +21,6 @@ const BACKGROUND: u32 = 0x00_F7_F7_F7;
 const TOOLBAR: u32 = 0x00_20_25_2B;
 const ADDRESS_BAR: u32 = 0x00_38_40_4A;
 const LIGHT_TEXT: u32 = 0x00_F4_F6_F8;
-
-const CONTENT_TOP: i32 = 90;
 
 pub(crate) struct LinkRegion {
     x: i32,
@@ -77,6 +79,7 @@ pub(crate) fn paint(
     width: usize,
     height: usize,
     page: &Page,
+    layout: &PageLayout,
     address: &str,
     status: &str,
     vector_font_data: Option<&[u8]>,
@@ -104,39 +107,36 @@ pub(crate) fn paint(
     let mut y = CONTENT_TOP - scroll_y;
     let mut link_regions = Vec::new();
 
-    for block in &page.blocks {
+    for (index, block) in page.blocks.iter().enumerate() {
+        let y = CONTENT_TOP + layout.block_top(index) - scroll_y;
+
+        if y + layout.block_height(index) <= CONTENT_TOP || y >= height as i32 {
+            continue;
+        }
+
         match &block.content {
             BlockContent::Svg(svg) => {
                 let available_width = width.saturating_sub(32);
                 let (svg_width, svg_height) = svg_block_size(svg, available_width);
 
-                if y + svg_height as i32 > CONTENT_TOP && y < height as i32 {
-                    if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT)
-                    {
-                        surface.blit_xrgb8888(pixels, width, height, 16, y);
-                    }
+                if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT) {
+                    surface.blit_xrgb8888(pixels, width, height, 16, y);
                 }
-
-                y += svg_height as i32 + block.style.margin_after;
             }
 
             BlockContent::Bitmap(bitmap) => {
                 let available_width = width.saturating_sub(32);
                 let (image_width, image_height) = bitmap_block_size(bitmap, available_width);
 
-                if y + image_height as i32 > CONTENT_TOP && y < height as i32 {
-                    bitmap.blit_scaled_xrgb8888(
-                        pixels,
-                        width,
-                        height,
-                        16,
-                        y,
-                        image_width,
-                        image_height,
-                    );
-                }
-
-                y += image_height as i32 + block.style.margin_after;
+                bitmap.blit_scaled_xrgb8888(
+                    pixels,
+                    width,
+                    height,
+                    16,
+                    y,
+                    image_width,
+                    image_height,
+                );
             }
 
             BlockContent::Text(text) => {
@@ -150,7 +150,7 @@ pub(crate) fn paint(
 
                 let vector_font = page_font.as_ref().or(fallback_font.as_ref());
 
-                y = draw_wrapped_text(
+                draw_wrapped_text(
                     pixels,
                     width,
                     height,
@@ -166,69 +166,19 @@ pub(crate) fn paint(
                     vector_font,
                     &mut link_regions,
                 );
-
-                y += block.style.margin_after;
             }
         }
     }
 
-    let document_bottom = y + scroll_y;
+    let content_viewport_height = (height as i32).saturating_sub(CONTENT_TOP).max(0);
 
     PaintResult {
         link_regions,
-        max_scroll_y: (document_bottom - height as i32).max(0),
+        max_scroll_y: layout
+            .content_height()
+            .saturating_sub(content_viewport_height)
+            .max(0),
     }
-}
-
-fn svg_block_size(svg: &SvgDocument, available_width: usize) -> (usize, usize) {
-    const DEFAULT_WIDTH: usize = 300;
-    const DEFAULT_HEIGHT: usize = 150;
-    const MAX_HEIGHT: usize = 4096;
-
-    let maximum_width = available_width.max(1);
-
-    let declared_width = svg
-        .width
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .map(|value| value.round() as usize);
-
-    let declared_height = svg
-        .height
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .map(|value| value.round() as usize);
-
-    let aspect_ratio = svg
-        .view_box
-        .filter(|view_box| view_box.width > 0.0 && view_box.height > 0.0)
-        .map(|view_box| view_box.width / view_box.height);
-
-    let width = declared_width
-        .unwrap_or_else(|| DEFAULT_WIDTH.min(maximum_width))
-        .clamp(1, maximum_width);
-
-    let height = match (declared_height, aspect_ratio) {
-        (Some(height), _) => height,
-        (None, Some(ratio)) => (width as f32 / ratio).round() as usize,
-        (None, None) => DEFAULT_HEIGHT,
-    }
-    .clamp(1, MAX_HEIGHT);
-
-    (width, height)
-}
-
-fn bitmap_block_size(bitmap: &RasterSurface, available_width: usize) -> (usize, usize) {
-    const MAX_HEIGHT: usize = 4_096;
-
-    let source_width = bitmap.width().max(1);
-    let source_height = bitmap.height().max(1);
-    let width = source_width.min(available_width.max(1));
-
-    let height = source_height
-        .saturating_mul(width)
-        .saturating_add(source_width - 1)
-        / source_width;
-
-    (width, height.clamp(1, MAX_HEIGHT))
 }
 
 fn draw_wrapped_text(
@@ -247,49 +197,23 @@ fn draw_wrapped_text(
     vector_font: Option<&TrueTypeFont<'_>>,
     link_regions: &mut Vec<LinkRegion>,
 ) -> i32 {
-    let bitmap_scale = if font_size >= 24.0 { 2 } else { 1 };
-
-    let bitmap_character_width = (8 * bitmap_scale) as i32;
-    let bitmap_glyph_height = (8 * bitmap_scale) as i32;
-    let bitmap_line_height = (10 * bitmap_scale) as i32;
-
-    let character_width = vector_font
-        .and_then(|font| {
-            vector_text_width(font, " ", font_size, FontWeight::Normal, FontStyle::Normal)
-        })
-        .unwrap_or(bitmap_character_width);
-
-    let vector_line_metrics = vector_font.and_then(|font| font.line_metrics(font_size));
-
-    let glyph_height = vector_line_metrics
-        .map(|metrics| metrics.line_height.ceil() as i32)
-        .unwrap_or(bitmap_glyph_height);
-
-    let line_height = vector_line_metrics
-        .map(|metrics| metrics.line_height.ceil() as i32)
-        .unwrap_or(bitmap_line_height);
-
+    let metrics = text_metrics(vector_font, font_size);
     let mut x = left;
 
     for word in text.split_whitespace() {
-        let word_width = vector_font
-            .and_then(|font| vector_text_width(font, word, font_size, font_weight, font_style))
-            .unwrap_or_else(|| {
-                word.chars().count() as i32 * bitmap_character_width
-                    + i32::from(font_weight == FontWeight::Bold)
-            });
+        let word_width = text_word_width(vector_font, word, font_size, font_weight, font_style);
 
-        if x != left && x + character_width + word_width > right {
+        if x != left && x + metrics.character_width + word_width > right {
             x = left;
-            y += line_height;
+            y += metrics.line_height;
         }
 
         if x != left {
-            x += character_width;
+            x += metrics.character_width;
         }
 
         let word_x = x;
-        let is_visible = y + glyph_height > CONTENT_TOP && y < height as i32;
+        let is_visible = y + metrics.glyph_height > CONTENT_TOP && y < height as i32;
 
         if is_visible {
             let rendered_with_vector_font = vector_font.is_some_and(|font| {
@@ -309,7 +233,16 @@ fn draw_wrapped_text(
             });
 
             if !rendered_with_vector_font {
-                draw_text_line(pixels, width, height, word_x, y, word, bitmap_scale, color);
+                draw_text_line(
+                    pixels,
+                    width,
+                    height,
+                    word_x,
+                    y,
+                    word,
+                    metrics.bitmap_scale,
+                    color,
+                );
 
                 if font_weight == FontWeight::Bold {
                     draw_text_line(
@@ -319,7 +252,7 @@ fn draw_wrapped_text(
                         word_x + 1,
                         y,
                         word,
-                        bitmap_scale,
+                        metrics.bitmap_scale,
                         color,
                     );
                 }
@@ -330,7 +263,7 @@ fn draw_wrapped_text(
                     x: word_x,
                     y,
                     width: word_width,
-                    height: glyph_height,
+                    height: metrics.glyph_height,
                     target: target.to_owned(),
                 });
             }
@@ -339,53 +272,7 @@ fn draw_wrapped_text(
         x += word_width;
     }
 
-    y + line_height
-}
-
-fn vector_text_width(
-    font: &TrueTypeFont<'_>,
-    text: &str,
-    font_size: f32,
-    font_weight: FontWeight,
-    font_style: FontStyle,
-) -> Option<i32> {
-    let outline = font.outline_text(text, font_size).ok()?;
-
-    let extra_width = synthetic_bold_offset(font_size, font_weight)
-        + synthetic_italic_overhang(font, font_size, font_style);
-
-    Some((outline.advance_width + extra_width).ceil().max(1.0) as i32)
-}
-
-fn synthetic_italic_shear(font_style: FontStyle) -> f32 {
-    match font_style {
-        FontStyle::Normal => 0.0,
-        // Glyph outlines above the baseline have negative Y coordinates, so the factor is negative.
-        FontStyle::Italic => -0.212_56,
-    }
-}
-
-fn synthetic_italic_overhang(
-    font: &TrueTypeFont<'_>,
-    font_size: f32,
-    font_style: FontStyle,
-) -> f32 {
-    let shear = synthetic_italic_shear(font_style).abs();
-
-    if shear == 0.0 {
-        return 0.0;
-    }
-
-    font.line_metrics(font_size)
-        .map(|metrics| metrics.ascent * shear)
-        .unwrap_or(font_size * shear)
-}
-
-fn synthetic_bold_offset(font_size: f32, font_weight: FontWeight) -> f32 {
-    match font_weight {
-        FontWeight::Normal => 0.0,
-        FontWeight::Bold => (font_size / 24.0).clamp(1.0, 2.0),
-    }
+    y + metrics.line_height
 }
 
 #[allow(clippy::too_many_arguments)]
