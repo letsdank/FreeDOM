@@ -175,6 +175,10 @@ impl<'a> TrueTypeFont<'a> {
         self.glyph_path(self.glyph_id(character))
     }
 
+    pub fn glyph_cache_key(&self) -> usize {
+        self.glyf.as_ptr() as usize
+    }
+
     fn glyph_path_inner(
         &self,
         glyph_id: u16,

@@ -21,7 +21,9 @@ use crate::performance::FrameProfiler;
 use crate::{
     page::{Page, load_page},
     page_layout::PageLayout,
-    render::{BlockRasterCache, LinkRegion, load_vector_font_from_environment, paint},
+    render::{
+        BlockRasterCache, GlyphRasterCache, LinkRegion, load_vector_font_from_environment, paint,
+    },
 };
 use anyhow::{Context as _, Result};
 use softbuffer::{Context as SoftbufferContext, Surface};
@@ -127,6 +129,7 @@ struct App {
     layout: Option<PageLayout>,
     block_raster_cache: BlockRasterCache,
     frame_profiler: FrameProfiler,
+    glyph_raster_cache: GlyphRasterCache,
 }
 
 impl App {
@@ -155,6 +158,7 @@ impl App {
             layout: None,
             block_raster_cache: BlockRasterCache::new(),
             frame_profiler: FrameProfiler::from_environment(),
+            glyph_raster_cache: GlyphRasterCache::new(),
         }
     }
 
@@ -338,6 +342,7 @@ impl App {
             &self.status,
             self.vector_font_data.as_deref(),
             &mut self.block_raster_cache,
+            &mut self.glyph_raster_cache,
             self.scroll_y,
             profiling,
         );
@@ -457,6 +462,7 @@ impl ApplicationHandler<AppEvent> for App {
                         self.page = page;
                         self.layout = None;
                         self.block_raster_cache.clear();
+                        self.glyph_raster_cache.clear();
                     }
 
                     Err(error) => {

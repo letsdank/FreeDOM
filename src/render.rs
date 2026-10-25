@@ -11,11 +11,14 @@ use crate::{
     page::{BlockContent, Page},
     page_layout::{
         CONTENT_TOP, PageLayout, bitmap_block_size, svg_block_size, synthetic_bold_offset,
-        synthetic_italic_overhang, synthetic_italic_shear, text_metrics, text_word_width,
+        synthetic_italic_shear, text_metrics, text_word_width,
     },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 const BACKGROUND: u32 = 0x00_F7_F7_F7;
 const TOOLBAR: u32 = 0x00_20_25_2B;
@@ -37,6 +40,95 @@ pub(crate) struct PaintResult {
 
 const MAX_BLOCK_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RASTER_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_GLYPH_CACHE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_RASTER_GLYPH_BYTES: usize = 4 * 1024 * 1024;
+const GLYPH_SUBPIXEL_STEPS: i32 = 8;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct GlyphRasterKey {
+    font_identity: usize,
+    glyph_id: u16,
+    font_size_bits: u32,
+    bold: bool,
+    italic: bool,
+    color: u32,
+    phase_x: u8,
+}
+
+struct CachedGlyph {
+    surface: RasterSurface,
+    offset_x: i32,
+    offset_y: i32,
+}
+
+pub(crate) struct GlyphRasterCache {
+    entries: HashMap<GlyphRasterKey, CachedGlyph>,
+    cached_bytes: usize,
+}
+
+impl GlyphRasterCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            cached_bytes: 0,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.cached_bytes = 0;
+    }
+
+    fn get_or_rasterize<F>(&mut self, key: GlyphRasterKey, rasterize: F) -> Option<&CachedGlyph>
+    where
+        F: FnOnce() -> Option<CachedGlyph>,
+    {
+        if self.entries.contains_key(&key) {
+            return self.entries.get(&key);
+        }
+
+        let glyph = rasterize()?;
+        let byte_count = glyph.byte_count();
+
+        if byte_count > MAX_RASTER_GLYPH_BYTES {
+            return None;
+        }
+
+        if self.cached_bytes.saturating_add(byte_count) > MAX_GLYPH_CACHE_BYTES {
+            self.clear();
+        }
+
+        self.cached_bytes = self.cached_bytes.saturating_add(byte_count);
+        self.entries.insert(key, glyph);
+        self.entries.get(&key)
+    }
+}
+
+impl CachedGlyph {
+    fn byte_count(&self) -> usize {
+        self.surface
+            .width()
+            .saturating_mul(self.surface.height())
+            .saturating_mul(std::mem::size_of::<RasterColor>())
+    }
+
+    fn blit_to(
+        &self,
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        origin_x: i32,
+        origin_y: i32,
+    ) {
+        self.surface.blit_xrgb8888(
+            pixels,
+            width,
+            height,
+            origin_x.saturating_add(self.offset_x),
+            origin_y.saturating_add(self.offset_y),
+        );
+    }
+}
 
 pub(crate) struct BlockRasterCache {
     entries: Vec<BlockRasterCacheEntry>,
@@ -226,6 +318,7 @@ fn cache_text_block<'cache>(
     index: usize,
     viewport_width: usize,
     fallback_font: Option<&TrueTypeFont<'_>>,
+    glyph_raster_cache: &mut GlyphRasterCache,
 ) -> Option<&'cache CachedBlock> {
     let already_cached = text_cache.cached(index).is_some();
 
@@ -272,6 +365,7 @@ fn cache_text_block<'cache>(
                 vector_font,
                 0,
                 cache_links,
+                glyph_raster_cache,
             );
         },
     )
@@ -335,30 +429,6 @@ fn cache_visual_block<'cache>(
     }
 }
 
-fn cache_page_block<'cache>(
-    block_raster_cache: &'cache mut BlockRasterCache,
-    page: &Page,
-    layout: &PageLayout,
-    index: usize,
-    viewport_width: usize,
-    fallback_font: Option<&TrueTypeFont<'_>>,
-) -> Option<&'cache CachedBlock> {
-    match &page.blocks.get(index)?.content {
-        BlockContent::Text(_) => cache_text_block(
-            block_raster_cache,
-            page,
-            layout,
-            index,
-            viewport_width,
-            fallback_font,
-        ),
-
-        BlockContent::Svg(_) | BlockContent::Bitmap(_) => {
-            cache_visual_block(block_raster_cache, page, index, viewport_width)
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint(
     pixels: &mut [u32],
@@ -370,6 +440,7 @@ pub(crate) fn paint(
     status: &str,
     vector_font_data: Option<&[u8]>,
     block_raster_cache: &mut BlockRasterCache,
+    glyph_raster_cache: &mut GlyphRasterCache,
     scroll_y: i32,
     profiling: bool,
 ) -> PaintResult {
@@ -446,6 +517,7 @@ pub(crate) fn paint(
                     index,
                     width,
                     fallback_font.as_ref(),
+                    glyph_raster_cache,
                 ) {
                     cached.blit_to(pixels, width, height, 16, y);
                     cached.append_link_regions(&mut link_regions, 16, y);
@@ -476,6 +548,7 @@ pub(crate) fn paint(
                         vector_font,
                         CONTENT_TOP,
                         &mut link_regions,
+                        glyph_raster_cache,
                     );
                 }
             }
@@ -527,6 +600,7 @@ fn draw_wrapped_text(
     vector_font: Option<&TrueTypeFont<'_>>,
     visible_top: i32,
     link_regions: &mut Vec<LinkRegion>,
+    glyph_raster_cache: &mut GlyphRasterCache,
 ) -> i32 {
     let metrics = text_metrics(vector_font, font_size);
     let mut x = left;
@@ -560,6 +634,7 @@ fn draw_wrapped_text(
                     font_style,
                     color,
                     font,
+                    glyph_raster_cache,
                 )
             });
 
@@ -606,6 +681,120 @@ fn draw_wrapped_text(
     y + metrics.line_height
 }
 
+fn split_subpixel_position(value: f32) -> Option<(i32, u8)> {
+    if !value.is_finite() {
+        return None;
+    }
+
+    let floor = value.floor();
+
+    if floor < i32::MIN as f32 || floor > i32::MAX as f32 {
+        return None;
+    }
+
+    let mut base = floor as i32;
+    let mut phase = ((value - floor) * GLYPH_SUBPIXEL_STEPS as f32).round() as i32;
+    phase = phase.clamp(0, GLYPH_SUBPIXEL_STEPS);
+
+    if phase == GLYPH_SUBPIXEL_STEPS {
+        base = base.saturating_add(1);
+        phase = 0;
+    }
+
+    Some((base, phase as u8))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rasterize_vector_glyph(
+    font: &TrueTypeFont<'_>,
+    glyph_id: u16,
+    font_size: f32,
+    font_weight: FontWeight,
+    font_style: FontStyle,
+    phase_x: f32,
+    phase_y: f32,
+    color: u32,
+) -> Option<CachedGlyph> {
+    let units_per_em = f32::from(font.head().units_per_em);
+
+    if !font_size.is_finite() || font_size <= 0.0 || units_per_em <= 0.0 {
+        return None;
+    }
+
+    let scale = font_size / units_per_em;
+    let italic_shear = synthetic_italic_shear(font_style);
+    let bold_offset = synthetic_bold_offset(font_size, font_weight);
+
+    let transform = Transform::scale(scale, -scale)
+        .then(Transform::skew_x(italic_shear))
+        .then(Transform::translate(phase_x, phase_y));
+
+    let path = font.glyph_path(glyph_id).ok()?.transformed(transform);
+
+    let Some(bounds) = path.control_bounds() else {
+        return Some(CachedGlyph {
+            surface: RasterSurface::new(0, 0, RasterColor::TRANSPARENT),
+            offset_x: 0,
+            offset_y: 0,
+        });
+    };
+
+    let padding = 2.0;
+    let left = (bounds.min.x - padding).floor();
+    let top = (bounds.min.y - padding).floor();
+    let right = (bounds.max.x + bold_offset + padding).ceil();
+    let bottom = (bounds.max.y + padding).ceil();
+
+    if !left.is_finite()
+        || !top.is_finite()
+        || !right.is_finite()
+        || !bottom.is_finite()
+        || left < i32::MIN as f32
+        || top < i32::MIN as f32
+        || right > i32::MAX as f32
+        || bottom > i32::MAX as f32
+    {
+        return None;
+    }
+
+    let glyph_width = (right - left).max(1.0) as usize;
+    let glyph_height = (bottom - top).max(1.0) as usize;
+    let byte_count = glyph_width
+        .checked_mul(glyph_height)?
+        .checked_mul(std::mem::size_of::<RasterColor>())?;
+
+    if byte_count > MAX_RASTER_GLYPH_BYTES {
+        return None;
+    }
+
+    let translated_path = path.transformed(Transform::translate(-left, -top));
+    let outline = TextOutline {
+        path: translated_path,
+        advance_width: 0.0,
+    };
+
+    let mut surface = RasterSurface::new(glyph_width, glyph_height, RasterColor::TRANSPARENT);
+
+    rasterize_text_outline(&mut surface, &outline, raster_color(color)).ok()?;
+
+    if font_weight == FontWeight::Bold && bold_offset > 0.0 {
+        let bold_outline = TextOutline {
+            path: outline
+                .path
+                .transformed(Transform::translate(bold_offset, 0.0)),
+            advance_width: 0.0,
+        };
+
+        rasterize_text_outline(&mut surface, &bold_outline, raster_color(color)).ok()?;
+    }
+
+    Some(CachedGlyph {
+        surface,
+        offset_x: left as i32,
+        offset_y: top as i32,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_vector_text_line(
     pixels: &mut [u32],
@@ -619,59 +808,79 @@ fn draw_vector_text_line(
     font_style: FontStyle,
     color: u32,
     font: &TrueTypeFont<'_>,
+    glyph_raster_cache: &mut GlyphRasterCache,
 ) -> bool {
-    let Ok(run) = font.layout_text(text, font_size) else {
-        return false;
-    };
-
     let Some(line_metrics) = font.line_metrics(font_size) else {
         return false;
     };
 
-    let padding = 2_i32;
-    let bold_offset = synthetic_bold_offset(font_size, font_weight);
-    let italic_shear = synthetic_italic_shear(font_style);
-    let italic_overhang = synthetic_italic_overhang(font, font_size, font_style);
-    let surface_width = (run.advance_width + bold_offset + italic_overhang)
-        .ceil()
-        .max(1.0) as usize
-        + 4;
-    let surface_height = line_metrics.line_height.ceil().max(1.0) as usize + 4;
+    let units_per_em = f32::from(font.head().units_per_em);
 
-    let glyph_transform = Transform::skew_x(italic_shear).then(Transform::translate(
-        padding as f32,
-        line_metrics.ascent + padding as f32,
-    ));
+    if units_per_em <= 0.0 {
+        return false;
+    }
 
-    let mut surface = RasterSurface::new(surface_width, surface_height, RasterColor::TRANSPARENT);
+    let scale = font_size / units_per_em;
+    let Some((baseline_y, baseline_phase)) = split_subpixel_position(line_metrics.ascent) else {
+        return false;
+    };
 
-    for glyph_path in &run.glyph_paths {
-        let glyph_outline = TextOutline {
-            path: glyph_path.transformed(glyph_transform),
-            advance_width: 0.0,
+    let baseline_phase = f32::from(baseline_phase) / GLYPH_SUBPIXEL_STEPS as f32;
+    let mut pen_x = 0.0;
+    let mut previous_glyph = None;
+
+    for character in text.chars() {
+        let glyph_id = font.glyph_id(character);
+        let Some(metric) = font.metric(glyph_id) else {
+            return false;
         };
 
-        if rasterize_text_outline(&mut surface, &glyph_outline, raster_color(color)).is_err() {
+        if let Some(previous_glyph) = previous_glyph {
+            pen_x += f32::from(font.kerning(previous_glyph, glyph_id)) * scale;
+        }
+
+        let Some((glyph_x, phase_x)) = split_subpixel_position(pen_x) else {
             return false;
-        }
+        };
+
+        let key = GlyphRasterKey {
+            font_identity: font.glyph_cache_key(),
+            glyph_id,
+            font_size_bits: font_size.to_bits(),
+            bold: font_weight == FontWeight::Bold,
+            italic: font_style == FontStyle::Italic,
+            color,
+            phase_x,
+        };
+
+        let phase_x = f32::from(phase_x) / GLYPH_SUBPIXEL_STEPS as f32;
+
+        let Some(glyph) = glyph_raster_cache.get_or_rasterize(key, || {
+            rasterize_vector_glyph(
+                font,
+                glyph_id,
+                font_size,
+                font_weight,
+                font_style,
+                phase_x,
+                baseline_phase,
+                color,
+            )
+        }) else {
+            return false;
+        };
+
+        glyph.blit_to(
+            pixels,
+            width,
+            height,
+            x.saturating_add(glyph_x),
+            y.saturating_add(baseline_y),
+        );
+
+        pen_x += f32::from(metric.advance_width) * scale;
+        previous_glyph = Some(glyph_id);
     }
-
-    if font_weight == FontWeight::Bold && bold_offset > 0.0 {
-        let bold_transform = glyph_transform.then(Transform::translate(bold_offset, 0.0));
-
-        for glyph_path in &run.glyph_paths {
-            let glyph_outline = TextOutline {
-                path: glyph_path.transformed(bold_transform),
-                advance_width: 0.0,
-            };
-
-            if rasterize_text_outline(&mut surface, &glyph_outline, raster_color(color)).is_err() {
-                return false;
-            }
-        }
-    }
-
-    surface.blit_xrgb8888(pixels, width, height, x - padding, y - padding);
 
     true
 }
