@@ -9,7 +9,9 @@ pub use lexer::{Token, TokenKind, tokenize};
 #[path = "javascript/parser.rs"]
 mod parser;
 
+#[cfg(test)]
 pub use parser::parse_json;
+
 use parser::parse_program;
 
 #[path = "javascript/dom.rs"]

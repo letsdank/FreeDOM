@@ -19,7 +19,7 @@ mod wpt;
 use crate::{
     page::{Page, load_page},
     page_layout::PageLayout,
-    render::{LinkRegion, load_vector_font_from_environment, paint},
+    render::{LinkRegion, TextBlockCache, load_vector_font_from_environment, paint},
 };
 use anyhow::{Context as _, Result};
 use softbuffer::{Context as SoftbufferContext, Surface};
@@ -122,6 +122,7 @@ struct App {
     modifiers: ModifiersState,
     vector_font_data: Option<Vec<u8>>,
     layout: Option<PageLayout>,
+    text_block_cache: TextBlockCache,
 }
 
 impl App {
@@ -148,6 +149,7 @@ impl App {
             max_scroll_y: 0,
             vector_font_data,
             layout: None,
+            text_block_cache: TextBlockCache::new(),
         }
     }
 
@@ -300,6 +302,7 @@ impl App {
                 viewport_width,
                 self.vector_font_data.as_deref(),
             ));
+            self.text_block_cache.clear();
         }
 
         let layout = self.layout.as_ref().expect("page layout must exist");
@@ -326,6 +329,7 @@ impl App {
             &self.address,
             &self.status,
             self.vector_font_data.as_deref(),
+            &mut self.text_block_cache,
             self.scroll_y,
         );
 
@@ -435,6 +439,7 @@ impl ApplicationHandler<AppEvent> for App {
                         self.link_regions.clear();
                         self.page = page;
                         self.layout = None;
+                        self.text_block_cache.clear();
                     }
 
                     Err(error) => {

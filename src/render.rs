@@ -7,7 +7,6 @@ use crate::{
         },
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
-        svg::SvgDocument,
     },
     page::{BlockContent, Page},
     page_layout::{
@@ -35,6 +34,142 @@ pub(crate) struct PaintResult {
     pub(crate) max_scroll_y: i32,
 }
 
+const MAX_TEXT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_TEXT_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) struct TextBlockCache {
+    entries: Vec<TextBlockCacheEntry>,
+    cached_bytes: usize,
+}
+
+enum TextBlockCacheEntry {
+    Missing,
+    Cached(CachedTextBlock),
+    Uncacheable,
+}
+
+struct CachedTextBlock {
+    width: usize,
+    height: usize,
+    pixels: Vec<u32>,
+    link_regions: Vec<LinkRegion>,
+}
+
+impl TextBlockCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            cached_bytes: 0,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.cached_bytes = 0;
+    }
+
+    fn cached(&self, index: usize) -> Option<&CachedTextBlock> {
+        match self.entries.get(index)? {
+            TextBlockCacheEntry::Cached(block) => Some(block),
+            TextBlockCacheEntry::Missing | TextBlockCacheEntry::Uncacheable => None,
+        }
+    }
+
+    fn get_or_render<F>(
+        &mut self,
+        index: usize,
+        width: usize,
+        height: usize,
+        render: F,
+    ) -> Option<&CachedTextBlock>
+    where
+        F: FnOnce(&mut [u32], usize, usize, &mut Vec<LinkRegion>),
+    {
+        let is_cached = matches!(
+            self.entries.get(index),
+            Some(TextBlockCacheEntry::Cached(_))
+        );
+        let is_uncacheable = matches!(
+            self.entries.get(index),
+            Some(TextBlockCacheEntry::Uncacheable)
+        );
+
+        if is_cached {
+            return self.cached(index);
+        }
+
+        if is_uncacheable {
+            return None;
+        }
+
+        self.entries
+            .resize_with(index.saturating_add(1), || TextBlockCacheEntry::Missing);
+
+        let Some(pixel_count) = width.checked_mul(height) else {
+            self.entries[index] = TextBlockCacheEntry::Uncacheable;
+            return None;
+        };
+
+        let Some(byte_count) = pixel_count.checked_mul(std::mem::size_of::<u32>()) else {
+            self.entries[index] = TextBlockCacheEntry::Uncacheable;
+            return None;
+        };
+
+        if pixel_count == 0
+            || byte_count > MAX_TEXT_BLOCK_CACHE_BYTES
+            || self.cached_bytes.saturating_add(byte_count) > MAX_TEXT_CACHE_BYTES
+        {
+            self.entries[index] = TextBlockCacheEntry::Uncacheable;
+            return None;
+        }
+
+        let mut pixels = vec![BACKGROUND; pixel_count];
+        let mut link_regions = Vec::new();
+
+        render(&mut pixels, width, height, &mut link_regions);
+
+        self.cached_bytes = self.cached_bytes.saturating_add(byte_count);
+        self.entries[index] = TextBlockCacheEntry::Cached(CachedTextBlock {
+            width,
+            height,
+            pixels,
+            link_regions,
+        });
+
+        self.cached(index)
+    }
+}
+
+impl CachedTextBlock {
+    fn blit_to(
+        &self,
+        destination: &mut [u32],
+        destination_width: usize,
+        destination_height: usize,
+        origin_x: i32,
+        origin_y: i32,
+    ) {
+        blit_opaque(
+            &self.pixels,
+            self.width,
+            self.height,
+            destination,
+            destination_width,
+            destination_height,
+            origin_x,
+            origin_y,
+        );
+    }
+
+    fn append_link_regions(&self, destination: &mut Vec<LinkRegion>, offset_x: i32, offset_y: i32) {
+        destination.extend(
+            self.link_regions
+                .iter()
+                .map(|region| region.translated(offset_x, offset_y)),
+        );
+    }
+}
+
 impl LinkRegion {
     pub(crate) fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
@@ -42,6 +177,16 @@ impl LinkRegion {
 
     pub(crate) fn target(&self) -> &str {
         &self.target
+    }
+
+    fn translated(&self, offset_x: i32, offset_y: i32) -> Self {
+        Self {
+            x: self.x.saturating_add(offset_x),
+            y: self.y.saturating_add(offset_y),
+            width: self.width,
+            height: self.height,
+            target: self.target.clone(),
+        }
     }
 }
 
@@ -83,6 +228,7 @@ pub(crate) fn paint(
     address: &str,
     status: &str,
     vector_font_data: Option<&[u8]>,
+    text_cache: &mut TextBlockCache,
     scroll_y: i32,
 ) -> PaintResult {
     pixels.fill(BACKGROUND);
@@ -104,7 +250,6 @@ pub(crate) fn paint(
     draw_text_line(pixels, width, height, 20, 18, address, 1, LIGHT_TEXT);
     draw_text_line(pixels, width, height, 16, 51, status, 1, LIGHT_TEXT);
 
-    let mut y = CONTENT_TOP - scroll_y;
     let mut link_regions = Vec::new();
 
     for (index, block) in page.blocks.iter().enumerate() {
@@ -140,6 +285,15 @@ pub(crate) fn paint(
             }
 
             BlockContent::Text(text) => {
+                let content_width = width.saturating_sub(32).max(1);
+                let block_height = usize::try_from(layout.block_height(index).max(0)).unwrap_or(0);
+
+                if let Some(cached) = text_cache.cached(index) {
+                    cached.blit_to(pixels, width, height, 16, y);
+                    cached.append_link_regions(&mut link_regions, 16, y);
+                    continue;
+                }
+
                 let page_font = page
                     .font_data_for(
                         block.style.font_family.as_deref(),
@@ -150,22 +304,51 @@ pub(crate) fn paint(
 
                 let vector_font = page_font.as_ref().or(fallback_font.as_ref());
 
-                draw_wrapped_text(
-                    pixels,
-                    width,
-                    height,
-                    16,
-                    y,
-                    width as i32 - 16,
-                    text,
-                    block.style.font_size,
-                    block.style.font_weight,
-                    block.style.font_style,
-                    block.style.color,
-                    block.link.as_deref(),
-                    vector_font,
-                    &mut link_regions,
-                );
+                if let Some(cached) = text_cache.get_or_render(
+                    index,
+                    content_width,
+                    block_height,
+                    |cache_pixels, cache_width, cache_height, cache_links| {
+                        draw_wrapped_text(
+                            cache_pixels,
+                            cache_width,
+                            cache_height,
+                            0,
+                            0,
+                            cache_width as i32,
+                            text,
+                            block.style.font_size,
+                            block.style.font_weight,
+                            block.style.font_style,
+                            block.style.color,
+                            block.link.as_deref(),
+                            vector_font,
+                            0,
+                            cache_links,
+                        );
+                    },
+                ) {
+                    cached.blit_to(pixels, width, height, 16, y);
+                    cached.append_link_regions(&mut link_regions, 16, y);
+                } else {
+                    draw_wrapped_text(
+                        pixels,
+                        width,
+                        height,
+                        16,
+                        y,
+                        width as i32 - 16,
+                        text,
+                        block.style.font_size,
+                        block.style.font_weight,
+                        block.style.font_style,
+                        block.style.color,
+                        block.link.as_deref(),
+                        vector_font,
+                        CONTENT_TOP,
+                        &mut link_regions,
+                    );
+                }
             }
         }
     }
@@ -195,6 +378,7 @@ fn draw_wrapped_text(
     color: u32,
     link_target: Option<&str>,
     vector_font: Option<&TrueTypeFont<'_>>,
+    visible_top: i32,
     link_regions: &mut Vec<LinkRegion>,
 ) -> i32 {
     let metrics = text_metrics(vector_font, font_size);
@@ -213,7 +397,7 @@ fn draw_wrapped_text(
         }
 
         let word_x = x;
-        let is_visible = y + metrics.glyph_height > CONTENT_TOP && y < height as i32;
+        let is_visible = y + metrics.glyph_height > visible_top && y < height as i32;
 
         if is_visible {
             let rendered_with_vector_font = vector_font.is_some_and(|font| {
@@ -397,6 +581,54 @@ fn draw_glyph(
                 );
             }
         }
+    }
+}
+
+fn blit_opaque(
+    source: &[u32],
+    source_width: usize,
+    source_height: usize,
+    destination: &mut [u32],
+    destination_width: usize,
+    destination_height: usize,
+    origin_x: i32,
+    origin_y: i32,
+) {
+    if source_width == 0 || source_height == 0 || destination_width == 0 || destination_height == 0
+    {
+        return;
+    }
+
+    let source_width_i32 = i32::try_from(source_width).unwrap_or(i32::MAX);
+    let source_height_i32 = i32::try_from(source_height).unwrap_or(i32::MAX);
+    let destination_width_i32 = i32::try_from(destination_width).unwrap_or(i32::MAX);
+    let destination_height_i32 = i32::try_from(destination_height).unwrap_or(i32::MAX);
+
+    let left = origin_x.max(0);
+    let top = origin_y.max(0);
+    let right = origin_x
+        .saturating_add(source_width_i32)
+        .min(destination_width_i32);
+    let bottom = origin_y
+        .saturating_add(source_height_i32)
+        .min(destination_height_i32);
+
+    if left >= right || top >= bottom {
+        return;
+    }
+
+    let source_left = usize::try_from(left - origin_x).unwrap_or(0);
+    let source_top = usize::try_from(top - origin_y).unwrap_or(0);
+    let copy_width = usize::try_from(right - left).unwrap_or(0);
+    let copy_height = usize::try_from(bottom - top).unwrap_or(0);
+
+    for row in 0..copy_height {
+        let source_start = (source_top + row) * source_width + source_left;
+        let destination_start = (usize::try_from(top).unwrap_or(0) + row) * destination_width
+            + usize::try_from(left).unwrap_or(0);
+
+        destination[destination_start..destination_start + copy_width]
+            .copy_from_slice(&source[source_start..source_start + copy_width]);
     }
 }
 
