@@ -1,6 +1,7 @@
 use super::{
     cmap::CmapTable,
     glyf::{Glyph, parse_glyph},
+    gpos,
     hmtx::{HorizontalMetric, HorizontalMetrics},
     kern::KerningTable,
     layout::{
@@ -70,7 +71,8 @@ impl<'a> TrueTypeFont<'a> {
         let maxp = MaxpTable::parse(&sfnt)?;
         let cmap = CmapTable::parse(&sfnt)?;
         let metrics = HorizontalMetrics::parse(&sfnt, maxp.num_glyphs)?;
-        let kerning = KerningTable::parse_optional(&sfnt)?;
+        let mut kerning = KerningTable::parse_optional(&sfnt)?;
+        gpos::apply_kerning(&sfnt, &mut kerning)?;
 
         let locations = GlyphLocations::parse(&sfnt, head.index_to_loc_format, maxp.num_glyphs)?;
 

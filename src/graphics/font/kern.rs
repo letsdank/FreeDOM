@@ -80,6 +80,16 @@ impl KerningTable {
             .unwrap_or(0)
     }
 
+    pub(crate) fn override_adjustment(
+        &mut self,
+        left_glyph: u16,
+        right_glyph: u16,
+        adjustment: i16,
+    ) {
+        self.adjustments
+            .insert((left_glyph, right_glyph), adjustment);
+    }
+
     fn parse_format_0(
         data: &[u8],
         file_offset: usize,
