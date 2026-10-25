@@ -2,6 +2,7 @@ mod css;
 mod fetch;
 mod page;
 mod page_layout;
+mod performance;
 mod render;
 mod url;
 
@@ -16,6 +17,7 @@ pub mod graphics;
 #[cfg(test)]
 mod wpt;
 
+use crate::performance::FrameProfiler;
 use crate::{
     page::{Page, load_page},
     page_layout::PageLayout,
@@ -23,6 +25,7 @@ use crate::{
 };
 use anyhow::{Context as _, Result};
 use softbuffer::{Context as SoftbufferContext, Surface};
+use std::time::Instant;
 use std::{num::NonZeroU32, rc::Rc};
 use winit::keyboard::ModifiersState;
 use winit::{
@@ -123,6 +126,7 @@ struct App {
     vector_font_data: Option<Vec<u8>>,
     layout: Option<PageLayout>,
     block_raster_cache: BlockRasterCache,
+    frame_profiler: FrameProfiler,
 }
 
 impl App {
@@ -150,6 +154,7 @@ impl App {
             vector_font_data,
             layout: None,
             block_raster_cache: BlockRasterCache::new(),
+            frame_profiler: FrameProfiler::from_environment(),
         }
     }
 
@@ -320,6 +325,9 @@ impl App {
             .buffer_mut()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
+        let profiling = self.frame_profiler.enabled();
+        let paint_started = profiling.then(Instant::now);
+
         let paint_result = paint(
             &mut buffer,
             width as usize,
@@ -331,11 +339,20 @@ impl App {
             self.vector_font_data.as_deref(),
             &mut self.block_raster_cache,
             self.scroll_y,
+            profiling,
         );
+
+        let paint_duration = paint_started.map(|started| started.elapsed());
+        let present_started = profiling.then(Instant::now);
 
         buffer
             .present()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+        if let (Some(paint_duration), Some(present_started)) = (paint_duration, present_started) {
+            self.frame_profiler
+                .record(paint_duration, present_started.elapsed());
+        }
 
         self.link_regions = paint_result.link_regions;
         self.max_scroll_y = paint_result.max_scroll_y;

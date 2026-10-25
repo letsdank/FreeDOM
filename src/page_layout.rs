@@ -243,12 +243,12 @@ pub(crate) fn vector_text_width(
     font_weight: FontWeight,
     font_style: FontStyle,
 ) -> Option<i32> {
-    let outline = font.outline_text(text, font_size).ok()?;
+    let advance_width = font.text_advance_width(text, font_size).ok()?;
 
     let extra_width = synthetic_bold_offset(font_size, font_weight)
         + synthetic_italic_overhang(font, font_size, font_style);
 
-    Some((outline.advance_width + extra_width).ceil().max(1.0) as i32)
+    Some((advance_width + extra_width).ceil().max(1.0) as i32)
 }
 
 pub(crate) fn synthetic_italic_shear(font_style: FontStyle) -> f32 {

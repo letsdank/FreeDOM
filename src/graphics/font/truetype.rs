@@ -3,7 +3,10 @@ use super::{
     glyf::{Glyph, parse_glyph},
     hmtx::{HorizontalMetric, HorizontalMetrics},
     kern::KerningTable,
-    layout::{TextOutline, outline_text},
+    layout::{
+        TextOutline, TextRun, layout_text as build_text_run, outline_text,
+        text_advance_width as measure_text_advance,
+    },
     loca::GlyphLocations,
     reader::{read_i16, read_u16, read_u32},
     sfnt::{FontError, SfntFlavor, SfntFont, TableTag},
@@ -211,6 +214,14 @@ impl<'a> TrueTypeFont<'a> {
 
     pub fn outline_text(&self, text: &str, font_size: f32) -> Result<TextOutline, FontError> {
         outline_text(self, text, font_size)
+    }
+
+    pub fn layout_text(&self, text: &str, font_size: f32) -> Result<TextRun, FontError> {
+        build_text_run(self, text, font_size)
+    }
+
+    pub fn text_advance_width(&self, text: &str, font_size: f32) -> Result<f32, FontError> {
+        measure_text_advance(self, text, font_size)
     }
 
     pub fn kerning(&self, left_glyph: u16, right_glyph: u16) -> i16 {

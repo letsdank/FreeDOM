@@ -15,6 +15,7 @@ use crate::{
     },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
+use std::time::{Duration, Instant};
 
 const BACKGROUND: u32 = 0x00_F7_F7_F7;
 const TOOLBAR: u32 = 0x00_20_25_2B;
@@ -36,7 +37,6 @@ pub(crate) struct PaintResult {
 
 const MAX_BLOCK_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RASTER_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
-const BLOCK_CACHE_PREFETCH_BLOCKS: usize = 1;
 
 pub(crate) struct BlockRasterCache {
     entries: Vec<BlockRasterCacheEntry>,
@@ -359,7 +359,7 @@ fn cache_page_block<'cache>(
     }
 }
 
-fn prefetch_blocks_after_viewport(
+fn prefetch_next_text_block(
     block_raster_cache: &mut BlockRasterCache,
     page: &Page,
     layout: &PageLayout,
@@ -374,29 +374,26 @@ fn prefetch_blocks_after_viewport(
         .max(0);
 
     let viewport_bottom = scroll_y.saturating_add(visible_height);
-    let mut prefetched = 0;
 
     for index in 0..page.blocks.len() {
         if layout.block_top(index) < viewport_bottom {
             continue;
         }
 
-        if cache_page_block(
+        if !matches!(&page.blocks[index].content, BlockContent::Text(_)) {
+            continue;
+        }
+
+        let _ = cache_text_block(
             block_raster_cache,
             page,
             layout,
             index,
             viewport_width,
             fallback_font,
-        )
-        .is_some()
-        {
-            prefetched += 1;
-        }
+        );
 
-        if prefetched == BLOCK_CACHE_PREFETCH_BLOCKS {
-            break;
-        }
+        break;
     }
 }
 
@@ -412,6 +409,7 @@ pub(crate) fn paint(
     vector_font_data: Option<&[u8]>,
     block_raster_cache: &mut BlockRasterCache,
     scroll_y: i32,
+    profiling: bool,
 ) -> PaintResult {
     pixels.fill(BACKGROUND);
 
@@ -433,6 +431,7 @@ pub(crate) fn paint(
     draw_text_line(pixels, width, height, 16, 51, status, 1, LIGHT_TEXT);
 
     let mut link_regions = Vec::new();
+    let slow_block_threshold = Duration::from_millis(16);
 
     for (index, block) in page.blocks.iter().enumerate() {
         let y = CONTENT_TOP + layout.block_top(index) - scroll_y;
@@ -440,6 +439,8 @@ pub(crate) fn paint(
         if y + layout.block_height(index) <= CONTENT_TOP || y >= height as i32 {
             continue;
         }
+
+        let block_started = profiling.then(Instant::now);
 
         match &block.content {
             BlockContent::Svg(svg) => {
@@ -517,9 +518,29 @@ pub(crate) fn paint(
                 }
             }
         }
+
+        if let Some(block_started) = block_started {
+            let elapsed = block_started.elapsed();
+
+            if elapsed >= slow_block_threshold {
+                let kind = match &block.content {
+                    BlockContent::Text(_) => "text",
+                    BlockContent::Svg(_) => "svg",
+                    BlockContent::Bitmap(_) => "bitmap",
+                };
+
+                eprintln!(
+                    "FreeDOM slow block: index={index}, kind={kind}, width={width}, height={}, time={:.2} ms",
+                    layout.block_height(index),
+                    elapsed.as_secs_f64() * 1_000.0,
+                );
+            }
+        }
     }
 
-    prefetch_blocks_after_viewport(
+    let prefetch_started = profiling.then(Instant::now);
+
+    prefetch_next_text_block(
         block_raster_cache,
         page,
         layout,
@@ -528,6 +549,17 @@ pub(crate) fn paint(
         scroll_y,
         fallback_font.as_ref(),
     );
+
+    if let Some(prefetch_started) = prefetch_started {
+        let elapsed = prefetch_started.elapsed();
+
+        if elapsed >= slow_block_threshold {
+            eprintln!(
+                "FreeDOM slow prefetch: {:.2} ms",
+                elapsed.as_secs_f64() * 1_000.0,
+            );
+        }
+    }
 
     let content_viewport_height = (height as i32).saturating_sub(CONTENT_TOP).max(0);
 
@@ -649,7 +681,7 @@ fn draw_vector_text_line(
     color: u32,
     font: &TrueTypeFont<'_>,
 ) -> bool {
-    let Ok(outline) = font.outline_text(text, font_size) else {
+    let Ok(run) = font.layout_text(text, font_size) else {
         return false;
     };
 
@@ -661,7 +693,7 @@ fn draw_vector_text_line(
     let bold_offset = synthetic_bold_offset(font_size, font_weight);
     let italic_shear = synthetic_italic_shear(font_style);
     let italic_overhang = synthetic_italic_overhang(font, font_size, font_style);
-    let surface_width = (outline.advance_width + bold_offset + italic_overhang)
+    let surface_width = (run.advance_width + bold_offset + italic_overhang)
         .ceil()
         .max(1.0) as usize
         + 4;
@@ -672,27 +704,31 @@ fn draw_vector_text_line(
         line_metrics.ascent + padding as f32,
     ));
 
-    let translated_outline = TextOutline {
-        path: outline.path.transformed(glyph_transform),
-        advance_width: outline.advance_width,
-    };
-
     let mut surface = RasterSurface::new(surface_width, surface_height, RasterColor::TRANSPARENT);
 
-    if rasterize_text_outline(&mut surface, &translated_outline, raster_color(color)).is_err() {
-        return false;
+    for glyph_path in &run.glyph_paths {
+        let glyph_outline = TextOutline {
+            path: glyph_path.transformed(glyph_transform),
+            advance_width: 0.0,
+        };
+
+        if rasterize_text_outline(&mut surface, &glyph_outline, raster_color(color)).is_err() {
+            return false;
+        }
     }
 
     if font_weight == FontWeight::Bold && bold_offset > 0.0 {
-        let bold_outline = TextOutline {
-            path: translated_outline
-                .path
-                .transformed(Transform::translate(bold_offset, 0.0)),
-            advance_width: translated_outline.advance_width,
-        };
+        let bold_transform = glyph_transform.then(Transform::translate(bold_offset, 0.0));
 
-        if rasterize_text_outline(&mut surface, &bold_outline, raster_color(color)).is_err() {
-            return false;
+        for glyph_path in &run.glyph_paths {
+            let glyph_outline = TextOutline {
+                path: glyph_path.transformed(bold_transform),
+                advance_width: 0.0,
+            };
+
+            if rasterize_text_outline(&mut surface, &glyph_outline, raster_color(color)).is_err() {
+                return false;
+            }
         }
     }
 
