@@ -34,29 +34,29 @@ pub(crate) struct PaintResult {
     pub(crate) max_scroll_y: i32,
 }
 
-const MAX_TEXT_CACHE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_TEXT_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
-const TEXT_CACHE_PREFETCH_BLOCKS: usize = 1;
+const MAX_BLOCK_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_RASTER_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const BLOCK_CACHE_PREFETCH_BLOCKS: usize = 1;
 
-pub(crate) struct TextBlockCache {
-    entries: Vec<TextBlockCacheEntry>,
+pub(crate) struct BlockRasterCache {
+    entries: Vec<BlockRasterCacheEntry>,
     cached_bytes: usize,
 }
 
-enum TextBlockCacheEntry {
+enum BlockRasterCacheEntry {
     Missing,
-    Cached(CachedTextBlock),
+    Cached(CachedBlock),
     Uncacheable,
 }
 
-struct CachedTextBlock {
+struct CachedBlock {
     width: usize,
     height: usize,
     pixels: Vec<u32>,
     link_regions: Vec<LinkRegion>,
 }
 
-impl TextBlockCache {
+impl BlockRasterCache {
     pub(crate) fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -69,10 +69,10 @@ impl TextBlockCache {
         self.cached_bytes = 0;
     }
 
-    fn cached(&self, index: usize) -> Option<&CachedTextBlock> {
+    fn cached(&self, index: usize) -> Option<&CachedBlock> {
         match self.entries.get(index)? {
-            TextBlockCacheEntry::Cached(block) => Some(block),
-            TextBlockCacheEntry::Missing | TextBlockCacheEntry::Uncacheable => None,
+            BlockRasterCacheEntry::Cached(block) => Some(block),
+            BlockRasterCacheEntry::Missing | BlockRasterCacheEntry::Uncacheable => None,
         }
     }
 
@@ -82,17 +82,17 @@ impl TextBlockCache {
         width: usize,
         height: usize,
         render: F,
-    ) -> Option<&CachedTextBlock>
+    ) -> Option<&CachedBlock>
     where
         F: FnOnce(&mut [u32], usize, usize, &mut Vec<LinkRegion>),
     {
         let is_cached = matches!(
             self.entries.get(index),
-            Some(TextBlockCacheEntry::Cached(_))
+            Some(BlockRasterCacheEntry::Cached(_))
         );
         let is_uncacheable = matches!(
             self.entries.get(index),
-            Some(TextBlockCacheEntry::Uncacheable)
+            Some(BlockRasterCacheEntry::Uncacheable)
         );
 
         if is_cached {
@@ -104,23 +104,23 @@ impl TextBlockCache {
         }
 
         self.entries
-            .resize_with(index.saturating_add(1), || TextBlockCacheEntry::Missing);
+            .resize_with(index.saturating_add(1), || BlockRasterCacheEntry::Missing);
 
         let Some(pixel_count) = width.checked_mul(height) else {
-            self.entries[index] = TextBlockCacheEntry::Uncacheable;
+            self.entries[index] = BlockRasterCacheEntry::Uncacheable;
             return None;
         };
 
         let Some(byte_count) = pixel_count.checked_mul(std::mem::size_of::<u32>()) else {
-            self.entries[index] = TextBlockCacheEntry::Uncacheable;
+            self.entries[index] = BlockRasterCacheEntry::Uncacheable;
             return None;
         };
 
         if pixel_count == 0
-            || byte_count > MAX_TEXT_BLOCK_CACHE_BYTES
-            || self.cached_bytes.saturating_add(byte_count) > MAX_TEXT_CACHE_BYTES
+            || byte_count > MAX_RASTER_BLOCK_CACHE_BYTES
+            || self.cached_bytes.saturating_add(byte_count) > MAX_BLOCK_CACHE_BYTES
         {
-            self.entries[index] = TextBlockCacheEntry::Uncacheable;
+            self.entries[index] = BlockRasterCacheEntry::Uncacheable;
             return None;
         }
 
@@ -130,7 +130,7 @@ impl TextBlockCache {
         render(&mut pixels, width, height, &mut link_regions);
 
         self.cached_bytes = self.cached_bytes.saturating_add(byte_count);
-        self.entries[index] = TextBlockCacheEntry::Cached(CachedTextBlock {
+        self.entries[index] = BlockRasterCacheEntry::Cached(CachedBlock {
             width,
             height,
             pixels,
@@ -141,7 +141,7 @@ impl TextBlockCache {
     }
 }
 
-impl CachedTextBlock {
+impl CachedBlock {
     fn blit_to(
         &self,
         destination: &mut [u32],
@@ -220,13 +220,13 @@ pub(crate) fn load_vector_font_from_environment() -> Option<Vec<u8>> {
 }
 
 fn cache_text_block<'cache>(
-    text_cache: &'cache mut TextBlockCache,
+    text_cache: &'cache mut BlockRasterCache,
     page: &Page,
     layout: &PageLayout,
     index: usize,
     viewport_width: usize,
     fallback_font: Option<&TrueTypeFont<'_>>,
-) -> Option<&'cache CachedTextBlock> {
+) -> Option<&'cache CachedBlock> {
     let already_cached = text_cache.cached(index).is_some();
 
     if already_cached {
@@ -277,8 +277,90 @@ fn cache_text_block<'cache>(
     )
 }
 
-fn prefetch_text_blocks_after_viewport(
-    text_cache: &mut TextBlockCache,
+fn cache_visual_block<'cache>(
+    block_raster_cache: &'cache mut BlockRasterCache,
+    page: &Page,
+    index: usize,
+    viewport_width: usize,
+) -> Option<&'cache CachedBlock> {
+    let already_cached = block_raster_cache.cached(index).is_some();
+
+    if already_cached {
+        return block_raster_cache.cached(index);
+    }
+
+    let block = page.blocks.get(index)?;
+    let available_width = viewport_width.saturating_sub(32).max(1);
+
+    match &block.content {
+        BlockContent::Svg(svg) => {
+            let (svg_width, svg_height) = svg_block_size(svg, available_width);
+
+            block_raster_cache.get_or_render(
+                index,
+                svg_width,
+                svg_height,
+                |cache_pixels, cache_width, cache_height, _cache_links| {
+                    if let Ok(surface) =
+                        svg.render(cache_width, cache_height, RasterColor::TRANSPARENT)
+                    {
+                        surface.blit_xrgb8888(cache_pixels, cache_width, cache_height, 0, 0);
+                    }
+                },
+            )
+        }
+
+        BlockContent::Bitmap(bitmap) => {
+            let (image_width, image_height) = bitmap_block_size(bitmap, available_width);
+
+            block_raster_cache.get_or_render(
+                index,
+                image_width,
+                image_height,
+                |cache_pixels, cache_width, cache_height, _cache_links| {
+                    bitmap.blit_scaled_xrgb8888(
+                        cache_pixels,
+                        cache_width,
+                        cache_height,
+                        0,
+                        0,
+                        cache_width,
+                        cache_height,
+                    );
+                },
+            )
+        }
+
+        BlockContent::Text(_) => None,
+    }
+}
+
+fn cache_page_block<'cache>(
+    block_raster_cache: &'cache mut BlockRasterCache,
+    page: &Page,
+    layout: &PageLayout,
+    index: usize,
+    viewport_width: usize,
+    fallback_font: Option<&TrueTypeFont<'_>>,
+) -> Option<&'cache CachedBlock> {
+    match &page.blocks.get(index)?.content {
+        BlockContent::Text(_) => cache_text_block(
+            block_raster_cache,
+            page,
+            layout,
+            index,
+            viewport_width,
+            fallback_font,
+        ),
+
+        BlockContent::Svg(_) | BlockContent::Bitmap(_) => {
+            cache_visual_block(block_raster_cache, page, index, viewport_width)
+        }
+    }
+}
+
+fn prefetch_blocks_after_viewport(
+    block_raster_cache: &mut BlockRasterCache,
     page: &Page,
     layout: &PageLayout,
     viewport_width: usize,
@@ -299,22 +381,20 @@ fn prefetch_text_blocks_after_viewport(
             continue;
         }
 
-        if !matches!(&page.blocks[index].content, BlockContent::Text(_)) {
-            continue;
-        }
-
-        let _ = cache_text_block(
-            text_cache,
+        if cache_page_block(
+            block_raster_cache,
             page,
             layout,
             index,
             viewport_width,
             fallback_font,
-        );
+        )
+        .is_some()
+        {
+            prefetched += 1;
+        }
 
-        prefetched += 1;
-
-        if prefetched == TEXT_CACHE_PREFETCH_BLOCKS {
+        if prefetched == BLOCK_CACHE_PREFETCH_BLOCKS {
             break;
         }
     }
@@ -330,7 +410,7 @@ pub(crate) fn paint(
     address: &str,
     status: &str,
     vector_font_data: Option<&[u8]>,
-    text_cache: &mut TextBlockCache,
+    block_raster_cache: &mut BlockRasterCache,
     scroll_y: i32,
 ) -> PaintResult {
     pixels.fill(BACKGROUND);
@@ -363,32 +443,41 @@ pub(crate) fn paint(
 
         match &block.content {
             BlockContent::Svg(svg) => {
-                let available_width = width.saturating_sub(32);
-                let (svg_width, svg_height) = svg_block_size(svg, available_width);
+                if let Some(cached) = cache_visual_block(block_raster_cache, page, index, width) {
+                    cached.blit_to(pixels, width, height, 16, y);
+                } else {
+                    let available_width = width.saturating_sub(32);
+                    let (svg_width, svg_height) = svg_block_size(svg, available_width);
 
-                if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT) {
-                    surface.blit_xrgb8888(pixels, width, height, 16, y);
+                    if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT)
+                    {
+                        surface.blit_xrgb8888(pixels, width, height, 16, y);
+                    }
                 }
             }
 
             BlockContent::Bitmap(bitmap) => {
-                let available_width = width.saturating_sub(32);
-                let (image_width, image_height) = bitmap_block_size(bitmap, available_width);
+                if let Some(cached) = cache_visual_block(block_raster_cache, page, index, width) {
+                    cached.blit_to(pixels, width, height, 16, y);
+                } else {
+                    let available_width = width.saturating_sub(32);
+                    let (image_width, image_height) = bitmap_block_size(bitmap, available_width);
 
-                bitmap.blit_scaled_xrgb8888(
-                    pixels,
-                    width,
-                    height,
-                    16,
-                    y,
-                    image_width,
-                    image_height,
-                );
+                    bitmap.blit_scaled_xrgb8888(
+                        pixels,
+                        width,
+                        height,
+                        16,
+                        y,
+                        image_width,
+                        image_height,
+                    );
+                }
             }
 
             BlockContent::Text(text) => {
                 if let Some(cached) = cache_text_block(
-                    text_cache,
+                    block_raster_cache,
                     page,
                     layout,
                     index,
@@ -430,8 +519,8 @@ pub(crate) fn paint(
         }
     }
 
-    prefetch_text_blocks_after_viewport(
-        text_cache,
+    prefetch_blocks_after_viewport(
+        block_raster_cache,
         page,
         layout,
         width,
