@@ -821,6 +821,19 @@ mod tests {
         assert_eq!(kerning.adjustment(2, 1), 0);
     }
 
+    #[test]
+    fn reads_class_based_pair_adjustment_kerning_from_gpos() {
+        let data = font_with_gpos_class_pair_adjustment();
+        let font = SfntFont::parse(&data).unwrap();
+        let mut kerning = KerningTable::default();
+
+        apply_kerning(&font, &mut kerning).unwrap();
+
+        assert_eq!(kerning.adjustment(1, 2), -80);
+        assert_eq!(kerning.adjustment(1, 3), -70);
+        assert_eq!(kerning.adjustment(3, 2), 0);
+    }
+
     fn font_with_gpos_pair_adjustment() -> Vec<u8> {
         let mut data = vec![0_u8; 90];
         let gpos_offset = 28;
@@ -869,6 +882,83 @@ mod tests {
         data[coverage..coverage + 2].copy_from_slice(&1_u16.to_be_bytes());
         data[coverage + 2..coverage + 4].copy_from_slice(&1_u16.to_be_bytes());
         data[coverage + 4..coverage + 6].copy_from_slice(&1_u16.to_be_bytes());
+
+        data
+    }
+
+    fn font_with_gpos_class_pair_adjustment() -> Vec<u8> {
+        let mut data = vec![0_u8; 118];
+        let gpos_offset = 28;
+
+        data[0..4].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
+        data[4..6].copy_from_slice(&1_u16.to_be_bytes());
+
+        data[12..16].copy_from_slice(b"GPOS");
+        data[20..24].copy_from_slice(&(gpos_offset as u32).to_be_bytes());
+        data[24..28].copy_from_slice(&90_u32.to_be_bytes());
+
+        data[gpos_offset..gpos_offset + 2].copy_from_slice(&1_u16.to_be_bytes());
+        data[gpos_offset + 6..gpos_offset + 8].copy_from_slice(&10_u16.to_be_bytes());
+        data[gpos_offset + 8..gpos_offset + 10].copy_from_slice(&24_u16.to_be_bytes());
+
+        let feature_list = gpos_offset + 10;
+        data[feature_list..feature_list + 2].copy_from_slice(&1_u16.to_be_bytes());
+        data[feature_list + 2..feature_list + 6].copy_from_slice(b"kern");
+        data[feature_list + 6..feature_list + 8].copy_from_slice(&8_u16.to_be_bytes());
+
+        let feature_table = feature_list + 8;
+        data[feature_table + 2..feature_table + 4].copy_from_slice(&1_u16.to_be_bytes());
+
+        let lookup_list = gpos_offset + 24;
+        data[lookup_list..lookup_list + 2].copy_from_slice(&1_u16.to_be_bytes());
+        data[lookup_list + 2..lookup_list + 4].copy_from_slice(&4_u16.to_be_bytes());
+
+        let lookup = lookup_list + 4;
+        data[lookup..lookup + 2].copy_from_slice(&2_u16.to_be_bytes());
+        data[lookup + 4..lookup + 6].copy_from_slice(&1_u16.to_be_bytes());
+        data[lookup + 6..lookup + 8].copy_from_slice(&8_u16.to_be_bytes());
+
+        let pair_positioning = lookup + 8;
+        data[pair_positioning..pair_positioning + 2].copy_from_slice(&2_u16.to_be_bytes());
+        data[pair_positioning + 2..pair_positioning + 4].copy_from_slice(&32_u16.to_be_bytes());
+        data[pair_positioning + 4..pair_positioning + 6].copy_from_slice(&X_ADVANCE.to_be_bytes());
+        data[pair_positioning + 8..pair_positioning + 10].copy_from_slice(&38_u16.to_be_bytes());
+        data[pair_positioning + 10..pair_positioning + 12].copy_from_slice(&46_u16.to_be_bytes());
+        data[pair_positioning + 12..pair_positioning + 14].copy_from_slice(&2_u16.to_be_bytes());
+        data[pair_positioning + 14..pair_positioning + 16].copy_from_slice(&2_u16.to_be_bytes());
+
+        data[pair_positioning + 16..pair_positioning + 18].copy_from_slice(&0_i16.to_be_bytes());
+        data[pair_positioning + 18..pair_positioning + 20]
+            .copy_from_slice(&(-10_i16).to_be_bytes());
+        data[pair_positioning + 20..pair_positioning + 22]
+            .copy_from_slice(&(-70_i16).to_be_bytes());
+        data[pair_positioning + 22..pair_positioning + 24]
+            .copy_from_slice(&(-80_i16).to_be_bytes());
+
+        let coverage = pair_positioning + 32;
+        data[coverage..coverage + 2].copy_from_slice(&1_u16.to_be_bytes());
+        data[coverage + 2..coverage + 4].copy_from_slice(&1_u16.to_be_bytes());
+        data[coverage + 4..coverage + 6].copy_from_slice(&1_u16.to_be_bytes());
+
+        let first_class_definition = pair_positioning + 38;
+        data[first_class_definition..first_class_definition + 2]
+            .copy_from_slice(&1_u16.to_be_bytes());
+        data[first_class_definition + 2..first_class_definition + 4]
+            .copy_from_slice(&1_u16.to_be_bytes());
+        data[first_class_definition + 4..first_class_definition + 6]
+            .copy_from_slice(&1_u16.to_be_bytes());
+        data[first_class_definition + 6..first_class_definition + 8]
+            .copy_from_slice(&1_u16.to_be_bytes());
+
+        let second_class_definition = pair_positioning + 46;
+        data[second_class_definition..second_class_definition + 2]
+            .copy_from_slice(&1_u16.to_be_bytes());
+        data[second_class_definition + 2..second_class_definition + 4]
+            .copy_from_slice(&2_u16.to_be_bytes());
+        data[second_class_definition + 4..second_class_definition + 6]
+            .copy_from_slice(&1_u16.to_be_bytes());
+        data[second_class_definition + 6..second_class_definition + 8]
+            .copy_from_slice(&1_u16.to_be_bytes());
 
         data
     }
