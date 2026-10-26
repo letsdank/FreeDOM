@@ -1,4 +1,7 @@
-use super::sfnt::{FontError, TableTag};
+use super::{
+    reader::{read_u8, read_u16, read_u32},
+    sfnt::{FontError, TableTag},
+};
 use std::ops::Range;
 
 const WOFF2_SIGNATURE: u32 = 0x774f_4632;
@@ -11,7 +14,7 @@ const KNOWN_TABLE_TAGS: [[u8; 4]; 63] = [
     *b"fpgm", *b"glyf", *b"loca", *b"prep", *b"CFF ", *b"VORG", *b"EBDT", *b"EBLC", *b"gasp",
     *b"hdmx", *b"kern", *b"LTSH", *b"PCLT", *b"VDMX", *b"vhea", *b"vmtx", *b"BASE", *b"GDEF",
     *b"GPOS", *b"GSUB", *b"EBSC", *b"JSTF", *b"MATH", *b"CBDT", *b"CBLC", *b"COLR", *b"CPAL",
-    *b"SVG ", *b"sbix", *b"acnt", *b"avar", *b"badt", *b"bloc", *b"bslc", *b"cvar", *b"cvt ",
+    *b"SVG ", *b"sbix", *b"acnt", *b"avar", *b"bdat", *b"bloc", *b"bsln", *b"cvar", *b"cvt ",
     *b"feat", *b"fmtx", *b"fvar", *b"gvar", *b"hsty", *b"just", *b"lcar", *b"mort", *b"morx",
     *b"opbd", *b"prop", *b"trak", *b"Zapf", *b"Silf", *b"Glat", *b"Gloc", *b"Feat", *b"Sill",
 ];
@@ -40,7 +43,7 @@ pub struct Woff2Directory {
 }
 
 pub fn parse_woff2_directory(data: &[u8]) -> Result<Woff2Directory, FontError> {
-    if read_u32(data, 0)? != WOFF2_SIGNATURE {
+    if read_u32(data, 0, 0)? != WOFF2_SIGNATURE {
         return Err(error(0, "invalid WOFF2 signature"));
     }
 
@@ -48,8 +51,8 @@ pub fn parse_woff2_directory(data: &[u8]) -> Result<Woff2Directory, FontError> {
         return Err(error(0, "WOFF2 header is shorter than 48 bytes"));
     }
 
-    let flavor = read_u32(data, 4)?;
-    let declared_length = to_usize(read_u32(data, 8)?, 8)?;
+    let flavor = read_u32(data, 4, 0)?;
+    let declared_length = to_usize(read_u32(data, 8, 0)?, 8)?;
 
     if declared_length != data.len() {
         return Err(error(8, "WOFF2 length does not match the input size"));
@@ -59,27 +62,27 @@ pub fn parse_woff2_directory(data: &[u8]) -> Result<Woff2Directory, FontError> {
         return Err(error(4, "WOFF2 collections are not supported yet"));
     }
 
-    let table_count = usize::from(read_u16(data, 12)?);
+    let table_count = usize::from(read_u16(data, 12, 0)?);
 
     if table_count > MAX_TABLE_COUNT {
         return Err(error(12, "WOFF contains too many tables"));
     }
 
-    let total_sfnt_size = to_usize(read_u32(data, 16)?, 16)?;
-    let compressed_length = to_usize(read_u32(data, 20)?, 20)?;
+    let total_sfnt_size = to_usize(read_u32(data, 16, 0)?, 16)?;
+    let compressed_length = to_usize(read_u32(data, 20, 0)?, 20)?;
 
-    let metadata_offset = to_usize(read_u32(data, 28)?, 28)?;
-    let metadata_length = to_usize(read_u32(data, 32)?, 32)?;
-    let metadata_original_length = to_usize(read_u32(data, 36)?, 36)?;
+    let metadata_offset = to_usize(read_u32(data, 28, 0)?, 28)?;
+    let metadata_length = to_usize(read_u32(data, 32, 0)?, 32)?;
+    let metadata_original_length = to_usize(read_u32(data, 36, 0)?, 36)?;
 
-    let private_offset = to_usize(read_u32(data, 40)?, 40)?;
-    let private_length = to_usize(read_u32(data, 44)?, 44)?;
+    let private_offset = to_usize(read_u32(data, 40, 0)?, 40)?;
+    let private_length = to_usize(read_u32(data, 44, 0)?, 44)?;
 
     let mut cursor = WOFF2_HEADER_LENGTH;
     let mut tables = Vec::with_capacity(table_count);
 
     for _ in 0..table_count {
-        let flags = read_u8(data, cursor)?;
+        let flags = read_u8(data, cursor, 0)?;
         cursor = checked_add(cursor, 1, "WOFF2 table directory offset overflows")?;
 
         let known_tag_index = usize::from(flags & 0x3f);
@@ -281,7 +284,7 @@ fn read_base_128(data: &[u8], cursor: &mut usize) -> Result<usize, FontError> {
     let mut value = 0_u32;
 
     for index in 0..5 {
-        let byte = read_u8(data, *cursor)?;
+        let byte = read_u8(data, *cursor, 0)?;
         *cursor = checked_add(*cursor, 1, "WOFF2 directory offset overflow")?;
 
         if index == 0 && byte == 0x80 {
@@ -303,22 +306,6 @@ fn read_base_128(data: &[u8], cursor: &mut usize) -> Result<usize, FontError> {
         *cursor,
         "WOFF2 UIntBase128 is longer than five bytes",
     ))
-}
-
-fn read_u8(data: &[u8], offset: usize) -> Result<u8, FontError> {
-    data.get(offset)
-        .copied()
-        .ok_or_else(|| error(offset, "unexpected end of WOFF2 file"))
-}
-
-fn read_u16(data: &[u8], offset: usize) -> Result<u16, FontError> {
-    let bytes = read_bytes(data, offset, 2)?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_u32(data: &[u8], offset: usize) -> Result<u32, FontError> {
-    let bytes = read_bytes(data, offset, 4)?;
-    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn read_bytes(data: &[u8], offset: usize, length: usize) -> Result<&[u8], FontError> {

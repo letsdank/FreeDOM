@@ -21,6 +21,13 @@ impl<'a> FontReader<'a> {
             .ok_or_else(|| self.error(offset, "truncated font data"))
     }
 
+    pub(crate) fn u8(&self, offset: usize) -> Result<u8, FontError> {
+        self.data
+            .get(offset)
+            .copied()
+            .ok_or_else(|| self.error(offset, "truncated font data"))
+    }
+
     pub(crate) fn u16(&self, offset: usize) -> Result<u16, FontError> {
         let bytes = self.bytes(offset, 2)?;
         Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
@@ -53,6 +60,10 @@ pub(crate) fn read_bytes(
     FontReader::new(data, base_offset).bytes(offset, length)
 }
 
+pub(crate) fn read_u8(data: &[u8], offset: usize, base_offset: usize) -> Result<u8, FontError> {
+    FontReader::new(data, base_offset).u8(offset)
+}
+
 pub(crate) fn read_u16(data: &[u8], offset: usize, base_offset: usize) -> Result<u16, FontError> {
     FontReader::new(data, base_offset).u16(offset)
 }
@@ -73,6 +84,7 @@ mod tests {
     fn reads_big_endian_font_scalars_with_absolute_offsets() {
         let reader = FontReader::new(&[0x12, 0x34, 0xff, 0xfe, 0xab, 0xcd, 0xef, 0x01], 40);
 
+        assert_eq!(reader.u8(0).unwrap(), 0x12);
         assert_eq!(reader.u16(0).unwrap(), 0x1234);
         assert_eq!(reader.i16(2).unwrap(), -2);
         assert_eq!(reader.u32(4).unwrap(), 0xabcd_ef01);
