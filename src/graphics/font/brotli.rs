@@ -1,5 +1,4 @@
 use super::sfnt::FontError;
-use std::fs::read;
 
 const MAX_HUFFMAN_CODE_LENGTH: usize = 15;
 
@@ -296,9 +295,17 @@ enum HuffmanNode {
 #[derive(Clone, Debug)]
 pub struct HuffmanTree {
     nodes: Vec<HuffmanNode>,
+    single_symbol: Option<usize>,
 }
 
 impl HuffmanTree {
+    pub fn single(symbol: usize) -> Self {
+        Self {
+            nodes: Vec::new(),
+            single_symbol: Some(symbol),
+        }
+    }
+
     pub fn from_code_lengths(code_lengths: &[u8]) -> Result<Self, FontError> {
         let mut counts = [0_usize; MAX_HUFFMAN_CODE_LENGTH + 1];
         let mut symbol_count = 0_usize;
@@ -335,6 +342,7 @@ impl HuffmanTree {
 
         let mut tree = Self {
             nodes: vec![HuffmanNode::Branch([None, None])],
+            single_symbol: None,
         };
 
         for (symbol, &length) in code_lengths.iter().enumerate() {
@@ -357,6 +365,10 @@ impl HuffmanTree {
     }
 
     pub fn decode(&self, reader: &mut BitReader<'_>) -> Result<usize, FontError> {
+        if let Some(symbol) = self.single_symbol {
+            return Ok(symbol);
+        }
+
         let mut node_index = 0_usize;
 
         loop {
@@ -428,6 +440,77 @@ impl HuffmanTree {
 
         Ok(())
     }
+}
+
+pub fn read_simple_prefix_code(
+    reader: &mut BitReader<'_>,
+    alphabet_size: usize,
+) -> Result<HuffmanTree, FontError> {
+    if alphabet_size == 0 {
+        return Err(error(
+            reader.bit_position(),
+            "Brotli prefix-code alphabet must not be empty",
+        ));
+    }
+
+    if reader.read_bits(2)? != 1 {
+        return Err(error(
+            reader.bit_position(),
+            "expected a Brotli simple prefix code",
+        ));
+    }
+
+    let symbol_count = reader.read_bits(2)? as usize + 1;
+    let alphabet_bits = alphabet_bit_width(alphabet_size)?;
+    let mut symbols = Vec::with_capacity(symbol_count);
+
+    for _ in 0..symbol_count {
+        let symbol = reader.read_bits(alphabet_bits)? as usize;
+
+        if symbol >= alphabet_size {
+            return Err(error(
+                reader.bit_position(),
+                "Brotli prefix-code symbol exceeds its alphabet",
+            ));
+        }
+
+        if symbols.contains(&symbol) {
+            return Err(error(
+                reader.bit_position(),
+                "Brotli simple prefix code contains a duplicate symbol",
+            ));
+        }
+
+        symbols.push(symbol);
+    }
+
+    if symbol_count == 1 {
+        return Ok(HuffmanTree::single(symbols[0]));
+    }
+
+    let lengths: &[u8] = match symbol_count {
+        2 => &[1, 1],
+        3 => &[1, 2, 2],
+        4 if reader.read_bit()? => &[1, 2, 3, 3],
+        4 => &[2, 2, 2, 2],
+        _ => unreachable!(),
+    };
+
+    let mut code_lengths = vec![0_u8; alphabet_size];
+
+    for (&symbol, &length) in symbols.iter().zip(lengths) {
+        code_lengths[symbol] = length;
+    }
+
+    HuffmanTree::from_code_lengths(&code_lengths)
+}
+
+fn alphabet_bit_width(alphabet_size: usize) -> Result<usize, FontError> {
+    if alphabet_size == 0 {
+        return Err(error(0, "Brotli prefix-code alphabet must not be empty"));
+    }
+
+    Ok((usize::BITS - (alphabet_size - 1).leading_zeros()) as usize)
 }
 
 fn error(offset: usize, message: impl Into<String>) -> FontError {
@@ -518,5 +601,77 @@ mod tests {
             error.message,
             "compressed Brotli meta-blocks are not supported yet"
         );
+    }
+
+    #[test]
+    fn decodes_a_three_symbol_simple_prefix_code() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 2, 2);
+        append_bits(&mut data, &mut bit_position, 5, 8);
+        append_bits(&mut data, &mut bit_position, 2, 8);
+        append_bits(&mut data, &mut bit_position, 9, 8);
+
+        append_bits(&mut data, &mut bit_position, 0, 1);
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 3, 2);
+
+        let mut reader = BitReader::new(&data);
+        let tree = read_simple_prefix_code(&mut reader, 256).unwrap();
+
+        assert_eq!(tree.decode(&mut reader).unwrap(), 5);
+        assert_eq!(tree.decode(&mut reader).unwrap(), 2);
+        assert_eq!(tree.decode(&mut reader).unwrap(), 9);
+    }
+
+    #[test]
+    fn decodes_a_single_symbol_simple_prefix_code_without_consuming_bits() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 0, 2);
+        append_bits(&mut data, &mut bit_position, 42, 8);
+
+        let mut reader = BitReader::new(&data);
+        let tree = read_simple_prefix_code(&mut reader, 256).unwrap();
+        let before_decode = reader.bit_position();
+
+        assert_eq!(tree.decode(&mut reader).unwrap(), 42);
+        assert_eq!(reader.bit_position(), before_decode);
+    }
+
+    #[test]
+    fn rejects_duplicate_symbols_in_a_simple_prefix_code() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 7, 8);
+        append_bits(&mut data, &mut bit_position, 7, 8);
+
+        let mut reader = BitReader::new(&data);
+        let error = read_simple_prefix_code(&mut reader, 256).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "Brotli simple prefix code contains a duplicate symbol"
+        );
+    }
+
+    fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
+        for bit_index in 0..bit_count {
+            if *bit_position / 8 == data.len() {
+                data.push(0);
+            }
+
+            let bit = (value >> bit_index) & 1;
+
+            data[*bit_position / 8] |= (bit as u8) << (*bit_position % 8);
+            *bit_position += 1;
+        }
     }
 }
