@@ -7,6 +7,17 @@ const PREFIX_CODE_WEIGHT: u32 = 32_768;
 const CODE_LENGTH_ALPHABET_ORDER: [usize; 18] =
     [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
+const IMPLICIT_BLOCK_LENGTH: usize = 1 << 24;
+
+const BLOCK_LENGTH_EXTRA_BITS: [usize; 26] = [
+    2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7, 8, 9, 10, 11, 12, 13, 24,
+];
+
+const BLOCK_LENGTH_OFFSETS: [usize; 26] = [
+    1, 5, 9, 13, 17, 25, 33, 41, 49, 65, 81, 97, 113, 145, 177, 209, 241, 305, 369, 497, 753, 1265,
+    2289, 4337, 8433, 16625,
+];
+
 #[derive(Clone, Debug)]
 pub struct BitReader<'a> {
     data: &'a [u8],
@@ -468,6 +479,60 @@ impl HuffmanTree {
 
         Ok(())
     }
+}
+
+#[derive(Clone, Debug)]
+struct BlockPartition {
+    block_type_count: usize,
+    block_type_tree: Option<HuffmanTree>,
+    block_length_tree: Option<HuffmanTree>,
+    previous_type: usize,
+    current_type: usize,
+    remaining: usize,
+}
+
+fn read_block_partition(reader: &mut BitReader<'_>) -> Result<BlockPartition, FontError> {
+    let block_type_count = read_block_type_count(reader)?;
+
+    if block_type_count == 1 {
+        return Ok(BlockPartition {
+            block_type_count,
+            block_type_tree: None,
+            block_length_tree: None,
+            previous_type: 1,
+            current_type: 0,
+            remaining: IMPLICIT_BLOCK_LENGTH,
+        });
+    }
+
+    let block_type_tree = read_prefix_code(reader, block_type_count + 2)?;
+    let block_length_tree = read_prefix_code(reader, BLOCK_LENGTH_OFFSETS.len())?;
+    let block_length_symbol = block_type_tree.decode(reader)?;
+    let remaining = read_block_length(reader, block_length_symbol)?;
+
+    Ok(BlockPartition {
+        block_type_count,
+        block_type_tree: Some(block_type_tree),
+        block_length_tree: Some(block_length_tree),
+        previous_type: 1,
+        current_type: 0,
+        remaining,
+    })
+}
+
+fn read_block_length(reader: &mut BitReader<'_>, symbol: usize) -> Result<usize, FontError> {
+    let Some(&extra_bit_count) = BLOCK_LENGTH_EXTRA_BITS.get(symbol) else {
+        return Err(error(
+            reader.bit_position(),
+            "Brotli block length symbol exceeds its alphabet",
+        ));
+    };
+
+    let extra = reader.read_bits(extra_bit_count)? as usize;
+
+    BLOCK_LENGTH_OFFSETS[symbol]
+        .checked_add(extra)
+        .ok_or_else(|| error(reader.bit_position(), "Brotli block length overflows"))
 }
 
 pub fn read_prefix_code(
@@ -1115,6 +1180,52 @@ mod tests {
 
             assert_eq!(read_block_type_count(&mut reader).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn reads_a_single_type_brotli_block_partition() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_variable_length_u8(&mut data, &mut bit_position, 0);
+
+        let mut reader = BitReader::new(&data);
+        let partition = read_block_partition(&mut reader).unwrap();
+
+        assert_eq!(partition.block_type_count, 1);
+        assert_eq!(partition.current_type, 0);
+        assert_eq!(partition.previous_type, 1);
+        assert_eq!(partition.remaining, IMPLICIT_BLOCK_LENGTH);
+        assert!(partition.block_type_tree.is_none());
+        assert!(partition.block_length_tree.is_none());
+    }
+
+    #[test]
+    fn reads_a_multi_type_brotli_block_partition() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_variable_length_u8(&mut data, &mut bit_position, 1);
+
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 0, 2);
+        append_bits(&mut data, &mut bit_position, 0, 2);
+
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 0, 2);
+        append_bits(&mut data, &mut bit_position, 0, 5);
+
+        append_bits(&mut data, &mut bit_position, 3, 2);
+
+        let mut reader = BitReader::new(&data);
+        let partition = read_block_partition(&mut reader).unwrap();
+
+        assert_eq!(partition.block_type_count, 2);
+        assert_eq!(partition.current_type, 0);
+        assert_eq!(partition.previous_type, 1);
+        assert_eq!(partition.remaining, 4);
+        assert!(partition.block_type_tree.is_some());
+        assert!(partition.block_length_tree.is_some());
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
