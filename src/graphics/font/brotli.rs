@@ -549,6 +549,68 @@ enum LiteralContextMode {
     Signed,
 }
 
+fn literal_context_id(mode: LiteralContextMode, previous: u8, before_previous: u8) -> usize {
+    match mode {
+        LiteralContextMode::Lsb6 => usize::from(previous & 0x3f),
+        LiteralContextMode::Msb6 => usize::from(previous >> 2),
+        LiteralContextMode::Utf8 => {
+            usize::from(utf8_context_first(previous) | utf8_context_second(before_previous))
+        }
+        LiteralContextMode::Signed => usize::from(
+            (signed_context_value(previous) << 3) | signed_context_value(before_previous),
+        ),
+    }
+}
+
+fn utf8_context_first(byte: u8) -> u8 {
+    const ASCII: [u8; 128] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 8, 12, 16, 12, 12, 20, 12, 16, 24, 28, 12, 12, 32, 12, 36, 12, 44, 44, 44, 44, 44,
+        44, 44, 44, 44, 44, 32, 32, 24, 40, 28, 12, 12, 48, 52, 52, 52, 48, 52, 52, 52, 48, 52, 52,
+        52, 52, 52, 48, 52, 52, 52, 52, 52, 52, 48, 52, 52, 52, 52, 24, 12, 28, 12, 12, 12, 56, 60,
+        60, 60, 56, 60, 60, 60, 56, 60, 60, 60, 60, 60, 56, 60, 60, 60, 60, 60, 56, 60, 60, 60, 60,
+        60, 24, 12, 28, 12, 0,
+    ];
+
+    match byte {
+        0..=127 => ASCII[usize::from(byte)],
+        128..=191 => byte & 1,
+        _ => 2 | (byte & 1),
+    }
+}
+
+fn utf8_context_second(byte: u8) -> u8 {
+    match byte {
+        0..=32 => 0,
+        33..=47 | 58..=64 | 91..=96 | 123..=126 => 1,
+        48..=57 | 65..=90 | 224..=255 => 2,
+        97..=122 => 3,
+        _ => 0,
+    }
+}
+
+fn signed_context_value(byte: u8) -> u8 {
+    match byte {
+        0 => 0,
+        1..=15 => 1,
+        16..=63 => 2,
+        64..=127 => 3,
+        128..=191 => 4,
+        192..=239 => 5,
+        240..=254 => 6,
+        255 => 7,
+    }
+}
+
+fn distance_context_id(copy_length: usize) -> usize {
+    match copy_length {
+        2 => 0,
+        3 => 1,
+        4 => 2,
+        _ => 3,
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CompressedMetaBlockHeader {
     literal_partition: BlockPartition,
@@ -1686,6 +1748,26 @@ mod tests {
 
         assert_eq!(partition.block_type_count, 2);
         assert_eq!(partition.remaining, 5);
+    }
+
+    #[test]
+    fn computes_brotli_literal_context_ids() {
+        assert_eq!(literal_context_id(LiteralContextMode::Lsb6, 0xd5, 0), 0x15);
+        assert_eq!(literal_context_id(LiteralContextMode::Msb6, 0xd5, 0), 0x35);
+        assert_eq!(literal_context_id(LiteralContextMode::Utf8, b'A', b'a'), 51);
+        assert_eq!(
+            literal_context_id(LiteralContextMode::Signed, 0xf0, 0x10),
+            50
+        );
+    }
+
+    #[test]
+    fn computes_brotli_distance_context_ids() {
+        assert_eq!(distance_context_id(2), 0);
+        assert_eq!(distance_context_id(3), 1);
+        assert_eq!(distance_context_id(4), 2);
+        assert_eq!(distance_context_id(5), 3);
+        assert_eq!(distance_context_id(128), 3);
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
