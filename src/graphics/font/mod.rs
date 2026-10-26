@@ -10,3 +10,4 @@ pub mod render;
 pub mod sfnt;
 pub mod truetype;
 pub mod woff;
+pub mod woff2;
