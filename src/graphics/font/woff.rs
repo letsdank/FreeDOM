@@ -3,6 +3,10 @@ use std::{io::Read, ops::Range};
 use flate2::read::ZlibDecoder;
 
 use super::{
+    reader::{
+        checked_range, padded_length, read_bytes_from_start, read_u16_from_start as read_u16,
+        read_u32_from_start as read_u32, to_usize, write_u16, write_u32,
+    },
     sfnt::{FontError, TableTag},
     woff2::decode_woff2,
 };
@@ -132,7 +136,7 @@ pub fn decode_woff(data: &[u8]) -> Result<Vec<u8>, FontError> {
     let mut decoded_tables = Vec::with_capacity(tables.len());
 
     for table in tables {
-        let compressed = checked_slice(data, table.source_offset, table.compressed_length)?;
+        let compressed = read_bytes_from_start(data, table.source_offset, table.compressed_length)?;
 
         let table_data = if table.compressed_length == table.original_length {
             compressed.to_vec()
@@ -172,13 +176,13 @@ pub fn decode_woff(data: &[u8]) -> Result<Vec<u8>, FontError> {
 
     let mut sfnt = vec![0; total_sfnt_size];
 
-    write_u32(&mut sfnt, 0, flavor);
-    write_u16(&mut sfnt, 4, table_count as u16);
+    write_u32(&mut sfnt, 0, flavor)?;
+    write_u16(&mut sfnt, 4, table_count as u16)?;
 
     let (search_range, entry_selector, range_shift) = sfnt_search_parameters(table_count);
-    write_u16(&mut sfnt, 6, search_range);
-    write_u16(&mut sfnt, 8, entry_selector);
-    write_u16(&mut sfnt, 10, range_shift);
+    write_u16(&mut sfnt, 6, search_range)?;
+    write_u16(&mut sfnt, 8, entry_selector)?;
+    write_u16(&mut sfnt, 10, range_shift)?;
 
     let mut table_offset = SFNT_HEADER_LENGTH + table_count * SFNT_TABLE_DIRECTORY_ENTRY_LENGTH;
 
@@ -187,19 +191,19 @@ pub fn decode_woff(data: &[u8]) -> Result<Vec<u8>, FontError> {
         let tag = table.tag.bytes();
 
         sfnt[record_offset..record_offset + 4].copy_from_slice(&tag);
-        write_u32(&mut sfnt, record_offset + 4, table.checksum);
+        write_u32(&mut sfnt, record_offset + 4, table.checksum)?;
         write_u32(
             &mut sfnt,
             record_offset + 8,
             u32::try_from(table_offset)
                 .map_err(|_| error(record_offset + 8, "SFNT table offset is too large"))?,
-        );
+        )?;
         write_u32(
             &mut sfnt,
             record_offset + 12,
             u32::try_from(table.data.len())
                 .map_err(|_| error(record_offset + 12, "SFNT table length is too large"))?,
-        );
+        )?;
 
         let table_end = table_offset + table.data.len();
         sfnt[table_offset..table_end].copy_from_slice(&table.data);
@@ -324,57 +328,6 @@ fn sfnt_search_parameters(table_count: usize) -> (u16, u16, u16) {
     (search_range as u16, entry_selector, range_shift as u16)
 }
 
-fn padded_length(length: usize) -> Result<usize, FontError> {
-    length
-        .checked_add(3)
-        .map(|length| length & !3)
-        .ok_or_else(|| error(length, "font length overflows"))
-}
-
-fn checked_slice(data: &[u8], offset: usize, length: usize) -> Result<&[u8], FontError> {
-    let range = checked_range(data, offset, length, "unexpected end of font file")?;
-    Ok(&data[range])
-}
-
-fn checked_range(
-    data: &[u8],
-    offset: usize,
-    length: usize,
-    message: &'static str,
-) -> Result<Range<usize>, FontError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| error(offset, "font offset overflows"))?;
-
-    if end > data.len() {
-        return Err(error(offset, message));
-    }
-
-    Ok(offset..end)
-}
-
-fn read_u16(data: &[u8], offset: usize) -> Result<u16, FontError> {
-    let bytes = checked_slice(data, offset, 2)?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn read_u32(data: &[u8], offset: usize) -> Result<u32, FontError> {
-    let bytes = checked_slice(data, offset, 4)?;
-    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn write_u16(data: &mut [u8], offset: usize, value: u16) {
-    data[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
-}
-
-fn write_u32(data: &mut [u8], offset: usize, value: u32) {
-    data[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-}
-
-fn to_usize(value: u32, offset: usize) -> Result<usize, FontError> {
-    usize::try_from(value).map_err(|_| error(offset, "font value is too large"))
-}
-
 fn error(offset: usize, message: impl Into<String>) -> FontError {
     FontError {
         offset,
@@ -466,18 +419,18 @@ mod tests {
 
         let mut data = vec![0_u8; file_length];
 
-        write_u32(&mut data, 0, WOFF_SIGNATURE);
-        write_u32(&mut data, 4, 0x0001_0000);
-        write_u32(&mut data, 8, file_length as u32);
-        write_u16(&mut data, 12, 1);
-        write_u32(&mut data, 16, total_sfnt_size as u32);
-        write_u16(&mut data, 20, 1);
+        write_u32(&mut data, 0, WOFF_SIGNATURE).unwrap();
+        write_u32(&mut data, 4, 0x0001_0000).unwrap();
+        write_u32(&mut data, 8, file_length as u32).unwrap();
+        write_u16(&mut data, 12, 1).unwrap();
+        write_u32(&mut data, 16, total_sfnt_size as u32).unwrap();
+        write_u16(&mut data, 20, 1).unwrap();
 
         data[44..48].copy_from_slice(b"name");
-        write_u32(&mut data, 48, table_offset as u32);
-        write_u32(&mut data, 52, encoded.len() as u32);
-        write_u32(&mut data, 56, table.len() as u32);
-        write_u32(&mut data, 60, 0);
+        write_u32(&mut data, 48, table_offset as u32).unwrap();
+        write_u32(&mut data, 52, encoded.len() as u32).unwrap();
+        write_u32(&mut data, 56, table.len() as u32).unwrap();
+        write_u32(&mut data, 60, 0).unwrap();
 
         data[table_offset..table_offset + encoded.len()].copy_from_slice(&encoded);
         data

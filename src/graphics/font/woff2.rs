@@ -1,6 +1,10 @@
 use super::{
     brotli::decode_uncompressed_meta_blocks,
-    reader::{read_u8, read_u16, read_u32},
+    reader::{
+        checked_add, checked_end, checked_range, padded_length,
+        read_bytes_from_start as read_bytes, read_u8, read_u16, read_u32, to_usize, write_u16,
+        write_u32,
+    },
     sfnt::{FontError, TableTag},
 };
 use std::ops::Range;
@@ -244,17 +248,17 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
 
     let mut sfnt = vec![0_u8; expected_sfnt_size];
 
-    write_u32(&mut sfnt, 0, directory.flavor);
+    write_u32(&mut sfnt, 0, directory.flavor)?;
     write_u16(
         &mut sfnt,
         4,
         u16::try_from(table_count).map_err(|_| error(12, "WOFF2 contains too many SFNT tables"))?,
-    );
+    )?;
 
     let (search_range, entry_selector, range_shift) = sfnt_search_parameters(table_count);
-    write_u16(&mut sfnt, 6, search_range);
-    write_u16(&mut sfnt, 8, entry_selector);
-    write_u16(&mut sfnt, 10, range_shift);
+    write_u16(&mut sfnt, 6, search_range)?;
+    write_u16(&mut sfnt, 8, entry_selector)?;
+    write_u16(&mut sfnt, 10, range_shift)?;
 
     let mut table_offset = directory_length;
     let mut head_offset = None;
@@ -264,19 +268,19 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
         let tag_bytes = tag.bytes();
 
         sfnt[record_offset..record_offset + 4].copy_from_slice(&tag_bytes);
-        write_u32(&mut sfnt, record_offset + 4, table_checksum(*tag, table));
+        write_u32(&mut sfnt, record_offset + 4, table_checksum(*tag, table))?;
         write_u32(
             &mut sfnt,
             record_offset + 8,
             u32::try_from(table_offset)
                 .map_err(|_| error(record_offset + 8, "SFNT table offset is too large"))?,
-        );
+        )?;
         write_u32(
             &mut sfnt,
             record_offset + 12,
             u32::try_from(table.len())
                 .map_err(|_| error(record_offset + 12, "SFNT table length is too large"))?,
-        );
+        )?;
 
         let table_end = table_offset
             .checked_add(table.len())
@@ -297,21 +301,14 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
             .ok_or_else(|| error(offset, "head table offset overflows"))?;
 
         if adjustment_offset + 4 <= sfnt.len() {
-            write_u32(&mut sfnt, adjustment_offset, 0);
+            write_u32(&mut sfnt, adjustment_offset, 0)?;
 
             let adjustment = 0xb1b0_afba_u32.wrapping_sub(sfnt_checksum(&sfnt));
-            write_u32(&mut sfnt, adjustment_offset, adjustment);
+            write_u32(&mut sfnt, adjustment_offset, adjustment)?;
         }
     }
 
     Ok(sfnt)
-}
-
-fn padded_length(length: usize) -> Result<usize, FontError> {
-    length
-        .checked_add(3)
-        .map(|length| length & !3)
-        .ok_or_else(|| error(length, "WOFF2 length overflows"))
 }
 
 fn sfnt_search_parameters(table_count: usize) -> (u16, u16, u16) {
@@ -369,14 +366,6 @@ fn sfnt_checksum(data: &[u8]) -> u32 {
     }
 
     checksum
-}
-
-fn write_u16(data: &mut [u8], offset: usize, value: u16) {
-    data[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
-}
-
-fn write_u32(data: &mut [u8], offset: usize, value: u32) {
-    data[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
 }
 
 fn table_transform(tag: TableTag, version: u8, offset: usize) -> Result<Woff2Transform, FontError> {
@@ -512,48 +501,6 @@ fn read_base_128(data: &[u8], cursor: &mut usize) -> Result<usize, FontError> {
         *cursor,
         "WOFF2 UIntBase128 is longer than five bytes",
     ))
-}
-
-fn read_bytes(data: &[u8], offset: usize, length: usize) -> Result<&[u8], FontError> {
-    let range = checked_range(data, offset, length, "unexpected end of WOFF2 file")?;
-    Ok(&data[range])
-}
-
-fn checked_range(
-    data: &[u8],
-    offset: usize,
-    length: usize,
-    message: &str,
-) -> Result<Range<usize>, FontError> {
-    let end = checked_end(offset, length, data.len(), message)?;
-    Ok(offset..end)
-}
-
-fn checked_end(
-    offset: usize,
-    length: usize,
-    limit: usize,
-    message: &str,
-) -> Result<usize, FontError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| error(offset, "WOFF2 offset overflows"))?;
-
-    if end > limit {
-        return Err(error(offset, message));
-    }
-
-    Ok(end)
-}
-
-fn checked_add(offset: usize, amount: usize, message: &str) -> Result<usize, FontError> {
-    offset
-        .checked_add(amount)
-        .ok_or_else(|| error(offset, message))
-}
-
-fn to_usize(value: u32, offset: usize) -> Result<usize, FontError> {
-    usize::try_from(value).map_err(|_| error(offset, "WOFF2 value is too large"))
 }
 
 fn error(offset: usize, message: impl Into<String>) -> FontError {
