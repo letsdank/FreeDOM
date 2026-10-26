@@ -241,6 +241,28 @@ fn read_meta_block_length(
         .ok_or_else(|| error(reader.bit_position(), "Brotli meta-block length overflows"))
 }
 
+fn read_variable_length_u8(reader: &mut BitReader<'_>) -> Result<usize, FontError> {
+    if !reader.read_bit()? {
+        return Ok(0);
+    }
+
+    let bit_count = reader.read_bits(3)? as usize;
+
+    if bit_count == 0 {
+        return Ok(1);
+    }
+
+    let suffix = reader.read_bits(bit_count)? as usize;
+
+    Ok((1_usize << bit_count) | suffix)
+}
+
+fn read_block_type_count(reader: &mut BitReader<'_>) -> Result<usize, FontError> {
+    read_variable_length_u8(reader)?
+        .checked_add(1)
+        .ok_or_else(|| error(reader.bit_position(), "Brotli block type count overflows"))
+}
+
 fn skip_empty_meta_block(reader: &mut BitReader<'_>) -> Result<(), FontError> {
     if reader.read_bit()? {
         return Err(error(
@@ -1079,6 +1101,22 @@ mod tests {
         assert_eq!(tree.decode(&mut reader).unwrap(), 5);
     }
 
+    #[test]
+    fn decodes_brotli_block_type_counts() {
+        for expected in [
+            1_usize, 2, 3, 4, 5, 8, 9, 16, 17, 32, 33, 64, 65, 128, 129, 256,
+        ] {
+            let mut data = Vec::new();
+            let mut bit_position = 0;
+
+            append_variable_length_u8(&mut data, &mut bit_position, expected - 1);
+
+            let mut reader = BitReader::new(&data);
+
+            assert_eq!(read_block_type_count(&mut reader).unwrap(), expected);
+        }
+    }
+
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
         for bit_index in 0..bit_count {
             if *bit_position / 8 == data.len() {
@@ -1090,5 +1128,23 @@ mod tests {
             data[*bit_position / 8] |= (bit as u8) << (*bit_position % 8);
             *bit_position += 1;
         }
+    }
+
+    fn append_variable_length_u8(data: &mut Vec<u8>, bit_position: &mut usize, value: usize) {
+        if value == 0 {
+            append_bits(data, bit_position, 0, 1);
+            return;
+        }
+
+        append_bits(data, bit_position, 1, 1);
+
+        let bit_count = (usize::BITS - value.leading_zeros() - 1) as usize;
+        append_bits(data, bit_position, bit_count as u32, 3);
+        append_bits(
+            data,
+            bit_position,
+            (value - (1_usize << bit_count)) as u32,
+            bit_count,
+        );
     }
 }
