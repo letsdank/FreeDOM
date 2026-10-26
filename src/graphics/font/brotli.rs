@@ -567,7 +567,7 @@ fn utf8_context_first(byte: u8) -> u8 {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 8, 12, 16, 12, 12, 20, 12, 16, 24, 28, 12, 12, 32, 12, 36, 12, 44, 44, 44, 44, 44,
         44, 44, 44, 44, 44, 32, 32, 24, 40, 28, 12, 12, 48, 52, 52, 52, 48, 52, 52, 52, 48, 52, 52,
-        52, 52, 52, 48, 52, 52, 52, 52, 52, 52, 48, 52, 52, 52, 52, 24, 12, 28, 12, 12, 12, 56, 60,
+        52, 52, 52, 48, 52, 52, 52, 52, 52, 48, 52, 52, 52, 52, 52, 24, 12, 28, 12, 12, 12, 56, 60,
         60, 60, 56, 60, 60, 60, 56, 60, 60, 60, 60, 60, 56, 60, 60, 60, 60, 60, 56, 60, 60, 60, 60,
         60, 24, 12, 28, 12, 0,
     ];
@@ -626,6 +626,107 @@ struct CompressedMetaBlockHeader {
     literal_trees: Vec<HuffmanTree>,
     command_trees: Vec<HuffmanTree>,
     distance_trees: Vec<HuffmanTree>,
+}
+
+impl CompressedMetaBlockHeader {
+    fn read_command_symbol(&mut self, reader: &mut BitReader<'_>) -> Result<usize, FontError> {
+        let block_type = self.command_partition.take_block_type(reader)?;
+
+        let tree = self.command_trees.get(block_type).ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli command block type has no Huffman tree",
+            )
+        })?;
+
+        tree.decode(reader)
+    }
+
+    fn read_literal(
+        &mut self,
+        reader: &mut BitReader<'_>,
+        previous: u8,
+        before_previous: u8,
+    ) -> Result<u8, FontError> {
+        let block_type = self.literal_partition.take_block_type(reader)?;
+
+        let mode = *self.literal_context_modes.get(block_type).ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli literal block type has no context mode",
+            )
+        })?;
+
+        let context = literal_context_id(mode, previous, before_previous);
+
+        let map_index = block_type
+            .checked_mul(64)
+            .and_then(|index| index.checked_add(context))
+            .ok_or_else(|| {
+                error(
+                    reader.bit_position(),
+                    "Brotli literal context index overflow",
+                )
+            })?;
+
+        let tree_index = *self.literal_context_map.get(map_index).ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli literal context is missing from the context map",
+            )
+        })?;
+
+        let tree = self.literal_trees.get(tree_index).ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli literal context refers to a missing Huffman tree",
+            )
+        })?;
+
+        let symbol = tree.decode(reader)?;
+
+        u8::try_from(symbol).map_err(|_| {
+            error(
+                reader.bit_position(),
+                "Brotli literal symbol is outside the byte range",
+            )
+        })
+    }
+
+    fn read_distance_symbol(
+        &mut self,
+        reader: &mut BitReader<'_>,
+        copy_length: usize,
+    ) -> Result<usize, FontError> {
+        let block_type = self.distance_partition.take_block_type(reader)?;
+        let context = distance_context_id(copy_length);
+
+        let map_index = block_type
+            .checked_mul(4)
+            .and_then(|index| index.checked_add(context))
+            .ok_or_else(|| {
+                error(
+                    reader.bit_position(),
+                    "Brotli distance context index overflow",
+                )
+            })?;
+
+        let tree_index = *self.distance_context_map.get(map_index).ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli distance context is missing from the context map",
+            )
+        })?;
+
+        let tree = self.distance_trees.get(tree_index).ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli distance context refers to a missing Huffman tree",
+            )
+        })?;
+
+        tree.decode(reader)
+    }
 }
 
 fn read_compressed_meta_block_header_prefix(
@@ -1759,6 +1860,8 @@ mod tests {
             literal_context_id(LiteralContextMode::Signed, 0xf0, 0x10),
             50
         );
+        assert_eq!(literal_context_id(LiteralContextMode::Utf8, b'U', 0), 48);
+        assert_eq!(literal_context_id(LiteralContextMode::Utf8, b'V', 0), 52);
     }
 
     #[test]
@@ -1768,6 +1871,56 @@ mod tests {
         assert_eq!(distance_context_id(4), 2);
         assert_eq!(distance_context_id(5), 3);
         assert_eq!(distance_context_id(128), 3);
+    }
+
+    #[test]
+    fn selects_brotli_trees_using_block_types_and_contexts() {
+        fn partition(current_type: usize) -> BlockPartition {
+            BlockPartition {
+                block_type_count: 2,
+                block_type_tree: None,
+                block_length_tree: None,
+                previous_type: 0,
+                current_type,
+                remaining: 2,
+            }
+        }
+
+        let mut literal_context_map = vec![0; 128];
+        literal_context_map[64 + 32] = 1;
+
+        let mut distance_context_map = vec![0; 8];
+        distance_context_map[4 + 1] = 1;
+
+        let mut header = CompressedMetaBlockHeader {
+            literal_partition: partition(1),
+            command_partition: partition(1),
+            distance_partition: partition(1),
+            distance_postfix_bits: 0,
+            direct_distance_code_count: 0,
+            literal_context_modes: vec![LiteralContextMode::Lsb6, LiteralContextMode::Msb6],
+            literal_tree_count: 2,
+            literal_context_map,
+            distance_tree_count: 2,
+            distance_context_map,
+            literal_trees: vec![HuffmanTree::single(65), HuffmanTree::single(66)],
+            command_trees: vec![HuffmanTree::single(17), HuffmanTree::single(37)],
+            distance_trees: vec![HuffmanTree::single(9), HuffmanTree::single(19)],
+        };
+
+        let mut reader = BitReader::new(&[]);
+
+        assert_eq!(header.read_command_symbol(&mut reader).unwrap(), 37);
+
+        // MSB6 context for 0x80 is 32.
+        assert_eq!(header.read_literal(&mut reader, 0x80, 0).unwrap(), 66);
+
+        // A copy length of 3 produces distance context 1.
+        assert_eq!(header.read_distance_symbol(&mut reader, 3).unwrap(), 19);
+
+        assert_eq!(header.command_partition.remaining, 1);
+        assert_eq!(header.literal_partition.remaining, 1);
+        assert_eq!(header.distance_partition.remaining, 1);
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
