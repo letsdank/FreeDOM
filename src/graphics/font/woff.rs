@@ -1,3 +1,10 @@
+//! WOFF container normalization.
+//!
+//! WOFF 1.0 stores font tables in a container and may compress each table
+//! separately. This module reconstructs SFNT data and dispatches WOFF 2.0
+//! input to the WOFF 2.0 decoder.
+//!
+//! Specification: <https://www.w3.org/TR/WOFF/>
 use std::{io::Read, ops::Range};
 
 use flate2::read::ZlibDecoder;
@@ -34,7 +41,10 @@ struct DecodedTable {
     data: Vec<u8>,
 }
 
-/// Decodes a WOFF 1.0 container into an SFNT byte buffer.
+/// Decodes a WOFF 1.0 or WOFF 2.0 container into an SFNT byte buffer.
+///
+/// WOFF 2.0 input is delegated to [`super::woff2::decode_woff2`], which
+/// currently supports only a subset of WOFF 2.0.
 pub fn decode_woff(data: &[u8]) -> Result<Vec<u8>, FontError> {
     if data.get(..4) == Some(b"wOF2") {
         return decode_woff2(data);

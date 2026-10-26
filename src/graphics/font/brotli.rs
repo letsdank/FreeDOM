@@ -1,14 +1,23 @@
+//! Brotli bitstream parsing for WOFF 2.0.
+//!
+//! The decoder currently handles uncompressed meta-blocks. Parsing support
+//! for compressed meta-block headers, prefix codes, contexts, and commands is
+//! being implemented separately and is not yet connected to the decoder.
+//!
+//! Specification: <https://www.rfc-editor.org/rfc/rfc7932.html>
 use super::sfnt::FontError;
 
 const MAX_HUFFMAN_CODE_LENGTH: usize = 15;
 const CODE_LENGTH_ALPHABET_WEIGHT: u32 = 32;
 const PREFIX_CODE_WEIGHT: u32 = 32_768;
 
+// RFC 7932, section 3.5: order of code-length code lengths.
 const CODE_LENGTH_ALPHABET_ORDER: [usize; 18] =
     [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 const IMPLICIT_BLOCK_LENGTH: usize = 1 << 24;
 
+// RFC 7932, section 6: block count codes.
 const BLOCK_LENGTH_EXTRA_BITS: [usize; 26] = [
     2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 7, 8, 9, 10, 11, 12, 13, 24,
 ];
@@ -549,6 +558,7 @@ enum LiteralContextMode {
     Signed,
 }
 
+// RFC 7932, section 7.1: literal context IDs.
 fn literal_context_id(mode: LiteralContextMode, previous: u8, before_previous: u8) -> usize {
     match mode {
         LiteralContextMode::Lsb6 => usize::from(previous & 0x3f),
@@ -618,6 +628,7 @@ struct InsertCopyCommand {
     implicit_distance: bool,
 }
 
+// RFC 7932, section 5: insert-and-copy length codes.
 fn read_insert_copy_command(
     reader: &mut BitReader<'_>,
     symbol: usize,

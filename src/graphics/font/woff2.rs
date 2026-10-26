@@ -1,3 +1,13 @@
+//! WOFF 2.0 directory parsing and SFNT reconstruction.
+//!
+//! The directory parser reads table metadata and identifies the compressed
+//! font data. The decoder currently supports untransformed tables stored in
+//! uncompressed Brotli meta-blocks.
+//!
+//! WOFF 2.0 font collections, transformed tables, and compressed Brotli
+//! meta-blocks are not yet supported by the decoder.
+//!
+//! Specification: <https://www.w3.org/TR/WOFF2/>
 use super::{
     brotli::decode_uncompressed_meta_blocks,
     reader::{
