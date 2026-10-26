@@ -611,6 +611,70 @@ fn distance_context_id(copy_length: usize) -> usize {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct InsertCopyCommand {
+    insert_length: usize,
+    copy_length: usize,
+    implicit_distance: bool,
+}
+
+fn read_insert_copy_command(
+    reader: &mut BitReader<'_>,
+    symbol: usize,
+) -> Result<InsertCopyCommand, FontError> {
+    const INSERT_BASE: [usize; 24] = [
+        0, 1, 2, 3, 4, 5, 6, 8, 10, 14, 18, 26, 34, 50, 66, 98, 130, 194, 322, 578, 1090, 2114,
+        6210, 22594,
+    ];
+
+    const INSERT_EXTRA_BITS: [usize; 24] = [
+        0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 10, 12, 14, 24,
+    ];
+
+    const COPY_BASE: [usize; 24] = [
+        2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 22, 30, 38, 54, 70, 102, 134, 198, 326, 582, 1094,
+        2118,
+    ];
+
+    const COPY_EXTRA_BITS: [usize; 24] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 10, 24,
+    ];
+
+    // The entries map each group of 64 symbols to insertion and copy code ranges.
+    const CODE_GROUPS: [(usize, usize); 11] = [
+        (0, 0),
+        (0, 8),
+        (0, 0),
+        (0, 8),
+        (8, 0),
+        (8, 8),
+        (0, 16),
+        (16, 0),
+        (8, 16),
+        (16, 8),
+        (16, 16),
+    ];
+
+    let &(insert_group, copy_group) = CODE_GROUPS.get(symbol / 64).ok_or_else(|| {
+        error(
+            reader.bit_position(),
+            "Brotli insert-and-copy symbol is outside its alphabet",
+        )
+    })?;
+
+    let insert_code = insert_group + ((symbol >> 3) & 7);
+    let copy_code = copy_group + (symbol & 7);
+
+    let insert_extra = reader.read_bits(INSERT_EXTRA_BITS[insert_code])? as usize;
+    let copy_extra = reader.read_bits(COPY_EXTRA_BITS[copy_code])? as usize;
+
+    Ok(InsertCopyCommand {
+        insert_length: INSERT_BASE[insert_code] + insert_extra,
+        copy_length: COPY_BASE[copy_code] + copy_extra,
+        implicit_distance: symbol < 128,
+    })
+}
+
 #[derive(Clone, Debug)]
 struct CompressedMetaBlockHeader {
     literal_partition: BlockPartition,
@@ -726,6 +790,11 @@ impl CompressedMetaBlockHeader {
         })?;
 
         tree.decode(reader)
+    }
+
+    fn read_command(&mut self, reader: &mut BitReader<'_>) -> Result<InsertCopyCommand, FontError> {
+        let symbol = self.read_command_symbol(reader)?;
+        read_insert_copy_command(reader, symbol)
     }
 }
 
@@ -1921,6 +1990,67 @@ mod tests {
         assert_eq!(header.command_partition.remaining, 1);
         assert_eq!(header.literal_partition.remaining, 1);
         assert_eq!(header.distance_partition.remaining, 1);
+    }
+
+    #[test]
+    fn decodes_brotli_insert_copy_commands() {
+        let mut reader = BitReader::new(&[]);
+
+        assert_eq!(
+            read_insert_copy_command(&mut reader, 0).unwrap(),
+            InsertCopyCommand {
+                insert_length: 0,
+                copy_length: 2,
+                implicit_distance: true,
+            }
+        );
+
+        assert_eq!(
+            read_insert_copy_command(&mut reader, 128).unwrap(),
+            InsertCopyCommand {
+                insert_length: 0,
+                copy_length: 2,
+                implicit_distance: false,
+            }
+        );
+
+        let mut reader = BitReader::new(&[0b0000_0011]);
+
+        // Symbol 64 uses insert code 0 and copy code 8.
+        // Copy code 8 has one extra bit.
+        assert_eq!(
+            read_insert_copy_command(&mut reader, 64).unwrap(),
+            InsertCopyCommand {
+                insert_length: 0,
+                copy_length: 11,
+                implicit_distance: true,
+            }
+        );
+        assert_eq!(reader.bit_position(), 1);
+    }
+
+    #[test]
+    fn decodes_brotli_large_insert_copy_lengths() {
+        let mut reader = BitReader::new(&[0xff; 6]);
+
+        assert_eq!(
+            read_insert_copy_command(&mut reader, 703).unwrap(),
+            InsertCopyCommand {
+                insert_length: 16_799_809,
+                copy_length: 16_779_333,
+                implicit_distance: false,
+            }
+        );
+        assert_eq!(reader.bit_position(), 48);
+    }
+
+    #[test]
+    fn rejects_invalid_or_truncated_brotli_commands() {
+        let mut reader = BitReader::new(&[]);
+        assert!(read_insert_copy_command(&mut reader, 704).is_err());
+
+        let mut reader = BitReader::new(&[0; 5]);
+        assert!(read_insert_copy_command(&mut reader, 703).is_err());
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
