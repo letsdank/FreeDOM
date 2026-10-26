@@ -552,6 +552,10 @@ struct CompressedMetaBlockHeader {
     distance_postfix_bits: u8,
     direct_distance_code_count: usize,
     literal_context_modes: Vec<LiteralContextMode>,
+    literal_tree_count: usize,
+    literal_context_map: Vec<usize>,
+    distance_tree_count: usize,
+    distance_context_map: Vec<usize>,
 }
 
 fn read_compressed_meta_block_header_prefix(
@@ -579,6 +583,32 @@ fn read_compressed_meta_block_header_prefix(
         literal_context_modes.push(mode);
     }
 
+    let literal_tree_count = read_block_type_count(reader)?;
+    let literal_context_map_size = literal_partition
+        .block_type_count
+        .checked_mul(64)
+        .ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli literal context map is too large",
+            )
+        })?;
+    let literal_context_map =
+        read_context_map(reader, literal_context_map_size, literal_tree_count)?;
+
+    let distance_tree_count = read_block_type_count(reader)?;
+    let distance_context_map_size = distance_partition
+        .block_type_count
+        .checked_mul(4)
+        .ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli distance context map is too large",
+            )
+        })?;
+    let distance_context_map =
+        read_context_map(reader, distance_context_map_size, distance_tree_count)?;
+
     Ok(CompressedMetaBlockHeader {
         literal_partition,
         command_partition,
@@ -586,7 +616,121 @@ fn read_compressed_meta_block_header_prefix(
         distance_postfix_bits,
         direct_distance_code_count,
         literal_context_modes,
+        literal_tree_count,
+        literal_context_map,
+        distance_tree_count,
+        distance_context_map,
     })
+}
+
+fn read_context_map(
+    reader: &mut BitReader<'_>,
+    context_map_size: usize,
+    tree_count: usize,
+) -> Result<Vec<usize>, FontError> {
+    if tree_count == 0 {
+        return Err(error(
+            reader.bit_position(),
+            "Brotli context map has no prefix trees",
+        ));
+    }
+
+    if tree_count == 1 {
+        return Ok(vec![0; context_map_size]);
+    }
+
+    let rle_max = if reader.read_bit()? {
+        reader.read_bits(4)? as usize + 1
+    } else {
+        0
+    };
+
+    let tree = read_prefix_code(reader, tree_count + rle_max)?;
+    let mut context_map = Vec::with_capacity(context_map_size);
+
+    while context_map.len() < context_map_size {
+        let symbol = tree.decode(reader)?;
+
+        if symbol == 0 {
+            context_map.push(0);
+            continue;
+        }
+
+        if symbol <= rle_max {
+            let repeat_count = (1_usize << symbol)
+                .checked_add(reader.read_bits(symbol)? as usize)
+                .ok_or_else(|| {
+                    error(
+                        reader.bit_position(),
+                        "Brotli context-map zero run overflows",
+                    )
+                })?;
+
+            let end = context_map
+                .len()
+                .checked_add(repeat_count)
+                .ok_or_else(|| error(reader.bit_position(), "Brotli context-map size overflows"))?;
+
+            if end > context_map_size {
+                return Err(error(
+                    reader.bit_position(),
+                    "Brotli context-map zero run exceeds its declared size",
+                ));
+            }
+
+            context_map.resize(end, 0);
+            continue;
+        }
+
+        let tree_index = symbol - rle_max;
+
+        if tree_index >= tree_count {
+            return Err(error(
+                reader.bit_position(),
+                "Brotli context-map tree index exceeds its tree count",
+            ));
+        }
+
+        context_map.push(tree_index);
+    }
+
+    if reader.read_bit()? {
+        inverse_move_to_front(&mut context_map);
+    }
+
+    let mut seen = vec![false; tree_count];
+
+    for &tree_index in &context_map {
+        seen[tree_index] = true;
+    }
+
+    if seen.iter().any(|present| !present) {
+        return Err(error(
+            reader.bit_position(),
+            "Brotli context map does not reference every prefix tree",
+        ));
+    }
+
+    Ok(context_map)
+}
+
+fn inverse_move_to_front(values: &mut [usize]) {
+    let mut entries = Vec::with_capacity(256);
+
+    for value in 0..256 {
+        entries.push(value);
+    }
+
+    for index in values {
+        let value = entries[*index];
+
+        for position in (1..=*index).rev() {
+            entries[position] = entries[position - 1];
+        }
+
+        entries[0] = value;
+        *index = value;
+    }
 }
 
 fn read_block_partition(reader: &mut BitReader<'_>) -> Result<BlockPartition, FontError> {
@@ -1389,6 +1533,9 @@ mod tests {
         append_bits(&mut data, &mut bit_position, 7, 4);
         append_bits(&mut data, &mut bit_position, 3, 2);
 
+        append_variable_length_u8(&mut data, &mut bit_position, 0);
+        append_variable_length_u8(&mut data, &mut bit_position, 0);
+
         let mut reader = BitReader::new(&data);
         let header = read_compressed_meta_block_header_prefix(&mut reader).unwrap();
 
@@ -1401,6 +1548,49 @@ mod tests {
             header.literal_context_modes,
             vec![LiteralContextMode::Signed]
         );
+
+        assert_eq!(header.literal_tree_count, 1);
+        assert_eq!(header.distance_tree_count, 1);
+        assert_eq!(header.literal_context_map.len(), 64);
+        assert_eq!(header.distance_context_map.len(), 4);
+        assert!(header.literal_context_map.iter().all(|index| *index == 0));
+        assert!(header.distance_context_map.iter().all(|index| *index == 0));
+    }
+
+    #[test]
+    fn decodes_brotli_context_map_with_zero_runs() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_bits(&mut data, &mut bit_position, 1, 1);
+        append_bits(&mut data, &mut bit_position, 0, 4);
+
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 1, 2);
+        append_bits(&mut data, &mut bit_position, 2, 2);
+
+        append_bits(&mut data, &mut bit_position, 0, 1);
+        append_bits(&mut data, &mut bit_position, 1, 1);
+        append_bits(&mut data, &mut bit_position, 1, 1);
+
+        append_bits(&mut data, &mut bit_position, 0, 1);
+
+        let mut reader = BitReader::new(&data);
+
+        assert_eq!(
+            read_context_map(&mut reader, 4, 2).unwrap(),
+            vec![0, 0, 0, 1]
+        );
+    }
+
+    #[test]
+    fn applies_inverse_move_to_front_to_a_brotli_context_map() {
+        let mut context_map = vec![1, 1, 0, 1];
+
+        inverse_move_to_front(&mut context_map);
+
+        assert_eq!(context_map, vec![1, 0, 0, 1]);
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
