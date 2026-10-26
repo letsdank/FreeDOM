@@ -1,3 +1,4 @@
+pub mod brotli;
 pub mod cmap;
 pub mod glyf;
 pub mod gpos;
