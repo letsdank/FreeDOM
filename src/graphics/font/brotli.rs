@@ -127,8 +127,9 @@ pub fn decode_uncompressed_meta_blocks(
 
     loop {
         let is_last = reader.read_bit()?;
+        let is_last_empty = is_last && reader.read_bit()?;
 
-        if is_last && reader.read_bit()? {
+        if is_last_empty {
             consume_zero_padding(&mut reader)?;
 
             if reader.bits_remaining() != 0 {
@@ -149,13 +150,6 @@ pub fn decode_uncompressed_meta_blocks(
         }
 
         let output_length = read_meta_block_length(&mut reader, nibble_count)?;
-
-        if is_last {
-            return Err(error(
-                reader.bit_position(),
-                "compressed Brotli meta-blocks are not supported yet",
-            ));
-        }
 
         if !reader.read_bit()? {
             return Err(error(
@@ -183,6 +177,17 @@ pub fn decode_uncompressed_meta_blocks(
             .map_err(|_| error(reader.bit_position(), "cannot allocate Brotli output"))?;
 
         output.extend_from_slice(reader.read_aligned_bytes(output_length)?);
+
+        if is_last {
+            if reader.bits_remaining() != 0 {
+                return Err(error(
+                    reader.bit_position(),
+                    "Brotli stream has bytes after its final meta-block",
+                ));
+            }
+
+            return Ok(output);
+        }
     }
 }
 
@@ -937,6 +942,27 @@ mod tests {
     #[test]
     fn decodes_an_uncompressed_meta_block() {
         let stream = [0x20, 0x00, 0x10, b'a', b'b', b'c', 0x03];
+
+        assert_eq!(decode_uncompressed_meta_blocks(&stream, 3).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn decodes_a_final_uncompressed_meta_block() {
+        let mut stream = Vec::new();
+        let mut bit_position = 0;
+
+        append_bits(&mut stream, &mut bit_position, 0, 1); // WBITS = 16
+        append_bits(&mut stream, &mut bit_position, 1, 1); // ISLAST
+        append_bits(&mut stream, &mut bit_position, 0, 1); // ISLASTEMPTY
+        append_bits(&mut stream, &mut bit_position, 0, 2); // MNIBBLES = 4
+        append_bits(&mut stream, &mut bit_position, 2, 16); // MLEN - 1
+        append_bits(&mut stream, &mut bit_position, 1, 1); // ISUNCOMPRESSED
+
+        while bit_position % 8 != 0 {
+            append_bits(&mut stream, &mut bit_position, 0, 1);
+        }
+
+        stream.extend_from_slice(b"abc");
 
         assert_eq!(decode_uncompressed_meta_blocks(&stream, 3).unwrap(), b"abc");
     }
