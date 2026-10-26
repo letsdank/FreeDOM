@@ -491,6 +491,51 @@ struct BlockPartition {
     remaining: usize,
 }
 
+impl BlockPartition {
+    fn take_block_type(&mut self, reader: &mut BitReader<'_>) -> Result<usize, FontError> {
+        if self.remaining == 0 {
+            let block_type_tree = self.block_type_tree.as_ref().ok_or_else(|| {
+                error(
+                    reader.bit_position(),
+                    "Brotli block partition is missing its type prerfix tree",
+                )
+            })?;
+
+            let block_length_tree = self.block_length_tree.as_ref().ok_or_else(|| {
+                error(
+                    reader.bit_position(),
+                    "Brotli block partition is missing its length prefix tree",
+                )
+            })?;
+
+            let type_symbol = block_type_tree.decode(reader)?;
+            let next_type = match type_symbol {
+                0 => self.previous_type,
+                1 => (self.current_type + 1) % self.block_type_count,
+                symbol => symbol - 2,
+            };
+
+            if next_type >= self.block_type_count {
+                return Err(error(
+                    reader.bit_position(),
+                    "Brotli block type symbol exceeds its partition",
+                ));
+            }
+
+            let length_symbol = block_length_tree.decode(reader)?;
+            let length = read_block_length(reader, length_symbol)?;
+
+            self.previous_type = self.current_type;
+            self.current_type = next_type;
+            self.remaining = length;
+        }
+
+        self.remaining -= 1;
+
+        Ok(self.current_type)
+    }
+}
+
 fn read_block_partition(reader: &mut BitReader<'_>) -> Result<BlockPartition, FontError> {
     let block_type_count = read_block_type_count(reader)?;
 
@@ -1226,6 +1271,56 @@ mod tests {
         assert_eq!(partition.remaining, 4);
         assert!(partition.block_type_tree.is_some());
         assert!(partition.block_length_tree.is_some());
+    }
+
+    #[test]
+    fn switches_brotli_block_types_after_the_current_block_expires() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_bits(&mut data, &mut bit_position, 2, 2);
+
+        let mut reader = BitReader::new(&data);
+        let mut partition = BlockPartition {
+            block_type_count: 3,
+            block_type_tree: Some(HuffmanTree::single(1)),
+            block_length_tree: Some(HuffmanTree::single(0)),
+            previous_type: 1,
+            current_type: 0,
+            remaining: 0,
+        };
+
+        assert_eq!(partition.take_block_type(&mut reader).unwrap(), 1);
+        assert_eq!(partition.previous_type, 0);
+        assert_eq!(partition.current_type, 1);
+        assert_eq!(partition.remaining, 2);
+
+        assert_eq!(partition.take_block_type(&mut reader).unwrap(), 1);
+        assert_eq!(partition.take_block_type(&mut reader).unwrap(), 1);
+        assert_eq!(partition.remaining, 0);
+    }
+
+    #[test]
+    fn reuses_the_previous_brotli_block_type() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_bits(&mut data, &mut bit_position, 0, 2);
+
+        let mut reader = BitReader::new(&data);
+        let mut partition = BlockPartition {
+            block_type_count: 3,
+            block_type_tree: Some(HuffmanTree::single(0)),
+            block_length_tree: Some(HuffmanTree::single(0)),
+            previous_type: 1,
+            current_type: 0,
+            remaining: 0,
+        };
+
+        assert_eq!(partition.take_block_type(&mut reader).unwrap(), 1);
+        assert_eq!(partition.previous_type, 0);
+        assert_eq!(partition.current_type, 1);
+        assert_eq!(partition.remaining, 0);
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
