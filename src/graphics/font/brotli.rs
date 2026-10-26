@@ -1,4 +1,5 @@
 use super::sfnt::FontError;
+use std::fs::read;
 
 const MAX_HUFFMAN_CODE_LENGTH: usize = 15;
 
@@ -110,6 +111,180 @@ impl<'a> BitReader<'a> {
 
         Ok(bytes)
     }
+}
+
+pub fn decode_uncompressed_meta_blocks(
+    data: &[u8],
+    maximum_output_size: usize,
+) -> Result<Vec<u8>, FontError> {
+    let mut reader = BitReader::new(data);
+    let _window_bits = read_window_bits(&mut reader)?;
+    let mut output = Vec::new();
+
+    loop {
+        let is_last = reader.read_bit()?;
+
+        if is_last && reader.read_bit()? {
+            consume_zero_padding(&mut reader)?;
+
+            if reader.bits_remaining() != 0 {
+                return Err(error(
+                    reader.bit_position(),
+                    "Brotli stream has bytes after its final empty meta-block",
+                ));
+            }
+
+            return Ok(output);
+        }
+
+        let nibble_count = read_meta_block_nibble_count(&mut reader)?;
+
+        if nibble_count == 0 {
+            skip_empty_meta_block(&mut reader)?;
+            continue;
+        }
+
+        let output_length = read_meta_block_length(&mut reader, nibble_count)?;
+
+        if is_last {
+            return Err(error(
+                reader.bit_position(),
+                "compressed Brotli meta-blocks are not supported yet",
+            ));
+        }
+
+        if !reader.read_bit()? {
+            return Err(error(
+                reader.bit_position(),
+                "compressed Brotli meta-blocks are not supported yet",
+            ));
+        }
+
+        consume_zero_padding(&mut reader)?;
+
+        let new_length = output
+            .len()
+            .checked_add(output_length)
+            .ok_or_else(|| error(reader.bit_position(), "Brotli output size overflows"))?;
+
+        if new_length > maximum_output_size {
+            return Err(error(
+                reader.bit_position(),
+                "Brotli output exceeds the configured size limit",
+            ));
+        }
+
+        output
+            .try_reserve(output_length)
+            .map_err(|_| error(reader.bit_position(), "cannot allocate Brotli output"))?;
+
+        output.extend_from_slice(reader.read_aligned_bytes(output_length)?);
+    }
+}
+
+fn read_window_bits(reader: &mut BitReader<'_>) -> Result<u8, FontError> {
+    if !reader.read_bit()? {
+        return Ok(16);
+    }
+
+    let short_code = reader.read_bits(3)? as u8;
+
+    if short_code != 0 {
+        return Ok(17 + short_code);
+    }
+
+    match reader.read_bits(3)? as u8 {
+        0 => Ok(17),
+        1 => Err(error(
+            reader.bit_position(),
+            "Brotli stream uses the reserved WBITS value",
+        )),
+        value => Ok(8 + value),
+    }
+}
+
+fn read_meta_block_nibble_count(reader: &mut BitReader<'_>) -> Result<usize, FontError> {
+    match reader.read_bits(2)? {
+        0 => Ok(4),
+        1 => Ok(5),
+        2 => Ok(6),
+        3 => Ok(0),
+        _ => unreachable!(),
+    }
+}
+
+fn read_meta_block_length(
+    reader: &mut BitReader<'_>,
+    nibble_count: usize,
+) -> Result<usize, FontError> {
+    let length_minus_one = reader.read_bits(nibble_count * 4)?;
+
+    if nibble_count > 4 {
+        let highest_nibble = (length_minus_one >> ((nibble_count - 1) * 4)) & 0x0f;
+
+        if highest_nibble == 0 {
+            return Err(error(
+                reader.bit_position(),
+                "Brotli meta-block length has a redundant leading zero nibble",
+            ));
+        }
+    }
+
+    usize::try_from(length_minus_one)
+        .ok()
+        .and_then(|length| length.checked_add(1))
+        .ok_or_else(|| error(reader.bit_position(), "Brotli meta-block length overflows"))
+}
+
+fn skip_empty_meta_block(reader: &mut BitReader<'_>) -> Result<(), FontError> {
+    if reader.read_bit()? {
+        return Err(error(
+            reader.bit_position(),
+            "Brotli empty meta-block has its reserved bit set",
+        ));
+    }
+
+    let skip_byte_count = reader.read_bits(2)? as usize;
+
+    let metadata_length = if skip_byte_count == 0 {
+        0
+    } else {
+        let length_minus_one = reader.read_bits(skip_byte_count * 8)?;
+
+        if skip_byte_count > 1 {
+            let most_significant_byte = (length_minus_one >> ((skip_byte_count - 1) * 8)) & 0xff;
+
+            if most_significant_byte == 0 {
+                return Err(error(
+                    reader.bit_position(),
+                    "Brotli metadata length has a redundant leading zero byte",
+                ));
+            }
+        }
+
+        usize::try_from(length_minus_one)
+            .ok()
+            .and_then(|length| length.checked_add(1))
+            .ok_or_else(|| error(reader.bit_position(), "Brotli metadata length overflows"))?
+    };
+
+    consume_zero_padding(reader)?;
+    reader.read_aligned_bytes(metadata_length)?;
+
+    Ok(())
+}
+
+fn consume_zero_padding(reader: &mut BitReader<'_>) -> Result<(), FontError> {
+    let padding_bits = (8 - reader.bit_position() % 8) % 8;
+
+    if reader.read_bits(padding_bits)? != 0 {
+        return Err(error(
+            reader.bit_position(),
+            "Brotli byte-alignment padding must be zero",
+        ));
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -309,5 +484,39 @@ mod tests {
         let error = HuffmanTree::from_code_lengths(&[1, 1, 1]).unwrap_err();
 
         assert_eq!(error.message, "oversubscribed Brotli Huffman tree");
+    }
+
+    #[test]
+    fn decodes_an_uncompressed_meta_block() {
+        let stream = [0x20, 0x00, 0x10, b'a', b'b', b'c', 0x03];
+
+        assert_eq!(decode_uncompressed_meta_blocks(&stream, 3).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn skips_metadata_in_an_empty_meta_block() {
+        let stream = [0x2c, 0x00, 0x99, 0x03];
+
+        assert_eq!(
+            decode_uncompressed_meta_blocks(&stream, 0).unwrap(),
+            Vec::<u8>::new()
+        );
+    }
+
+    #[test]
+    fn rejects_non_zero_padding_after_a_final_empty_meta_block() {
+        let error = decode_uncompressed_meta_blocks(&[0x0e], 0).unwrap_err();
+
+        assert_eq!(error.message, "Brotli byte-alignment padding must be zero");
+    }
+
+    #[test]
+    fn reports_compressed_meta_blocks_as_unsupported() {
+        let error = decode_uncompressed_meta_blocks(&[0x02, 0x00, 0x00], 1).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "compressed Brotli meta-blocks are not supported yet"
+        );
     }
 }
