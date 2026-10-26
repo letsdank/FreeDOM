@@ -18,6 +18,11 @@ const BLOCK_LENGTH_OFFSETS: [usize; 26] = [
     2289, 4337, 8433, 16625,
 ];
 
+const LITERAL_ALPHABET_SIZE: usize = 256;
+const COMMAND_ALPHABET_SIZE: usize = 704;
+const DISTANCE_SHORT_CODE_COUNT: usize = 16;
+const DISTANCE_CODE_GROUP_COUNT: usize = 48;
+
 #[derive(Clone, Debug)]
 pub struct BitReader<'a> {
     data: &'a [u8],
@@ -556,6 +561,9 @@ struct CompressedMetaBlockHeader {
     literal_context_map: Vec<usize>,
     distance_tree_count: usize,
     distance_context_map: Vec<usize>,
+    literal_trees: Vec<HuffmanTree>,
+    command_trees: Vec<HuffmanTree>,
+    distance_trees: Vec<HuffmanTree>,
 }
 
 fn read_compressed_meta_block_header_prefix(
@@ -609,6 +617,36 @@ fn read_compressed_meta_block_header_prefix(
     let distance_context_map =
         read_context_map(reader, distance_context_map_size, distance_tree_count)?;
 
+    let literal_trees = read_prefix_code_array(reader, literal_tree_count, LITERAL_ALPHABET_SIZE)?;
+
+    let command_trees = read_prefix_code_array(
+        reader,
+        command_partition.block_type_count,
+        COMMAND_ALPHABET_SIZE,
+    )?;
+
+    let distance_code_group_count = DISTANCE_CODE_GROUP_COUNT
+        .checked_shl(u32::from(distance_postfix_bits))
+        .ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli distance code-group count overflows",
+            )
+        })?;
+
+    let distance_alphabet_size = DISTANCE_SHORT_CODE_COUNT
+        .checked_add(direct_distance_code_count)
+        .and_then(|count| count.checked_add(distance_code_group_count))
+        .ok_or_else(|| {
+            error(
+                reader.bit_position(),
+                "Brotli distance alphabet size overflows",
+            )
+        })?;
+
+    let distance_trees =
+        read_prefix_code_array(reader, distance_tree_count, distance_alphabet_size)?;
+
     Ok(CompressedMetaBlockHeader {
         literal_partition,
         command_partition,
@@ -620,6 +658,9 @@ fn read_compressed_meta_block_header_prefix(
         literal_context_map,
         distance_tree_count,
         distance_context_map,
+        literal_trees,
+        command_trees,
+        distance_trees,
     })
 }
 
@@ -714,6 +755,20 @@ fn read_context_map(
     Ok(context_map)
 }
 
+fn read_prefix_code_array(
+    reader: &mut BitReader<'_>,
+    count: usize,
+    alphabet_size: usize,
+) -> Result<Vec<HuffmanTree>, FontError> {
+    let mut trees = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        trees.push(read_prefix_code(reader, alphabet_size)?);
+    }
+
+    Ok(trees)
+}
+
 fn inverse_move_to_front(values: &mut [usize]) {
     let mut entries = Vec::with_capacity(256);
 
@@ -749,7 +804,7 @@ fn read_block_partition(reader: &mut BitReader<'_>) -> Result<BlockPartition, Fo
 
     let block_type_tree = read_prefix_code(reader, block_type_count + 2)?;
     let block_length_tree = read_prefix_code(reader, BLOCK_LENGTH_OFFSETS.len())?;
-    let block_length_symbol = block_type_tree.decode(reader)?;
+    let block_length_symbol = block_length_tree.decode(reader)?;
     let remaining = read_block_length(reader, block_length_symbol)?;
 
     Ok(BlockPartition {
@@ -1536,6 +1591,10 @@ mod tests {
         append_variable_length_u8(&mut data, &mut bit_position, 0);
         append_variable_length_u8(&mut data, &mut bit_position, 0);
 
+        append_single_symbol_prefix_code(&mut data, &mut bit_position, 256, 65);
+        append_single_symbol_prefix_code(&mut data, &mut bit_position, 704, 17);
+        append_single_symbol_prefix_code(&mut data, &mut bit_position, 236, 9);
+
         let mut reader = BitReader::new(&data);
         let header = read_compressed_meta_block_header_prefix(&mut reader).unwrap();
 
@@ -1555,6 +1614,25 @@ mod tests {
         assert_eq!(header.distance_context_map.len(), 4);
         assert!(header.literal_context_map.iter().all(|index| *index == 0));
         assert!(header.distance_context_map.iter().all(|index| *index == 0));
+
+        assert_eq!(header.literal_trees.len(), 1);
+        assert_eq!(header.command_trees.len(), 1);
+        assert_eq!(header.distance_trees.len(), 1);
+
+        let mut empty_reader = BitReader::new(&[]);
+
+        assert_eq!(
+            header.literal_trees[0].decode(&mut empty_reader).unwrap(),
+            65
+        );
+        assert_eq!(
+            header.command_trees[0].decode(&mut empty_reader).unwrap(),
+            17
+        );
+        assert_eq!(
+            header.distance_trees[0].decode(&mut empty_reader).unwrap(),
+            9
+        );
     }
 
     #[test]
@@ -1593,6 +1671,23 @@ mod tests {
         assert_eq!(context_map, vec![1, 0, 0, 1]);
     }
 
+    #[test]
+    fn reads_brotli_block_lengths_from_the_length_tree() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_variable_length_u8(&mut data, &mut bit_position, 1);
+        append_single_symbol_prefix_code(&mut data, &mut bit_position, 4, 0);
+        append_single_symbol_prefix_code(&mut data, &mut bit_position, 26, 1);
+        append_bits(&mut data, &mut bit_position, 0, 2);
+
+        let mut reader = BitReader::new(&data);
+        let partition = read_block_partition(&mut reader).unwrap();
+
+        assert_eq!(partition.block_type_count, 2);
+        assert_eq!(partition.remaining, 5);
+    }
+
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
         for bit_index in 0..bit_count {
             if *bit_position / 8 == data.len() {
@@ -1621,6 +1716,22 @@ mod tests {
             bit_position,
             (value - (1_usize << bit_count)) as u32,
             bit_count,
+        );
+    }
+
+    fn append_single_symbol_prefix_code(
+        data: &mut Vec<u8>,
+        bit_position: &mut usize,
+        alphabet_size: usize,
+        symbol: usize,
+    ) {
+        append_bits(data, bit_position, 1, 2);
+        append_bits(data, bit_position, 0, 2);
+        append_bits(
+            data,
+            bit_position,
+            symbol as u32,
+            alphabet_bit_width(alphabet_size).unwrap(),
         );
     }
 }
