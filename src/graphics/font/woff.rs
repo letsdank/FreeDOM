@@ -2,7 +2,10 @@ use std::{io::Read, ops::Range};
 
 use flate2::read::ZlibDecoder;
 
-use super::sfnt::{FontError, TableTag};
+use super::{
+    sfnt::{FontError, TableTag},
+    woff2::decode_woff2,
+};
 
 const WOFF_SIGNATURE: u32 = 0x774F_4646;
 const WOFF_HEADER_LENGTH: usize = 44;
@@ -29,11 +32,11 @@ struct DecodedTable {
 
 /// Decodes a WOFF 1.0 container into an SFNT byte buffer.
 pub fn decode_woff(data: &[u8]) -> Result<Vec<u8>, FontError> {
-    if read_u32(data, 0)? != WOFF_SIGNATURE {
-        if data.get(..4) == Some(b"wOF2") {
-            return Err(error(0, "WOFF2 fonts are not supported yet"));
-        }
+    if data.get(..4) == Some(b"wOF2") {
+        return decode_woff2(data);
+    }
 
+    if read_u32(data, 0)? != WOFF_SIGNATURE {
         return Err(error(0, "invalid WOFF signature"));
     }
 

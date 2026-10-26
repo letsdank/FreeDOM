@@ -1,4 +1,5 @@
 use super::{
+    brotli::decode_uncompressed_meta_blocks,
     reader::{read_u8, read_u16, read_u32},
     sfnt::{FontError, TableTag},
 };
@@ -171,6 +172,211 @@ pub fn parse_woff2_directory(data: &[u8]) -> Result<Woff2Directory, FontError> {
         tables,
         compressed_data,
     })
+}
+
+pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
+    let directory = parse_woff2_directory(data)?;
+
+    if directory
+        .tables
+        .iter()
+        .any(|table| table.transform != Woff2Transform::Null)
+    {
+        return Err(error(
+            directory.compressed_data.start,
+            "WOFF2 table transforms are not supported yet",
+        ));
+    }
+
+    let decoded_length = directory.tables.iter().try_fold(0_usize, |length, table| {
+        length
+            .checked_add(table.original_length)
+            .ok_or_else(|| error(directory.compressed_data.start, "WOFF2 data is too large"))
+    })?;
+
+    let decoded_data =
+        decode_uncompressed_meta_blocks(&data[directory.compressed_data.clone()], decoded_length)?;
+
+    if decoded_data.len() != decoded_length {
+        return Err(error(
+            directory.compressed_data.start,
+            "WOFF2 Brotli data has an unexpected length",
+        ));
+    }
+
+    let mut cursor = 0_usize;
+    let mut tables = Vec::with_capacity(directory.tables.len());
+
+    for table in &directory.tables {
+        let end = checked_end(
+            cursor,
+            table.original_length,
+            decoded_data.len(),
+            "WOFF2 table data is truncated",
+        )?;
+
+        tables.push((table.tag, decoded_data[cursor..end].to_vec()));
+        cursor = end;
+    }
+
+    tables.sort_by_key(|(tag, _)| tag.bytes());
+
+    let table_count = tables.len();
+    let directory_length = table_count
+        .checked_mul(16)
+        .and_then(|length| length.checked_add(12))
+        .ok_or_else(|| error(12, "WOFF2 SFNT directory is too large"))?;
+
+    let expected_sfnt_size = tables
+        .iter()
+        .try_fold(directory_length, |length, (_, table)| {
+            length
+                .checked_add(padded_length(table.len())?)
+                .ok_or_else(|| error(16, "WOFF2 SFNT output is too large"))
+        })?;
+
+    if expected_sfnt_size != directory.total_sfnt_size {
+        return Err(error(
+            16,
+            "WOFF2 totalSfntSize does not match reconstructed tables",
+        ));
+    }
+
+    let mut sfnt = vec![0_u8; expected_sfnt_size];
+
+    write_u32(&mut sfnt, 0, directory.flavor);
+    write_u16(
+        &mut sfnt,
+        4,
+        u16::try_from(table_count).map_err(|_| error(12, "WOFF2 contains too many SFNT tables"))?,
+    );
+
+    let (search_range, entry_selector, range_shift) = sfnt_search_parameters(table_count);
+    write_u16(&mut sfnt, 6, search_range);
+    write_u16(&mut sfnt, 8, entry_selector);
+    write_u16(&mut sfnt, 10, range_shift);
+
+    let mut table_offset = directory_length;
+    let mut head_offset = None;
+
+    for (index, (tag, table)) in tables.iter().enumerate() {
+        let record_offset = 12 + index * 16;
+        let tag_bytes = tag.bytes();
+
+        sfnt[record_offset..record_offset + 4].copy_from_slice(&tag_bytes);
+        write_u32(&mut sfnt, record_offset + 4, table_checksum(*tag, table));
+        write_u32(
+            &mut sfnt,
+            record_offset + 8,
+            u32::try_from(table_offset)
+                .map_err(|_| error(record_offset + 8, "SFNT table offset is too large"))?,
+        );
+        write_u32(
+            &mut sfnt,
+            record_offset + 12,
+            u32::try_from(table.len())
+                .map_err(|_| error(record_offset + 12, "SFNT table length is too large"))?,
+        );
+
+        let table_end = table_offset
+            .checked_add(table.len())
+            .ok_or_else(|| error(table_offset, "SFNT table range overflows"))?;
+
+        sfnt[table_offset..table_end].copy_from_slice(table);
+
+        if *tag == TableTag::HEAD {
+            head_offset = Some(table_offset);
+        }
+
+        table_offset = padded_length(table_end)?;
+    }
+
+    if let Some(offset) = head_offset {
+        let adjustment_offset = offset
+            .checked_add(8)
+            .ok_or_else(|| error(offset, "head table offset overflows"))?;
+
+        if adjustment_offset + 4 <= sfnt.len() {
+            write_u32(&mut sfnt, adjustment_offset, 0);
+
+            let adjustment = 0xb1b0_afba_u32.wrapping_sub(sfnt_checksum(&sfnt));
+            write_u32(&mut sfnt, adjustment_offset, adjustment);
+        }
+    }
+
+    Ok(sfnt)
+}
+
+fn padded_length(length: usize) -> Result<usize, FontError> {
+    length
+        .checked_add(3)
+        .map(|length| length & !3)
+        .ok_or_else(|| error(length, "WOFF2 length overflows"))
+}
+
+fn sfnt_search_parameters(table_count: usize) -> (u16, u16, u16) {
+    if table_count == 0 {
+        return (0, 0, 0);
+    }
+
+    let mut largest_power_of_two = 1_usize;
+    let mut entry_selector = 0_u16;
+
+    while largest_power_of_two * 2 <= table_count {
+        largest_power_of_two *= 2;
+        entry_selector += 1;
+    }
+
+    let search_range = largest_power_of_two * 16;
+    let range_shift = table_count * 16 - search_range;
+
+    (search_range as u16, entry_selector, range_shift as u16)
+}
+
+fn table_checksum(tag: TableTag, data: &[u8]) -> u32 {
+    let mut checksum = 0_u32;
+
+    for offset in (0..data.len()).step_by(4) {
+        let mut word = [0_u8; 4];
+
+        for (index, byte) in word.iter_mut().enumerate() {
+            let position = offset + index;
+
+            if position < data.len() && !(tag == TableTag::HEAD && (8..12).contains(&position)) {
+                *byte = data[position];
+            }
+        }
+
+        checksum = checksum.wrapping_add(u32::from_be_bytes(word));
+    }
+
+    checksum
+}
+
+fn sfnt_checksum(data: &[u8]) -> u32 {
+    let mut checksum = 0_u32;
+
+    for offset in (0..data.len()).step_by(4) {
+        let mut word = [0_u8; 4];
+
+        for (index, byte) in word.iter_mut().enumerate() {
+            if let Some(value) = data.get(offset + index) {
+                *byte = *value;
+            }
+        }
+
+        checksum = checksum.wrapping_add(u32::from_be_bytes(word));
+    }
+
+    checksum
+}
+
+fn write_u16(data: &mut [u8], offset: usize, value: u16) {
+    data[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+}
+
+fn write_u32(data: &mut [u8], offset: usize, value: u32) {
+    data[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
 }
 
 fn table_transform(tag: TableTag, version: u8, offset: usize) -> Result<Woff2Transform, FontError> {
@@ -403,6 +609,37 @@ mod tests {
         assert_eq!(error.message, "WOFF2 UIntBase128 has a leading zero");
     }
 
+    #[test]
+    fn decodes_an_untransformed_woff2_font() {
+        let compressed = uncompressed_brotli(b"abcd");
+        let mut data = minimal_woff2(1, &[5, 4], &compressed);
+
+        data[16..20].copy_from_slice(&32_u32.to_be_bytes());
+
+        let sfnt = decode_woff2(&data).unwrap();
+
+        assert_eq!(sfnt.len(), 32);
+        assert_eq!(&sfnt[0..4], &0x0001_0000_u32.to_be_bytes());
+        assert_eq!(&sfnt[4..6], &1_u16.to_be_bytes());
+        assert_eq!(&sfnt[12..16], b"name");
+        assert_eq!(&sfnt[16..20], &0x6162_6364_u32.to_be_bytes());
+        assert_eq!(&sfnt[20..24], &28_u32.to_be_bytes());
+        assert_eq!(&sfnt[24..28], &4_u32.to_be_bytes());
+        assert_eq!(&sfnt[28..32], b"abcd");
+    }
+
+    #[test]
+    fn rejects_woff2_table_transforms_before_reconstruction() {
+        let data = minimal_woff2(2, &[10, 8, 6, 11, 4, 0], &[0x06]);
+
+        let error = decode_woff2(&data).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "WOFF2 table transforms are not supported yet"
+        );
+    }
+
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
         let length = WOFF2_HEADER_LENGTH + directory.len() + compressed.len();
         let mut data = vec![0_u8; length];
@@ -418,5 +655,52 @@ mod tests {
         data[directory_end..].copy_from_slice(compressed);
 
         data
+    }
+
+    fn uncompressed_brotli(payload: &[u8]) -> Vec<u8> {
+        assert!(!payload.is_empty());
+        assert!(payload.len() <= 65_536);
+
+        let mut data = Vec::new();
+        let mut bit_position = 0_usize;
+
+        append_bits(&mut data, &mut bit_position, 0, 1);
+        append_bits(&mut data, &mut bit_position, 0, 1);
+        append_bits(&mut data, &mut bit_position, 0, 2);
+        append_bits(
+            &mut data,
+            &mut bit_position,
+            u32::try_from(payload.len() - 1).unwrap(),
+            16,
+        );
+        append_bits(&mut data, &mut bit_position, 1, 1);
+
+        while bit_position % 8 != 0 {
+            append_bits(&mut data, &mut bit_position, 0, 1);
+        }
+
+        data.extend_from_slice(payload);
+        bit_position += payload.len() * 8;
+
+        append_bits(&mut data, &mut bit_position, 1, 1);
+        append_bits(&mut data, &mut bit_position, 1, 1);
+
+        while bit_position % 8 != 0 {
+            append_bits(&mut data, &mut bit_position, 0, 1);
+        }
+
+        data
+    }
+
+    fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
+        for bit_index in 0..bit_count {
+            if *bit_position / 8 == data.len() {
+                data.push(0);
+            }
+
+            let bit = (value >> bit_index) & 1;
+            data[*bit_position / 8] |= (bit as u8) << (*bit_position % 8);
+            *bit_position += 1;
+        }
     }
 }
