@@ -536,6 +536,59 @@ impl BlockPartition {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiteralContextMode {
+    Lsb6,
+    Msb6,
+    Utf8,
+    Signed,
+}
+
+#[derive(Clone, Debug)]
+struct CompressedMetaBlockHeader {
+    literal_partition: BlockPartition,
+    command_partition: BlockPartition,
+    distance_partition: BlockPartition,
+    distance_postfix_bits: u8,
+    direct_distance_code_count: usize,
+    literal_context_modes: Vec<LiteralContextMode>,
+}
+
+fn read_compressed_meta_block_header_prefix(
+    reader: &mut BitReader<'_>,
+) -> Result<CompressedMetaBlockHeader, FontError> {
+    let literal_partition = read_block_partition(reader)?;
+    let command_partition = read_block_partition(reader)?;
+    let distance_partition = read_block_partition(reader)?;
+
+    let distance_postfix_bits = reader.read_bits(2)? as u8;
+    let direct_distance_code_count =
+        (reader.read_bits(4)? as usize) << usize::from(distance_postfix_bits);
+
+    let mut literal_context_modes = Vec::with_capacity(literal_partition.block_type_count);
+
+    for _ in 0..literal_partition.block_type_count {
+        let mode = match reader.read_bits(2)? {
+            0 => LiteralContextMode::Lsb6,
+            1 => LiteralContextMode::Msb6,
+            2 => LiteralContextMode::Utf8,
+            3 => LiteralContextMode::Signed,
+            _ => unreachable!(),
+        };
+
+        literal_context_modes.push(mode);
+    }
+
+    Ok(CompressedMetaBlockHeader {
+        literal_partition,
+        command_partition,
+        distance_partition,
+        distance_postfix_bits,
+        direct_distance_code_count,
+        literal_context_modes,
+    })
+}
+
 fn read_block_partition(reader: &mut BitReader<'_>) -> Result<BlockPartition, FontError> {
     let block_type_count = read_block_type_count(reader)?;
 
@@ -1321,6 +1374,33 @@ mod tests {
         assert_eq!(partition.previous_type, 0);
         assert_eq!(partition.current_type, 1);
         assert_eq!(partition.remaining, 0);
+    }
+
+    #[test]
+    fn reads_brotli_compressed_meta_block_header_prefix() {
+        let mut data = Vec::new();
+        let mut bit_position = 0;
+
+        append_variable_length_u8(&mut data, &mut bit_position, 0);
+        append_variable_length_u8(&mut data, &mut bit_position, 0);
+        append_variable_length_u8(&mut data, &mut bit_position, 0);
+
+        append_bits(&mut data, &mut bit_position, 2, 2);
+        append_bits(&mut data, &mut bit_position, 7, 4);
+        append_bits(&mut data, &mut bit_position, 3, 2);
+
+        let mut reader = BitReader::new(&data);
+        let header = read_compressed_meta_block_header_prefix(&mut reader).unwrap();
+
+        assert_eq!(header.literal_partition.block_type_count, 1);
+        assert_eq!(header.command_partition.block_type_count, 1);
+        assert_eq!(header.distance_partition.block_type_count, 1);
+        assert_eq!(header.distance_postfix_bits, 2);
+        assert_eq!(header.direct_distance_code_count, 28);
+        assert_eq!(
+            header.literal_context_modes,
+            vec![LiteralContextMode::Signed]
+        );
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
