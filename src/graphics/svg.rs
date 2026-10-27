@@ -2093,6 +2093,54 @@ mod tests {
     }
 
     #[test]
+    fn renders_elliptically_rounded_rectangle_like_its_path() {
+        let rectangle = parse_svg(
+            r#"
+                <svg width="50" height="40">
+                    <rect x="5" y="7" width="40" height="20" rx="8" ry="3"/>
+                </svg>
+            "#,
+        )
+        .unwrap();
+
+        let reference = parse_svg(
+            r#"
+                <svg width="50" height="40">
+                    <path d="
+                        M 13 7
+                        L 37 7
+                        C 41.4182784 7 45 8.3431456 45 10
+                        L 45 24
+                        C 45 25.6568544 41.4182784 27 37 27
+                        L 13 27
+                        C 8.5817216 27 5 25.6568544 5 24
+                        L 5 10
+                        C 5 8.3431456 8.5817216 7 13 7
+                    "/>
+                </svg>
+            "#,
+        )
+        .unwrap();
+
+        let actual = rectangle.render(50, 40, Color::WHITE).unwrap();
+        let expected = rectangle.render(50, 40, Color::WHITE).unwrap();
+
+        // Ensure the comparison does not pass because both images are empty.
+        assert_eq!(actual.pixel(25, 17), Some(Color::BLACK));
+        assert_eq!(expected.pixel(25, 17), Some(Color::BLACK));
+
+        for y in 0..40 {
+            for x in 0..50 {
+                assert_eq!(
+                    actual.pixel(x, y),
+                    expected.pixel(x, y),
+                    "pixel mismatch at ({x}, {y})",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ignores_zero_radius_ellipses() {
         let document = parse_svg(r#"<svg><circle cx="10" cy="10" r="0"/></svg>"#).unwrap();
 
