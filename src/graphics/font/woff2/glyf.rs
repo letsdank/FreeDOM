@@ -59,6 +59,7 @@ pub(super) struct OutlineCursors {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct GlyphCursors {
     pub outline: OutlineCursors,
+    pub composites: usize,
     pub bbox: usize,
     pub instructions: usize,
 }
@@ -81,7 +82,7 @@ impl SimpleOutline {
     /// Reconstructs a TrueType simple-glyph record.
     pub(super) fn to_truetype(
         &self,
-        bounds: super::super::glyf::GlyphBounds,
+        bounds: GlyphBounds,
         instructions: &[u8],
         overlap: bool,
     ) -> Result<Vec<u8>, FontError> {
@@ -262,9 +263,7 @@ impl GlyfStreams<'_> {
         Ok(glyph)
     }
 
-    /// Reconstructs an empty or simple glyph.
-    ///
-    /// Composite glyph reconstruction is not implemented yet.
+    /// Reconstructs an empty, simple, or composite glyph.
     pub(super) fn reconstruct_glyph(
         &self,
         glyph_index: usize,
@@ -287,10 +286,7 @@ impl GlyfStreams<'_> {
 
             1.. => self.reconstruct_simple_glyph(glyph_index, cursors),
 
-            _ => Err(error(
-                glyph_index,
-                "WOFF2 composite glyphs are not supported yet",
-            )),
+            _ => self.reconstruct_composite_glyph(glyph_index, cursors),
         }
     }
 
@@ -306,6 +302,69 @@ impl GlyfStreams<'_> {
         *cursor += length;
 
         Ok(components)
+    }
+
+    /// Reconstructs one composite glyph as a TrueType glyph record.
+    ///
+    /// Stream positions are updated only after reconstruction succeeds.
+    pub(super) fn reconstruct_composite_glyph(
+        &self,
+        glyph_index: usize,
+        cursors: &mut GlyphCursors,
+    ) -> Result<Vec<u8>, FontError> {
+        let contours = self.contour_count(glyph_index)?;
+
+        if contours >= 0 {
+            return Err(error(glyph_index, "glyph is not a composite glyph"));
+        }
+
+        if !bitmap_bit(self.bbox_bitmap, glyph_index)? {
+            return Err(error(
+                glyph_index,
+                "composite glyph is missing a bounding box",
+            ));
+        }
+
+        let mut next = *cursors;
+
+        let components = self.read_components(&mut next.composites)?;
+
+        let bounds = FontReader::new(self.bbox_data, 0).bytes(next.bbox, 8)?;
+
+        next.bbox += 8;
+
+        let instructions = if components.has_instructions {
+            let (length, used) = FontReader::new(self.glyphs, 0).u255_u16(next.outline.glyphs)?;
+
+            next.outline.glyphs += used;
+
+            let bytes = FontReader::new(self.instructions, 0)
+                .bytes(next.instructions, usize::from(length))?;
+
+            next.instructions += usize::from(length);
+
+            Some(bytes)
+        } else {
+            None
+        };
+
+        let mut result = Vec::new();
+
+        result.extend_from_slice(&contours.to_be_bytes());
+        result.extend_from_slice(bounds);
+        result.extend_from_slice(components.bytes);
+
+        if let Some(bytes) = instructions {
+            let length = u16::try_from(bytes.len())
+                .map_err(|_| error(next.instructions, "glyph instructions are too long"))?;
+
+            result.extend_from_slice(&length.to_be_bytes());
+            result.extend_from_slice(bytes);
+        }
+
+        *cursors = next;
+
+        Ok(result)
     }
 }
 
@@ -757,6 +816,7 @@ mod tests {
                         flags: 3,
                         glyphs: 5,
                     },
+                    composites: 0,
                     bbox: if explicit_bbox { 8 } else { 0 },
                     instructions: 2,
                 }
@@ -828,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_bbox_and_unsupported_composite() {
+    fn rejects_empty_bbox_and_incomplete_composite() {
         let mut data = simple_fixture(true, false);
 
         // The first glyph is empty, but its bbox bitmap bit is set.
@@ -849,11 +909,7 @@ mod tests {
 
         let error = streams.reconstruct_glyph(0, &mut cursors).unwrap_err();
 
-        assert_eq!(
-            error.message,
-            "WOFF2 composite glyphs are not supported yet"
-        );
-
+        assert_eq!(error.message, "truncated font data");
         assert_eq!(cursors, GlyphCursors::default());
     }
 
@@ -880,6 +936,91 @@ mod tests {
 
         assert!(streams.read_components(&mut cursor).is_err());
         assert_eq!(cursor, 7);
+    }
+
+    #[test]
+    fn reconstructs_composite_with_instructions_on_first_component() {
+        use crate::graphics::font::glyf::parse_glyph;
+
+        let streams = composite_fixture();
+        let mut cursors = GlyphCursors::default();
+
+        let glyph = streams.reconstruct_glyph(0, &mut cursors).unwrap();
+
+        assert_eq!(&glyph[10..22], streams.composites);
+        assert_eq!(&glyph[22..], &[0, 2, 0xaa, 0xbb]);
+
+        let Glyph::Compound(parsed) = parse_glyph(&glyph, 0).unwrap() else {
+            panic!("expected a composite glyph");
+        };
+
+        assert_eq!(parsed.components.len(), 2);
+
+        assert_eq!(
+            parsed.bounds,
+            GlyphBounds {
+                x_min: -10,
+                y_min: -20,
+                x_max: 60,
+                y_max: 100,
+            }
+        );
+
+        assert!(parse_glyph(&glyph[..glyph.len() - 1], 0).is_err());
+
+        assert_eq!(
+            cursors,
+            GlyphCursors {
+                outline: OutlineCursors {
+                    points: 0,
+                    flags: 0,
+                    glyphs: 1,
+                },
+                composites: 12,
+                bbox: 8,
+                instructions: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn composite_reconstruction_failures_leave_cursors_unchanged() {
+        let mut streams = composite_fixture();
+        let mut cursors = GlyphCursors::default();
+
+        streams.bbox_bitmap = &[0, 0, 0, 0];
+
+        let error = streams.reconstruct_glyph(0, &mut cursors).unwrap_err();
+
+        assert_eq!(error.message, "composite glyph is missing a bounding box");
+        assert_eq!(cursors, GlyphCursors::default());
+
+        streams.bbox_bitmap = &[0x80, 0, 0, 0];
+        streams.instructions = &[0xaa];
+
+        assert!(streams.reconstruct_glyph(0, &mut cursors).is_err());
+        assert_eq!(cursors, GlyphCursors::default());
+
+        streams.instructions = &[0xaa, 0xbb];
+        streams.composites = &[0, 2, 0];
+
+        assert!(streams.reconstruct_glyph(0, &mut cursors).is_err());
+        assert_eq!(cursors, GlyphCursors::default());
+    }
+
+    #[test]
+    fn composite_without_instructions_leaves_streams_untouched() {
+        let mut streams = composite_fixture();
+
+        streams.composites = &[0, 2, 0, 1, 0, 0];
+
+        let mut cursors = GlyphCursors::default();
+        let glyph = streams.reconstruct_glyph(0, &mut cursors).unwrap();
+
+        assert_eq!(glyph.len(), 16);
+        assert_eq!(cursors.outline.glyphs, 0);
+        assert_eq!(cursors.instructions, 0);
+        assert_eq!(cursors.composites, 6);
     }
 
     fn outline_streams<'a>(points: &'a [u8], flags: &'a [u8], glyphs: &'a [u8]) -> GlyfStreams<'a> {
@@ -933,5 +1074,35 @@ mod tests {
         }
 
         data
+    }
+
+    fn composite_fixture() -> GlyfStreams<'static> {
+        GlyfStreams {
+            num_glyphs: 3,
+            index_format: 0,
+
+            // Glyph 0 is composite; glyphs 1 and 2 are empty.
+            contours: &[0xff, 0xff, 0, 0, 0, 0],
+
+            points: &[],
+            flags: &[],
+
+            // Composite instruction length.
+            glyphs: &[2],
+
+            composites: &[
+                // First component: instructions + another component.
+                0x01, 0x22, 0, 1, 10, 20, // Last component: no instructions flag.
+                0, 2, 0, 2, 0xfe, 4,
+            ],
+
+            bbox_bitmap: &[0x80, 0, 0, 0],
+
+            // xMin = -10, yMin = -20, xMax = 60, yMax = 100.
+            bbox_data: &[0xff, 0xf6, 0xff, 0xec, 0, 60, 0, 100],
+
+            instructions: &[0xaa, 0xbb],
+            overlap_bitmap: None,
+        }
     }
 }

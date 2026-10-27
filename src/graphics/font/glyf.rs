@@ -197,10 +197,11 @@ fn parse_compound_glyph(
 ) -> Result<Glyph, FontError> {
     let mut cursor = 10;
     let mut components = Vec::new();
-    let final_flags;
+    let mut has_instructions = false;
 
     loop {
         let flags = read_u16(data, cursor, file_offset)?;
+        has_instructions |= flags & WE_HAVE_INSTRUCTIONS != 0;
         cursor += 2;
 
         let glyph_id = read_u16(data, cursor, file_offset)?;
@@ -281,12 +282,11 @@ fn parse_compound_glyph(
         }
 
         if flags & MORE_COMPONENTS == 0 {
-            final_flags = flags;
             break;
         }
     }
 
-    if final_flags & WE_HAVE_INSTRUCTIONS != 0 {
+    if has_instructions {
         let instruction_length = usize::from(read_u16(data, cursor, file_offset)?);
         cursor += 2;
         read_bytes(data, cursor, instruction_length, file_offset)?;
@@ -478,5 +478,30 @@ mod tests {
                 transform: Transform::translate(3.0, -4.0),
             }]
         );
+    }
+
+    #[test]
+    fn reads_composite_instructions_flag_from_any_component() {
+        let mut data = vec![0_u8; 10];
+
+        data[..2].copy_from_slice(&(-1_i16).to_be_bytes());
+
+        data.extend_from_slice(&[
+            // First component: instructions + another component.
+            0x01, 0x22, 0, 0, 0, 0, // Last component: no instructions flag.
+            0, 0x02, 0, 1, 0, 0, // Instruction length and bytes.
+            0, 2, 0xaa, 0xbb,
+        ]);
+
+        let Glyph::Compound(glyph) = parse_glyph(&data, 0).unwrap() else {
+            panic!("expected a composite glyph");
+        };
+
+        assert_eq!(glyph.components.len(), 2);
+
+        // Missing the last instruction byte must be detected.
+        let error = parse_glyph(&data[..data.len() - 1], 0).unwrap_err();
+
+        assert_eq!(error.message, "truncated font data");
     }
 }
