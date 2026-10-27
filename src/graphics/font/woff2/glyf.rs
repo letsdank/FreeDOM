@@ -36,6 +36,28 @@ pub(super) struct PointDelta {
     pub on_curve: bool,
 }
 
+/// Current positions in the streams used to decode a simple outline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct OutlineCursors {
+    pub points: usize,
+    pub flags: usize,
+    pub glyphs: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct OutlinePoint {
+    pub x: i32,
+    pub y: i32,
+    pub on_curve: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct SimpleOutline {
+    /// The index of the last point in each contour.
+    pub contour_ends: Vec<u16>,
+    pub points: Vec<OutlinePoint>,
+}
+
 impl GlyfStreams<'_> {
     /// Reads the signed contour count for a glyph.
     pub(super) fn contour_count(&self, glyph_index: usize) -> Result<i16, FontError> {
@@ -76,6 +98,76 @@ impl GlyfStreams<'_> {
         *glyph_cursor += length;
 
         Ok(point)
+    }
+
+    /// Reads the points of a simple glyph.
+    ///
+    /// Coordinates remain relative to the preceding point across contour
+    /// boundaries. Cursors are updated only after the entire outline is read.
+    pub(super) fn read_simple_outline(
+        &self,
+        contour_count: usize,
+        cursors: &mut OutlineCursors,
+    ) -> Result<SimpleOutline, FontError> {
+        if contour_count == 0 || contour_count > i16::MAX as usize {
+            return Err(error(cursors.points, "invalid simple glyph contour count"));
+        }
+
+        let mut next = *cursors;
+        let mut contour_ends = Vec::with_capacity(contour_count);
+        let mut total_points = 0_usize;
+
+        for _ in 0..contour_count {
+            let count = usize::from(self.read_point_count(&mut next.points)?);
+
+            if count == 0 {
+                return Err(error(next.points, "glyph contour has no points"));
+            }
+
+            total_points = total_points
+                .checked_add(count)
+                .ok_or_else(|| error(next.points, "glyph point count overflows"))?;
+
+            // TrueType contour endpoints are UInt16 point indexes.
+            if total_points > usize::from(u16::MAX) + 1 {
+                return Err(error(next.points, "glyph has too many points"));
+            }
+
+            contour_ends.push((total_points - 1) as u16);
+        }
+
+        // Each point needs one flag byte and at least one coordinate byte.
+        FontReader::new(self.flags, 0).bytes(next.flags, total_points)?;
+        FontReader::new(self.glyphs, 0).bytes(next.glyphs, total_points)?;
+
+        let mut points = Vec::with_capacity(total_points);
+        let mut x = 0_i32;
+        let mut y = 0_i32;
+
+        for _ in 0..total_points {
+            let delta = self.read_point(&mut next.flags, &mut next.glyphs)?;
+
+            x = x
+                .checked_add(delta.dx)
+                .ok_or_else(|| error(next.glyphs, "glyph x coordinate overflows"))?;
+
+            y = y
+                .checked_add(delta.dy)
+                .ok_or_else(|| error(next.glyphs, "glyph y coordinate overflows"))?;
+
+            points.push(OutlinePoint {
+                x,
+                y,
+                on_curve: delta.on_curve,
+            });
+        }
+
+        *cursors = next;
+
+        Ok(SimpleOutline {
+            contour_ends,
+            points,
+        })
     }
 }
 
@@ -332,5 +424,120 @@ mod tests {
         );
 
         assert_eq!((flag_cursor, glyph_cursor), (1, 1));
+    }
+
+    #[test]
+    fn builds_simple_outline_across_contours() {
+        let streams = outline_streams(
+            &[99, 2, 2],
+            &[99, 23, 0x80 | 21, 1, 10],
+            &[99, 0x12, 0x23, 4, 5],
+        );
+
+        let mut cursors = OutlineCursors {
+            points: 1,
+            flags: 1,
+            glyphs: 1,
+        };
+
+        let outline = streams.read_simple_outline(2, &mut cursors).unwrap();
+
+        assert_eq!(outline.contour_ends, [1, 3]);
+
+        assert_eq!(
+            outline.points,
+            vec![
+                OutlinePoint {
+                    x: 2,
+                    y: 3,
+                    on_curve: true,
+                },
+                OutlinePoint {
+                    x: 5,
+                    y: -1,
+                    on_curve: false,
+                },
+                OutlinePoint {
+                    x: 5,
+                    y: 3,
+                    on_curve: true,
+                },
+                OutlinePoint {
+                    x: 0,
+                    y: 3,
+                    on_curve: true,
+                }
+            ]
+        );
+
+        assert_eq!(
+            cursors,
+            OutlineCursors {
+                points: 3,
+                flags: 5,
+                glyphs: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn errors_do_not_advance_outline_cursors() {
+        let starting = OutlineCursors::default();
+
+        let cases: &[(&[u8], &[u8], &[u8], usize)] = &[
+            // The second point requires three bytes but only one remains.
+            (&[2], &[23, 123], &[0x12, 0], 1),
+            // A contour cannot have zero points.
+            (&[0], &[], &[], 1),
+            // 65535 + 2 points exceed the UInt16 endpoint range.
+            (&[253, 255, 255, 2], &[], &[], 2),
+            // This method handles simple glyphs with at least one contour.
+            (&[], &[], &[], 0),
+        ];
+
+        for &(points, flags, glyphs, contours) in cases {
+            let streams = outline_streams(points, flags, glyphs);
+            let mut cursors = starting;
+
+            assert!(streams.read_simple_outline(contours, &mut cursors).is_err());
+
+            assert_eq!(cursors, starting);
+        }
+    }
+
+    #[test]
+    fn rejects_coordinate_accumulation_overflow() {
+        let point_count = 32769_usize;
+
+        // 255UInt16 encoding of 32769.
+        let points = [253, 0x80, 0x01];
+
+        // Each point advances x by 65535.
+        let flags = vec![125_u8; point_count];
+        let glyphs = [0xff, 0xff, 0, 0].repeat(point_count);
+
+        let streams = outline_streams(&points, &flags, &glyphs);
+        let mut cursors = OutlineCursors::default();
+
+        let error = streams.read_simple_outline(1, &mut cursors).unwrap_err();
+
+        assert_eq!(error.message, "glyph x coordinate overflows");
+        assert_eq!(cursors, OutlineCursors::default());
+    }
+
+    fn outline_streams<'a>(points: &'a [u8], flags: &'a [u8], glyphs: &'a [u8]) -> GlyfStreams<'a> {
+        GlyfStreams {
+            num_glyphs: 0,
+            index_format: 0,
+            contours: &[],
+            points,
+            flags,
+            glyphs,
+            composites: &[],
+            bbox_bitmap: &[],
+            bbox_data: &[],
+            instructions: &[],
+            overlap_bitmap: None,
+        }
     }
 }
