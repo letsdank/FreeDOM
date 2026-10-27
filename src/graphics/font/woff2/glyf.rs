@@ -2,6 +2,7 @@
 //!
 //! Specification: <https://www.w3.org/TR/WOFF2/#glyf_table_format>
 
+mod serialize;
 mod triplet;
 
 use super::super::{
@@ -56,6 +57,18 @@ pub(super) struct SimpleOutline {
     /// The index of the last point in each contour.
     pub contour_ends: Vec<u16>,
     pub points: Vec<OutlinePoint>,
+}
+
+impl SimpleOutline {
+    /// Reconstructs a TrueType simple-glyph record.
+    pub(super) fn to_truetype(
+        &self,
+        bounds: super::super::glyf::GlyphBounds,
+        instructions: &[u8],
+        overlap: bool,
+    ) -> Result<Vec<u8>, FontError> {
+        serialize::simple_glyph(self, bounds, instructions, overlap)
+    }
 }
 
 impl GlyfStreams<'_> {
