@@ -1424,6 +1424,82 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reconstructs_real_noto_font_with_transformed_hmtx() {
+        use crate::graphics::font::{sfnt::SfntFont, truetype::TrueTypeFont};
+
+        let source_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/fonts/noto/",
+            "NotoSansNko-regular-webfont.woff2",
+        );
+
+        let transformed_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2",
+        );
+
+        let source =
+            std::fs::read(source_path).expect("original WPT Noto Sans NKo fixture must exist");
+
+        let transformed =
+            std::fs::read(transformed_path).expect("transformed hmtx fixture must exist");
+
+        let directory = parse_woff2_directory(&transformed).unwrap();
+
+        let record = directory
+            .tables
+            .iter()
+            .find(|table| table.tag == TableTag::HMTX)
+            .expect("fixture must contain hmtx");
+
+        assert_eq!(record.transform, Woff2Transform::Hmtx);
+
+        let decoded = decode_table_data(&transformed, &directory).unwrap();
+        let tables = split_table_data(&decoded, &directory).unwrap();
+
+        let encoded_hmtx = tables
+            .iter()
+            .find(|(tag, _)| *tag == TableTag::HMTX)
+            .expect("decoded data must contain hmtx")
+            .1;
+
+        // Both bearing arrays are omitted in this fixture.
+        assert_eq!(encoded_hmtx.first(), Some(&3));
+
+        let source_sfnt = decode_woff2(&source).unwrap();
+        let transformed_sfnt = decode_woff2(&transformed).unwrap();
+
+        let reference = SfntFont::parse(&source_sfnt).unwrap();
+        let actual = SfntFont::parse(&transformed_sfnt).unwrap();
+
+        assert_eq!(reference.table(TableTag::HMTX).unwrap().len(), 756);
+        assert_eq!(
+            actual.table(TableTag::HMTX),
+            reference.table(TableTag::HMTX)
+        );
+
+        let reference_font = TrueTypeFont::parse(&source_sfnt).unwrap();
+        let actual_font = TrueTypeFont::parse(&transformed_sfnt).unwrap();
+
+        assert_eq!(reference_font.maxp().num_glyphs, 190);
+        assert_eq!(actual_font.maxp().num_glyphs, 190);
+
+        for glyph_id in 0..190_u16 {
+            assert_eq!(
+                actual_font.metric(glyph_id),
+                reference_font.metric(glyph_id),
+                "glyph {glyph_id}"
+            );
+        }
+
+        // NKO LETTER A; independently checked against the original font.
+        let metric = actual_font.metric(20).unwrap();
+
+        assert_eq!(metric.advance_width, 543);
+        assert_eq!(metric.left_side_bearing, 180);
+    }
+
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
         for bit_index in 0..bit_count {
             if *bit_position / 8 == data.len() {
