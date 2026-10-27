@@ -1416,6 +1416,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inline_style_keeps_semicolon_inside_font_family() {
+        let page = parse_html(
+            "https://example.test",
+            r#"<p style="font-family: 'Nko; Test'; color: green">Hello</p>"#,
+        );
+
+        assert_eq!(
+            page.blocks[0].style.font_family.as_deref(),
+            Some("Nko; Test")
+        );
+
+        assert_eq!(page.blocks[0].style.color, 0x00_00_80_00);
+    }
+
     fn woff_with_name_table(table: &[u8]) -> Vec<u8> {
         assert_eq!(table.len() % 4, 0);
 

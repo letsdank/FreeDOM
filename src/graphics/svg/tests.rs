@@ -847,3 +847,22 @@ fn reports_invalid_svg_number_positions_in_paths_and_transforms() {
     assert_eq!(transform_error.offset, 10);
     assert_eq!(transform_error.message, "number must be finite");
 }
+
+#[test]
+fn semicolon_inside_css_string_does_not_create_a_fill_declaration() {
+    let document = parse_svg(
+        r#"
+            <svg>
+                <rect
+                    width="10"
+                    height="10"
+                    fill="red"
+                    style="--x: 'a; fill: blue; b'"
+                />
+            </svg>
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(document.shapes[0].fill, Some(Color::rgba(255, 0, 0, 255)));
+}
