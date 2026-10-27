@@ -218,7 +218,7 @@ pub(super) fn parse_rect(element: &HtmlElement) -> Result<Option<Path>, SvgError
     path.line_to(Point::new(x, y + radius_y));
     path.cubic_to(
         Point::new(x, y + radius_y - control_y),
-        Point::new(x + radius_x - control_y, y),
+        Point::new(x + radius_x - control_x, y),
         Point::new(x + radius_x, y),
     );
 

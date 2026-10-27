@@ -2039,6 +2039,35 @@ mod tests {
     }
 
     #[test]
+    fn rounded_rectangle_with_different_radii_has_symmetric_top_corners() {
+        let document =
+            parse_svg(r#"<svg><rect x="5" y="7" width="40" height="20" rx="8" ry="3"/></svg>"#)
+                .unwrap();
+
+        let commands = document.shapes[0].path.commands();
+
+        let (
+            PathCommand::CubicTo {
+                control_one: top_right,
+                ..
+            },
+            PathCommand::CubicTo {
+                control_two: top_left,
+                ..
+            },
+        ) = (&commands[2], &commands[8])
+        else {
+            panic!("expected cubic curves for the top corners");
+        };
+
+        assert_eq!(top_right.y, 7.0);
+        assert_eq!(top_left.y, 7.0);
+
+        // The control points should be mirrored across the rectangle's center.
+        assert!((top_left.x + top_right.x - 50.0).abs() < 0.0001);
+    }
+
+    #[test]
     fn converts_circles_and_ellipses_to_cubic_paths() {
         let document = parse_svg(
             r#"
