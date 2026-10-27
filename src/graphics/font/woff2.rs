@@ -645,6 +645,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parses_real_wpt_woff2_directory() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/WOFF2/support/",
+            "metadatadisplay-schema-metadata-004.woff2",
+        );
+
+        let data = std::fs::read(path).expect("WPT WOFF2 fixture must exist");
+
+        assert!(data.starts_with(b"wOF2"), "fixture is not a WOFF2 file");
+
+        let directory = parse_woff2_directory(&data).unwrap();
+
+        assert!(!directory.tables.is_empty());
+        assert!(directory.compressed_data.start < directory.compressed_data.end);
+        assert!(directory.compressed_data.end <= data.len());
+
+        println!(
+            "WOFF2 fixture: {} byte, {} tables, {} compressed bytes",
+            data.len(),
+            directory.tables.len(),
+            directory.compressed_data.len()
+        );
+
+        for table in &directory.tables {
+            println!(
+                "  {:?}: original={}, transformed={:?}, transform={:?}",
+                table.tag, table.original_length, table.transformed_length, table.transform,
+            );
+        }
+    }
+
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
         let length = WOFF2_HEADER_LENGTH + directory.len() + compressed.len();
         let mut data = vec![0_u8; length];
