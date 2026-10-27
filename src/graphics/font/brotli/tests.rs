@@ -259,102 +259,6 @@ fn reuses_the_previous_brotli_block_type() {
 }
 
 #[test]
-fn reads_brotli_compressed_meta_block_header_prefix() {
-    let mut data = Vec::new();
-    let mut bit_position = 0;
-
-    append_variable_length_u8(&mut data, &mut bit_position, 0);
-    append_variable_length_u8(&mut data, &mut bit_position, 0);
-    append_variable_length_u8(&mut data, &mut bit_position, 0);
-
-    append_bits(&mut data, &mut bit_position, 2, 2);
-    append_bits(&mut data, &mut bit_position, 7, 4);
-    append_bits(&mut data, &mut bit_position, 3, 2);
-
-    append_variable_length_u8(&mut data, &mut bit_position, 0);
-    append_variable_length_u8(&mut data, &mut bit_position, 0);
-
-    append_single_symbol_prefix_code(&mut data, &mut bit_position, 256, 65);
-    append_single_symbol_prefix_code(&mut data, &mut bit_position, 704, 17);
-    append_single_symbol_prefix_code(&mut data, &mut bit_position, 236, 9);
-
-    let mut reader = BitReader::new(&data);
-    let header = read_compressed_meta_block_header_prefix(&mut reader).unwrap();
-
-    assert_eq!(header.literal_partition.block_type_count, 1);
-    assert_eq!(header.command_partition.block_type_count, 1);
-    assert_eq!(header.distance_partition.block_type_count, 1);
-    assert_eq!(header.distance_postfix_bits, 2);
-    assert_eq!(header.direct_distance_code_count, 28);
-    assert_eq!(
-        header.literal_context_modes,
-        vec![LiteralContextMode::Signed]
-    );
-
-    assert_eq!(header.literal_tree_count, 1);
-    assert_eq!(header.distance_tree_count, 1);
-    assert_eq!(header.literal_context_map.len(), 64);
-    assert_eq!(header.distance_context_map.len(), 4);
-    assert!(header.literal_context_map.iter().all(|index| *index == 0));
-    assert!(header.distance_context_map.iter().all(|index| *index == 0));
-
-    assert_eq!(header.literal_trees.len(), 1);
-    assert_eq!(header.command_trees.len(), 1);
-    assert_eq!(header.distance_trees.len(), 1);
-
-    let mut empty_reader = BitReader::new(&[]);
-
-    assert_eq!(
-        header.literal_trees[0].decode(&mut empty_reader).unwrap(),
-        65
-    );
-    assert_eq!(
-        header.command_trees[0].decode(&mut empty_reader).unwrap(),
-        17
-    );
-    assert_eq!(
-        header.distance_trees[0].decode(&mut empty_reader).unwrap(),
-        9
-    );
-}
-
-#[test]
-fn decodes_brotli_context_map_with_zero_runs() {
-    let mut data = Vec::new();
-    let mut bit_position = 0;
-
-    append_bits(&mut data, &mut bit_position, 1, 1);
-    append_bits(&mut data, &mut bit_position, 0, 4);
-
-    append_bits(&mut data, &mut bit_position, 1, 2);
-    append_bits(&mut data, &mut bit_position, 1, 2);
-    append_bits(&mut data, &mut bit_position, 1, 2);
-    append_bits(&mut data, &mut bit_position, 2, 2);
-
-    append_bits(&mut data, &mut bit_position, 0, 1);
-    append_bits(&mut data, &mut bit_position, 1, 1);
-    append_bits(&mut data, &mut bit_position, 1, 1);
-
-    append_bits(&mut data, &mut bit_position, 0, 1);
-
-    let mut reader = BitReader::new(&data);
-
-    assert_eq!(
-        read_context_map(&mut reader, 4, 2).unwrap(),
-        vec![0, 0, 0, 1]
-    );
-}
-
-#[test]
-fn applies_inverse_move_to_front_to_a_brotli_context_map() {
-    let mut context_map = vec![1, 1, 0, 1];
-
-    inverse_move_to_front(&mut context_map);
-
-    assert_eq!(context_map, vec![1, 0, 0, 1]);
-}
-
-#[test]
 fn reads_brotli_block_lengths_from_the_length_tree() {
     let mut data = Vec::new();
     let mut bit_position = 0;
@@ -391,56 +295,6 @@ fn computes_brotli_distance_context_ids() {
     assert_eq!(distance_context_id(4), 2);
     assert_eq!(distance_context_id(5), 3);
     assert_eq!(distance_context_id(128), 3);
-}
-
-#[test]
-fn selects_brotli_trees_using_block_types_and_contexts() {
-    fn partition(current_type: usize) -> BlockPartition {
-        BlockPartition {
-            block_type_count: 2,
-            block_type_tree: None,
-            block_length_tree: None,
-            previous_type: 0,
-            current_type,
-            remaining: 2,
-        }
-    }
-
-    let mut literal_context_map = vec![0; 128];
-    literal_context_map[64 + 32] = 1;
-
-    let mut distance_context_map = vec![0; 8];
-    distance_context_map[4 + 1] = 1;
-
-    let mut header = CompressedMetaBlockHeader {
-        literal_partition: partition(1),
-        command_partition: partition(1),
-        distance_partition: partition(1),
-        distance_postfix_bits: 0,
-        direct_distance_code_count: 0,
-        literal_context_modes: vec![LiteralContextMode::Lsb6, LiteralContextMode::Msb6],
-        literal_tree_count: 2,
-        literal_context_map,
-        distance_tree_count: 2,
-        distance_context_map,
-        literal_trees: vec![HuffmanTree::single(65), HuffmanTree::single(66)],
-        command_trees: vec![HuffmanTree::single(17), HuffmanTree::single(37)],
-        distance_trees: vec![HuffmanTree::single(9), HuffmanTree::single(19)],
-    };
-
-    let mut reader = BitReader::new(&[]);
-
-    assert_eq!(header.read_command_symbol(&mut reader).unwrap(), 37);
-
-    // MSB6 context for 0x80 is 32.
-    assert_eq!(header.read_literal(&mut reader, 0x80, 0).unwrap(), 66);
-
-    // A copy length of 3 produces distance context 1.
-    assert_eq!(header.read_distance_symbol(&mut reader, 3).unwrap(), 19);
-
-    assert_eq!(header.command_partition.remaining, 1);
-    assert_eq!(header.literal_partition.remaining, 1);
-    assert_eq!(header.distance_partition.remaining, 1);
 }
 
 #[test]
@@ -504,7 +358,12 @@ fn rejects_invalid_or_truncated_brotli_commands() {
     assert!(read_insert_copy_command(&mut reader, 703).is_err());
 }
 
-fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
+pub(super) fn append_bits(
+    data: &mut Vec<u8>,
+    bit_position: &mut usize,
+    value: u32,
+    bit_count: usize,
+) {
     for bit_index in 0..bit_count {
         if *bit_position / 8 == data.len() {
             data.push(0);
@@ -517,7 +376,11 @@ fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_cou
     }
 }
 
-fn append_variable_length_u8(data: &mut Vec<u8>, bit_position: &mut usize, value: usize) {
+pub(super) fn append_variable_length_u8(
+    data: &mut Vec<u8>,
+    bit_position: &mut usize,
+    value: usize,
+) {
     if value == 0 {
         append_bits(data, bit_position, 0, 1);
         return;
@@ -535,7 +398,7 @@ fn append_variable_length_u8(data: &mut Vec<u8>, bit_position: &mut usize, value
     );
 }
 
-fn append_single_symbol_prefix_code(
+pub(super) fn append_single_symbol_prefix_code(
     data: &mut Vec<u8>,
     bit_position: &mut usize,
     alphabet_size: usize,
