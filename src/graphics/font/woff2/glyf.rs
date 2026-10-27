@@ -252,6 +252,38 @@ impl GlyfStreams<'_> {
 
         Ok(glyph)
     }
+
+    /// Reconstructs an empty or simple glyph.
+    ///
+    /// Composite glyph reconstruction is not implemented yet.
+    pub(super) fn reconstruct_glyph(
+        &self,
+        glyph_index: usize,
+        cursors: &mut GlyphCursors,
+    ) -> Result<Vec<u8>, FontError> {
+        let contours = self.contour_count(glyph_index)?;
+
+        match contours {
+            0 => {
+                if bitmap_bit(self.bbox_bitmap, glyph_index)? {
+                    return Err(error(
+                        glyph_index,
+                        "empty glyph has an explicit bounding box",
+                    ));
+                }
+
+                // An empty glyph has no record in the reconstructed glyf table.
+                Ok(Vec::new())
+            }
+
+            1.. => self.reconstruct_simple_glyph(glyph_index, cursors),
+
+            _ => Err(error(
+                glyph_index,
+                "WOFF2 composite glyphs are not supported yet",
+            )),
+        }
+    }
 }
 
 /// Reads a most-significant-bit-first glyph bitmap.
@@ -740,6 +772,63 @@ mod tests {
             missing_bbox
                 .reconstruct_simple_glyph(1, &mut cursors)
                 .is_err()
+        );
+
+        assert_eq!(cursors, GlyphCursors::default());
+    }
+
+    #[test]
+    fn reconstructs_empty_then_simple_glyph_with_shared_cursors() {
+        use crate::graphics::font::glyf::parse_glyph;
+
+        let mut data = simple_fixture(false, false);
+
+        // Add an empty glyph before the existing simple glyph.
+        write_u16(&mut data, 4, 2).unwrap();
+        write_u32(&mut data, 8, 4).unwrap();
+        data.splice(36..36, [0, 0]);
+
+        let streams = parse(&data).unwrap();
+        let mut cursors = GlyphCursors::default();
+
+        let empty = streams.reconstruct_glyph(0, &mut cursors).unwrap();
+
+        assert!(empty.is_empty());
+        assert_eq!(cursors, GlyphCursors::default());
+        assert!(matches!(parse_glyph(&empty, 0).unwrap(), Glyph::Empty));
+
+        let simple = streams.reconstruct_glyph(1, &mut cursors).unwrap();
+
+        assert!(matches!(parse_glyph(&simple, 0).unwrap(), Glyph::Simple(_)));
+        assert_eq!(cursors.outline.glyphs, 5);
+        assert_eq!(cursors.instructions, 2);
+    }
+
+    #[test]
+    fn rejects_empty_bbox_and_unsupported_composite() {
+        let mut data = simple_fixture(true, false);
+
+        // The first glyph is empty, but its bbox bitmap bit is set.
+        data[36..38].copy_from_slice(&0_i16.to_be_bytes());
+
+        let streams = parse(&data).unwrap();
+        let mut cursors = GlyphCursors::default();
+
+        let error = streams.reconstruct_glyph(0, &mut cursors).unwrap_err();
+
+        assert_eq!(error.message, "empty glyph has an explicit bounding box");
+        assert_eq!(cursors, GlyphCursors::default());
+
+        // A negative contour count identifies a composite glyph.
+        data[36..38].copy_from_slice(&(-1_i16).to_be_bytes());
+
+        let streams = parse(&data).unwrap();
+
+        let error = streams.reconstruct_glyph(0, &mut cursors).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "WOFF2 composite glyphs are not supported yet"
         );
 
         assert_eq!(cursors, GlyphCursors::default());
