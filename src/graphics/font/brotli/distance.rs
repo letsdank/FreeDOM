@@ -3,7 +3,7 @@
 //! Specification: RFC 7392, section 4.
 //! <https://www.rfc-editor.org/rfc/rfc7932.html#section-4>
 
-use super::{FontError, error};
+use super::{BitReader, FontError, error};
 
 /// The four most recent distances, ordered from newest to oldest.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +81,65 @@ impl DistanceHistory {
     }
 }
 
+/// Resolves a distance symbol and reads its extra bits when required.
+///
+/// This does not update the distance history. The caller must first determine
+/// whether the distance refers to previously decoded data or the dictionary.
+pub(super) fn read_distance(
+    reader: &mut BitReader<'_>,
+    symbol: usize,
+    postfix_bits: u8,
+    direct_code_count: usize,
+    history: &DistanceHistory,
+) -> Result<usize, FontError> {
+    if postfix_bits > 3 {
+        return Err(error(
+            reader.bit_position(),
+            "invalid Brotli distance postfix bit count",
+        ));
+    }
+
+    let postfix = usize::from(postfix_bits);
+    let postfix_factor = 1_usize << postfix;
+
+    // NDIRECT is a four-bit value shifted left by NPOSTFIX.
+    if direct_code_count > 15 * postfix_factor || direct_code_count % postfix_factor != 0 {
+        return Err(error(
+            reader.bit_position(),
+            "invalid Brotli direct distance code count",
+        ));
+    }
+
+    let alphabet_size = 16 + direct_code_count + (48 << postfix);
+
+    if symbol >= alphabet_size {
+        return Err(error(
+            reader.bit_position(),
+            "Brotli distance symbol exceeds its alphabet",
+        ));
+    }
+
+    if symbol < 16 {
+        return history.resolve_short(symbol, reader.bit_position());
+    }
+
+    if symbol < 16 + direct_code_count {
+        return Ok(symbol - 15);
+    }
+
+    let encoded = symbol - 16 - direct_code_count;
+    let high_code = encoded >> postfix;
+    let low_code = encoded & (postfix_factor - 1);
+    let extra_bit_count = 1 + (encoded >> (postfix + 1));
+
+    let extra = reader.read_bits(extra_bit_count)? as usize;
+
+    // RFC 7932, section 4: conversion from a distance code to a distance.
+    let base = ((2 + (high_code & 1)) << extra_bit_count) - 4;
+
+    Ok(((base + extra) << postfix) + low_code + direct_code_count + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +189,57 @@ mod tests {
         assert!(history.resolve_short(4, 7).is_err());
         assert!(history.resolve_short(6, 7).is_err());
         assert!(history.record(16, 0, false, 7).is_err());
+    }
+
+    #[test]
+    fn reads_direct_brotli_distances_without_extra_bits() {
+        let history = DistanceHistory::new();
+        let mut reader = BitReader::new(&[]);
+
+        assert_eq!(read_distance(&mut reader, 0, 0, 4, &history).unwrap(), 4);
+        assert_eq!(read_distance(&mut reader, 16, 0, 4, &history).unwrap(), 1);
+        assert_eq!(read_distance(&mut reader, 19, 0, 4, &history).unwrap(), 4);
+        assert_eq!(reader.bit_position(), 0);
+    }
+
+    #[test]
+    fn reads_brotli_distances_with_extra_bits() {
+        let history = DistanceHistory::new();
+
+        let mut reader = BitReader::new(&[0b0000_0001]);
+        assert_eq!(read_distance(&mut reader, 17, 0, 0, &history).unwrap(), 4);
+        assert_eq!(reader.bit_position(), 1);
+
+        let mut reader = BitReader::new(&[0b0000_0011]);
+        assert_eq!(read_distance(&mut reader, 18, 0, 0, &history).unwrap(), 8);
+        assert_eq!(reader.bit_position(), 2);
+    }
+
+    #[test]
+    fn reads_brotli_distances_with_postfix_bits() {
+        let history = DistanceHistory::new();
+
+        let mut reader = BitReader::new(&[0b0000_0001]);
+        assert_eq!(read_distance(&mut reader, 20, 1, 4, &history).unwrap(), 7);
+
+        let mut reader = BitReader::new(&[0b0000_0001]);
+        assert_eq!(read_distance(&mut reader, 21, 1, 4, &history).unwrap(), 8);
+
+        let mut reader = BitReader::new(&[0b0000_0011]);
+        assert_eq!(read_distance(&mut reader, 24, 1, 4, &history).unwrap(), 19);
+        assert_eq!(reader.bit_position(), 2);
+    }
+
+    #[test]
+    fn rejects_invalid_or_truncated_brotli_distance_codes() {
+        let history = DistanceHistory::new();
+
+        let mut reader = BitReader::new(&[]);
+        assert!(read_distance(&mut reader, 16, 4, 0, &history).is_err());
+        assert!(read_distance(&mut reader, 16, 1, 3, &history).is_err());
+        assert!(read_distance(&mut reader, 116, 1, 4, &history).is_err());
+
+        // Symbol 16 requires one extra bit when there are no direct codes.
+        assert!(read_distance(&mut reader, 16, 0, 0, &history).is_err());
     }
 }
