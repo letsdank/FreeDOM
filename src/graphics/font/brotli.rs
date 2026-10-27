@@ -10,6 +10,7 @@ mod block;
 mod command;
 mod compressed;
 mod context;
+mod distance;
 mod huffman;
 mod prefix_code;
 
