@@ -1,3 +1,12 @@
+//! CSS rules, declarations, and style computation.
+//!
+//! Syntax: <https://www.w3.org/TR/css-syntax-3/>
+//! Cascade: <https://www.w3.org/TR/css-cascade-4/>
+
+mod syntax;
+
+pub(crate) use self::syntax::parse_declaration_list;
+
 const DEFAULT_TEXT_COLOR: u32 = 0x00_18_1B_20;
 const DEFAULT_LINK_COLOR: u32 = 0x00_00_00_EE;
 
@@ -415,43 +424,58 @@ fn is_css_identifier(value: &str) -> bool {
             .all(|character| character.is_alphanumeric() || character == '-' || character == '_')
 }
 
-pub(crate) fn parse_declaration_list(source: &str) -> Vec<CssDeclaration> {
-    source
-        .split(';')
-        .filter_map(|declaration| {
-            let (name, value) = declaration.split_once(':')?;
-            let name = name.trim().to_ascii_lowercase();
-
-            (!name.is_empty()).then_some(CssDeclaration {
-                name,
-                value: value.trim().to_owned(),
-            })
-        })
-        .collect()
-}
-
 fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
     let mut parsed = Declarations::default();
 
     for declaration in declarations {
         match declaration.name.as_str() {
-            "color" => parsed.color = parse_color(&declaration.value),
-            "font-size" => parsed.font_size = parse_font_size(&declaration.value),
-            "font-weight" => parsed.font_weight = parse_font_weight(&declaration.value),
-            "font-family" => parsed.font_family = parse_text_font_family(&declaration.value),
-            "font-style" => parsed.font_style = parse_font_style(&declaration.value),
+            "color" => {
+                if let Some(value) = parse_color(&declaration.value) {
+                    parsed.color = Some(value);
+                }
+            }
+
+            "font-size" => {
+                if let Some(value) = parse_font_size(&declaration.value) {
+                    parsed.font_size = Some(value);
+                }
+            }
+
+            "font-weight" => {
+                if let Some(value) = parse_font_weight(&declaration.value) {
+                    parsed.font_weight = Some(value);
+                }
+            }
+
+            "font-family" => {
+                if let Some(value) = parse_text_font_family(&declaration.value) {
+                    parsed.font_family = Some(value);
+                }
+            }
+
+            "font-style" => {
+                if let Some(value) = parse_font_style(&declaration.value) {
+                    parsed.font_style = Some(value);
+                }
+            }
 
             "display" => {
-                parsed.display = match declaration.value.to_ascii_lowercase().as_str() {
+                let value = match declaration.value.to_ascii_lowercase().as_str() {
                     "none" => Some(Display::None),
                     "block" => Some(Display::Block),
                     "inline" => Some(Display::Inline),
                     _ => None,
                 };
+
+                if let Some(value) = value {
+                    parsed.display = Some(value);
+                }
             }
 
             "margin-bottom" | "margin" => {
-                parsed.margin_after = parse_length(&declaration.value);
+                if let Some(value) = parse_length(&declaration.value) {
+                    parsed.margin_after = Some(value);
+                }
             }
 
             _ => {}
@@ -834,5 +858,20 @@ mod tests {
         );
 
         assert_eq!(parse_text_font_family(r#""Nko, Test"#), None);
+    }
+
+    #[test]
+    fn invalid_declarations_do_not_erase_earlier_valid_values() {
+        let declarations = parse_declaration_list(
+            "color: green; color: not-a-color; \
+            font-weight: bold; font-weight: nope;\
+            display: block; display: nope",
+        );
+
+        let parsed = parse_text_declarations(&declarations);
+
+        assert_eq!(parsed.color, Some(0x00_00_80_00));
+        assert_eq!(parsed.font_weight, Some(FontWeight::Bold));
+        assert!(matches!(parsed.display, Some(Display::Block)));
     }
 }
