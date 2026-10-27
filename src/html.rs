@@ -303,7 +303,10 @@ fn tokenize(input: &str) -> Vec<Token> {
                 let end = content_start + end_offset;
                 let content = input[content_start..end].trim();
 
-                if content.len() >= 7 && content[..7].eq_ignore_ascii_case("doctype") {
+                if content
+                    .get(..7)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("doctype"))
+                {
                     tokens.push(Token::Doctype(content[7..].trim().to_ascii_lowercase()));
                     cursor = end + 1;
                     continue;
@@ -363,8 +366,9 @@ fn tokenize(input: &str) -> Vec<Token> {
             }
         }
 
-        let next = input[cursor + 1..]
-            .find('<')
+        let next = input.as_bytes()[cursor + 1..]
+            .iter()
+            .position(|&byte| byte == b'<')
             .map(|offset| cursor + offset + 1)
             .unwrap_or(input.len());
 
@@ -387,8 +391,9 @@ fn find_raw_text_end(input: &str, start: usize, tag_name: &str) -> Option<usize>
             let name_start = candidate + 2;
             let name_end = name_start + tag_name.len();
 
-            if name_end <= input.len()
-                && input[name_start..name_end].eq_ignore_ascii_case(tag_name)
+            if input
+                .get(name_start..name_end)
+                .is_some_and(|name| name.eq_ignore_ascii_case(tag_name))
                 && input
                     .as_bytes()
                     .get(name_end)
@@ -710,5 +715,41 @@ mod tests {
         assert_eq!(second.name, "li");
         assert_eq!(first.children, vec![Node::Text("one".to_owned())]);
         assert_eq!(second.children, vec![Node::Text("two".to_owned())]);
+    }
+
+    #[test]
+    fn handles_multibyte_text_and_invalid_tag_start() {
+        for (input, expected) in [
+            ("ߊ", "ߊ"),
+            ("<p>ߊ café 🌍</p>", "ߊ café 🌍"),
+            ("<p><ߊ</p>", "<ߊ"),
+        ] {
+            assert_eq!(Document::parse(input).text_content(), expected);
+        }
+    }
+
+    #[test]
+    fn handles_multibyte_raw_text_end_tag_candidates() {
+        let document = Document::parse("<style>x</ߊߊߊx></style><p>ok</p>");
+
+        assert_eq!(
+            document.first_element("style").unwrap().children,
+            vec![Node::Text("x</ߊߊߊx>".to_owned())]
+        );
+
+        assert_eq!(
+            document.first_element("p").unwrap().children,
+            vec![Node::Text("ok".to_owned())]
+        );
+    }
+
+    #[test]
+    fn handles_multibyte_declaration_without_panicking() {
+        let document = Document::parse("<!ߊߊߊߊ><p>ok</p>");
+
+        assert_eq!(
+            document.first_element("p").unwrap().children,
+            vec![Node::Text("ok".to_owned())]
+        );
     }
 }
