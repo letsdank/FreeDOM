@@ -766,6 +766,7 @@ fn flush(blocks: &mut Vec<Block>, current: &mut String, style: TextStyle) {
 mod tests {
     use super::*;
     use crate::css::{FontStyle, FontWeight};
+    use crate::page_layout::PageLayout;
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -1278,7 +1279,7 @@ mod tests {
 
         let result = load_page(&format!("http://{address}/page/index.html"));
         let requests = server.join().unwrap();
-        let page = result.unwrap();
+        let mut page = result.unwrap();
 
         assert_eq!(
             requests,
@@ -1318,6 +1319,93 @@ mod tests {
 
         assert_eq!(surface.pixel(8, 73), Some(Color::BLACK));
         assert_eq!(surface.pixel(0, 0), Some(Color::TRANSPARENT));
+
+        use crate::{
+            page_layout::{CONTENT_TOP, PageLayout},
+            render::{BlockRasterCache, GlyphRasterCache, paint},
+        };
+
+        let width = 256;
+        let height = 200;
+
+        let layout = PageLayout::build(&page, width, None);
+        let mut pixels = vec![0; width * height];
+
+        let mut block_cache = BlockRasterCache::new();
+        let mut glyph_cache = GlyphRasterCache::new();
+
+        paint(
+            &mut pixels,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut block_cache,
+            &mut glyph_cache,
+            0,
+            false,
+        );
+
+        // A cached repaint must produce the same image.
+        let mut cached_pixels = vec![0; width * height];
+
+        paint(
+            &mut cached_pixels,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut block_cache,
+            &mut glyph_cache,
+            0,
+            false,
+        );
+
+        assert_eq!(pixels, cached_pixels);
+
+        // Only inspect page content, excluding the toolbar.
+        let content_start = CONTENT_TOP as usize * width;
+        let background = 0x00_F7_F7_F7;
+
+        assert!(
+            pixels[content_start..]
+                .iter()
+                .any(|&pixel| pixel != background),
+            "the page content must contain rendered pixels"
+        );
+
+        // Re-render without the downloaded font to verify that it affects the output.
+        page.font_faces.clear();
+
+        let fallback_layout = PageLayout::build(&page, width, None);
+        let mut fallback_pixels = vec![0; width * height];
+
+        paint(
+            &mut fallback_pixels,
+            width,
+            height,
+            &page,
+            &fallback_layout,
+            "",
+            "",
+            None,
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+
+        assert_ne!(
+            &pixels[content_start..],
+            &fallback_pixels[content_start..],
+            "the downloaded font must affect page rendering"
+        );
     }
 
     fn woff_with_name_table(table: &[u8]) -> Vec<u8> {
