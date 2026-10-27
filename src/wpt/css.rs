@@ -50,4 +50,50 @@ mod tests {
             "invalid declarations must not replace green"
         );
     }
+
+    #[test]
+    fn wpt_input_preprocessing_null_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/css-syntax/input-preprocessing.html",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+        let mut count = 0;
+
+        for line in source.lines().map(str::trim) {
+            let Some(arguments) = line
+                .strip_prefix("testParsing(")
+                .and_then(|line| line.strip_suffix(");"))
+            else {
+                continue;
+            };
+
+            let Some((input, expected)) = arguments.split_once(", ") else {
+                continue;
+            };
+
+            if !input.contains(r"\x00") {
+                continue;
+            }
+
+            // Convert the JavaScript escape used by this fixture to JSON syntax.
+            let input_json = input.replace(r"\x00", r"\u0000");
+
+            let input = crate::javascript::parse_json(&input_json)
+                .expect("WPT input must be a supported string");
+
+            let expected = crate::javascript::parse_json(expected)
+                .expect("WPT expectation must be a supported string");
+
+            assert_eq!(
+                crate::css::preprocess_input(input.as_string().unwrap()),
+                expected.as_string().unwrap()
+            );
+
+            count += 1;
+        }
+
+        assert_eq!(count, 5, "expected five WPT NUL cases");
+    }
 }

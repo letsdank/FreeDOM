@@ -3,8 +3,10 @@
 //! Syntax: <https://www.w3.org/TR/css-syntax-3/>
 //! Cascade: <https://www.w3.org/TR/css-cascade-4/>
 
+mod input;
 mod syntax;
 
+pub(crate) use self::input::preprocess_input;
 pub(crate) use self::syntax::parse_declaration_list;
 
 const DEFAULT_TEXT_COLOR: u32 = 0x00_18_1B_20;
@@ -137,7 +139,7 @@ pub(crate) fn parse_font_faces(stylesheets: &[String]) -> Vec<FontFaceRule> {
 }
 
 fn parse_font_faces_in_stylesheet(source: &str) -> Vec<FontFaceRule> {
-    let source = remove_css_comments(source);
+    let source = remove_css_comments(&preprocess_input(source));
     let mut faces = Vec::new();
 
     for rule_text in source.split('}') {
@@ -285,7 +287,7 @@ fn take_font_face_url(input: &str) -> Option<(&str, &str)> {
 }
 
 fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &mut usize) {
-    let source = remove_css_comments(source);
+    let source = remove_css_comments(&preprocess_input(source));
 
     for rule_text in source.split('}') {
         let Some((selector_text, declaration_text)) = rule_text.split_once('{') else {

@@ -1431,6 +1431,29 @@ mod tests {
         assert_eq!(page.blocks[0].style.color, 0x00_00_80_00);
     }
 
+    #[test]
+    fn preprocesses_css_in_stylesheet_and_inline_style() {
+        let stylesheet = parse_html(
+            "https://example.test",
+            "<style>p { font-family: 'A\0B' }</style><p>Hello</p>",
+        );
+
+        let inline = parse_html(
+            "https://example.test",
+            "<p style=\"font-family: 'A\0B'\">Hello</p>",
+        );
+
+        assert_eq!(
+            stylesheet.blocks[0].style.font_family.as_deref(),
+            Some("A\u{FFFD}B")
+        );
+
+        assert_eq!(
+            inline.blocks[0].style.font_family.as_deref(),
+            Some("A\u{FFFD}B")
+        );
+    }
+
     fn woff_with_name_table(table: &[u8]) -> Vec<u8> {
         assert_eq!(table.len() % 4, 0);
 

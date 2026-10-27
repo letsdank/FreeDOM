@@ -7,6 +7,8 @@
 use super::CssDeclaration;
 
 pub(crate) fn parse_declaration_list(source: &str) -> Vec<CssDeclaration> {
+    let normalized = super::preprocess_input(source);
+    let source = normalized.as_str();
     let mut declarations = Vec::new();
     let mut start = 0;
     let mut quote = None;
@@ -121,6 +123,14 @@ mod tests {
 
         assert_eq!(declarations.len(), 2);
         assert_eq!(declarations[0].value, r#"'a\';b'"#);
+        assert_eq!(declarations[1].name, "color");
+    }
+
+    #[test]
+    fn preprocesses_declaration_values() {
+        let declarations = parse_declaration_list("font-family: 'A\0B'; color: green");
+
+        assert_eq!(declarations[0].value, "'A\u{FFFD}B'");
         assert_eq!(declarations[1].name, "color");
     }
 }
