@@ -1,3 +1,7 @@
+//! Parsing of SVG transform lists.
+//!
+//! Specification: <https://www.w3.org/TR/SVG2/coords.html#TransformProperty>
+
 use std::{error::Error, fmt};
 
 use crate::graphics::geometry::Transform;

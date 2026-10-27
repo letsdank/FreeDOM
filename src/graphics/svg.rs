@@ -6,22 +6,26 @@ mod clip;
 mod gradient;
 mod number;
 mod paint;
+mod path;
 mod render;
 mod shapes;
 mod stroke;
 mod style;
+mod transform;
 mod viewport;
 
 use self::clip::resolve_clip_paths;
 use self::gradient::resolve_linear_gradient;
 use self::number::parse_number_list;
 use self::paint::{apply_opacity, parse_opacity, parse_paint, parse_solid_color, resolve_paint};
+use self::path::parse_path_data;
 use self::shapes::{parse_circle, parse_ellipse, parse_line, parse_poly_points, parse_rect};
 use self::stroke::{
     parse_stroke_dash_array, parse_stroke_dash_offset, parse_stroke_line_cap,
     parse_stroke_line_join, parse_stroke_miter_limit, parse_stroke_width,
 };
 use self::style::{collect_svg_stylesheets, resolve_style};
+use self::transform::parse_transform_list;
 use self::viewport::{
     parse_preserve_aspect_ratio, parse_svg_length, parse_svg_viewport_dimension, parse_view_box,
     view_box_transform, viewport_path,
@@ -33,8 +37,6 @@ use crate::{
         flatten::FlattenedPath,
         geometry::{Path, Point, Transform},
         raster::{Color, FillRule, Paint, StrokeLineCap, StrokeLineJoin},
-        svg_path::parse_path_data,
-        svg_transform::parse_transform_list,
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     url::Url,

@@ -1,3 +1,7 @@
+//! Parsing of SVG path data.
+//!
+//! Specification: <https://www.w3.org/TR/SVG2/paths.html>
+
 use crate::graphics::geometry::{Path, Point};
 use std::{error::Error, fmt};
 
