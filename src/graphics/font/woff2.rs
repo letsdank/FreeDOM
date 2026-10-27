@@ -1180,6 +1180,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn decodes_wpt_mongolian_composite_glyph() {
+        use crate::graphics::{
+            font::{
+                glyf::{Glyph, GlyphBounds},
+                truetype::TrueTypeFont,
+            },
+            geometry::{Point, Transform},
+        };
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/fonts/noto/",
+            "NotoSansMongolian-regular.woff2"
+        );
+
+        let data = std::fs::read(path).expect("WPT Noto Sans Mongolian fixture must exist");
+
+        let directory = parse_woff2_directory(&data).unwrap();
+
+        let index = |tag| {
+            directory
+                .tables
+                .iter()
+                .position(|table| table.tag == tag)
+                .expect("required table is missing")
+        };
+
+        let glyf_index = index(TableTag::GLYF);
+        let hhea_index = index(TableTag::HHEA);
+        let loca_index = index(TableTag::LOCA);
+
+        // This font has other tables between glyf and loca.
+        assert!(glyf_index < hhea_index);
+        assert!(hhea_index < loca_index);
+
+        assert_eq!(
+            directory.tables[glyf_index].transform,
+            Woff2Transform::GlyfLoca,
+        );
+
+        assert_eq!(
+            directory.tables[loca_index].transform,
+            Woff2Transform::GlyfLoca,
+        );
+
+        let sfnt = decode_woff2(&data).unwrap();
+        let font = TrueTypeFont::parse(&sfnt).unwrap();
+
+        assert_eq!(font.maxp().num_glyphs, 1513);
+
+        // Glyph 9 contains four translated copies of glyph 10.
+        // Values were checked with FreeType using the original WOFF2.
+        let Glyph::Compound(glyph) = font.glyph(9).unwrap() else {
+            panic!("expected a composite glyph");
+        };
+
+        assert_eq!(
+            glyph.bounds,
+            GlyphBounds {
+                x_min: 147,
+                y_min: 694,
+                x_max: 1962,
+                y_max: 971,
+            }
+        );
+
+        assert_eq!(glyph.components.len(), 4);
+
+        let offsets = [-385.0, 135.0, 655.0, 1176.0];
+
+        for (component, x) in glyph.components.iter().zip(offsets) {
+            assert_eq!(component.glyph_id, 10);
+            assert_eq!(component.transform, Transform::translate(x, 0.0));
+        }
+
+        // Check the path after resolving and transforming the components.
+        let path = font.glyph_path(9).unwrap();
+        let bounds = path.control_bounds().unwrap();
+
+        assert_eq!(bounds.min, Point::new(147.0, 694.0));
+        assert_eq!(bounds.max, Point::new(1962.0, 971.0));
+    }
+
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
         for bit_index in 0..bit_count {
             if *bit_position / 8 == data.len() {
