@@ -678,6 +678,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decodes_real_wpt_woff2_fixture() {
+        use crate::graphics::font::sfnt::SfntFont;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/WOFF2/support/",
+            "metadatadisplay-schema-metadata-004.woff2",
+        );
+
+        let data = std::fs::read(path).expect("WPT WOFF2 fixture must exist");
+        let directory = parse_woff2_directory(&data).unwrap();
+
+        let decoded = decode_brotli(&data[directory.compressed_data.clone()], 1691).unwrap();
+
+        assert_eq!(decoded.len(), 1691);
+
+        // Check the decompressed bytes against an independent Brotli decoder.
+        let mut crc = 0xffff_ffff_u32;
+
+        for byte in decoded {
+            crc ^= u32::from(byte);
+
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+
+        assert_eq!(!crc, 0x293b_f12b);
+
+        let sfnt_data = decode_woff2(&data).unwrap();
+        let font = SfntFont::parse(&sfnt_data).unwrap();
+
+        assert_eq!(font.table(TableTag::NAME).unwrap().len(), 663);
+    }
+
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
         let length = WOFF2_HEADER_LENGTH + directory.len() + compressed.len();
         let mut data = vec![0_u8; length];

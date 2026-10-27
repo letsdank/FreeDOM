@@ -15,6 +15,7 @@ mod dictionary;
 mod distance;
 mod huffman;
 mod prefix_code;
+mod transforms;
 
 pub use self::bit_reader::BitReader;
 use self::compressed::decode_compressed_meta_block;

@@ -38,8 +38,6 @@ pub(super) fn base_word(length: usize, index: usize) -> Option<&'static [u8]> {
 }
 
 /// Resolves a static dictionary reference and applies its transformation.
-///
-/// Transformations 0 and 9 are currently supported.
 pub(super) fn expand_word(
     length: usize,
     distance: usize,
@@ -63,41 +61,11 @@ pub(super) fn expand_word(
         return Err(error(offset, "invalid Brotli dictionary transform"));
     }
 
-    let mut word = base_word(length, index)
-        .ok_or_else(|| error(offset, "invalid Brotli dictionary word index"))?
-        .to_vec();
+    let word = base_word(length, index)
+        .ok_or_else(|| error(offset, "invalid Brotli dictionary word index"))?;
 
-    match transform {
-        0 => {}
-        9 => ferment_first(&mut word),
-        _ => {
-            return Err(error(
-                offset,
-                format!("unsupported Brotli dictionary transform: {transform}"),
-            ));
-        }
-    }
-
-    Ok(word)
-}
-
-// RFC 7932, section 8: FermentFirst operates on bytes, not Unicode chars.
-fn ferment_first(word: &mut [u8]) {
-    let Some(&first) = word.first() else {
-        return;
-    };
-
-    if first < 192 {
-        if first.is_ascii_lowercase() {
-            word[0] ^= 32;
-        }
-    } else if first < 224 {
-        if let Some(byte) = word.get_mut(1) {
-            *byte ^= 32;
-        }
-    } else if let Some(byte) = word.get_mut(2) {
-        *byte ^= 5;
-    }
+    super::transforms::transform_word(transform, word)
+        .ok_or_else(|| error(offset, "invalid Brotli dictionary transform"))
 }
 
 #[cfg(test)]
@@ -156,19 +124,5 @@ mod tests {
 
         // Transform IDs are in the range 0..121.
         assert!(expand_word(4, 1 + 121 * 1024, 0, 0).is_err());
-
-        let error = expand_word(4, 1 + 32 * 1024, 0, 0).unwrap_err();
-        assert_eq!(error.message, "unsupported Brotli dictionary transform: 32");
-    }
-
-    #[test]
-    fn ferments_first_multibyte_sequence_according_to_brotli() {
-        let mut two_bytes = [0xc3, 0xa9];
-        ferment_first(&mut two_bytes);
-        assert_eq!(two_bytes, [0xc3, 0x89]);
-
-        let mut three_bytes = [0xe0, 0xa4, 0x95];
-        ferment_first(&mut three_bytes);
-        assert_eq!(three_bytes, [0xe0, 0xa4, 0x90]);
     }
 }
