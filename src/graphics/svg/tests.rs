@@ -804,3 +804,45 @@ fn stores_linear_gradients_as_fill_paints() {
         Some(Paint::LinearGradient(_))
     ));
 }
+
+#[test]
+fn parses_svg_numbers_in_attributes_paths_and_transforms() {
+    let numbers = parse_number_list("1e1-2.5e+1,.5").unwrap();
+    assert_eq!(numbers, vec![10.0, -25.0, 0.5]);
+
+    let path = parse_path_data("M1e1-2.5e+1L.5,3").unwrap();
+    assert_eq!(
+        path.commands(),
+        &[
+            PathCommand::MoveTo(Point::new(10.0, -25.0)),
+            PathCommand::LineTo(Point::new(0.5, 3.0)),
+        ],
+    );
+
+    let transform = parse_transform_list("translate(1e1,-2.5e+1)").unwrap();
+    assert_eq!(
+        transform.apply_point(Point::new(0.0, 0.0)),
+        Point::new(10.0, -25.0),
+    );
+}
+
+#[test]
+fn reports_invalid_svg_number_positions_in_paths_and_transforms() {
+    let path_error = parse_path_data("M1e 2").unwrap_err();
+    assert_eq!(path_error.offset, 3);
+    assert_eq!(path_error.message, "expected exponent digits");
+
+    let transform_error = parse_transform_list("translate(1e 2)").unwrap_err();
+    assert_eq!(transform_error.offset, 12);
+    assert_eq!(transform_error.message, "expected exponent digits");
+
+    assert!(parse_number_list("1e999").is_err());
+
+    let path_error = parse_path_data("M1e999 0").unwrap_err();
+    assert_eq!(path_error.offset, 1);
+    assert_eq!(path_error.message, "number must be finite");
+
+    let transform_error = parse_transform_list("translate(1e999,0)").unwrap_err();
+    assert_eq!(transform_error.offset, 10);
+    assert_eq!(transform_error.message, "number must be finite");
+}
