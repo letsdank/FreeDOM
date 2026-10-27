@@ -1,9 +1,7 @@
-//! Brotli bitstream parsing for WOFF 2.0.
+//! Brotli bitstream decoding for WOFF 2.0.
 //!
-//! The decoder handles uncompressed meta-blocks and compressed meta-blocks
-//! that finish using literal insertion alone.
-//!
-//! Backward copies and static dictionary references are not supported yet.
+//! The decoder handles compressed and uncompressed meta-blocks,
+//! backward references, and static dictionary references.
 //!
 //! Specification: <https://www.rfc-editor.org/rfc/rfc7932.html>
 mod bit_reader;

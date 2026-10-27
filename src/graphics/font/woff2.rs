@@ -1489,7 +1489,20 @@ mod tests {
             assert_eq!(
                 actual_font.metric(glyph_id),
                 reference_font.metric(glyph_id),
-                "glyph {glyph_id}"
+                "metrics differ for glyph {glyph_id}"
+            );
+
+            let actual_path = actual_font
+                .glyph_path(glyph_id)
+                .unwrap_or_else(|error| panic!("cannot read glyph {glyph_id}: {error:?}"));
+
+            let reference_path = reference_font.glyph_path(glyph_id).unwrap_or_else(|error| {
+                panic!("cannot read reference glyph {glyph_id}: {error:?}")
+            });
+
+            assert_eq!(
+                actual_path, reference_path,
+                "outline differs for glyph {glyph_id}"
             );
         }
 

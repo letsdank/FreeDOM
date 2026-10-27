@@ -240,8 +240,6 @@ pub(super) fn read_compressed_meta_block_header_prefix(
 }
 
 /// Decodes a compressed Brotli meta-block.
-///
-/// Static dictionary references are not supported yet.
 pub(super) fn decode_compressed_meta_block(
     reader: &mut BitReader<'_>,
     output: &mut Vec<u8>,
