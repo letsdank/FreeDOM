@@ -181,6 +181,7 @@ fn renders_elliptically_rounded_rectangle_like_its_path() {
                         C 8.5817216 27 5 25.6568544 5 24
                         L 5 10
                         C 5 8.3431456 8.5817216 7 13 7
+                        Z
                     "/>
                 </svg>
             "#,
@@ -188,7 +189,7 @@ fn renders_elliptically_rounded_rectangle_like_its_path() {
     .unwrap();
 
     let actual = rectangle.render(50, 40, Color::WHITE).unwrap();
-    let expected = rectangle.render(50, 40, Color::WHITE).unwrap();
+    let expected = reference.render(50, 40, Color::WHITE).unwrap();
 
     // Ensure the comparison does not pass because both images are empty.
     assert_eq!(actual.pixel(25, 17), Some(Color::BLACK));
