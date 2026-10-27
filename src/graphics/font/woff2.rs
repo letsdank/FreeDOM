@@ -222,6 +222,35 @@ fn decode_table_data(data: &[u8], directory: &Woff2Directory) -> Result<Vec<u8>,
     Ok(decoded)
 }
 
+/// Splits decompressed WOFF2 data into table slices in directory order.
+///
+/// Transformed tables occupy `transformed_length` bytes; other tables
+/// occupy `original_length` bytes.
+///
+/// Specification: <https://www.w3.org/TR/WOFF2/#compressed_data_format>
+fn split_table_data<'a>(
+    data: &'a [u8],
+    directory: &Woff2Directory,
+) -> Result<Vec<(TableTag, &'a [u8])>, FontError> {
+    let mut cursor = 0_usize;
+    let mut tables = Vec::with_capacity(directory.tables.len());
+
+    for table in &directory.tables {
+        let length = table.transformed_length.unwrap_or(table.original_length);
+
+        let end = checked_end(cursor, length, data.len(), "WOFF2 table data is truncated")?;
+
+        tables.push((table.tag, &data[cursor..end]));
+        cursor = end;
+    }
+
+    if cursor != data.len() {
+        return Err(error(cursor, "WOFF2 table data has trailing bytes"));
+    }
+
+    Ok(tables)
+}
+
 pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
     let directory = parse_woff2_directory(data)?;
 
@@ -238,20 +267,10 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
 
     let decoded_data = decode_table_data(data, &directory)?;
 
-    let mut cursor = 0_usize;
-    let mut tables = Vec::with_capacity(directory.tables.len());
-
-    for table in &directory.tables {
-        let end = checked_end(
-            cursor,
-            table.original_length,
-            decoded_data.len(),
-            "WOFF2 table data is truncated",
-        )?;
-
-        tables.push((table.tag, decoded_data[cursor..end].to_vec()));
-        cursor = end;
-    }
+    let mut tables: Vec<_> = split_table_data(&decoded_data, &directory)?
+        .into_iter()
+        .map(|(tag, bytes)| (tag, bytes.to_vec()))
+        .collect();
 
     tables.sort_by_key(|(tag, _)| tag.bytes());
 
@@ -773,6 +792,45 @@ mod tests {
         let error = decode_table_data(&data, &directory).unwrap_err();
 
         assert_eq!(error.message, "WOFF2 Brotli data has an unexpected length");
+    }
+
+    #[test]
+    fn splits_mixed_transformed_and_untransformed_table_data() {
+        let compressed = uncompressed_brotli(b"xyzabcdef");
+
+        // name: original length 3.
+        // glyf: original length 8, transformed length 6.
+        // loca: original length 4, transformed length 0.
+        let data = minimal_woff2(3, &[5, 3, 10, 8, 6, 11, 4, 0], &compressed);
+
+        let directory = parse_woff2_directory(&data).unwrap();
+        let decoded = decode_table_data(&data, &directory).unwrap();
+        let tables = split_table_data(&decoded, &directory).unwrap();
+
+        assert_eq!(
+            tables,
+            vec![
+                (TableTag::NAME, &b"xyz"[..]),
+                (TableTag::GLYF, &b"abcdef"[..]),
+                (TableTag::LOCA, &b""[..]),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_or_extra_table_data() {
+        let compressed = uncompressed_brotli(b"abcdef");
+        let data = minimal_woff2(2, &[10, 8, 6, 11, 4, 0], &compressed);
+
+        let directory = parse_woff2_directory(&data).unwrap();
+
+        let truncated = split_table_data(b"abcde", &directory).unwrap_err();
+
+        assert_eq!(truncated.message, "WOFF2 table data is truncated");
+
+        let extra = split_table_data(b"abcdefg", &directory).unwrap_err();
+
+        assert_eq!(extra.message, "WOFF2 table data has trailing bytes");
     }
 
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
