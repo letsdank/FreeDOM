@@ -366,6 +366,109 @@ impl GlyfStreams<'_> {
 
         Ok(result)
     }
+
+    /// Reconstructs the TrueType glyf and loca tables.
+    ///
+    /// The loca length comes from the original-length field in the WOFF2
+    /// table directory, not from the reconstructured glyf table size.
+    pub(super) fn reconstruct_tables(
+        &self,
+        original_loca_length: usize,
+    ) -> Result<(Vec<u8>, Vec<u8>), FontError> {
+        let entry_size = match self.index_format {
+            0 => 2,
+            1 => 4,
+            _ => {
+                return Err(error(0, "invalid transformed glyf index format"));
+            }
+        };
+
+        let entry_count = usize::from(self.num_glyphs) + 1;
+        let expected_loca_length = entry_count * entry_size;
+
+        if original_loca_length != expected_loca_length {
+            return Err(error(
+                0,
+                "WOFF2 loca original length does not match glyph count",
+            ));
+        }
+
+        let mut glyf = Vec::new();
+        let mut loca = Vec::with_capacity(expected_loca_length);
+        let mut cursors = GlyphCursors::default();
+
+        for glyph_index in 0..usize::from(self.num_glyphs) {
+            write_loca_offset(&mut loca, self.index_format, glyf.len())?;
+            let glyph = self.reconstruct_glyph(glyph_index, &mut cursors)?;
+
+            let new_length = glyf
+                .len()
+                .checked_add(glyph.len())
+                .ok_or_else(|| error(glyph_index, "reconstructed glyf table is too large"))?;
+
+            // Short loca stores offsets divided by two.
+            let padding = usize::from(self.index_format == 0 && new_length % 2 != 0);
+
+            let final_length = new_length
+                .checked_add(padding)
+                .ok_or_else(|| error(glyph_index, "reconstructed glyf table is too large"))?;
+
+            u32::try_from(final_length)
+                .map_err(|_| error(glyph_index, "reconstructed glyf table is too large"))?;
+
+            let additional = glyph
+                .len()
+                .checked_add(padding)
+                .ok_or_else(|| error(glyph_index, "reconstructed glyf table is too large"))?;
+
+            glyf.try_reserve(additional)
+                .map_err(|_| error(glyph_index, "cannot allocate reconstructed glyf table"))?;
+
+            glyf.extend_from_slice(&glyph);
+
+            if padding != 0 {
+                glyf.push(0);
+            }
+        }
+
+        // loca contains one extra offset marking the end of the last glyph.
+        write_loca_offset(&mut loca, self.index_format, glyf.len())?;
+
+        Ok((glyf, loca))
+    }
+}
+
+/// Appends one offset using the format specified by indexToLocFormat.
+fn write_loca_offset(
+    loca: &mut Vec<u8>,
+    index_format: u16,
+    offset: usize,
+) -> Result<(), FontError> {
+    match index_format {
+        0 => {
+            if offset % 2 != 0 {
+                return Err(error(offset, "short loca offset is not aligned"));
+            }
+
+            let value = u16::try_from(offset / 2)
+                .map_err(|_| error(offset, "short loca offset is too large"))?;
+
+            loca.extend_from_slice(&value.to_be_bytes());
+        }
+
+        1 => {
+            let value = u32::try_from(offset)
+                .map_err(|_| error(offset, "long loca offset is too large"))?;
+
+            loca.extend_from_slice(&value.to_be_bytes());
+        }
+
+        _ => {
+            return Err(error(offset, "invalid transformed glyf index format"));
+        }
+    }
+
+    Ok(())
 }
 
 /// Reads a most-significant-bit-first glyph bitmap.
@@ -1104,5 +1207,96 @@ mod tests {
             instructions: &[0xaa, 0xbb],
             overlap_bitmap: None,
         }
+    }
+
+    fn table_fixture(format: u16) -> GlyfStreams<'static> {
+        GlyfStreams {
+            num_glyphs: 3,
+            index_format: format,
+
+            // Empty, simple, composite.
+            contours: &[0, 0, 0, 1, 0xff, 0xff],
+
+            points: &[3],
+            flags: &[1, 11, 86],
+
+            // Simple point data, simple instruction length,
+            // composite instruction length.
+            glyphs: &[0, 50, 24, 79, 0, 2],
+
+            // Composite references glyph 1 and has instructions.
+            composites: &[1, 2, 0, 1, 0, 0],
+
+            // Explicit bbox for glyph 2.
+            bbox_bitmap: &[0x20, 0, 0, 0],
+            bbox_data: &[0, 0, 0, 0, 0, 50, 0, 80],
+
+            instructions: &[0xaa, 0xbb],
+            overlap_bitmap: None,
+        }
+    }
+
+    #[test]
+    fn reconstructs_short_and_long_glyf_loca_tables() {
+        use crate::graphics::font::glyf::parse_glyph;
+
+        let cases = [(0, 8, vec![0, 0, 30, 50]), (1, 16, vec![0, 0, 29, 49])];
+
+        for (format, loca_size, expected_offsets) in cases {
+            let (glyf, loca) = table_fixture(format).reconstruct_tables(loca_size).unwrap();
+
+            let offsets: Vec<usize> = if format == 0 {
+                loca.chunks_exact(2)
+                    .map(|bytes| usize::from(u16::from_be_bytes([bytes[0], bytes[1]])) * 2)
+                    .collect()
+            } else {
+                loca.chunks_exact(4)
+                    .map(|bytes| {
+                        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
+                    })
+                    .collect()
+            };
+
+            assert_eq!(offsets, expected_offsets);
+            assert_eq!(loca.len(), loca_size);
+            assert_eq!(glyf.len(), *offsets.last().unwrap());
+
+            assert!(matches!(
+                parse_glyph(&glyf[offsets[0]..offsets[1]], 0).unwrap(),
+                Glyph::Empty
+            ));
+
+            assert!(matches!(
+                parse_glyph(&glyf[offsets[1]..offsets[2]], 0).unwrap(),
+                Glyph::Simple(_)
+            ));
+
+            assert!(matches!(
+                parse_glyph(&glyf[offsets[2]..offsets[3]], 0).unwrap(),
+                Glyph::Compound(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn validates_loca_format_length_and_offset_limits() {
+        let error = table_fixture(0).reconstruct_tables(16).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "WOFF2 loca original length does not match glyph count"
+        );
+
+        let mut loca = Vec::new();
+
+        write_loca_offset(&mut loca, 0, 131070).unwrap();
+
+        assert_eq!(loca, [0xff, 0xff]);
+
+        assert!(write_loca_offset(&mut loca, 0, 131072).is_err());
+        assert!(write_loca_offset(&mut loca, 0, 1).is_err());
+
+        // Failed writes must not modify the output.
+        assert_eq!(loca, [0xff, 0xff]);
     }
 }
