@@ -188,6 +188,40 @@ pub fn parse_woff2_directory(data: &[u8]) -> Result<Woff2Directory, FontError> {
     })
 }
 
+/// Decompresses the concatenated WOFF2 table data.
+///
+/// The output contains transformed data for tables that use a WOFF2
+/// transform. Reconstructing those tables is a separate step.
+///
+/// Specification: <https://www.w3.org/TR/WOFF2/#compressed_data_format>
+fn decode_table_data(data: &[u8], directory: &Woff2Directory) -> Result<Vec<u8>, FontError> {
+    let expected_length = directory.tables.iter().try_fold(0_usize, |length, table| {
+        let table_length = table.transformed_length.unwrap_or(table.original_length);
+
+        length
+            .checked_add(table_length)
+            .ok_or_else(|| error(directory.compressed_data.start, "WOFF2 data is too large"))
+    })?;
+
+    let compressed = data.get(directory.compressed_data.clone()).ok_or_else(|| {
+        error(
+            directory.compressed_data.start,
+            "WOFF2 compressed data extends beyond input",
+        )
+    })?;
+
+    let decoded = decode_brotli(compressed, expected_length)?;
+
+    if decoded.len() != expected_length {
+        return Err(error(
+            directory.compressed_data.start,
+            "WOFF2 Brotli data has an unexpected length",
+        ));
+    }
+
+    Ok(decoded)
+}
+
 pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
     let directory = parse_woff2_directory(data)?;
 
@@ -202,20 +236,7 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
         ));
     }
 
-    let decoded_length = directory.tables.iter().try_fold(0_usize, |length, table| {
-        length
-            .checked_add(table.original_length)
-            .ok_or_else(|| error(directory.compressed_data.start, "WOFF2 data is too large"))
-    })?;
-
-    let decoded_data = decode_brotli(&data[directory.compressed_data.clone()], decoded_length)?;
-
-    if decoded_data.len() != decoded_length {
-        return Err(error(
-            directory.compressed_data.start,
-            "WOFF2 Brotli data has an unexpected length",
-        ));
-    }
+    let decoded_data = decode_table_data(data, &directory)?;
 
     let mut cursor = 0_usize;
     let mut tables = Vec::with_capacity(directory.tables.len());
@@ -716,6 +737,42 @@ mod tests {
         let font = SfntFont::parse(&sfnt_data).unwrap();
 
         assert_eq!(font.table(TableTag::NAME).unwrap().len(), 663);
+    }
+
+    #[test]
+    fn decompresses_transformed_table_lengths() {
+        let compressed = uncompressed_brotli(b"abcdef");
+
+        // Transformed glyf: original length 8, transformed length 6.
+        // Transformed loca: original length 4, transformed length 0.
+        let data = minimal_woff2(2, &[10, 8, 6, 11, 4, 0], &compressed);
+
+        let directory = parse_woff2_directory(&data).unwrap();
+        let decoded = decode_table_data(&data, &directory).unwrap();
+
+        assert_eq!(decoded, b"abcdef");
+
+        // Table reconstruction is still intentionally unsupported.
+        let error = decode_woff2(&data).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "WOFF2 table transforms are not supported yet"
+        );
+    }
+
+    #[test]
+    fn rejects_shorter_transformed_table_data() {
+        let compressed = uncompressed_brotli(b"abcde");
+
+        // The directory declares six decompressed bytes, but the stream
+        // contains only five.
+        let data = minimal_woff2(2, &[10, 8, 6, 11, 4, 0], &compressed);
+
+        let directory = parse_woff2_directory(&data).unwrap();
+        let error = decode_table_data(&data, &directory).unwrap_err();
+
+        assert_eq!(error.message, "WOFF2 Brotli data has an unexpected length");
     }
 
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
