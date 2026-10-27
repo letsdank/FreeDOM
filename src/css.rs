@@ -186,18 +186,45 @@ fn declaration_value<'a>(declarations: &'a [CssDeclaration], name: &str) -> Opti
 fn parse_font_face_family(value: &str) -> Option<String> {
     let value = value.trim();
 
-    let value = match (value.as_bytes().first(), value.as_bytes().last()) {
+    let (value, quoted) = match (value.as_bytes().first(), value.as_bytes().last()) {
         (Some(b'"'), Some(b'"')) | (Some(b'\''), Some(b'\'')) if value.len() >= 2 => {
-            &value[1..value.len() - 1]
+            (&value[1..value.len() - 1], true)
         }
-        _ => value,
+        _ => (value, false),
     };
 
-    (!value.is_empty() && !value.contains(',')).then(|| value.to_owned())
+    (!value.is_empty() && (quoted || !value.contains(','))).then(|| value.to_owned())
 }
 
 fn parse_text_font_family(value: &str) -> Option<String> {
-    let first_family = value.split(',').next()?.trim();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut end = value.len();
+
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if quote.is_some() && character == '\\' {
+            escaped = true;
+        } else if quote == Some(character) {
+            quote = None;
+        } else if quote.is_none() && matches!(character, '\'' | '"') {
+            quote = Some(character);
+        } else if quote.is_none() && character == ',' {
+            end = index;
+            break;
+        }
+    }
+
+    if quote.is_some() {
+        return None;
+    }
+
+    let first_family = value[..end].trim();
+
     parse_font_face_family(first_family)
 }
 
@@ -792,5 +819,20 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
         assert_eq!(style.font_family.as_deref(), Some("FreeDOM Sans"));
+    }
+
+    #[test]
+    fn quoted_family_name_can_contain_a_comma() {
+        assert_eq!(
+            parse_text_font_family(r#""Nko, Test", sans-serif"#),
+            Some("Nko, Test".to_owned())
+        );
+
+        assert_eq!(
+            parse_font_face_family(r#""Nko, Test""#),
+            Some("Nko, Test".to_owned())
+        );
+
+        assert_eq!(parse_text_font_family(r#""Nko, Test"#), None);
     }
 }

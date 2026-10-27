@@ -1254,10 +1254,10 @@ mod tests {
                     "/assets/main.css" => (
                         "text/css; charset=utf-8",
                         b"@font-face { \
-                            font-family: Nko; \
+                            font-family: 'Nko, Test'; \
                             src: url('fonts/invalid.ttf'), url('fonts/nko.woff2') format('woff2'); \
                         } \
-                        p { font-family: Nko; }",
+                        p { font-family: 'Nko, Test', sans-serif; }",
                     ),
 
                     "/assets/fonts/nko.woff2" => ("font/woff2", &font_bytes),
@@ -1304,7 +1304,7 @@ mod tests {
             .find(|block| block.text() == Some("ߊ"))
             .expect("text block must exist");
 
-        assert_eq!(block.style.font_family.as_deref(), Some("Nko"));
+        assert_eq!(block.style.font_family.as_deref(), Some("Nko, Test"));
 
         let font_data = page
             .font_data_for(
