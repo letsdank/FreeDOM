@@ -11,6 +11,7 @@ mod block;
 mod command;
 mod compressed;
 mod context;
+mod dictionary;
 mod distance;
 mod huffman;
 mod prefix_code;
