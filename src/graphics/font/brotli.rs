@@ -1,8 +1,9 @@
 //! Brotli bitstream parsing for WOFF 2.0.
 //!
-//! The decoder currently handles uncompressed meta-blocks. Parsing support
-//! for compressed meta-block headers, prefix codes, contexts, and commands is
-//! being implemented separately and is not yet connected to the decoder.
+//! The decoder handles uncompressed meta-blocks and compressed meta-blocks
+//! that finish using literal insertion alone.
+//!
+//! Backward copies and static dictionary references are not supported yet.
 //!
 //! Specification: <https://www.rfc-editor.org/rfc/rfc7932.html>
 mod bit_reader;
@@ -15,6 +16,7 @@ mod huffman;
 mod prefix_code;
 
 pub use self::bit_reader::BitReader;
+use self::compressed::decode_literal_only_meta_block;
 pub use self::huffman::HuffmanTree;
 pub use self::prefix_code::{read_prefix_code, read_simple_prefix_code};
 
@@ -29,10 +31,7 @@ use self::context::{LiteralContextMode, distance_context_id, literal_context_id}
 
 use super::sfnt::FontError;
 
-pub fn decode_uncompressed_meta_blocks(
-    data: &[u8],
-    maximum_output_size: usize,
-) -> Result<Vec<u8>, FontError> {
+pub fn decode_brotli(data: &[u8], maximum_output_size: usize) -> Result<Vec<u8>, FontError> {
     let mut reader = BitReader::new(data);
     let _window_bits = read_window_bits(&mut reader)?;
     let mut output = Vec::new();
@@ -63,21 +62,8 @@ pub fn decode_uncompressed_meta_blocks(
 
         let output_length = read_meta_block_length(&mut reader, nibble_count)?;
 
-        if is_last {
-            return Err(error(
-                reader.bit_position(),
-                "compressed Brotli meta-blocks are not supported yet",
-            ));
-        }
-
-        if !reader.read_bit()? {
-            return Err(error(
-                reader.bit_position(),
-                "compressed Brotli meta-blocks are not supported yet",
-            ));
-        }
-
-        consume_zero_padding(&mut reader)?;
+        // ISUNCOMPRESSED is present only for non-final meta-blocks.
+        let is_uncompressed = !is_last && reader.read_bit()?;
 
         let new_length = output
             .len()
@@ -95,7 +81,25 @@ pub fn decode_uncompressed_meta_blocks(
             .try_reserve(output_length)
             .map_err(|_| error(reader.bit_position(), "cannot allocate Brotli output"))?;
 
-        output.extend_from_slice(reader.read_aligned_bytes(output_length)?);
+        if is_uncompressed {
+            consume_zero_padding(&mut reader)?;
+            output.extend_from_slice(reader.read_aligned_bytes(output_length)?);
+        } else {
+            decode_literal_only_meta_block(&mut reader, &mut output, output_length)?;
+        }
+
+        if is_last {
+            consume_zero_padding(&mut reader)?;
+
+            if reader.bits_remaining() != 0 {
+                return Err(error(
+                    reader.bit_position(),
+                    "Brotli stream has bytes after its final meta-block",
+                ));
+            }
+
+            return Ok(output);
+        }
     }
 }
 

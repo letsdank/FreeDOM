@@ -237,6 +237,58 @@ pub(super) fn read_compressed_meta_block_header_prefix(
     })
 }
 
+/// Decodes a compressed meta-block that finishes with literal insertion.
+///
+/// Backward copies and static dictionary references are not supported yet.
+pub(super) fn decode_literal_only_meta_block(
+    reader: &mut BitReader<'_>,
+    output: &mut Vec<u8>,
+    block_length: usize,
+) -> Result<(), FontError> {
+    let block_end = output
+        .len()
+        .checked_add(block_length)
+        .ok_or_else(|| error(reader.bit_position(), "Brotli output size overflows"))?;
+
+    let mut header = read_compressed_meta_block_header_prefix(reader)?;
+
+    while output.len() < block_end {
+        let command = header.read_command(reader)?;
+        let remaining = block_end - output.len();
+
+        if command.insert_length > remaining {
+            return Err(error(
+                reader.bit_position(),
+                "Brotli literal insertion exceeds the meta-block length",
+            ));
+        }
+
+        for _ in 0..command.insert_length {
+            let previous = output.last().copied().unwrap_or(0);
+            let before_previous = output
+                .len()
+                .checked_sub(2)
+                .and_then(|index| output.get(index))
+                .copied()
+                .unwrap_or(0);
+
+            let literal = header.read_literal(reader, previous, before_previous)?;
+            output.push(literal);
+        }
+
+        if output.len() == block_end {
+            return Ok(());
+        }
+
+        return Err(error(
+            reader.bit_position(),
+            "Brotli backward copies and dictionary are not supported yet",
+        ));
+    }
+
+    Ok(())
+}
+
 fn read_context_map(
     reader: &mut BitReader<'_>,
     context_map_size: usize,

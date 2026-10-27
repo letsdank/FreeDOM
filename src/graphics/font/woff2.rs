@@ -9,7 +9,7 @@
 //!
 //! Specification: <https://www.w3.org/TR/WOFF2/>
 use super::{
-    brotli::decode_uncompressed_meta_blocks,
+    brotli::decode_brotli,
     reader::{
         checked_add, checked_end, checked_range, padded_length,
         read_bytes_from_start as read_bytes, read_u8, read_u16, read_u32, to_usize, write_u16,
@@ -208,8 +208,7 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
             .ok_or_else(|| error(directory.compressed_data.start, "WOFF2 data is too large"))
     })?;
 
-    let decoded_data =
-        decode_uncompressed_meta_blocks(&data[directory.compressed_data.clone()], decoded_length)?;
+    let decoded_data = decode_brotli(&data[directory.compressed_data.clone()], decoded_length)?;
 
     if decoded_data.len() != decoded_length {
         return Err(error(

@@ -6,33 +6,60 @@ use super::*;
 fn decodes_an_uncompressed_meta_block() {
     let stream = [0x20, 0x00, 0x10, b'a', b'b', b'c', 0x03];
 
-    assert_eq!(decode_uncompressed_meta_blocks(&stream, 3).unwrap(), b"abc");
+    assert_eq!(decode_brotli(&stream, 3).unwrap(), b"abc");
 }
 
 #[test]
 fn skips_metadata_in_an_empty_meta_block() {
     let stream = [0x2c, 0x00, 0x99, 0x03];
 
-    assert_eq!(
-        decode_uncompressed_meta_blocks(&stream, 0).unwrap(),
-        Vec::<u8>::new()
-    );
+    assert_eq!(decode_brotli(&stream, 0).unwrap(), Vec::<u8>::new());
 }
 
 #[test]
 fn rejects_non_zero_padding_after_a_final_empty_meta_block() {
-    let error = decode_uncompressed_meta_blocks(&[0x0e], 0).unwrap_err();
+    let error = decode_brotli(&[0x0e], 0).unwrap_err();
 
     assert_eq!(error.message, "Brotli byte-alignment padding must be zero");
 }
 
 #[test]
-fn reports_compressed_meta_blocks_as_unsupported() {
-    let error = decode_uncompressed_meta_blocks(&[0x02, 0x00, 0x00], 1).unwrap_err();
+fn decodes_a_final_compressed_literal_only_meta_block() {
+    // Independently verified with libbrotlidec.
+    let stream = [0x42, 0x00, 0x00, 0x00, 0x44, 0x58, 0x60, 0x10, 0x00];
+
+    assert_eq!(decode_brotli(&stream, 3).unwrap(), b"aaa");
+}
+
+#[test]
+fn decodes_a_non_final_compressed_literal_only_meta_block() {
+    // Independently verified with libbrotlidec.
+    let stream = [0x20, 0x00, 0x00, 0x00, 0x44, 0x58, 0x60, 0x10, 0xc0];
+
+    assert_eq!(decode_brotli(&stream, 3).unwrap(), b"aaa");
+}
+
+#[test]
+fn rejects_compressed_output_above_the_configured_limit() {
+    let stream = [0x42, 0x00, 0x00, 0x00, 0x44, 0x58, 0x60, 0x10, 0x00];
+
+    let error = decode_brotli(&stream, 2).unwrap_err();
 
     assert_eq!(
         error.message,
-        "compressed Brotli meta-blocks are not supported yet"
+        "Brotli output exceeds the configured size limit"
+    );
+}
+
+#[test]
+fn rejects_bytes_after_a_final_compressed_meta_block() {
+    let stream = [0x42, 0x00, 0x00, 0x00, 0x44, 0x58, 0x60, 0x10, 0x00, 0x00];
+
+    let error = decode_brotli(&stream, 3).unwrap_err();
+
+    assert_eq!(
+        error.message,
+        "Brotli stream has bytes after its final meta-block"
     );
 }
 
