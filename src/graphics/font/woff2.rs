@@ -439,45 +439,43 @@ fn table_transform(tag: TableTag, version: u8, offset: usize) -> Result<Woff2Tra
     }
 }
 
+/// Validates glyf/loca pairing in a single-font WOFF2 directory.
+///
+/// Other tables may appear between glyf and loca, but loca must follow
+/// glyf. Both tables must use the same transformation.
+///
+/// Specification: WOFF 2.0, sections 5.3 and 5.5.
+/// <https://www.w3.org/TR/WOFF2/>
 fn validate_transformed_pairs(tables: &[Woff2Table], offset: usize) -> Result<(), FontError> {
-    for (index, table) in tables.iter().enumerate() {
-        if table.transform != Woff2Transform::GlyfLoca {
-            continue;
+    let glyf = tables.iter().position(|table| table.tag == TableTag::GLYF);
+    let loca = tables.iter().position(|table| table.tag == TableTag::LOCA);
+
+    match (glyf, loca) {
+        (Some(glyf_index), Some(loca_index)) => {
+            if glyf_index >= loca_index {
+                return Err(error(offset, "WOFF2 loca table must follow glyf"));
+            }
+
+            if tables[glyf_index].transform != tables[loca_index].transform {
+                return Err(error(offset, "WOFF2 glyf and loca transforms must match"));
+            }
         }
 
-        let tag = table.tag.bytes();
-
-        if tag == *b"glyf" {
-            let Some(next) = tables.get(index + 1) else {
-                return Err(error(
-                    offset,
-                    "transformed WOFF2 glyf table is missing loca",
-                ));
-            };
-
-            if next.tag.bytes() != *b"loca" || next.transform != Woff2Transform::GlyfLoca {
-                return Err(error(
-                    offset,
-                    "transformed WOFF2 glyf table is not followed by loca",
-                ));
-            }
-        } else if tag == *b"loca" {
-            let Some(previous) = index.checked_sub(1).and_then(|index| tables.get(index)) else {
-                return Err(error(
-                    offset,
-                    "transformed WOFF2 loca table has not preceding glyf table",
-                ));
-            };
-
-            if previous.tag.bytes() != *b"glyf" || previous.transform != Woff2Transform::GlyfLoca {
-                return Err(error(
-                    offset,
-                    "transformed WOFF2 loca table does not follow glyf",
-                ));
-            }
-        } else {
-            return Err(error(offset, "invalid WOFF2 glyf/loca transform target"));
+        (Some(index), None) if tables[index].transform == Woff2Transform::GlyfLoca => {
+            return Err(error(
+                offset,
+                "transformed WOFF2 glyf table is missing loca",
+            ));
         }
+
+        (None, Some(index)) if tables[index].transform == Woff2Transform::GlyfLoca => {
+            return Err(error(
+                offset,
+                "transformed WOFF2 loca table is missing glyf",
+            ));
+        }
+
+        _ => {}
     }
 
     Ok(())
@@ -864,6 +862,75 @@ mod tests {
         assert_eq!(streams.contours, &[0, 0]);
         assert_eq!(streams.bbox_bitmap, &[0, 0, 0, 0]);
         assert_eq!(tables[1], (TableTag::LOCA, &b""[..]));
+    }
+
+    #[test]
+    fn accepts_other_tables_between_glyf_and_loca() {
+        let directories: &[&[u8]] = &[
+            // Transformed glyf, hhea, transformed loca.
+            &[10, 8, 6, 2, 2, 11, 4, 0],
+            // Untransformed glyf, hhea, untransformed loca.
+            &[0xca, 8, 2, 2, 0xcb, 4],
+        ];
+
+        for &directory in directories {
+            let data = minimal_woff2(3, directory, &[0]);
+            let parsed = parse_woff2_directory(&data).unwrap();
+
+            assert_eq!(parsed.tables[0].tag, TableTag::GLYF);
+            assert_eq!(parsed.tables[1].tag, TableTag::HHEA);
+            assert_eq!(parsed.tables[2].tag, TableTag::LOCA);
+        }
+    }
+
+    #[test]
+    fn rejects_reversed_or_mismatched_glyf_loca_pairs() {
+        let reversed: &[&[u8]] = &[
+            // Transformed loca before transformed glyf.
+            &[11, 4, 0, 10, 8, 6],
+            // Untransformed loca before untransformed glyf.
+            &[0xcb, 4, 0xca, 8],
+        ];
+
+        for &directory in reversed {
+            let data = minimal_woff2(2, directory, &[0]);
+            let error = parse_woff2_directory(&data).unwrap_err();
+
+            assert_eq!(error.message, "WOFF2 loca table must follow glyf");
+        }
+
+        let mismatched: &[&[u8]] = &[
+            // Transformed glyf, untransformed loca.
+            &[10, 8, 6, 0xcb, 4],
+            // Untransformed glyf, transformed loca.
+            &[0xca, 8, 11, 4, 0],
+        ];
+
+        for &directory in mismatched {
+            let data = minimal_woff2(2, directory, &[0]);
+            let error = parse_woff2_directory(&data).unwrap_err();
+
+            assert_eq!(error.message, "WOFF2 glyf and loca transforms must match");
+        }
+    }
+
+    #[test]
+    fn rejects_unpaired_transformed_glyf_and_loca() {
+        let data = minimal_woff2(1, &[10, 8, 6], &[0]);
+        let error = parse_woff2_directory(&data).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "transformed WOFF2 glyf table is missing loca"
+        );
+
+        let data = minimal_woff2(1, &[11, 4, 0], &[0]);
+        let error = parse_woff2_directory(&data).unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "transformed WOFF2 loca table is missing glyf"
+        );
     }
 
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
