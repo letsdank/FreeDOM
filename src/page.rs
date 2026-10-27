@@ -1160,6 +1160,166 @@ mod tests {
         );
     }
 
+    #[test]
+    fn loads_and_rasterizes_woff2_font_from_external_stylesheet() {
+        use crate::graphics::{
+            font::{TrueTypeFont, rasterize_text_outline},
+            geometry::Transform,
+            raster::{Color, Surface},
+        };
+        use std::{
+            io::ErrorKind,
+            time::{Duration, Instant},
+        };
+
+        let font_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2",
+        );
+
+        let font_bytes = std::fs::read(font_path).expect("transformed hmtx test font must exist");
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut requests = Vec::new();
+
+            while requests.len() < 3 {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "timed out waiting for page resources; received: {requests:?}"
+                        );
+
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+
+                    Err(error) => panic!("failed to accpt connection: {error}"),
+                };
+
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut chunk).unwrap();
+
+                    assert!(count > 0, "unexpected end of request");
+
+                    request.extend_from_slice(&chunk[..count]);
+
+                    assert!(request.len() < 16_384, "request headers are too long");
+                }
+
+                let request = String::from_utf8(request).unwrap();
+
+                let request_path = request
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .to_owned();
+
+                let (content_type, body): (&str, &[u8]) = match request_path.as_str() {
+                    "/page/index.html" => (
+                        "text/html; charset=utf-8",
+                        concat!(
+                            "<html><head>",
+                            "<link rel=\"stylesheet\" href=\"../assets/main.css\">",
+                            "</head><body><p>ߊ</p></body></html>",
+                        )
+                        .as_bytes(),
+                    ),
+
+                    "/assets/main.css" => (
+                        "text/css; charset=utf-8",
+                        b"@font-face { \
+                            font-family: Nko; \
+                            src: url('fonts/nko.woff2') format('woff2'); \
+                        } \
+                        p { font-family: Nko; }",
+                    ),
+
+                    "/assets/fonts/nko.woff2" => ("font/woff2", &font_bytes),
+
+                    _ => panic!("unexpected request: {request_path}"),
+                };
+
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                    Content-Type: {content_type}\r\n\
+                    Content-Length: {}\r\n\
+                    Connection: close\r\n\
+                    \r\n",
+                    body.len(),
+                );
+
+                stream.write_all(headers.as_bytes()).unwrap();
+                stream.write_all(body).unwrap();
+
+                requests.push(request_path);
+            }
+
+            requests
+        });
+
+        let result = load_page(&format!("http://{address}/page/index.html"));
+        let requests = server.join().unwrap();
+        let page = result.unwrap();
+
+        assert_eq!(
+            requests,
+            [
+                "/page/index.html",
+                "/assets/main.css",
+                "/assets/fonts/nko.woff2",
+            ]
+        );
+
+        let block = page
+            .blocks
+            .iter()
+            .find(|block| block.text() == Some("ߊ"))
+            .expect("text block must exist");
+
+        assert_eq!(block.style.font_family.as_deref(), Some("Nko"));
+
+        let font_data = page
+            .font_data_for(
+                block.style.font_family.as_deref(),
+                block.style.font_weight,
+                block.style.font_style,
+            )
+            .expect("font must be loaded through @font-face");
+
+        let font = TrueTypeFont::parse(font_data).unwrap();
+
+        assert_eq!(font.glyph_id('\u{07CA}'), 20);
+
+        let mut outline = font.outline_text("ߊ", 64.0).unwrap();
+        outline.path = outline.path.transformed(Transform::translate(0.0, 96.0));
+
+        let mut surface = Surface::new(128, 128, Color::TRANSPARENT);
+
+        rasterize_text_outline(&mut surface, &outline, Color::BLACK).unwrap();
+
+        assert_eq!(surface.pixel(8, 73), Some(Color::BLACK));
+        assert_eq!(surface.pixel(0, 0), Some(Color::TRANSPARENT));
+    }
+
     fn woff_with_name_table(table: &[u8]) -> Vec<u8> {
         assert_eq!(table.len() % 4, 0);
 
