@@ -419,6 +419,16 @@ fn rejects_a_copy_that_exceeds_the_meta_block_length() {
     );
 }
 
+#[test]
+fn decodes_a_static_dictionary_reference() {
+    // Independently verified with libbrotlidec.
+    let stream = [
+        0x62, 0x00, 0x00, 0x00, 0x44, 0x58, 0x08, 0x12, 0x66, 0x46, 0x01,
+    ];
+
+    assert_eq!(decode_brotli(&stream, 4).unwrap(), b"Test");
+}
+
 pub(super) fn append_bits(
     data: &mut Vec<u8>,
     bit_position: &mut usize,

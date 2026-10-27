@@ -6,6 +6,8 @@
 //! The binary data was obtained from the official Brotli repository.
 //! Its license is stored alongside `dictionary.bin`.
 
+use super::{FontError, error};
+
 const DICTIONARY: &[u8; 122_784] = include_bytes!("dictionary.bin");
 
 // RFC 7932, appendix A: number of index bits for each word length.
@@ -33,6 +35,69 @@ pub(super) fn base_word(length: usize, index: usize) -> Option<&'static [u8]> {
     let end = start.checked_add(length)?;
 
     DICTIONARY.get(start..end)
+}
+
+/// Resolves a static dictionary reference and applies its transformation.
+///
+/// Transformations 0 and 9 are currently supported.
+pub(super) fn expand_word(
+    length: usize,
+    distance: usize,
+    maximum_backward_distance: usize,
+    offset: usize,
+) -> Result<Vec<u8>, FontError> {
+    if !(4..=24).contains(&length) {
+        return Err(error(offset, "invalid Brotli dictionary word length"));
+    }
+
+    let word_id = distance
+        .checked_sub(maximum_backward_distance)
+        .and_then(|value| value.checked_sub(1))
+        .ok_or_else(|| error(offset, "invalid Brotli dictionary distance"))?;
+
+    let bits = WORD_INDEX_BITS[length];
+    let index = word_id & ((1_usize << bits) - 1);
+    let transform = word_id >> bits;
+
+    if transform >= 121 {
+        return Err(error(offset, "invalid Brotli dictionary transform"));
+    }
+
+    let mut word = base_word(length, index)
+        .ok_or_else(|| error(offset, "invalid Brotli dictionary word index"))?
+        .to_vec();
+
+    match transform {
+        0 => {}
+        9 => ferment_first(&mut word),
+        _ => {
+            return Err(error(
+                offset,
+                format!("unsupported Brotli dictionary transform: {transform}"),
+            ));
+        }
+    }
+
+    Ok(word)
+}
+
+// RFC 7932, section 8: FermentFirst operates on bytes, not Unicode chars.
+fn ferment_first(word: &mut [u8]) {
+    let Some(&first) = word.first() else {
+        return;
+    };
+
+    if first < 192 {
+        if first.is_ascii_lowercase() {
+            word[0] ^= 32;
+        }
+    } else if first < 224 {
+        if let Some(byte) = word.get_mut(1) {
+            *byte ^= 32;
+        }
+    } else if let Some(byte) = word.get_mut(2) {
+        *byte ^= 5;
+    }
 }
 
 #[cfg(test)]
@@ -73,5 +138,37 @@ mod tests {
         assert_eq!(base_word(4, 1024), None);
         assert_eq!(base_word(24, 32), None);
         assert_eq!(base_word(25, 0), None);
+    }
+
+    #[test]
+    fn resolves_identity_and_ferment_first_dictionary_words() {
+        // Word 277 is "test"; transform 0 is Identity.
+        assert_eq!(expand_word(4, 278, 0, 0).unwrap(), b"test",);
+
+        // Transform 9 is FermentFirst.
+        assert_eq!(expand_word(4, 9494, 0, 0).unwrap(), b"Test",);
+    }
+
+    #[test]
+    fn rejects_invalid_dictionary_references() {
+        assert!(expand_word(3, 1, 0, 0).is_err());
+        assert!(expand_word(4, 10, 10, 0).is_err());
+
+        // Transform IDs are in the range 0..121.
+        assert!(expand_word(4, 1 + 121 * 1024, 0, 0).is_err());
+
+        let error = expand_word(4, 1 + 32 * 1024, 0, 0).unwrap_err();
+        assert_eq!(error.message, "unsupported Brotli dictionary transform: 32");
+    }
+
+    #[test]
+    fn ferments_first_multibyte_sequence_according_to_brotli() {
+        let mut two_bytes = [0xc3, 0xa9];
+        ferment_first(&mut two_bytes);
+        assert_eq!(two_bytes, [0xc3, 0x89]);
+
+        let mut three_bytes = [0xe0, 0xa4, 0x95];
+        ferment_first(&mut three_bytes);
+        assert_eq!(three_bytes, [0xe0, 0xa4, 0x90]);
     }
 }

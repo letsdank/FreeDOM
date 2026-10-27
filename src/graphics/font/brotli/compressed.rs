@@ -9,6 +9,7 @@
 use super::block::{BlockPartition, read_block_partition};
 use super::command::{InsertCopyCommand, read_insert_copy_command};
 use super::context::{LiteralContextMode, distance_context_id, literal_context_id};
+use super::dictionary::expand_word;
 use super::{BitReader, FontError, HuffmanTree, error, read_block_type_count, read_prefix_code};
 use crate::graphics::font::brotli::distance::{DistanceHistory, read_distance};
 
@@ -284,13 +285,6 @@ pub(super) fn decode_compressed_meta_block(
             return Ok(());
         }
 
-        if command.copy_length > block_end - output.len() {
-            return Err(error(
-                reader.bit_position(),
-                "Brotli backward copy exceeds the meta-block length",
-            ));
-        }
-
         let symbol = if command.implicit_distance {
             0
         } else {
@@ -308,9 +302,30 @@ pub(super) fn decode_compressed_meta_block(
         let maximum_backward_distance = output.len().min(window_size);
 
         if distance > maximum_backward_distance {
+            let word = expand_word(
+                command.copy_length,
+                distance,
+                maximum_backward_distance,
+                reader.bit_position(),
+            )?;
+
+            if word.len() > block_end - output.len() {
+                return Err(error(
+                    reader.bit_position(),
+                    "Brotli dictionary word exceeds the meta-block length",
+                ));
+            }
+
+            output.extend_from_slice(&word);
+
+            // Dictionary references do not update the distance history.
+            continue;
+        }
+
+        if command.copy_length > block_end - output.len() {
             return Err(error(
                 reader.bit_position(),
-                "Brotli static dictionary references are not supported yet",
+                "Brotli backward copy exceeds the meta-block length",
             ));
         }
 
