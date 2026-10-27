@@ -1,6 +1,6 @@
 use crate::{
     css::{FontStyle, FontWeight},
-    graphics::{font::truetype::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
+    graphics::{font::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
     page::{BlockContent, Page},
 };
 

@@ -22,3 +22,8 @@ pub mod sfnt;
 pub mod truetype;
 pub mod woff;
 pub mod woff2;
+
+pub(crate) use self::{
+    layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont,
+    woff::normalize_font_container,
+};

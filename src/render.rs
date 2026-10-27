@@ -1,10 +1,7 @@
 use crate::{
     css::{FontStyle, FontWeight},
     graphics::{
-        font::{
-            layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont,
-            woff::normalize_font_container,
-        },
+        font::{TextOutline, TrueTypeFont, normalize_font_container, rasterize_text_outline},
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
     },

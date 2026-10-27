@@ -5,7 +5,7 @@ use crate::{
     },
     fetch::Fetcher,
     graphics::{
-        font::woff::normalize_font_container,
+        font::normalize_font_container,
         image::decode_png,
         raster::Surface as RasterSurface,
         svg::{SvgDocument, parse_svg_at, parse_svg_element, parse_svg_element_at},
