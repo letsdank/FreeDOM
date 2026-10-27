@@ -4,10 +4,12 @@
 //! Cascade: <https://www.w3.org/TR/css-cascade-4/>
 
 mod comments;
+mod ident;
 mod input;
 mod syntax;
 
 use self::comments::remove_css_comments;
+use self::ident::is_unescaped_identifier;
 pub(crate) use self::input::preprocess_input;
 pub(crate) use self::syntax::parse_declaration_list;
 
@@ -394,14 +396,7 @@ fn take_css_identifier(input: &str) -> Option<(&str, &str)> {
 
     let identifier = &input[..boundary];
 
-    is_css_identifier(identifier).then_some((identifier, &input[boundary..]))
-}
-
-fn is_css_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|character| character.is_alphanumeric() || character == '-' || character == '_')
+    is_unescaped_identifier(identifier).then_some((identifier, &input[boundary..]))
 }
 
 fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
@@ -871,6 +866,28 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
         assert_eq!(style.font_family.as_deref(), Some("A/*B*/C"));
+        assert_eq!(style.color, 0x00_00_80_00);
+    }
+
+    #[test]
+    fn selector_matches_non_ascii_class_and_rejects_digit_starts() {
+        let stylesheets = [".💡 { color: green } .123 { color: red }".to_owned()];
+
+        let rules = build_author_rules(&stylesheets);
+
+        assert_eq!(rules.len(), 1);
+
+        let classes = vec!["💡".to_owned()];
+
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
         assert_eq!(style.color, 0x00_00_80_00);
     }
 }

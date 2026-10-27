@@ -91,6 +91,22 @@ mod tests {
                 expected.as_string().unwrap()
             );
 
+            let stylesheet = format!("{} {{ color: green }}", input.as_string().unwrap());
+            let rules = build_author_rules(&[stylesheet]);
+
+            assert_eq!(rules.len(), 1, "input: {:?}", input.as_string().unwrap());
+
+            let element = Element {
+                tag: expected.as_string().unwrap(),
+                id: None,
+                classes: &[],
+                inline_style: None,
+            };
+
+            let style = compute_style(&element, TextStyle::initial(), &rules);
+
+            assert_eq!(style.color, 0x00_00_80_00);
+
             count += 1;
         }
 
