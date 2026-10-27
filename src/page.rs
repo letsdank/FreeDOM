@@ -459,6 +459,12 @@ fn load_font_face(
             }
         };
 
+        // Validate the SFNT directory before accepting this source.
+        if let Err(error) = crate::graphics::font::sfnt::SfntFont::parse(&data) {
+            eprintln!("FreeDOM: invalid font {url}: {error}");
+            continue;
+        }
+
         return Some(data);
     }
 
@@ -1189,7 +1195,7 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut requests = Vec::new();
 
-            while requests.len() < 3 {
+            while requests.len() < 4 {
                 let mut stream = match listener.accept() {
                     Ok((stream, _)) => stream,
 
@@ -1249,12 +1255,13 @@ mod tests {
                         "text/css; charset=utf-8",
                         b"@font-face { \
                             font-family: Nko; \
-                            src: url('fonts/nko.woff2') format('woff2'); \
+                            src: url('fonts/invalid.ttf'), url('fonts/nko.woff2') format('woff2'); \
                         } \
                         p { font-family: Nko; }",
                     ),
 
                     "/assets/fonts/nko.woff2" => ("font/woff2", &font_bytes),
+                    "/assets/fonts/invalid.ttf" => ("font/ttf", b"not a font"),
 
                     _ => panic!("unexpected request: {request_path}"),
                 };
@@ -1286,6 +1293,7 @@ mod tests {
             [
                 "/page/index.html",
                 "/assets/main.css",
+                "/assets/fonts/invalid.ttf",
                 "/assets/fonts/nko.woff2",
             ]
         );
