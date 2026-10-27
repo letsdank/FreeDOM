@@ -8,6 +8,10 @@
 //! meta-blocks are not yet supported by the decoder.
 //!
 //! Specification: <https://www.w3.org/TR/WOFF2/>
+
+#[allow(dead_code)]
+mod glyf;
+
 use super::{
     brotli::decode_brotli,
     reader::{
@@ -831,6 +835,35 @@ mod tests {
         let extra = split_table_data(b"abcdefg", &directory).unwrap_err();
 
         assert_eq!(extra.message, "WOFF2 table data has trailing bytes");
+    }
+
+    #[test]
+    fn parses_glyf_from_decompressed_table_data() {
+        // One empty glyph: two contour bytes and a four-byte bbox bitmap.
+        let mut transformed = vec![0_u8; 42];
+
+        write_u16(&mut transformed, 4, 1).unwrap();
+        write_u32(&mut transformed, 8, 2).unwrap();
+        write_u32(&mut transformed, 28, 4).unwrap();
+
+        let compressed = uncompressed_brotli(&transformed);
+
+        // glyf: original length 10, transformed length 42.
+        // loca: original length 4, transformed length 0.
+        let data = minimal_woff2(2, &[10, 10, 42, 11, 4, 0], &compressed);
+
+        let directory = parse_woff2_directory(&data).unwrap();
+        let decoded = decode_table_data(&data, &directory).unwrap();
+        let tables = split_table_data(&decoded, &directory).unwrap();
+
+        assert_eq!(tables[0].0, TableTag::GLYF);
+
+        let streams = glyf::parse(tables[0].1).unwrap();
+
+        assert_eq!(streams.num_glyphs, 1);
+        assert_eq!(streams.contours, &[0, 0]);
+        assert_eq!(streams.bbox_bitmap, &[0, 0, 0, 0]);
+        assert_eq!(tables[1], (TableTag::LOCA, &b""[..]));
     }
 
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
