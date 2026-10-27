@@ -1125,6 +1125,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decodes_real_wpt_noto_nko_transformed_glyf() {
+        use crate::graphics::{
+            font::{glyf::Glyph, truetype::TrueTypeFont},
+            geometry::{PathCommand, Point},
+        };
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/fonts/noto/",
+            "NotoSansNko-regular-webfont.woff2",
+        );
+
+        let data = std::fs::read(path).expect("WPT Noto Sans NKo fixture must exist");
+
+        let directory = parse_woff2_directory(&data).unwrap();
+
+        for tag in [TableTag::GLYF, TableTag::LOCA] {
+            let table = directory
+                .tables
+                .iter()
+                .find(|table| table.tag == tag)
+                .expect("fixture must contain glyf and loca");
+
+            assert_eq!(table.transform, Woff2Transform::GlyfLoca);
+        }
+
+        let sfnt = decode_woff2(&data).unwrap();
+        let font = TrueTypeFont::parse(&sfnt).unwrap();
+
+        assert_eq!(font.maxp().num_glyphs, 190);
+
+        // NKO LETTER A. Expected glyph and metrics were checked with
+        // FreeType using the original WOFF2 font.
+        let glyph_id = font.glyph_id('\u{07ca}');
+
+        assert_eq!(glyph_id, 20);
+        assert_eq!(font.metric(glyph_id).unwrap().advance_width, 543);
+
+        let Glyph::Simple(glyph) = font.glyph(glyph_id).unwrap() else {
+            panic!("expected a simple glyph");
+        };
+
+        assert_eq!(
+            glyph.path.commands(),
+            &[
+                PathCommand::MoveTo(Point::new(362.0, 1462.0)),
+                PathCommand::LineTo(Point::new(362.0, 0.0)),
+                PathCommand::LineTo(Point::new(180.0, 0.0)),
+                PathCommand::LineTo(Point::new(180.0, 1462.0)),
+                PathCommand::Close,
+            ]
+        );
+    }
+
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
         for bit_index in 0..bit_count {
             if *bit_position / 8 == data.len() {
