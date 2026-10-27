@@ -27,9 +27,19 @@ impl GlyphLocations {
             message: "cannot read loca table".to_owned(),
         })?;
 
+        Self::parse_table(table, format, num_glyphs, record.offset)
+    }
+
+    /// Parses loca bytes without requiring a complete SFNT container.
+    pub(crate) fn parse_table(
+        table: &[u8],
+        format: IndexToLocFormat,
+        num_glyphs: u16,
+        table_offset: usize,
+    ) -> Result<Self, FontError> {
         let entry_count = usize::from(num_glyphs)
             .checked_add(1)
-            .ok_or_else(|| table_error(record.offset, "too many glyph locations"))?;
+            .ok_or_else(|| table_error(table_offset, "too many glyph locations"))?;
 
         let (entry_size, multiplier) = match format {
             IndexToLocFormat::Short => (2, 2),
@@ -38,11 +48,11 @@ impl GlyphLocations {
 
         let required_length = entry_count
             .checked_mul(entry_size)
-            .ok_or_else(|| table_error(record.offset, "loca table is too large"))?;
+            .ok_or_else(|| table_error(table_offset, "loca table is too large"))?;
 
         if table.len() < required_length {
             return Err(table_error(
-                record.offset + table.len(),
+                table_offset + table.len(),
                 "truncated loca table",
             ));
         }
@@ -51,23 +61,23 @@ impl GlyphLocations {
 
         for index in 0..entry_count {
             let position = index * entry_size;
+
             let raw_offset = match format {
-                IndexToLocFormat::Short => usize::from(read_u16(table, position, record.offset)?),
-                IndexToLocFormat::Long => {
-                    usize::try_from(read_u32(table, position, record.offset)?).map_err(|_| {
-                        table_error(record.offset + position, "loca glyph offset is too large")
-                    })?
-                }
+                IndexToLocFormat::Short => usize::from(read_u16(table, position, table_offset)?),
+                IndexToLocFormat::Long => usize::try_from(read_u32(table, position, table_offset)?)
+                    .map_err(|_| {
+                        table_error(table_offset + position, "loca glyph offset is too large")
+                    })?,
             };
 
             let offset = raw_offset.checked_mul(multiplier).ok_or_else(|| {
-                table_error(record.offset + position, "loca glyph offset overflows")
+                table_error(table_offset + position, "loca glyph offset overflows")
             })?;
 
             if let Some(previous) = offsets.last() {
                 if offset < *previous {
                     return Err(table_error(
-                        record.offset + position,
+                        table_offset + position,
                         "loca offsets are not monotonically increasing",
                     ));
                 }

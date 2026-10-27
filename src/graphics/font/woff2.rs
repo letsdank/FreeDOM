@@ -3,11 +3,12 @@
 //! The decoder supports Brotli-compressed table data and reconstruction
 //! of transformed glyf and loca tables.
 //!
-//! Font collections and the hmtx table transform are not supported yet.
+//! Font collections are not supported yet.
 //!
 //! Specification: <https://www.w3.org/TR/WOFF2/>
 
 mod glyf;
+mod hmtx;
 
 use super::{
     brotli::decode_brotli,
@@ -254,18 +255,6 @@ fn split_table_data<'a>(
 
 pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
     let directory = parse_woff2_directory(data)?;
-
-    if directory
-        .tables
-        .iter()
-        .any(|table| table.transform == Woff2Transform::Hmtx)
-    {
-        return Err(error(
-            directory.compressed_data.start,
-            "WOFF2 hmtx transform is not supported yet",
-        ));
-    }
-
     let decoded_data = decode_table_data(data, &directory)?;
 
     let mut tables: Vec<_> = split_table_data(&decoded_data, &directory)?
@@ -274,6 +263,8 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
         .collect();
 
     reconstruct_transformed_glyf(&directory, &mut tables)?;
+    reconstruct_transformed_hmtx(&directory, &mut tables)?;
+
     tables.sort_by_key(|(tag, _)| tag.bytes());
 
     let table_count = tables.len();
@@ -405,6 +396,89 @@ fn reconstruct_transformed_glyf(
 
     tables[glyf_index].1 = glyf_data;
     tables[loca_index].1 = loca_data;
+
+    Ok(())
+}
+
+/// Reconstructs transformed hmtx after glyf and loca are available.
+fn reconstruct_transformed_hmtx(
+    directory: &Woff2Directory,
+    tables: &mut [(TableTag, Vec<u8>)],
+) -> Result<(), FontError> {
+    use super::{loca::GlyphLocations, truetype::IndexToLocFormat};
+
+    let Some(hmtx_index) = directory
+        .tables
+        .iter()
+        .position(|table| table.tag == TableTag::HMTX && table.transform == Woff2Transform::Hmtx)
+    else {
+        return Ok(());
+    };
+
+    let find = |tag, message| {
+        directory
+            .tables
+            .iter()
+            .position(|table| table.tag == tag)
+            .ok_or_else(|| error(0, message))
+    };
+
+    let head = find(TableTag::HEAD, "transformed WOFF2 hmtx is missing head")?;
+
+    let maxp = find(TableTag::MAXP, "transformed WOFF2 hmtx is missing maxp")?;
+
+    let hhea = find(TableTag::HHEA, "transformed WOFF2 hmtx is missing hhea")?;
+
+    let loca = find(TableTag::LOCA, "transformed WOFF2 hmtx is missing loca")?;
+
+    let glyf = find(TableTag::GLYF, "transformed WOFF2 hmtx is missing glyf")?;
+
+    let glyph_count = read_u16(&tables[maxp].1, 4, 0)?;
+    let metric_count = read_u16(&tables[hhea].1, 34, 0)?;
+
+    let format = match read_u16(&tables[head].1, 50, 0)? {
+        0 => IndexToLocFormat::Short,
+        1 => IndexToLocFormat::Long,
+        _ => return Err(error(50, "invalid indexToLocFormat value")),
+    };
+
+    let locations = GlyphLocations::parse_table(&tables[loca].1, format, glyph_count, 0)?;
+
+    let glyph_data = &tables[glyf].1;
+
+    if locations.final_offset() > glyph_data.len() {
+        return Err(error(0, "loca table points outside the glyf table"));
+    }
+
+    let mut x_mins = Vec::with_capacity(usize::from(glyph_count));
+
+    for glyph_id in 0..glyph_count {
+        let range = locations
+            .glyph_range(glyph_id)
+            .ok_or_else(|| error(usize::from(glyph_id), "missing glyph location"))?;
+
+        if range.is_empty() {
+            x_mins.push(0);
+            continue;
+        }
+
+        if range.len() < 10 {
+            return Err(error(range.start, "truncated glyph header"));
+        }
+
+        let x_min = super::reader::read_i16(glyph_data, range.start + 2, 0)?;
+
+        x_mins.push(x_min);
+    }
+
+    let restored = hmtx::reconstruct(
+        &tables[hmtx_index].1,
+        metric_count,
+        &x_mins,
+        directory.tables[hmtx_index].original_length,
+    )?;
+
+    tables[hmtx_index].1 = restored;
 
     Ok(())
 }
@@ -672,11 +746,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_hmtx_transform_before_decompression() {
+    fn rejects_invalid_hmtx_compressed_data() {
         let data = minimal_woff2(1, &[0x43, 4, 3], &[0x06]);
-        let error = decode_woff2(&data).unwrap_err();
 
-        assert_eq!(error.message, "WOFF2 hmtx transform is not supported yet");
+        assert!(decode_woff2(&data).is_err());
     }
 
     #[test]
@@ -1262,6 +1335,93 @@ mod tests {
 
         assert_eq!(bounds.min, Point::new(147.0, 694.0));
         assert_eq!(bounds.max, Point::new(1962.0, 971.0));
+    }
+
+    fn transformed_hmtx_fixture(transformed_glyf: bool) -> Vec<u8> {
+        let mut head = vec![0_u8; 54];
+        write_u16(&mut head, 50, 0).unwrap();
+
+        let mut maxp = vec![0_u8; 6];
+        write_u32(&mut maxp, 0, 0x0001_0000).unwrap();
+        write_u16(&mut maxp, 4, 2).unwrap();
+
+        let mut hhea = vec![0_u8; 36];
+        write_u16(&mut hhea, 34, 2).unwrap();
+
+        let mut raw = head;
+        raw.extend_from_slice(&maxp);
+        raw.extend_from_slice(&hhea);
+
+        let directory: Vec<u8>;
+
+        if transformed_glyf {
+            let mut glyf = vec![0_u8; 36];
+
+            write_u16(&mut glyf, 4, 2).unwrap();
+
+            let sizes = [4_u32, 1, 3, 5, 0, 4, 0];
+
+            for (index, size) in sizes.into_iter().enumerate() {
+                write_u32(&mut glyf, 8 + index * 4, size).unwrap();
+            }
+
+            glyf.extend_from_slice(&[
+                0, 0, 0, 1, // empty glyph, then one contour
+                3, // point count
+                11, 11, 86, // flags
+                10, 50, 24, 79, // coordinate data
+                0,  // instruction length
+                0, 0, 0, 0, // bbox bitmap
+            ]);
+
+            raw.extend_from_slice(&glyf);
+
+            // Both bearing arrays are omitted.
+            raw.extend_from_slice(&[3, 1, 244, 2, 88]);
+
+            directory = vec![
+                1, 54, // head
+                4, 6, // maxp
+                2, 36, // hhea
+                10, 20, 53, // transformed glyf
+                0x43, 8, 5, // transformed hmtx
+                11, 6, 0, // transformed loca
+            ];
+        } else {
+            // Both glyphs are empty.
+            raw.extend_from_slice(&[3, 1, 244, 2, 88]);
+            raw.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+
+            directory = vec![
+                1, 54, // head
+                4, 6, // maxp
+                2, 36, // hhea
+                0xca, 0, // untransformed empty glyf
+                0x43, 8, 5, // transformed hmtx
+                0xcb, 6, // untransformed loca
+            ];
+        }
+
+        minimal_woff2(6, &directory, &uncompressed_brotli(&raw))
+    }
+
+    #[test]
+    fn decodes_hmtx_with_transformed_and_untransformed_glyf() {
+        use crate::graphics::font::{hmtx::HorizontalMetrics, sfnt::SfntFont};
+
+        for (transformed, expected_lsb) in [(true, 10), (false, 0)] {
+            let data = transformed_hmtx_fixture(transformed);
+            let sfnt = decode_woff2(&data).unwrap();
+            let font = SfntFont::parse(&sfnt).unwrap();
+
+            let metrics = HorizontalMetrics::parse(&font, 2).unwrap();
+
+            assert_eq!(metrics.metric(0).unwrap().advance_width, 500);
+            assert_eq!(metrics.metric(0).unwrap().left_side_bearing, 0);
+
+            assert_eq!(metrics.metric(1).unwrap().advance_width, 600);
+            assert_eq!(metrics.metric(1).unwrap().left_side_bearing, expected_lsb);
+        }
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {
