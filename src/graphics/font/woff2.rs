@@ -248,13 +248,9 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
                 .ok_or_else(|| error(16, "WOFF2 SFNT output is too large"))
         })?;
 
-    if expected_sfnt_size != directory.total_sfnt_size {
-        return Err(error(
-            16,
-            "WOFF2 totalSfntSize does not match reconstructed tables",
-        ));
-    }
-
+    // WOFF 2.0 treats totalSfntSize as a reference value.
+    // Allocate using the reconstructed table sizes instead.
+    // See: https://www.w3.org/TR/WOFF2/#WOFF2Header
     let mut sfnt = vec![0_u8; expected_sfnt_size];
 
     write_u32(&mut sfnt, 0, directory.flavor)?;
@@ -623,6 +619,30 @@ mod tests {
 
         assert_eq!(sfnt_data.len(), 40);
         assert_eq!(font.table(TableTag::NAME), Some(&b"aaaaaaaaaaa"[..]));
+    }
+
+    #[test]
+    fn reconstructs_woff2_when_total_sfnt_size_differs() {
+        use crate::graphics::font::sfnt::SfntFont;
+
+        let compressed = uncompressed_brotli(b"abcd");
+
+        // The reconstructed SFNT occupies 32 bytes. The header value is
+        // deliberately varied to check that it is not used as an allocation size.
+        for declared_size in [0_u32, 16, 32, 40, u32::MAX] {
+            let mut data = minimal_woff2(1, &[5, 4], &compressed);
+            data[16..20].copy_from_slice(&declared_size.to_be_bytes());
+
+            let sfnt_data = decode_woff2(&data).unwrap();
+            let font = SfntFont::parse(&sfnt_data).unwrap();
+
+            assert_eq!(sfnt_data.len(), 32, "declared size: {declared_size}");
+            assert_eq!(
+                font.table(TableTag::NAME),
+                Some(&b"abcd"[..]),
+                "declared size: {declared_size}"
+            );
+        }
     }
 
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
