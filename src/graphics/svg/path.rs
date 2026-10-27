@@ -2,6 +2,7 @@
 //!
 //! Specification: <https://www.w3.org/TR/SVG2/paths.html>
 
+use super::number::{NumberErrorKind, parse_number};
 use crate::graphics::geometry::{Path, Point};
 use std::{error::Error, fmt};
 
@@ -350,71 +351,19 @@ impl<'a> PathDataParser<'a> {
     fn parse_number(&mut self) -> Result<f32, SvgPathError> {
         self.skip_separators();
 
-        let start = self.cursor;
+        match parse_number(self.input, &mut self.cursor) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if error.kind == NumberErrorKind::ExpectedNumber {
+                    self.cursor = error.offset;
+                }
 
-        if self
-            .peek_byte()
-            .is_some_and(|byte| byte == b'+' || byte == b'-')
-        {
-            self.cursor += 1;
-        }
-
-        let digits_before_dot = self.consume_digits();
-
-        if self.peek_byte() == Some(b'.') {
-            self.cursor += 1;
-        }
-
-        let digits_after_dot = self.consume_digits();
-
-        if !digits_before_dot && !digits_after_dot {
-            self.cursor = start;
-            return Err(self.error("expected a number"));
-        }
-
-        if self
-            .peek_byte()
-            .is_some_and(|byte| byte == b'e' || byte == b'E')
-        {
-            self.cursor += 1;
-
-            if self
-                .peek_byte()
-                .is_some_and(|byte| byte == b'+' || byte == b'-')
-            {
-                self.cursor += 1;
-            }
-
-            if !self.consume_digits() {
-                return Err(self.error("expected exponent digits"));
+                Err(SvgPathError {
+                    offset: error.offset,
+                    message: error.kind.parser_message().to_owned(),
+                })
             }
         }
-
-        let value = self.input[start..self.cursor]
-            .parse::<f32>()
-            .map_err(|_| SvgPathError {
-                offset: start,
-                message: "invalid number".to_owned(),
-            })?;
-
-        if !value.is_finite() {
-            return Err(SvgPathError {
-                offset: start,
-                message: "number must be finite".to_owned(),
-            });
-        }
-
-        Ok(value)
-    }
-
-    fn consume_digits(&mut self) -> bool {
-        let start = self.cursor;
-
-        while self.peek_byte().is_some_and(|byte| byte.is_ascii_digit()) {
-            self.cursor += 1;
-        }
-
-        self.cursor != start
     }
 
     fn has_number(&mut self) -> bool {
