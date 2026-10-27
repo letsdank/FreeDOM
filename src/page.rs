@@ -772,7 +772,6 @@ fn flush(blocks: &mut Vec<Block>, current: &mut String, style: TextStyle) {
 mod tests {
     use super::*;
     use crate::css::{FontStyle, FontWeight};
-    use crate::page_layout::PageLayout;
     use std::{
         io::{Read, Write},
         net::TcpListener,

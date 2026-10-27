@@ -6,6 +6,54 @@
 
 use super::CssDeclaration;
 
+/// Splits at commas outside quoted strings and balanced parentheses/brackets.
+///
+/// The caller must preprocess CSS input and handle comments first.
+pub(super) fn split_top_level_commas(source: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut closing_delimiters = Vec::new();
+    let mut characters = source.char_indices().peekable();
+
+    while let Some((index, character)) = characters.next() {
+        if character == '\\' {
+            characters.next();
+            continue;
+        }
+
+        if let Some(delimiter) = quote {
+            if character == delimiter {
+                quote = None;
+            }
+
+            continue;
+        }
+
+        match character {
+            '\'' | '"' => quote = Some(character),
+
+            '(' => closing_delimiters.push(')'),
+            '[' => closing_delimiters.push(']'),
+
+            ')' | ']' if closing_delimiters.last() == Some(&character) => {
+                closing_delimiters.pop();
+            }
+
+            ',' if closing_delimiters.is_empty() => {
+                parts.push(&source[start..index]);
+                start = index + 1;
+            }
+
+            _ => {}
+        }
+    }
+
+    parts.push(&source[start..]);
+
+    parts
+}
+
 pub(crate) fn parse_declaration_list(source: &str) -> Vec<CssDeclaration> {
     let normalized = super::preprocess_input(source);
     let source = normalized.as_str();
@@ -132,5 +180,17 @@ mod tests {
 
         assert_eq!(declarations[0].value, "'A\u{FFFD}B'");
         assert_eq!(declarations[1].name, "color");
+    }
+
+    #[test]
+    fn splits_only_top_level_unescaped_commas() {
+        use super::split_top_level_commas;
+
+        assert_eq!(
+            split_top_level_commas(r#".a\,b, :is(.c,.d), [data="x,y"], .end"#),
+            vec![r".a\,b", " :is(.c,.d)", r#" [data="x,y"]"#, " .end",]
+        );
+
+        assert_eq!(split_top_level_commas(r".a\\, .b"), vec![r".a\\", " .b"]);
     }
 }

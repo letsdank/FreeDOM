@@ -881,3 +881,29 @@ fn embedded_css_matches_escaped_class_name() {
 
     assert_eq!(document.shapes[0].fill, Some(Color::rgba(255, 0, 0, 255)));
 }
+
+#[test]
+fn embedded_css_selector_list_with_escaped_comma() {
+    let document = parse_svg(
+        r#"
+            <svg>
+                <style>
+                    .a\,b, .other { fill: red }
+                </style>
+                
+                <rect class="a,b" width="10" height="10"/>
+                <rect class="other" width="10" height="10"/>
+            </svg>
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(document.shapes.len(), 2);
+
+    assert!(
+        document
+            .shapes
+            .iter()
+            .all(|shape| shape.fill == Some(Color::rgba(255, 0, 0, 255)))
+    );
+}

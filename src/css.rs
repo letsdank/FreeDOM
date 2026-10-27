@@ -300,7 +300,7 @@ fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &m
 
         let declarations = parse_declaration_list(declaration_text);
 
-        for selector_text in selector_text.split(',') {
+        for selector_text in syntax::split_top_level_commas(selector_text) {
             let Some((selector, specificity)) = parse_selector(selector_text.trim()) else {
                 continue;
             };
@@ -900,5 +900,29 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
         assert_eq!(style.color, 0x00_00_80_00);
+    }
+
+    #[test]
+    fn selector_list_with_escaped_comma_matches_both_classes() {
+        let stylesheets = [r".hello\,world, .other { color: green }".to_owned()];
+
+        let rules = build_author_rules(&stylesheets);
+
+        assert_eq!(rules.len(), 2);
+
+        for class in ["hello,world", "other"] {
+            let classes = vec![class.to_owned()];
+
+            let element = Element {
+                tag: "p",
+                id: None,
+                classes: &classes,
+                inline_style: None,
+            };
+
+            let style = compute_style(&element, TextStyle::initial(), &rules);
+
+            assert_eq!(style.color, 0x00_00_80_00);
+        }
     }
 }
