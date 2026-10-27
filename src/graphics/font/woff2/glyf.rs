@@ -6,6 +6,7 @@ mod serialize;
 mod triplet;
 
 use super::super::{
+    glyf::GlyphBounds,
     reader::{FontReader, to_usize},
     sfnt::FontError,
 };
@@ -43,6 +44,14 @@ pub(super) struct OutlineCursors {
     pub points: usize,
     pub flags: usize,
     pub glyphs: usize,
+}
+
+/// Positions in the streams needed to reconstruct glyph records.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct GlyphCursors {
+    pub outline: OutlineCursors,
+    pub bbox: usize,
+    pub instructions: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -182,6 +191,106 @@ impl GlyfStreams<'_> {
             points,
         })
     }
+
+    /// Reconstructs one simple glyph as a TrueType glyph record.
+    ///
+    /// Stream positions are updated only after reconstruction succeeds.
+    pub(super) fn reconstruct_simple_glyph(
+        &self,
+        glyph_index: usize,
+        cursors: &mut GlyphCursors,
+    ) -> Result<Vec<u8>, FontError> {
+        let contour_count = self.contour_count(glyph_index)?;
+
+        if contour_count <= 0 {
+            return Err(error(glyph_index, "glyph is not a simple glyph"));
+        }
+
+        let mut next = *cursors;
+
+        let outline = self.read_simple_outline(contour_count as usize, &mut next.outline)?;
+
+        // The instruction legnth follows the point data in glyphStream.
+        let glyph_reader = FontReader::new(self.glyphs, 0);
+
+        let (instruction_length, used) = glyph_reader.u255_u16(next.outline.glyphs)?;
+        next.outline.glyphs += used;
+
+        let instructions = FontReader::new(self.instructions, 0)
+            .bytes(next.instructions, usize::from(instruction_length))?;
+        next.instructions += usize::from(instruction_length);
+
+        let bbox_explicit = bitmap_bit(self.bbox_bitmap, glyph_index)?;
+
+        let bounds = if bbox_explicit {
+            let bytes = FontReader::new(self.bbox_data, 0).bytes(next.bbox, 8)?;
+
+            let reader = FontReader::new(bytes, next.bbox);
+
+            let bounds = GlyphBounds {
+                x_min: reader.i16(0)?,
+                y_min: reader.i16(2)?,
+                x_max: reader.i16(4)?,
+                y_max: reader.i16(6)?,
+            };
+
+            next.bbox += 8;
+
+            bounds
+        } else {
+            outline_bounds(&outline)?
+        };
+
+        let overlap = match self.overlap_bitmap {
+            Some(bitmap) => bitmap_bit(bitmap, glyph_index)?,
+            None => false,
+        };
+
+        let glyph = outline.to_truetype(bounds, instructions, overlap)?;
+
+        *cursors = next;
+
+        Ok(glyph)
+    }
+}
+
+/// Reads a most-significant-bit-first glyph bitmap.
+fn bitmap_bit(bitmap: &[u8], glyph_index: usize) -> Result<bool, FontError> {
+    let byte = FontReader::new(bitmap, 0).u8(glyph_index / 8)?;
+    let mask = 0x80 >> (glyph_index % 8);
+
+    Ok(byte & mask != 0)
+}
+
+/// Computes a bounding box from all on-curve and off-curve points.
+fn outline_bounds(outline: &SimpleOutline) -> Result<GlyphBounds, FontError> {
+    let first = outline
+        .points
+        .first()
+        .ok_or_else(|| error(0, "simple glyph has no points"))?;
+
+    let mut x_min = first.x;
+    let mut y_min = first.y;
+    let mut x_max = first.x;
+    let mut y_max = first.y;
+
+    for point in &outline.points[1..] {
+        x_min = x_min.min(point.x);
+        y_min = y_min.min(point.y);
+        x_max = x_max.max(point.x);
+        y_max = y_max.max(point.y);
+    }
+
+    let convert = |value| {
+        i16::try_from(value).map_err(|_| error(0, "glyph bounding box coordinate out of range"))
+    };
+
+    Ok(GlyphBounds {
+        x_min: convert(x_min)?,
+        y_min: convert(y_min)?,
+        x_max: convert(x_max)?,
+        y_max: convert(y_max)?,
+    })
 }
 
 pub(super) fn parse(data: &[u8]) -> Result<GlyfStreams<'_>, FontError> {
@@ -285,6 +394,7 @@ fn error(offset: usize, message: &str) -> FontError {
 mod tests {
     use super::super::super::reader::{write_u16, write_u32};
     use super::*;
+    use crate::graphics::font::glyf::Glyph;
 
     fn sample(overlap: bool) -> Vec<u8> {
         let mut data = vec![0_u8; 36];
@@ -538,6 +648,103 @@ mod tests {
         assert_eq!(cursors, OutlineCursors::default());
     }
 
+    #[test]
+    fn reconstructs_bounds_instructions_and_overlap() {
+        use crate::graphics::font::glyf::{Glyph, parse_glyph};
+
+        let cases = [
+            (
+                false,
+                false,
+                GlyphBounds {
+                    x_min: 0,
+                    y_min: 0,
+                    x_max: 50,
+                    y_max: 80,
+                },
+            ),
+            (
+                true,
+                true,
+                GlyphBounds {
+                    x_min: -10,
+                    y_min: -20,
+                    x_max: 60,
+                    y_max: 100,
+                },
+            ),
+        ];
+
+        for (explicit_bbox, overlap, expected_bounds) in cases {
+            let data = simple_fixture(explicit_bbox, overlap);
+            let streams = parse(&data).unwrap();
+            let mut cursors = GlyphCursors::default();
+
+            let bytes = streams.reconstruct_simple_glyph(0, &mut cursors).unwrap();
+
+            // Instruction length followed by instruction bytes.
+            assert_eq!(&bytes[12..16], &[0, 2, 0xaa, 0xbb]);
+
+            // OVERLAP_SIMPLE is stored in the first point flag.
+            assert_eq!(bytes[16] & 0x40 != 0, overlap);
+
+            let Glyph::Simple(glyph) = parse_glyph(&bytes, 0).unwrap() else {
+                panic!("expected a simple glyph");
+            };
+
+            assert_eq!(glyph.bounds, expected_bounds);
+
+            assert_eq!(
+                cursors,
+                GlyphCursors {
+                    outline: OutlineCursors {
+                        points: 1,
+                        flags: 3,
+                        glyphs: 5,
+                    },
+                    bbox: if explicit_bbox { 8 } else { 0 },
+                    instructions: 2,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn reconstruction_does_not_advance_cursors_on_error() {
+        let data = simple_fixture(true, true);
+        let mut cursors = GlyphCursors::default();
+
+        let mut missing_instructions = parse(&data).unwrap();
+        missing_instructions.instructions = &[];
+
+        assert!(
+            missing_instructions
+                .reconstruct_simple_glyph(0, &mut cursors)
+                .is_err(),
+        );
+
+        assert_eq!(cursors, GlyphCursors::default());
+
+        let mut missing_bbox = parse(&data).unwrap();
+        missing_bbox.bbox_data = &[];
+
+        assert!(
+            missing_bbox
+                .reconstruct_simple_glyph(0, &mut cursors)
+                .is_err()
+        );
+
+        assert_eq!(cursors, GlyphCursors::default());
+
+        assert!(
+            missing_bbox
+                .reconstruct_simple_glyph(1, &mut cursors)
+                .is_err()
+        );
+
+        assert_eq!(cursors, GlyphCursors::default());
+    }
+
     fn outline_streams<'a>(points: &'a [u8], flags: &'a [u8], glyphs: &'a [u8]) -> GlyfStreams<'a> {
         GlyfStreams {
             num_glyphs: 0,
@@ -552,5 +759,42 @@ mod tests {
             instructions: &[],
             overlap_bitmap: None,
         }
+    }
+
+    fn simple_fixture(explicit_bbox: bool, overlap: bool) -> Vec<u8> {
+        let mut data = vec![0_u8; 36];
+
+        write_u16(&mut data, 2, u16::from(overlap)).unwrap();
+        write_u16(&mut data, 4, 1).unwrap();
+
+        let bbox_size = if explicit_bbox { 12 } else { 4 };
+        let sizes = [2_u32, 1, 3, 5, 0, bbox_size, 2];
+
+        for (index, size) in sizes.into_iter().enumerate() {
+            write_u32(&mut data, 8 + index * 4, size).unwrap();
+        }
+
+        data.extend_from_slice(&[
+            0, 1, // one contour
+            3, // three points
+            1, 11, 86, // point flags
+            0, 50, 24, 79, // coordinates
+            2,  // instruction length
+        ]);
+
+        data.extend_from_slice(&[if explicit_bbox { 0x80 } else { 0 }, 0, 0, 0]);
+
+        if explicit_bbox {
+            // xMin = -10, yMin = -20, xMax = 60, yMax = 100.
+            data.extend_from_slice(&[0xff, 0xf6, 0xff, 0xec, 0x00, 60, 0x00, 100]);
+        }
+
+        data.extend_from_slice(&[0xaa, 0xbb]);
+
+        if overlap {
+            data.push(0x80);
+        }
+
+        data
     }
 }
