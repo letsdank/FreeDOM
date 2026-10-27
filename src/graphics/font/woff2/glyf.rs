@@ -2,6 +2,7 @@
 //!
 //! Specification: <https://www.w3.org/TR/WOFF2/#glyf_table_format>
 
+mod composite;
 mod serialize;
 mod triplet;
 
@@ -36,6 +37,14 @@ pub(super) struct PointDelta {
     pub dx: i32,
     pub dy: i32,
     pub on_curve: bool,
+}
+
+/// Component records belonging to one composite glyph.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct CompositeComponents<'a> {
+    pub bytes: &'a [u8],
+    pub has_instructions: bool,
+    pub last_flags_offset: usize,
 }
 
 /// Current positions in the streams used to decode a simple outline.
@@ -283,6 +292,20 @@ impl GlyfStreams<'_> {
                 "WOFF2 composite glyphs are not supported yet",
             )),
         }
+    }
+
+    /// Reads a composite glyph's component records.
+    ///
+    /// The cursor remains unchanged if any component is invalid.
+    pub(super) fn read_components(
+        &self,
+        cursor: &mut usize,
+    ) -> Result<CompositeComponents<'_>, FontError> {
+        let (components, length) = composite::read(self.composites, *cursor, self.num_glyphs)?;
+
+        *cursor += length;
+
+        Ok(components)
     }
 }
 
@@ -832,6 +855,31 @@ mod tests {
         );
 
         assert_eq!(cursors, GlyphCursors::default());
+    }
+
+    #[test]
+    fn reads_composite_stream_transactionally() {
+        let data = simple_fixture(false, false);
+        let mut streams = parse(&data).unwrap();
+
+        let components = [
+            0xee, // unrelated prefix
+            0, 2, // flags
+            0, 0, // glyph ID
+            0, 0, // arguments
+        ];
+
+        streams.composites = &components;
+
+        let mut cursor = 1;
+        let result = streams.read_components(&mut cursor).unwrap();
+
+        assert_eq!(result.bytes, &components[1..]);
+        assert!(!result.has_instructions);
+        assert_eq!(cursor, 7);
+
+        assert!(streams.read_components(&mut cursor).is_err());
+        assert_eq!(cursor, 7);
     }
 
     fn outline_streams<'a>(points: &'a [u8], flags: &'a [u8], glyphs: &'a [u8]) -> GlyfStreams<'a> {
