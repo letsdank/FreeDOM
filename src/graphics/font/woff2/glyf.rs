@@ -1240,7 +1240,7 @@ mod tests {
     fn reconstructs_short_and_long_glyf_loca_tables() {
         use crate::graphics::font::glyf::parse_glyph;
 
-        let cases = [(0, 8, vec![0, 0, 30, 50]), (1, 16, vec![0, 0, 29, 49])];
+        let cases = [(0, 8, vec![0, 0, 20, 40]), (1, 16, vec![0, 0, 20, 40])];
 
         for (format, loca_size, expected_offsets) in cases {
             let (glyf, loca) = table_fixture(format).reconstruct_tables(loca_size).unwrap();
@@ -1298,5 +1298,33 @@ mod tests {
 
         // Failed writes must not modify the output.
         assert_eq!(loca, [0xff, 0xff]);
+    }
+
+    #[test]
+    fn pads_odd_glyph_for_short_loca() {
+        let mut streams = table_fixture(0);
+
+        streams.num_glyphs = 1;
+        streams.contours = &[0, 1];
+        streams.points = &[1];
+        streams.flags = &[1];
+        streams.glyphs = &[0, 0];
+        streams.composites = &[];
+        streams.bbox_bitmap = &[0, 0, 0, 0];
+        streams.bbox_data = &[];
+        streams.instructions = &[];
+
+        let (glyf, loca) = streams.reconstruct_tables(4).unwrap();
+
+        assert_eq!(glyf.len(), 16);
+        assert_eq!(glyf[15], 0);
+        assert_eq!(loca, [0, 0, 0, 8]);
+
+        streams.index_format = 1;
+
+        let (glyf, loca) = streams.reconstruct_tables(8).unwrap();
+
+        assert_eq!(glyf.len(), 15);
+        assert_eq!(loca, [0, 0, 0, 0, 0, 0, 0, 15]);
     }
 }

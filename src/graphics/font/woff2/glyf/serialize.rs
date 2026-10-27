@@ -7,12 +7,14 @@ use super::super::super::glyf::GlyphBounds;
 use super::{FontError, SimpleOutline, error};
 
 const ON_CURVE_POINT: u8 = 0x01;
+const X_SHORT_VECTOR: u8 = 0x02;
+const Y_SHORT_VECTOR: u8 = 0x04;
+const REPEAT_FLAG: u8 = 0x08;
+const X_IS_SAME_OR_POSITIVE: u8 = 0x10;
+const Y_IS_SAME_OR_POSITIVE: u8 = 0x20;
 const OVERLAP_SIMPLE: u8 = 0x40;
 
 /// Serializes a simple outline as a TrueType glyph record.
-///
-/// This initial implementation writes every coordinate delta as a signed
-/// 16-bit value and does not compress repeated flags.
 pub(super) fn simple_glyph(
     outline: &SimpleOutline,
     bounds: GlyphBounds,
@@ -71,10 +73,23 @@ pub(super) fn simple_glyph(
             flag |= OVERLAP_SIMPLE;
         }
 
-        flags.push(flag);
+        encode_delta(
+            dx,
+            X_SHORT_VECTOR,
+            X_IS_SAME_OR_POSITIVE,
+            &mut flag,
+            &mut x_coordinates,
+        );
 
-        x_coordinates.extend_from_slice(&dx.to_be_bytes());
-        y_coordinates.extend_from_slice(&dy.to_be_bytes());
+        encode_delta(
+            dy,
+            Y_SHORT_VECTOR,
+            Y_IS_SAME_OR_POSITIVE,
+            &mut flag,
+            &mut y_coordinates,
+        );
+
+        flags.push(flag);
 
         previous_x = point.x;
         previous_y = point.y;
@@ -98,11 +113,64 @@ pub(super) fn simple_glyph(
     result.extend_from_slice(instructions);
 
     // TrueType stores flags, all X deltas, then all Y deltas.
-    result.extend_from_slice(&flags);
+    write_flags(&flags, &mut result);
     result.extend_from_slice(&x_coordinates);
     result.extend_from_slice(&y_coordinates);
 
     Ok(result)
+}
+
+/// Encodes one TrueType coordinate delta and updates its point flag.
+fn encode_delta(
+    delta: i16,
+    short_flag: u8,
+    same_or_positive_flag: u8,
+    flag: &mut u8,
+    output: &mut Vec<u8>,
+) {
+    match delta {
+        0 => {
+            *flag |= same_or_positive_flag;
+        }
+
+        1..=255 => {
+            *flag |= short_flag | same_or_positive_flag;
+            output.push(delta as u8);
+        }
+
+        -255..=-1 => {
+            *flag |= short_flag;
+            output.push((-delta) as u8);
+        }
+
+        _ => {
+            output.extend_from_slice(&delta.to_be_bytes());
+        }
+    }
+}
+
+/// Writes runs of identical TrueType point flags.
+fn write_flags(flags: &[u8], output: &mut Vec<u8>) {
+    let mut index = 0;
+
+    while index < flags.len() {
+        let flag = flags[index];
+        let mut run = 1_usize;
+
+        // The repeat byte stores the number of additional flags.
+        while run < 256 && flags.get(index + run) == Some(&flag) {
+            run += 1;
+        }
+
+        if run > 1 {
+            output.push(flag | REPEAT_FLAG);
+            output.push((run - 1) as u8);
+        } else {
+            output.push(flag);
+        }
+
+        index += run;
+    }
 }
 
 #[cfg(test)]
@@ -298,5 +366,64 @@ mod tests {
                 .message,
             "glyph instructions are too long"
         );
+    }
+
+    #[test]
+    fn encodes_coordinate_delta_boundaries() {
+        let cases: &[(i16, u8, &[u8])] = &[
+            (0, 0x10, &[]),
+            (1, 0x12, &[1]),
+            (255, 0x12, &[255]),
+            (-1, 0x02, &[1]),
+            (-255, 0x02, &[255]),
+            (256, 0, &[1, 0]),
+            (-256, 0, &[0xff, 0]),
+            (i16::MIN, 0, &[0x80, 0]),
+            (i16::MAX, 0, &[0x7f, 0xff]),
+        ];
+
+        for &(delta, expected_flag, expected_bytes) in cases {
+            let mut flag = 0;
+            let mut output = Vec::new();
+
+            encode_delta(
+                delta,
+                X_SHORT_VECTOR,
+                X_IS_SAME_OR_POSITIVE,
+                &mut flag,
+                &mut output,
+            );
+
+            assert_eq!(flag, expected_flag, "delta {delta}");
+            assert_eq!(output, expected_bytes, "delta {delta}");
+        }
+    }
+
+    #[test]
+    fn compresses_long_flag_runs_and_parses_the_result() {
+        let outline = SimpleOutline {
+            contour_ends: vec![599],
+            points: (1..=600)
+                .map(|x| OutlinePoint {
+                    x,
+                    y: 0,
+                    on_curve: true,
+                })
+                .collect(),
+        };
+
+        let bounds = GlyphBounds {
+            x_min: 1,
+            y_min: 0,
+            x_max: 600,
+            y_max: 0,
+        };
+
+        let data = outline.to_truetype(bounds, &[], false).unwrap();
+
+        // Three runs: 256, 256, and 88 identical flags.
+        assert_eq!(&data[14..20], &[0x3b, 255, 0x3b, 255, 0x3b, 87]);
+        assert_eq!(data.len(), 14 + 6 + 600);
+        assert!(matches!(parse_glyph(&data, 0).unwrap(), Glyph::Simple(_)));
     }
 }
