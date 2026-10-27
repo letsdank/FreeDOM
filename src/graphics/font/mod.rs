@@ -8,7 +8,7 @@
 //! - WOFF 1.0: <https://www.w3.org/TR/WOFF/>
 //! - WOFF 2.0: <https://www.w3.org/TR/WOFF2/>
 //! - OpenType: <https://learn.microsoft.com/en-us/typography/opentype/spec/>
-pub mod brotli;
+mod brotli;
 pub mod cmap;
 pub mod glyf;
 pub mod gpos;
@@ -20,8 +20,8 @@ pub(crate) mod reader;
 pub mod render;
 pub mod sfnt;
 pub mod truetype;
-pub mod woff;
-pub mod woff2;
+mod woff;
+mod woff2;
 
 pub(crate) use self::{
     layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont,
