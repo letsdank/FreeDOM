@@ -3,9 +3,11 @@
 //! Syntax: <https://www.w3.org/TR/css-syntax-3/>
 //! Cascade: <https://www.w3.org/TR/css-cascade-4/>
 
+mod comments;
 mod input;
 mod syntax;
 
+use self::comments::remove_css_comments;
 pub(crate) use self::input::preprocess_input;
 pub(crate) use self::syntax::parse_declaration_list;
 
@@ -311,30 +313,6 @@ fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &m
             *source_order += 1;
         }
     }
-}
-
-fn remove_css_comments(source: &str) -> String {
-    let mut output = String::new();
-    let mut remaining = source;
-
-    loop {
-        let Some(comment_start) = remaining.find("/*") else {
-            output.push_str(remaining);
-            break;
-        };
-
-        output.push_str(&remaining[..comment_start]);
-
-        let after_start = &remaining[comment_start + 2..];
-
-        let Some(comment_end) = after_start.find("*/") else {
-            break;
-        };
-
-        remaining = &after_start[comment_end + 2..];
-    }
-
-    output
 }
 
 fn parse_selector(input: &str) -> Option<(Selector, u16)> {
@@ -875,5 +853,24 @@ mod tests {
         assert_eq!(parsed.color, Some(0x00_00_80_00));
         assert_eq!(parsed.font_weight, Some(FontWeight::Bold));
         assert!(matches!(parsed.display, Some(Display::Block)));
+    }
+
+    #[test]
+    fn stylesheet_preserves_comments_in_quoted_font_family() {
+        let stylesheets = ["/* note */ p { font-family: 'A/*B*/C'; color: green; }".to_owned()];
+
+        let rules = build_author_rules(&stylesheets);
+
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(style.font_family.as_deref(), Some("A/*B*/C"));
+        assert_eq!(style.color, 0x00_00_80_00);
     }
 }
