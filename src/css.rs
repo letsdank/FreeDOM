@@ -9,7 +9,7 @@ mod input;
 mod syntax;
 
 use self::comments::remove_css_comments;
-use self::ident::is_unescaped_identifier;
+use self::ident::consume_identifier;
 pub(crate) use self::input::preprocess_input;
 pub(crate) use self::syntax::parse_declaration_list;
 
@@ -320,11 +320,7 @@ fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &m
 fn parse_selector(input: &str) -> Option<(Selector, u16)> {
     let input = input.trim();
 
-    if input.is_empty()
-        || input
-            .chars()
-            .any(|character| character.is_ascii_whitespace())
-    {
+    if input.is_empty() {
         return None;
     }
 
@@ -355,7 +351,7 @@ fn parse_selector(input: &str) -> Option<(Selector, u16)> {
                     return None;
                 }
 
-                selector.id = Some(id.to_owned());
+                selector.id = Some(id);
                 specificity = specificity.saturating_add(100);
                 remaining = tail;
             }
@@ -363,7 +359,7 @@ fn parse_selector(input: &str) -> Option<(Selector, u16)> {
             b'.' => {
                 let (class, tail) = take_css_identifier(&remaining[1..])?;
 
-                selector.classes.push(class.to_owned());
+                selector.classes.push(class);
                 specificity = specificity.saturating_add(10);
                 remaining = tail;
             }
@@ -389,14 +385,8 @@ fn parse_selector(input: &str) -> Option<(Selector, u16)> {
     .then_some((selector, specificity))
 }
 
-fn take_css_identifier(input: &str) -> Option<(&str, &str)> {
-    let boundary = input
-        .find(|character| matches!(character, '.' | '#'))
-        .unwrap_or(input.len());
-
-    let identifier = &input[..boundary];
-
-    is_unescaped_identifier(identifier).then_some((identifier, &input[boundary..]))
+fn take_css_identifier(input: &str) -> Option<(String, &str)> {
+    consume_identifier(input)
 }
 
 fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
@@ -878,6 +868,27 @@ mod tests {
         assert_eq!(rules.len(), 1);
 
         let classes = vec!["💡".to_owned()];
+
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(style.color, 0x00_00_80_00);
+    }
+
+    #[test]
+    fn selector_decodes_escaped_class_name() {
+        let stylesheets = [r".\31 23 { color: green }".to_owned()];
+        let rules = build_author_rules(&stylesheets);
+
+        assert_eq!(rules.len(), 1);
+
+        let classes = vec!["123".to_owned()];
 
         let element = Element {
             tag: "p",

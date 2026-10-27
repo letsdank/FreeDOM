@@ -866,3 +866,18 @@ fn semicolon_inside_css_string_does_not_create_a_fill_declaration() {
 
     assert_eq!(document.shapes[0].fill, Some(Color::rgba(255, 0, 0, 255)));
 }
+
+#[test]
+fn embedded_css_matches_escaped_class_name() {
+    let document = parse_svg(
+        r#"
+            <svg>
+                <style>.\31 23 { fill: red }</style>
+                <rect class="123" width="10" height="10"/>
+            </svg>
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(document.shapes[0].fill, Some(Color::rgba(255, 0, 0, 255)));
+}
