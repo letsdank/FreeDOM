@@ -2,6 +2,8 @@
 //!
 //! Specification: <https://www.w3.org/TR/WOFF2/#glyf_table_format>
 
+mod triplet;
+
 use super::super::{
     reader::{FontReader, to_usize},
     sfnt::FontError,
@@ -26,6 +28,14 @@ pub(super) struct GlyfStreams<'a> {
     pub overlap_bitmap: Option<&'a [u8]>,
 }
 
+/// A point encoded as a delta from the preceding point.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct PointDelta {
+    pub dx: i32,
+    pub dy: i32,
+    pub on_curve: bool,
+}
+
 impl GlyfStreams<'_> {
     /// Reads the signed contour count for a glyph.
     pub(super) fn contour_count(&self, glyph_index: usize) -> Result<i16, FontError> {
@@ -48,6 +58,24 @@ impl GlyfStreams<'_> {
         *cursor += length;
 
         Ok(count)
+    }
+
+    /// Reads one point from the flags and glyph streams.
+    ///
+    /// Both cursors remain unchanged if the point data is truncated.
+    pub(super) fn read_point(
+        &self,
+        flag_cursor: &mut usize,
+        glyph_cursor: &mut usize,
+    ) -> Result<PointDelta, FontError> {
+        let flag = FontReader::new(self.flags, 0).u8(*flag_cursor)?;
+
+        let (point, length) = triplet::decode(flag, self.glyphs, *glyph_cursor)?;
+
+        *flag_cursor += 1;
+        *glyph_cursor += length;
+
+        Ok(point)
     }
 }
 
@@ -271,5 +299,38 @@ mod tests {
 
         assert!(streams.read_point_count(&mut cursor).is_err());
         assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn reads_point_from_streams_without_advancing_on_error() {
+        let data = sample(false);
+        let streams = parse(&data).unwrap();
+
+        let mut flag_cursor = 0;
+        let mut glyph_cursor = 0;
+
+        let point = streams
+            .read_point(&mut flag_cursor, &mut glyph_cursor)
+            .unwrap();
+
+        assert_eq!(
+            point,
+            PointDelta {
+                dx: 0,
+                dy: 3,
+                on_curve: true,
+            }
+        );
+
+        assert_eq!((flag_cursor, glyph_cursor), (1, 1));
+
+        // The second flag exists, but its coordinate byte is missing.
+        assert!(
+            streams
+                .read_point(&mut flag_cursor, &mut glyph_cursor)
+                .is_err()
+        );
+
+        assert_eq!((flag_cursor, glyph_cursor), (1, 1));
     }
 }
