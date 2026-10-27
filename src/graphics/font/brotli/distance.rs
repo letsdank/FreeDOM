@@ -1,6 +1,6 @@
 //! Brotli backward-distance history.
 //!
-//! Specification: RFC 7392, section 4.
+//! Specification: RFC 7932, section 4.
 //! <https://www.rfc-editor.org/rfc/rfc7932.html#section-4>
 
 use super::{BitReader, FontError, error};

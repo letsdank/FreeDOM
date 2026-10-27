@@ -10,6 +10,7 @@ use super::block::{BlockPartition, read_block_partition};
 use super::command::{InsertCopyCommand, read_insert_copy_command};
 use super::context::{LiteralContextMode, distance_context_id, literal_context_id};
 use super::{BitReader, FontError, HuffmanTree, error, read_block_type_count, read_prefix_code};
+use crate::graphics::font::brotli::distance::{DistanceHistory, read_distance};
 
 const LITERAL_ALPHABET_SIZE: usize = 256;
 const COMMAND_ALPHABET_SIZE: usize = 704;
@@ -237,13 +238,15 @@ pub(super) fn read_compressed_meta_block_header_prefix(
     })
 }
 
-/// Decodes a compressed meta-block that finishes with literal insertion.
+/// Decodes a compressed Brotli meta-block.
 ///
-/// Backward copies and static dictionary references are not supported yet.
-pub(super) fn decode_literal_only_meta_block(
+/// Static dictionary references are not supported yet.
+pub(super) fn decode_compressed_meta_block(
     reader: &mut BitReader<'_>,
     output: &mut Vec<u8>,
     block_length: usize,
+    window_size: usize,
+    history: &mut DistanceHistory,
 ) -> Result<(), FontError> {
     let block_end = output
         .len()
@@ -276,14 +279,48 @@ pub(super) fn decode_literal_only_meta_block(
             output.push(literal);
         }
 
+        // The final command can end after its literals.
         if output.len() == block_end {
             return Ok(());
         }
 
-        return Err(error(
-            reader.bit_position(),
-            "Brotli backward copies and dictionary are not supported yet",
-        ));
+        if command.copy_length > block_end - output.len() {
+            return Err(error(
+                reader.bit_position(),
+                "Brotli backward copy exceeds the meta-block length",
+            ));
+        }
+
+        let symbol = if command.implicit_distance {
+            0
+        } else {
+            header.read_distance_symbol(reader, command.copy_length)?
+        };
+
+        let distance = read_distance(
+            reader,
+            symbol,
+            header.distance_postfix_bits,
+            header.direct_distance_code_count,
+            history,
+        )?;
+
+        let maximum_backward_distance = output.len().min(window_size);
+
+        if distance > maximum_backward_distance {
+            return Err(error(
+                reader.bit_position(),
+                "Brotli static dictionary references are not supported yet",
+            ));
+        }
+
+        history.record(symbol, distance, false, reader.bit_position())?;
+
+        // The source can overlap the bytes being appended.
+        for _ in 0..command.copy_length {
+            let byte = output[output.len() - distance];
+            output.push(byte);
+        }
     }
 
     Ok(())

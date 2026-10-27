@@ -385,6 +385,40 @@ fn rejects_invalid_or_truncated_brotli_commands() {
     assert!(read_insert_copy_command(&mut reader, 703).is_err());
 }
 
+#[test]
+fn copies_bytes_from_a_previous_meta_block() {
+    // Independently verified with libbrotlidec.
+    let stream = [
+        0x30, 0x00, 0x10, b'a', b'b', b'c', b'd', 0x11, 0x00, 0x00, 0x00, 0x22, 0x2c, 0x00, 0x08,
+        0x00,
+    ];
+
+    assert_eq!(decode_brotli(&stream, 6).unwrap(), b"abcdab");
+}
+
+#[test]
+fn copies_overlapping_brotli_data() {
+    // Independently verified with libbrotlidec.
+    let stream = [0x42, 0x01, 0x00, 0x04, 0x44, 0x58, 0x20, 0x13, 0x10];
+
+    assert_eq!(decode_brotli(&stream, 11).unwrap(), b"aaaaaaaaaaa");
+}
+
+#[test]
+fn rejects_a_copy_that_exceeds_the_meta_block_length() {
+    let stream = [
+        0x30, 0x00, 0x10, b'a', b'b', b'c', b'd', 0x01, 0x00, 0x00, 0x00, 0x22, 0x2c, 0x00, 0x08,
+        0x00,
+    ];
+
+    let error = decode_brotli(&stream, 6).unwrap_err();
+
+    assert_eq!(
+        error.message,
+        "Brotli backward copy exceeds the meta-block length",
+    );
+}
+
 pub(super) fn append_bits(
     data: &mut Vec<u8>,
     bit_position: &mut usize,

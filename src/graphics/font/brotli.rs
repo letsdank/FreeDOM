@@ -16,7 +16,8 @@ mod huffman;
 mod prefix_code;
 
 pub use self::bit_reader::BitReader;
-use self::compressed::decode_literal_only_meta_block;
+use self::compressed::decode_compressed_meta_block;
+use self::distance::DistanceHistory;
 pub use self::huffman::HuffmanTree;
 pub use self::prefix_code::{read_prefix_code, read_simple_prefix_code};
 
@@ -33,8 +34,10 @@ use super::sfnt::FontError;
 
 pub fn decode_brotli(data: &[u8], maximum_output_size: usize) -> Result<Vec<u8>, FontError> {
     let mut reader = BitReader::new(data);
-    let _window_bits = read_window_bits(&mut reader)?;
+    let window_bits = read_window_bits(&mut reader)?;
+    let window_size = (1_usize << window_bits) - 16;
     let mut output = Vec::new();
+    let mut distance_history = DistanceHistory::new();
 
     loop {
         let is_last = reader.read_bit()?;
@@ -85,7 +88,13 @@ pub fn decode_brotli(data: &[u8], maximum_output_size: usize) -> Result<Vec<u8>,
             consume_zero_padding(&mut reader)?;
             output.extend_from_slice(reader.read_aligned_bytes(output_length)?);
         } else {
-            decode_literal_only_meta_block(&mut reader, &mut output, output_length)?;
+            decode_compressed_meta_block(
+                &mut reader,
+                &mut output,
+                output_length,
+                window_size,
+                &mut distance_history,
+            )?;
         }
 
         if is_last {
