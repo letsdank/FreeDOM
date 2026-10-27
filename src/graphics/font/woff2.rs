@@ -29,7 +29,7 @@ const KNOWN_TABLE_TAGS: [[u8; 4]; 63] = [
     *b"fpgm", *b"glyf", *b"loca", *b"prep", *b"CFF ", *b"VORG", *b"EBDT", *b"EBLC", *b"gasp",
     *b"hdmx", *b"kern", *b"LTSH", *b"PCLT", *b"VDMX", *b"vhea", *b"vmtx", *b"BASE", *b"GDEF",
     *b"GPOS", *b"GSUB", *b"EBSC", *b"JSTF", *b"MATH", *b"CBDT", *b"CBLC", *b"COLR", *b"CPAL",
-    *b"SVG ", *b"sbix", *b"acnt", *b"avar", *b"bdat", *b"bloc", *b"bsln", *b"cvar", *b"cvt ",
+    *b"SVG ", *b"sbix", *b"acnt", *b"avar", *b"bdat", *b"bloc", *b"bsln", *b"cvar", *b"fdsc",
     *b"feat", *b"fmtx", *b"fvar", *b"gvar", *b"hsty", *b"just", *b"lcar", *b"mort", *b"morx",
     *b"opbd", *b"prop", *b"trak", *b"Zapf", *b"Silf", *b"Glat", *b"Gloc", *b"Feat", *b"Sill",
 ];
@@ -594,6 +594,35 @@ mod tests {
             error.message,
             "WOFF2 table transforms are not supported yet"
         );
+    }
+
+    #[test]
+    fn parses_distinct_cvt_and_fdsc_known_tags() {
+        // Known tag indexes 8 and 44.
+        let data = minimal_woff2(2, &[8, 4, 44, 4], &[0]);
+        let directory = parse_woff2_directory(&data).unwrap();
+
+        assert_eq!(directory.tables[0].tag.bytes(), *b"cvt ");
+        assert_eq!(directory.tables[1].tag.bytes(), *b"fdsc");
+    }
+
+    #[test]
+    fn reconstructs_woff2_table_from_compressed_brotli() {
+        use crate::graphics::font::sfnt::SfntFont;
+
+        // Brotli stream producing eleven 'a' bytes using an overlapping copy.
+        // The stream was independently verified with libbrolidec.
+        let compressed = [0x42, 0x01, 0x00, 0x04, 0x44, 0x58, 0x20, 0x13, 0x10];
+
+        // One untransformed `name` table containing eleven bytes.
+        let mut data = minimal_woff2(1, &[5, 11], &compressed);
+        data[16..20].copy_from_slice(&40_u32.to_be_bytes());
+
+        let sfnt_data = decode_woff2(&data).unwrap();
+        let font = SfntFont::parse(&sfnt_data).unwrap();
+
+        assert_eq!(sfnt_data.len(), 40);
+        assert_eq!(font.table(TableTag::NAME), Some(&b"aaaaaaaaaaa"[..]));
     }
 
     fn minimal_woff2(table_count: u16, directory: &[u8], compressed: &[u8]) -> Vec<u8> {
