@@ -43,6 +43,33 @@ impl<'a> FontReader<'a> {
         Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    /// Reads a WOFF2 255UInt16 value and returns its encoded length.
+    ///
+    /// Specification: WOFF 2.0, section 3.1.
+    /// <https://www.w3.org/TR/WOFF2/>
+    pub(crate) fn u255_u16(&self, offset: usize) -> Result<(u16, usize), FontError> {
+        let code = self.u8(offset)?;
+
+        match code {
+            0..=252 => Ok((u16::from(code), 1)),
+
+            253 => {
+                let bytes = self.bytes(offset, 3)?;
+                let value = u16::from_be_bytes([bytes[1], bytes[2]]);
+
+                Ok((value, 3))
+            }
+
+            254 | 255 => {
+                let bytes = self.bytes(offset, 2)?;
+
+                let base = if code == 254 { 506_u16 } else { 253_u16 };
+
+                Ok((base + u16::from(bytes[1]), 2))
+            }
+        }
+    }
+
     fn error(&self, offset: usize, message: impl Into<String>) -> FontError {
         FontError {
             offset: self.base_offset.saturating_add(offset),
@@ -184,5 +211,42 @@ mod tests {
         write_u32(&mut data, 2, 0xabcd_ef01).unwrap();
 
         assert_eq!(data, [0x12, 0x34, 0xab, 0xcd, 0xef, 0x01]);
+    }
+
+    #[test]
+    fn reads_woff2_255_u16_values() {
+        let cases: &[(&[u8], u16, usize)] = &[
+            (&[0], 0, 1),
+            (&[252], 252, 1),
+            (&[255, 0], 253, 2),
+            (&[255, 253], 506, 2),
+            (&[254, 0], 506, 2),
+            (&[253, 1, 250], 506, 3),
+            (&[254, 255], 761, 2),
+            (&[253, 255, 255], 65535, 3),
+        ];
+
+        for &(bytes, expected, length) in cases {
+            let reader = FontReader::new(bytes, 0);
+
+            assert_eq!(
+                reader.u255_u16(0).unwrap(),
+                (expected, length),
+                "input: {bytes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_woff2_255_u16() {
+        let cases: &[&[u8]] = &[&[], &[253], &[253, 1], &[254], &[255]];
+
+        for &bytes in cases {
+            let reader = FontReader::new(bytes, 100);
+            let error = reader.u255_u16(0).unwrap_err();
+
+            assert_eq!(error.offset, 100);
+            assert_eq!(error.message, "truncated font data");
+        }
     }
 }

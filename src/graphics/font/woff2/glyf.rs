@@ -26,6 +26,31 @@ pub(super) struct GlyfStreams<'a> {
     pub overlap_bitmap: Option<&'a [u8]>,
 }
 
+impl GlyfStreams<'_> {
+    /// Reads the signed contour count for a glyph.
+    pub(super) fn contour_count(&self, glyph_index: usize) -> Result<i16, FontError> {
+        if glyph_index >= usize::from(self.num_glyphs) {
+            return Err(error(glyph_index, "glyph index is out of bounds"));
+        }
+
+        let reader = FontReader::new(self.contours, 0);
+
+        reader.i16(glyph_index * 2)
+    }
+
+    /// Reads one contour's point count and advances the points-stream cursor.
+    ///
+    /// The cursor remains unchanged if the value is truncated.
+    pub(super) fn read_point_count(&self, cursor: &mut usize) -> Result<u16, FontError> {
+        let reader = FontReader::new(self.points, 0);
+        let (count, length) = reader.u255_u16(*cursor)?;
+
+        *cursor += length;
+
+        Ok(count)
+    }
+}
+
 pub(super) fn parse(data: &[u8]) -> Result<GlyfStreams<'_>, FontError> {
     let reader = FontReader::new(data, 0);
 
@@ -219,5 +244,32 @@ mod tests {
             parse(&bad_index_format).unwrap_err().message,
             "invalid transformed glyf index format",
         );
+    }
+
+    #[test]
+    fn reads_glyph_contours_and_point_counts() {
+        let mut data = sample(false);
+
+        // The second glyph is composite: its contour count is -1.
+        data[38] = 0xff;
+        data[39] = 0xff;
+
+        let streams = parse(&data).unwrap();
+
+        assert_eq!(streams.contour_count(0).unwrap(), 1);
+        assert_eq!(streams.contour_count(1).unwrap(), -1);
+
+        assert_eq!(
+            streams.contour_count(2).unwrap_err().message,
+            "glyph index is out of bounds"
+        );
+
+        let mut cursor = 0;
+
+        assert_eq!(streams.read_point_count(&mut cursor).unwrap(), 42);
+        assert_eq!(cursor, 1);
+
+        assert!(streams.read_point_count(&mut cursor).is_err());
+        assert_eq!(cursor, 1);
     }
 }
