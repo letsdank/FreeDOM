@@ -44,7 +44,6 @@ pub(super) struct PointDelta {
 pub(super) struct CompositeComponents<'a> {
     pub bytes: &'a [u8],
     pub has_instructions: bool,
-    pub last_flags_offset: usize,
 }
 
 /// Current positions in the streams used to decode a simple outline.
@@ -220,7 +219,7 @@ impl GlyfStreams<'_> {
 
         let outline = self.read_simple_outline(contour_count as usize, &mut next.outline)?;
 
-        // The instruction legnth follows the point data in glyphStream.
+        // The instruction length follows the point data in glyphStream.
         let glyph_reader = FontReader::new(self.glyphs, 0);
 
         let (instruction_length, used) = glyph_reader.u255_u16(next.outline.glyphs)?;
@@ -370,7 +369,7 @@ impl GlyfStreams<'_> {
     /// Reconstructs the TrueType glyf and loca tables.
     ///
     /// The loca length comes from the original-length field in the WOFF2
-    /// table directory, not from the reconstructured glyf table size.
+    /// table directory, not from the reconstructed glyf table size.
     pub(super) fn reconstruct_tables(
         &self,
         original_loca_length: usize,

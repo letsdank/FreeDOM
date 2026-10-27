@@ -1,15 +1,12 @@
 //! WOFF 2.0 directory parsing and SFNT reconstruction.
 //!
-//! The directory parser reads table metadata and identifies the compressed
-//! font data. The decoder currently supports untransformed tables stored in
-//! uncompressed Brotli meta-blocks.
+//! The decoder supports Brotli-compressed table data and reconstruction
+//! of transformed glyf and loca tables.
 //!
-//! WOFF 2.0 font collections, transformed tables, and compressed Brotli
-//! meta-blocks are not yet supported by the decoder.
+//! Font collections and the hmtx table transform are not supported yet.
 //!
 //! Specification: <https://www.w3.org/TR/WOFF2/>
 
-#[allow(dead_code)]
 mod glyf;
 
 use super::{
@@ -261,11 +258,11 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
     if directory
         .tables
         .iter()
-        .any(|table| table.transform != Woff2Transform::Null)
+        .any(|table| table.transform == Woff2Transform::Hmtx)
     {
         return Err(error(
             directory.compressed_data.start,
-            "WOFF2 table transforms are not supported yet",
+            "WOFF2 hmtx transform is not supported yet",
         ));
     }
 
@@ -276,6 +273,7 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
         .map(|(tag, bytes)| (tag, bytes.to_vec()))
         .collect();
 
+    reconstruct_transformed_glyf(&directory, &mut tables)?;
     tables.sort_by_key(|(tag, _)| tag.bytes());
 
     let table_count = tables.len();
@@ -358,6 +356,57 @@ pub fn decode_woff2(data: &[u8]) -> Result<Vec<u8>, FontError> {
     }
 
     Ok(sfnt)
+}
+
+/// Reconstructs transformed glyf and loca tables, if present.
+///
+/// The table vector must remain in WOFF2 directory order while this
+/// function runs.
+///
+/// Specification: WOFF 2.0, sections 5.1 and 5.3.
+/// <https://www.w3.org/TR/WOFF2/>
+fn reconstruct_transformed_glyf(
+    directory: &Woff2Directory,
+    tables: &mut [(TableTag, Vec<u8>)],
+) -> Result<(), FontError> {
+    let Some(glyf_index) = directory.tables.iter().position(|table| {
+        table.tag == TableTag::GLYF && table.transform == Woff2Transform::GlyfLoca
+    }) else {
+        return Ok(());
+    };
+
+    let find = |tag| directory.tables.iter().position(|table| table.tag == tag);
+
+    let loca_index = find(TableTag::LOCA)
+        .ok_or_else(|| error(0, "transformed WOFF2 glyf table is missing loca"))?;
+
+    let head_index = find(TableTag::HEAD)
+        .ok_or_else(|| error(0, "transformed WOFF2 glyf table is missing head"))?;
+
+    let maxp_index = find(TableTag::MAXP)
+        .ok_or_else(|| error(0, "transformed WOFF2 glyf table is missing maxp"))?;
+
+    // maxp.numGlyphs and head.indexToLocFormat.
+    let glyph_count = read_u16(&tables[maxp_index].1, 4, 0)?;
+    let index_format = read_u16(&tables[head_index].1, 50, 0)?;
+
+    let streams = glyf::parse(&tables[glyf_index].1)?;
+
+    if streams.num_glyphs != glyph_count {
+        return Err(error(0, "WOFF2 glyf glyph count does not match maxp"));
+    }
+
+    if streams.index_format != index_format {
+        return Err(error(0, "WOFF2 glyf index format does not match head"));
+    }
+
+    let (glyf_data, loca_data) =
+        streams.reconstruct_tables(directory.tables[loca_index].original_length)?;
+
+    tables[glyf_index].1 = glyf_data;
+    tables[loca_index].1 = loca_data;
+
+    Ok(())
 }
 
 fn sfnt_search_parameters(table_count: usize) -> (u16, u16, u16) {
@@ -623,15 +672,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_woff2_table_transforms_before_reconstruction() {
-        let data = minimal_woff2(2, &[10, 8, 6, 11, 4, 0], &[0x06]);
-
+    fn rejects_unsupported_hmtx_transform_before_decompression() {
+        let data = minimal_woff2(1, &[0x43, 4, 3], &[0x06]);
         let error = decode_woff2(&data).unwrap_err();
 
-        assert_eq!(
-            error.message,
-            "WOFF2 table transforms are not supported yet"
-        );
+        assert_eq!(error.message, "WOFF2 hmtx transform is not supported yet");
     }
 
     #[test]
@@ -773,13 +818,8 @@ mod tests {
 
         assert_eq!(decoded, b"abcdef");
 
-        // Table reconstruction is still intentionally unsupported.
-        let error = decode_woff2(&data).unwrap_err();
-
-        assert_eq!(
-            error.message,
-            "WOFF2 table transforms are not supported yet"
-        );
+        // Six bytes are not a valid transformed glyf table.
+        assert!(decode_woff2(&data).is_err());
     }
 
     #[test]
@@ -983,6 +1023,106 @@ mod tests {
         }
 
         data
+    }
+
+    fn transformed_glyf_fixture(maxp_glyphs: u16, head_format: u16, loca_length: u8) -> Vec<u8> {
+        let mut head = vec![0_u8; 54];
+        write_u16(&mut head, 50, head_format).unwrap();
+
+        let mut maxp = vec![0_u8; 6];
+        write_u32(&mut maxp, 0, 0x0001_0000).unwrap();
+        write_u16(&mut maxp, 4, maxp_glyphs).unwrap();
+
+        let mut glyf = vec![0_u8; 36];
+        write_u16(&mut glyf, 4, 2).unwrap();
+
+        let sizes = [4_u32, 1, 3, 5, 0, 4, 2];
+
+        for (index, size) in sizes.into_iter().enumerate() {
+            write_u32(&mut glyf, 8 + index * 4, size).unwrap()
+        }
+
+        glyf.extend_from_slice(&[
+            0, 0, 0, 1, // empty glyph, then one-contour glyph
+            3, // three points
+            1, 11, 86, // point flags
+            0, 50, 24, 79, // coordinates
+            2,  // instruction length
+            0, 0, 0, 0, // bbox bitmap
+            0xaa, 0xbb, // instructions
+        ]);
+
+        let mut raw = head;
+        raw.extend_from_slice(&maxp);
+        raw.extend_from_slice(&glyf);
+
+        let compressed = uncompressed_brotli(&raw);
+
+        minimal_woff2(
+            4,
+            &[
+                1,
+                54, // head
+                4,
+                6, // maxp
+                10,
+                20,
+                55, // transformed glyf
+                11,
+                loca_length,
+                0, // transformed loca
+            ],
+            &compressed,
+        )
+    }
+
+    #[test]
+    fn decodes_transformed_glyf_loca_in_a_woff2_container() {
+        use crate::graphics::font::{
+            glyf::{Glyph, parse_glyph},
+            sfnt::SfntFont,
+        };
+
+        let data = transformed_glyf_fixture(2, 0, 6);
+        let sfnt = decode_woff2(&data).unwrap();
+        let font = SfntFont::parse(&sfnt).unwrap();
+
+        let glyf = font.table(TableTag::GLYF).unwrap();
+
+        assert_eq!(font.table(TableTag::LOCA), Some(&[0, 0, 0, 0, 0, 11][..]));
+
+        assert_eq!(glyf.len(), 22);
+
+        let Glyph::Simple(glyph) = parse_glyph(glyf, 0).unwrap() else {
+            panic!("expected a simple glyph");
+        };
+
+        assert_eq!(glyph.bounds.x_max, 50);
+        assert_eq!(glyph.bounds.y_max, 80);
+    }
+
+    #[test]
+    fn rejects_transformed_glyf_with_inconsistent_metadata() {
+        let cases = [
+            (
+                transformed_glyf_fixture(3, 0, 6),
+                "WOFF2 glyf glyph count does not match maxp",
+            ),
+            (
+                transformed_glyf_fixture(2, 1, 6),
+                "WOFF2 glyf index format does not match head",
+            ),
+            (
+                transformed_glyf_fixture(2, 0, 8),
+                "WOFF2 loca original length does not match glyph count",
+            ),
+        ];
+
+        for (data, expected_message) in cases {
+            let error = decode_woff2(&data).unwrap_err();
+
+            assert_eq!(error.message, expected_message);
+        }
     }
 
     fn append_bits(data: &mut Vec<u8>, bit_position: &mut usize, value: u32, bit_count: usize) {

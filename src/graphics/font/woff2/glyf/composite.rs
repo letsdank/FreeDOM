@@ -24,7 +24,6 @@ pub(super) fn read(
     let reader = FontReader::new(data, 0);
     let mut cursor = start;
     let mut has_instructions = false;
-    let last_flags_offset;
 
     loop {
         let header = reader.bytes(cursor, 4)?;
@@ -69,7 +68,6 @@ pub(super) fn read(
         has_instructions |= flags & WE_HAVE_INSTRUCTIONS != 0;
 
         if flags & MORE_COMPONENTS == 0 {
-            last_flags_offset = cursor - start;
             cursor += length;
             break;
         }
@@ -84,7 +82,6 @@ pub(super) fn read(
         CompositeComponents {
             bytes,
             has_instructions,
-            last_flags_offset,
         },
         length,
     ))
@@ -105,7 +102,6 @@ mod tests {
 
         assert_eq!(used, 16);
         assert_eq!(components.bytes, &data[1..]);
-        assert_eq!(components.last_flags_offset, 6);
 
         // The instructions flag is present on the first component.
         assert!(components.has_instructions);
