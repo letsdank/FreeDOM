@@ -463,14 +463,18 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
 fn parse_font_size(value: &str) -> Option<FontSize> {
     let value = value.trim().to_ascii_lowercase();
 
+    if value.parse::<f32>().ok() == Some(0.0) {
+        return Some(FontSize::Pixels(0.0));
+    }
+
     if let Some(value) = value.strip_suffix("px") {
         let pixels = value.trim().parse::<f32>().ok()?;
-        return (pixels.is_finite() && pixels > 0.0).then_some(FontSize::Pixels(pixels));
+        return (pixels.is_finite() && pixels >= 0.0).then_some(FontSize::Pixels(pixels));
     }
 
     if let Some(value) = value.strip_suffix("em") {
         let em = value.trim().parse::<f32>().ok()?;
-        return (em.is_finite() && em > 0.0).then_some(FontSize::Em(em));
+        return (em.is_finite() && em >= 0.0).then_some(FontSize::Em(em));
     }
 
     None
@@ -1062,5 +1066,34 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
         assert_eq!(style.color, 0x00_00_40_80);
+    }
+
+    #[test]
+    fn zero_font_size_is_accepted_and_negative_is_rejected() {
+        for value in ["0", "0px", "0em", "-0px"] {
+            let inline_style = format!("font-size: 18px; font-size: {value}");
+
+            let element = Element {
+                tag: "p",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let style = compute_style(&element, TextStyle::initial(), &[]);
+
+            assert_eq!(style.font_size, 0.0, "value: {value}");
+        }
+
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &[],
+            inline_style: Some("font-size: 18px; font-size: -1px"),
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &[]);
+
+        assert_eq!(style.font_size, 18.0);
     }
 }

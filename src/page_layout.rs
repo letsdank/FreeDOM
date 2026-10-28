@@ -108,6 +108,15 @@ impl PageLayout {
 }
 
 pub(crate) fn text_metrics(vector_font: Option<&TrueTypeFont<'_>>, font_size: f32) -> TextMetrics {
+    if font_size == 0.0 {
+        return TextMetrics {
+            bitmap_scale: 1,
+            character_width: 0,
+            glyph_height: 0,
+            line_height: 0,
+        };
+    }
+
     let bitmap_scale = if font_size >= 24.0 { 2 } else { 1 };
     let bitmap_character_width = (8 * bitmap_scale) as i32;
     let bitmap_glyph_height = (8 * bitmap_scale) as i32;
@@ -175,6 +184,10 @@ pub(crate) fn text_word_width(
     font_weight: FontWeight,
     font_style: FontStyle,
 ) -> i32 {
+    if font_size == 0.0 {
+        return 0;
+    }
+
     vector_font
         .and_then(|font| vector_text_width(font, text, font_size, font_weight, font_style))
         .unwrap_or_else(|| {

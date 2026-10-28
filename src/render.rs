@@ -599,6 +599,10 @@ fn draw_wrapped_text(
     link_regions: &mut Vec<LinkRegion>,
     glyph_raster_cache: &mut GlyphRasterCache,
 ) -> i32 {
+    if font_size == 0.0 {
+        return y;
+    }
+
     let metrics = text_metrics(vector_font, font_size);
     let mut x = left;
 

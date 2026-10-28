@@ -390,4 +390,53 @@ mod tests {
 
         assert_eq!(count, 2, "expected two legacy integer RGB WPT cases");
     }
+
+    #[test]
+    fn wpt_font_size_zero_computed_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/css-fonts/font-size-zero-1.html"
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+        let document = Document::parse(&source);
+
+        let style_element = document
+            .first_element("style")
+            .expect("WPT fixture must contain a style element");
+
+        let stylesheet = style_element
+            .children
+            .iter()
+            .filter_map(|node| match node {
+                Node::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        let rules = build_author_rules(&[stylesheet]);
+        let classes = vec!["zero".to_owned()];
+
+        let zero = Element {
+            tag: "p",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let style = compute_style(&zero, TextStyle::initial(), &rules);
+
+        assert_eq!(style.font_size, 0.0);
+
+        let ordinary = Element {
+            tag: "p",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let style = compute_style(&ordinary, TextStyle::initial(), &rules);
+
+        assert_eq!(style.font_size, 16.0);
+    }
 }

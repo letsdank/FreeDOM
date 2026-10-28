@@ -1415,6 +1415,37 @@ mod tests {
         );
     }
 
+    fn woff_with_name_table(table: &[u8]) -> Vec<u8> {
+        assert_eq!(table.len() % 4, 0);
+
+        const WOFF_HEADER_LENGTH: usize = 44;
+        const WOFF_TABLE_DIRECTORY_ENTRY_LENGTH: usize = 20;
+        const SFNT_HEADER_LENGTH: usize = 12;
+        const SFNT_TABLE_DIRECTORY_ENTRY_LENGTH: usize = 16;
+
+        let table_offset = WOFF_HEADER_LENGTH + WOFF_TABLE_DIRECTORY_ENTRY_LENGTH;
+        let file_length = table_offset + table.len();
+        let total_sfnt_size = SFNT_HEADER_LENGTH + SFNT_TABLE_DIRECTORY_ENTRY_LENGTH + table.len();
+
+        let mut data = vec![0_u8; file_length];
+
+        data[0..4].copy_from_slice(b"wOFF");
+        data[4..8].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
+        data[8..12].copy_from_slice(&(file_length as u32).to_be_bytes());
+        data[12..14].copy_from_slice(&1_u16.to_be_bytes());
+        data[16..20].copy_from_slice(&(total_sfnt_size as u32).to_be_bytes());
+        data[20..22].copy_from_slice(&1_u16.to_be_bytes());
+
+        data[44..48].copy_from_slice(b"name");
+        data[48..52].copy_from_slice(&(table_offset as u32).to_be_bytes());
+        data[52..56].copy_from_slice(&(table.len() as u32).to_be_bytes());
+        data[56..60].copy_from_slice(&(table.len() as u32).to_be_bytes());
+
+        data[table_offset..].copy_from_slice(table);
+
+        data
+    }
+
     #[test]
     fn inline_style_keeps_semicolon_inside_font_family() {
         let page = parse_html(
@@ -1453,34 +1484,51 @@ mod tests {
         );
     }
 
-    fn woff_with_name_table(table: &[u8]) -> Vec<u8> {
-        assert_eq!(table.len() % 4, 0);
+    #[test]
+    fn zero_font_size_does_not_draw_bitmap_fallback() {
+        use crate::{
+            page_layout::{CONTENT_TOP, PageLayout},
+            render::{BlockRasterCache, GlyphRasterCache, paint},
+        };
 
-        const WOFF_HEADER_LENGTH: usize = 44;
-        const WOFF_TABLE_DIRECTORY_ENTRY_LENGTH: usize = 20;
-        const SFNT_HEADER_LENGTH: usize = 12;
-        const SFNT_TABLE_DIRECTORY_ENTRY_LENGTH: usize = 16;
+        let page = parse_html(
+            "https://example.test",
+            r#"<p style="font-size: 0">Visible?</p>"#,
+        );
 
-        let table_offset = WOFF_HEADER_LENGTH + WOFF_TABLE_DIRECTORY_ENTRY_LENGTH;
-        let file_length = table_offset + table.len();
-        let total_sfnt_size = SFNT_HEADER_LENGTH + SFNT_TABLE_DIRECTORY_ENTRY_LENGTH + table.len();
+        assert_eq!(page.blocks.len(), 1);
+        assert_eq!(page.blocks[0].style.font_size, 0.0);
 
-        let mut data = vec![0_u8; file_length];
+        let width = 200;
+        let height = 160;
 
-        data[0..4].copy_from_slice(b"wOFF");
-        data[4..8].copy_from_slice(&0x0001_0000_u32.to_be_bytes());
-        data[8..12].copy_from_slice(&(file_length as u32).to_be_bytes());
-        data[12..14].copy_from_slice(&1_u16.to_be_bytes());
-        data[16..20].copy_from_slice(&(total_sfnt_size as u32).to_be_bytes());
-        data[20..22].copy_from_slice(&1_u16.to_be_bytes());
+        let layout = PageLayout::build(&page, width, None);
 
-        data[44..48].copy_from_slice(b"name");
-        data[48..52].copy_from_slice(&(table_offset as u32).to_be_bytes());
-        data[52..56].copy_from_slice(&(table.len() as u32).to_be_bytes());
-        data[56..60].copy_from_slice(&(table.len() as u32).to_be_bytes());
+        assert_eq!(layout.block_height(0), 0);
 
-        data[table_offset..].copy_from_slice(table);
+        let mut pixels = vec![0; width * height];
 
-        data
+        paint(
+            &mut pixels,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+
+        let content_start = CONTENT_TOP as usize * width;
+
+        assert!(
+            pixels[content_start..]
+                .iter()
+                .all(|&pixel| pixel == 0x00_F7_F7_F7)
+        );
     }
 }
