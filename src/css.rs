@@ -20,6 +20,9 @@ pub(crate) use self::syntax::parse_declaration_list;
 const DEFAULT_TEXT_COLOR: u32 = 0x00_18_1B_20;
 const DEFAULT_LINK_COLOR: u32 = 0x00_00_00_EE;
 
+// https://www.w3.org/TR/css-fonts-4/#font-size-prop
+const RELATIVE_FONT_SIZE_SCALE: f32 = 1.2;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Display {
     Inline,
@@ -482,6 +485,9 @@ fn parse_font_size(value: &str) -> Option<FontSize> {
         "x-large" => return Some(FontSize::Pixels(24.0)),
         "xx-large" => return Some(FontSize::Pixels(32.0)),
         "xxx-large" => return Some(FontSize::Pixels(48.0)),
+
+        "larger" => return Some(FontSize::Em(RELATIVE_FONT_SIZE_SCALE)),
+        "smaller" => return Some(FontSize::Em(1.0 / RELATIVE_FONT_SIZE_SCALE)),
 
         _ => {}
     }
@@ -1224,6 +1230,36 @@ mod tests {
             let style = compute_style(&element, parent.clone(), &[]);
 
             assert_eq!(style.font_size, expected, "keyword: {keyword}");
+        }
+    }
+
+    #[test]
+    fn relative_font_size_keywords_use_parent_size() {
+        for (parent_size, keyword, expected) in [
+            (20.0, "larger", 24.0),
+            (24.0, "smaller", 20.0),
+            (0.0, "larger", 0.0),
+            (20.0, "LARGER", 24.0),
+        ] {
+            let mut parent = TextStyle::initial();
+            parent.font_size = parent_size;
+
+            let inline_style = format!("font-size: 100px; font-size: {keyword}");
+
+            let element = Element {
+                tag: "h1",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let style = compute_style(&element, parent, &[]);
+
+            assert!(
+                (style.font_size - expected).abs() < 0.001,
+                "keyword: {keyword}, actual: {}",
+                style.font_size
+            );
         }
     }
 }

@@ -1576,4 +1576,20 @@ mod tests {
 
         assert_eq!(page.blocks[0].style.font_size, 24.0);
     }
+
+    #[test]
+    fn relative_font_size_flows_through_page_styles() {
+        let page = parse_html(
+            "https://example.test",
+            r#"
+                <style>
+                    div { font-size: 20px }
+                    p { font-size: larger }
+                </style>
+                <div><p>Hello</p></div>
+            "#,
+        );
+
+        assert!((page.blocks[0].style.font_size - 24.0).abs() < 0.001);
+    }
 }

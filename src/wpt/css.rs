@@ -540,6 +540,25 @@ mod tests {
             assert_eq!(style.font_size, expected, "keyword: {keyword}");
         }
 
+        for (class, expected) in [("larger", 16.0 * 1.2), ("smaller", 16.0 / 1.2)] {
+            let classes = vec![class.to_owned()];
+
+            let element = Element {
+                tag: "div",
+                id: None,
+                classes: &classes,
+                inline_style: None,
+            };
+
+            let style = compute_style(&element, TextStyle::initial(), &rules);
+
+            assert!(
+                (style.font_size - expected).abs() <= 0.02,
+                "class: {class}, actual: {}",
+                style.font_size
+            );
+        }
+
         for (class, expected) in [
             ("xxSmall", 9.0),
             ("xSmall", 10.0),
