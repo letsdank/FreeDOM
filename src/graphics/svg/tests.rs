@@ -907,3 +907,22 @@ fn embedded_css_selector_list_with_escaped_comma() {
             .all(|shape| shape.fill == Some(Color::rgba(255, 0, 0, 255)))
     );
 }
+
+#[test]
+fn id_specificity_exceeds_many_classes_in_svg() {
+    let document = parse_svg(
+        r#"
+            <svg>
+                <style>
+                    #target { fill: green }
+                    .x.x.x.x.x.x.x.x.x.x.x { fill: red }
+                </style>
+
+                <rect id="target" class="x" width="10" height="10"/>
+            </svg>
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
+}

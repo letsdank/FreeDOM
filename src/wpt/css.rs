@@ -144,4 +144,55 @@ mod tests {
             "the invalid selector list must discard the rule"
         );
     }
+
+    #[test]
+    fn wpt_element_vs_universal_specificity_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/CSS2/cascade/specificity-007.xht"
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+        let document = Document::parse(&source);
+
+        let style_element = document
+            .first_element("style")
+            .expect("WPT fixture must contain a style element");
+
+        let stylesheet = style_element
+            .children
+            .iter()
+            .filter_map(|node| match node {
+                Node::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        let rules = build_author_rules(&[stylesheet]);
+
+        assert_eq!(rules.len(), 3);
+
+        let div = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let div_style = compute_style(&div, TextStyle::initial(), &rules);
+
+        assert_eq!(div_style.color, 0x00_00_80_00);
+
+        // Verify that the universal selector was applied to another element.
+        let span = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let span_style = compute_style(&span, TextStyle::initial(), &rules);
+
+        assert_eq!(span_style.color, 0x00_FF_00_00);
+    }
 }

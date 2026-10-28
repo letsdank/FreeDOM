@@ -6,11 +6,13 @@
 mod comments;
 mod ident;
 mod input;
+mod specificity;
 mod syntax;
 
 use self::comments::remove_css_comments;
 use self::ident::consume_identifier;
 pub(crate) use self::input::preprocess_input;
+use self::specificity::Specificity;
 pub(crate) use self::syntax::parse_declaration_list;
 
 const DEFAULT_TEXT_COLOR: u32 = 0x00_18_1B_20;
@@ -79,7 +81,7 @@ struct Declarations {
 
 pub(crate) struct CssRule {
     selector: Selector,
-    specificity: u16,
+    specificity: Specificity,
     source_order: usize,
     declarations: Declarations,
 }
@@ -100,7 +102,7 @@ pub(crate) struct FontFaceRule {
 
 pub(crate) struct CascadeRule {
     selector: Selector,
-    specificity: u16,
+    specificity: Specificity,
     source_order: usize,
     declarations: Vec<CssDeclaration>,
 }
@@ -322,7 +324,7 @@ fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &m
     }
 }
 
-fn parse_selector(input: &str) -> Option<(Selector, u16)> {
+fn parse_selector(input: &str) -> Option<(Selector, Specificity)> {
     let input = input.trim();
 
     if input.is_empty() {
@@ -330,7 +332,7 @@ fn parse_selector(input: &str) -> Option<(Selector, u16)> {
     }
 
     let mut selector = Selector::default();
-    let mut specificity: u16 = 0;
+    let mut specificity = Specificity::default();
     let mut remaining = input;
     let mut saw_universal = false;
 
@@ -357,7 +359,7 @@ fn parse_selector(input: &str) -> Option<(Selector, u16)> {
                 }
 
                 selector.id = Some(id);
-                specificity = specificity.saturating_add(100);
+                specificity.add_id();
                 remaining = tail;
             }
 
@@ -365,7 +367,7 @@ fn parse_selector(input: &str) -> Option<(Selector, u16)> {
                 let (class, tail) = take_css_identifier(&remaining[1..])?;
 
                 selector.classes.push(class);
-                specificity = specificity.saturating_add(10);
+                specificity.add_class();
                 remaining = tail;
             }
 
@@ -377,7 +379,7 @@ fn parse_selector(input: &str) -> Option<(Selector, u16)> {
                 let (tag, tail) = take_css_identifier(remaining)?;
 
                 selector.tag = Some(tag.to_ascii_lowercase());
-                specificity = specificity.saturating_add(1);
+                specificity.add_type();
                 remaining = tail;
             }
         }
@@ -729,7 +731,7 @@ mod tests {
         assert_eq!(selector.tag.as_deref(), Some("p"));
         assert_eq!(selector.id.as_deref(), Some("lead"));
         assert_eq!(selector.classes, ["notice", "wide"]);
-        assert_eq!(specificity, 121);
+        assert_eq!(specificity, Specificity::new(1, 2, 1));
 
         let classes = vec!["notice".to_owned(), "wide".to_owned()];
 
@@ -946,5 +948,45 @@ mod tests {
         let rules = build_author_rules(&["p, div { color: green }".to_owned()]);
 
         assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn id_specificity_exceeds_many_classes() {
+        let stylesheets = ["#target { color: green } \
+             .x.x.x.x.x.x.x.x.x.x.x { color: red }"
+            .to_owned()];
+
+        let rules = build_author_rules(&stylesheets);
+        let classes = vec!["x".to_owned()];
+
+        let element = Element {
+            tag: "p",
+            id: Some("target"),
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(style.color, 0x00_00_80_00);
+    }
+
+    #[test]
+    fn equal_specificity_respects_source_order() {
+        let stylesheets = [".a { color: red } .b { color: green }".to_owned()];
+
+        let rules = build_author_rules(&stylesheets);
+        let classes = vec!["a".to_owned(), "b".to_owned()];
+
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(style.color, 0x00_00_80_00);
     }
 }
