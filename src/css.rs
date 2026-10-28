@@ -68,6 +68,7 @@ impl TextStyle {
 enum FontSize {
     Pixels(f32),
     Em(f32),
+    Percentage(f32),
 }
 
 #[derive(Clone, Default)]
@@ -477,6 +478,12 @@ fn parse_font_size(value: &str) -> Option<FontSize> {
         return (em.is_finite() && em >= 0.0).then_some(FontSize::Em(em));
     }
 
+    if let Some(value) = value.strip_suffix('%') {
+        let percent = value.parse::<f32>().ok()?;
+
+        return (percent.is_finite() && percent >= 0.0).then_some(FontSize::Percentage(percent));
+    }
+
     None
 }
 
@@ -650,6 +657,7 @@ fn apply_declarations(style: &mut TextStyle, declarations: &Declarations, parent
         style.font_size = match font_size {
             FontSize::Pixels(pixels) => pixels,
             FontSize::Em(em) => parent_font_size * em,
+            FontSize::Percentage(percent) => parent_font_size * (percent / 100.0),
         };
     }
 
@@ -1095,5 +1103,41 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &[]);
 
         assert_eq!(style.font_size, 18.0);
+    }
+
+    #[test]
+    fn percentage_font_size_uses_parent_and_respects_cascade() {
+        let mut parent = TextStyle::initial();
+        parent.font_size = 20.0;
+
+        for (value, expected) in [("150%", 30.0), ("25%", 5.0), ("0%", 0.0), ("-0%", 0.0)] {
+            let inline_style = format!("font-size: 7px; font-size: {value}");
+
+            let element = Element {
+                tag: "p",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let style = compute_style(&element, parent.clone(), &[]);
+
+            assert_eq!(style.font_size, expected, "value: {value}");
+        }
+
+        for value in ["-1%", "nan%", "inf%", "20 %"] {
+            let inline_style = format!("font-size: 18px; font-size: {value}");
+
+            let element = Element {
+                tag: "p",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let style = compute_style(&element, parent.clone(), &[]);
+
+            assert_eq!(style.font_size, 18.0, "value: {value}");
+        }
     }
 }

@@ -439,4 +439,47 @@ mod tests {
 
         assert_eq!(style.font_size, 16.0);
     }
+
+    #[test]
+    fn wpt_font_size_percentage_valid_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/css-fonts/parsing/font-size-valid.html",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+        let mut count = 0;
+
+        for line in source.lines().map(str::trim) {
+            let Some(value) = line
+                .strip_prefix("test_valid_value('font-size', '")
+                .and_then(|line| line.strip_suffix("');"))
+            else {
+                continue;
+            };
+
+            if value != "20%" {
+                continue;
+            }
+
+            let inline_style = format!("font-size: {value}");
+
+            let element = Element {
+                tag: "p",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let mut parent = TextStyle::initial();
+            parent.font_size = 20.0;
+
+            let style = compute_style(&element, parent, &[]);
+
+            assert_eq!(style.font_size, 4.0);
+            count += 1;
+        }
+
+        assert_eq!(count, 1, "expected the 20% WPT case");
+    }
 }

@@ -1531,4 +1531,20 @@ mod tests {
                 .all(|&pixel| pixel == 0x00_F7_F7_F7)
         );
     }
+
+    #[test]
+    fn percentage_font_size_flows_through_page_styles() {
+        let page = parse_html(
+            "https://example.test",
+            r#"
+                <style>
+                    div { font-size: 20px }
+                    p { font-size: 150% }
+                </style>
+                <div><p>Hello</p></div>
+            "#,
+        );
+
+        assert_eq!(page.blocks[0].style.font_size, 30.0);
+    }
 }
