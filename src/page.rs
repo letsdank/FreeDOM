@@ -1563,4 +1563,17 @@ mod tests {
 
         assert_eq!(page.blocks[0].style.font_size, 24.0);
     }
+
+    #[test]
+    fn absolute_font_size_flows_through_page_styles() {
+        let page = parse_html(
+            "https://example.test",
+            r#"
+                <style>p { font-size: x-large }</style>
+                <p>Hello</p>
+            "#,
+        );
+
+        assert_eq!(page.blocks[0].style.font_size, 24.0);
+    }
 }

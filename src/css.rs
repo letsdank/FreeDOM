@@ -471,6 +471,18 @@ fn parse_font_size(value: &str) -> Option<FontSize> {
     match value.as_str() {
         "inherit" | "unset" => return Some(FontSize::Inherit),
         "initial" => return Some(FontSize::Initial),
+
+        // FreeDOM currently uses a 16px medium size.
+        // https://www.w3.org/TR/css-fonts-4/#absolute-size-mapping
+        "xx-small" => return Some(FontSize::Pixels(9.0)),
+        "x-small" => return Some(FontSize::Pixels(10.0)),
+        "small" => return Some(FontSize::Pixels(13.0)),
+        "medium" => return Some(FontSize::Pixels(16.0)),
+        "large" => return Some(FontSize::Pixels(18.0)),
+        "x-large" => return Some(FontSize::Pixels(24.0)),
+        "xx-large" => return Some(FontSize::Pixels(32.0)),
+        "xxx-large" => return Some(FontSize::Pixels(48.0)),
+
         _ => {}
     }
 
@@ -1183,5 +1195,35 @@ mod tests {
         let style = compute_style(&important, parent, &[]);
 
         assert_eq!(style.font_size, 24.0);
+    }
+
+    #[test]
+    fn absolute_font_size_keywords_do_not_depend_on_parent() {
+        let mut parent = TextStyle::initial();
+        parent.font_size = 25.0;
+
+        for (keyword, expected) in [
+            ("xx-small", 9.0),
+            ("x-small", 10.0),
+            ("small", 13.0),
+            ("medium", 16.0),
+            ("large", 18.0),
+            ("x-large", 24.0),
+            ("xx-large", 32.0),
+            ("XXX-LARGE", 48.0),
+        ] {
+            let inline_style = format!("font-size: 7px; font-size: {keyword}");
+
+            let element = Element {
+                tag: "h1",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let style = compute_style(&element, parent.clone(), &[]);
+
+            assert_eq!(style.font_size, expected, "keyword: {keyword}");
+        }
     }
 }

@@ -506,8 +506,7 @@ mod tests {
             })
             .collect::<String>();
 
-        // The fixture's "large" keyword is not implemented yet.
-        let rules = build_author_rules(&[".large { font-size: 30px }".to_owned(), stylesheet]);
+        let rules = build_author_rules(&[stylesheet]);
 
         let mut parent = TextStyle::initial();
         parent.font_size = 24.0;
@@ -523,7 +522,7 @@ mod tests {
 
         assert_eq!(
             compute_style(&large, TextStyle::initial(), &rules).font_size,
-            30.0
+            18.0
         );
 
         for (keyword, expected) in [("initial", 16.0), ("inherit", 24.0), ("unset", 24.0)] {
@@ -539,6 +538,30 @@ mod tests {
             let style = compute_style(&element, parent.clone(), &rules);
 
             assert_eq!(style.font_size, expected, "keyword: {keyword}");
+        }
+
+        for (class, expected) in [
+            ("xxSmall", 9.0),
+            ("xSmall", 10.0),
+            ("small", 13.0),
+            ("medium", 16.0),
+            ("large", 18.0),
+            ("xLarge", 24.0),
+            ("xxLarge", 32.0),
+            ("xxxLarge", 48.0),
+        ] {
+            let classes = vec![class.to_owned()];
+
+            let element = Element {
+                tag: "div",
+                id: None,
+                classes: &classes,
+                inline_style: None,
+            };
+
+            let style = compute_style(&element, parent.clone(), &rules);
+
+            assert_eq!(style.font_size, expected, "class: {class}");
         }
     }
 }
