@@ -76,9 +76,16 @@ enum FontSize {
     Initial,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextColor {
+    Value(u32),
+    Inherit,
+    Initial,
+}
+
 #[derive(Clone, Default)]
 struct Declarations {
-    color: Option<u32>,
+    color: Option<TextColor>,
     font_size: Option<FontSize>,
     font_weight: Option<FontWeight>,
     font_family: Option<String>,
@@ -411,7 +418,7 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
     for declaration in declarations {
         match declaration.name.as_str() {
             "color" => {
-                if let Some(value) = parse_color(&declaration.value) {
+                if let Some(value) = parse_text_color(&declaration.value) {
                     parsed.color = Some(value);
                 }
             }
@@ -464,6 +471,14 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
     }
 
     parsed
+}
+
+fn parse_text_color(value: &str) -> Option<TextColor> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "inherit" | "unset" | "currentcolor" => Some(TextColor::Inherit),
+        "initial" => Some(TextColor::Initial),
+        _ => parse_color(value).map(TextColor::Value),
+    }
 }
 
 fn parse_font_size(value: &str) -> Option<FontSize> {
@@ -552,6 +567,7 @@ pub(crate) fn compute_style(
     rules: &[CssRule],
 ) -> TextStyle {
     let parent_font_size = inherited_style.font_size;
+    let parent_color = inherited_style.color;
     let mut style = default_style(&element.tag, inherited_style);
 
     let mut matching_rules: Vec<&CssRule> = rules
@@ -580,7 +596,7 @@ pub(crate) fn compute_style(
     for declaration in declarations {
         let parsed = parse_text_declarations(std::slice::from_ref(declaration));
 
-        apply_declarations(&mut style, &parsed, parent_font_size);
+        apply_declarations(&mut style, &parsed, parent_font_size, parent_color);
     }
 
     style
@@ -676,9 +692,18 @@ pub(crate) fn matching_declarations<'a>(
     declarations
 }
 
-fn apply_declarations(style: &mut TextStyle, declarations: &Declarations, parent_font_size: f32) {
+fn apply_declarations(
+    style: &mut TextStyle,
+    declarations: &Declarations,
+    parent_font_size: f32,
+    parent_color: u32,
+) {
     if let Some(color) = declarations.color {
-        style.color = color;
+        style.color = match color {
+            TextColor::Value(value) => value,
+            TextColor::Inherit => parent_color,
+            TextColor::Initial => TextStyle::initial().color,
+        };
     }
 
     if let Some(font_size) = declarations.font_size {
@@ -858,7 +883,7 @@ mod tests {
 
         let parsed = parse_text_declarations(&declarations);
 
-        assert_eq!(parsed.color, Some(0x00_00_80_00));
+        assert_eq!(parsed.color, Some(TextColor::Value(0x00_00_80_00)));
         assert_eq!(parsed.font_weight, Some(FontWeight::Bold));
         assert!(matches!(parsed.display, Some(Display::Block)));
     }
@@ -1261,5 +1286,42 @@ mod tests {
                 style.font_size
             );
         }
+    }
+
+    #[test]
+    fn color_defaulting_keywords_use_parent_or_initial() {
+        let mut parent = TextStyle::initial();
+        parent.color = 0x00_FF_00_00;
+
+        for (keyword, expected) in [
+            ("currentColor", 0x00_FF_00_00),
+            ("inherit", 0x00_FF_00_00),
+            ("unset", 0x00_FF_00_00),
+            ("initial", TextStyle::initial().color),
+        ] {
+            let inline_style = format!("color: green; color: {keyword}");
+
+            let element = Element {
+                tag: "a",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let style = compute_style(&element, parent.clone(), &[]);
+
+            assert_eq!(style.color, expected, "keyword: {keyword}");
+        }
+
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &[],
+            inline_style: Some("color: currentcolor !important; color: green"),
+        };
+
+        let style = compute_style(&element, parent, &[]);
+
+        assert_eq!(style.color, 0x00_FF_00_00);
     }
 }

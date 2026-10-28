@@ -583,4 +583,58 @@ mod tests {
             assert_eq!(style.font_size, expected, "class: {class}");
         }
     }
+
+    #[test]
+    fn wpt_color_currentcolor_computed_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/css-color/parsing/color-computed.html",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+
+        assert!(
+            source.contains(r#"test_computed_value("color", "currentcolor", "rgb(255, 0, 0)");"#),
+            "expected currentcolor case in WPT fixture",
+        );
+
+        let document = Document::parse(&source);
+
+        let style_element = document
+            .first_element("style")
+            .expect("WPT fixture must contain a style element");
+
+        let stylesheet = style_element
+            .children
+            .iter()
+            .filter_map(|node| match node {
+                Node::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        let rules = build_author_rules(&[stylesheet]);
+
+        let container = Element {
+            tag: "div",
+            id: Some("container"),
+            classes: &[],
+            inline_style: None,
+        };
+
+        let parent = compute_style(&container, TextStyle::initial(), &rules);
+
+        assert_eq!(parent.color, 0x00_FF_00_00);
+
+        let target = Element {
+            tag: "div",
+            id: Some("target"),
+            classes: &[],
+            inline_style: Some("color: green; color: currentcolor"),
+        };
+
+        let style = compute_style(&target, parent, &rules);
+
+        assert_eq!(style.color, 0x00_FF_00_00);
+    }
 }

@@ -1592,4 +1592,20 @@ mod tests {
 
         assert!((page.blocks[0].style.font_size - 24.0).abs() < 0.001);
     }
+
+    #[test]
+    fn currentcolor_flows_through_page_styles() {
+        let page = parse_html(
+            "https://example.test",
+            r#"
+                <style>
+                    div { color: red }
+                    p { color: green; color: currentcolor }
+                </style>
+                <div><p>Hello</p></div>
+            "#,
+        );
+
+        assert_eq!(page.blocks[0].style.color, 0x00_FF_00_00);
+    }
 }
