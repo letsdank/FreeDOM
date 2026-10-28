@@ -149,6 +149,17 @@ fn match_pattern(
                     Term::Group { pattern, .. } => {
                         next.extend(match_pattern(pattern, input, position, flags, budget)?);
                     }
+
+                    Term::Repeat {
+                        term,
+                        min,
+                        max,
+                        greedy,
+                    } => {
+                        next.extend(match_repeat(
+                            term, *min, *max, *greedy, input, position, flags, budget,
+                        )?);
+                    }
                 }
             }
 
@@ -160,6 +171,74 @@ fn match_pattern(
         }
 
         matches.extend(positions);
+    }
+
+    Ok(matches)
+}
+
+fn match_repeat(
+    term: &Term,
+    min: usize,
+    max: Option<usize>,
+    greedy: bool,
+    input: &[u16],
+    start: usize,
+    flags: RegExpFlags,
+    budget: &mut usize,
+) -> Result<Vec<usize>, MatchError> {
+    enum Frame {
+        Visit { position: usize, count: usize },
+        Emit(usize),
+    }
+
+    let atom = Pattern {
+        alternatives: vec![vec![term.clone()]],
+    };
+
+    let mut stack = vec![Frame::Visit {
+        position: start,
+        count: 0,
+    }];
+
+    let mut matches = Vec::new();
+
+    while let Some(frame) = stack.pop() {
+        step(budget)?;
+
+        let (position, count) = match frame {
+            Frame::Emit(position) => {
+                matches.push(position);
+                continue;
+            }
+
+            Frame::Visit { position, count } => (position, count),
+        };
+
+        if count >= min {
+            if greedy {
+                stack.push(Frame::Emit(position));
+            } else {
+                matches.push(position);
+            }
+        }
+
+        if max.is_some_and(|limit| count >= limit) {
+            continue;
+        }
+
+        let ends = match_pattern(&atom, input, position, flags, budget)?;
+
+        for end in ends.into_iter().rev() {
+            // An empty match must not repeat indefinitely.
+            if end == position && count >= min {
+                continue;
+            }
+
+            stack.push(Frame::Visit {
+                position: end,
+                count: count + 1,
+            });
+        }
     }
 
     Ok(matches)
@@ -385,6 +464,31 @@ mod tests {
                 expected,
                 "pattern: {pattern:?}, input: {input:?}"
             );
+        }
+    }
+
+    #[test]
+    fn matches_greedy_and_lazy_quantifiers() {
+        for (pattern, input, expected) in [
+            ("a*", "aaab", Some((0, 3))),
+            ("a*?", "aaab", Some((0, 0))),
+            ("a+", "aaab", Some((0, 3))),
+            ("a+?", "aaab", Some((0, 1))),
+            ("a?", "aaab", Some((0, 1))),
+            ("a??", "aaab", Some((0, 0))),
+            ("a*b", "aaab", Some((0, 4))),
+            ("a*ab", "aaab", Some((0, 4))),
+            ("a*?b", "aaab", Some((0, 4))),
+            ("(ab|a)+b", "aab", Some((0, 3))),
+            ("a+", "bbb", None),
+            ("(a|)+b", "b", Some((0, 1))),
+            ("()+", "", Some((0, 0))),
+        ] {
+            let result = search(pattern, input, 0, "")
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
         }
     }
 }

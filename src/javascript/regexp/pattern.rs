@@ -28,6 +28,12 @@ pub(crate) enum Term {
         capturing: bool,
         pattern: Box<Pattern>,
     },
+    Repeat {
+        term: Box<Term>,
+        min: usize,
+        max: Option<usize>,
+        greedy: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,6 +104,7 @@ impl Parser<'_> {
             }
 
             let term = self.term(depth)?;
+            let term = self.quantity(term)?;
 
             alternatives.last_mut().unwrap().push(term);
         }
@@ -124,6 +131,47 @@ impl Parser<'_> {
 
             _ => Ok(Term::Literal(character)),
         }
+    }
+
+    fn quantity(&mut self, term: Term) -> Result<Term, PatternError> {
+        let (min, max) = match self.peek() {
+            Some('*') => (0, None),
+            Some('+') => (1, None),
+            Some('?') => (0, Some(1)),
+            _ => return Ok(term),
+        };
+
+        if matches!(term, Term::Start | Term::End) {
+            return Err(PatternError {
+                offset: self.offset,
+                kind: PatternErrorKind::Unsupported(self.peek().unwrap()),
+            });
+        }
+
+        if let Term::Literal(character) = &term {
+            if character.len_utf16() == 2 {
+                return Err(PatternError {
+                    offset: self.offset,
+                    kind: PatternErrorKind::Unsupported(*character),
+                });
+            }
+        }
+
+        self.advance();
+
+        let greedy = if self.peek() == Some('?') {
+            self.advance();
+            false
+        } else {
+            true
+        };
+
+        Ok(Term::Repeat {
+            term: Box::new(term),
+            min,
+            max,
+            greedy,
+        })
     }
 
     fn group(&mut self, group_start: usize, depth: usize) -> Result<Term, PatternError> {
@@ -404,7 +452,7 @@ mod tests {
         );
 
         assert_eq!(
-            parse("a+").unwrap_err().kind,
+            parse("+a").unwrap_err().kind,
             PatternErrorKind::Unsupported('+'),
         );
 
@@ -460,5 +508,15 @@ mod tests {
             parse("[😀]").unwrap_err().kind,
             PatternErrorKind::Unsupported('😀'),
         );
+    }
+
+    #[test]
+    fn defers_quantified_astral_literals() {
+        assert_eq!(
+            parse("😀*").unwrap_err().kind,
+            PatternErrorKind::Unsupported('😀'),
+        );
+
+        assert!(parse("(?:😀)*").is_ok());
     }
 }
