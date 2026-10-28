@@ -35,4 +35,40 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn scans_regular_expression_literals_from_upstream_testharness() {
+        use crate::javascript::regexp::scan_literal;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT testharness.js must exist");
+
+        for (fragment, expected_pattern, following) in [
+            (
+                r"/^\(\)\s*=>\s*(?:{(.*)}\s*|(.*))$/",
+                r"^\(\)\s*=>\s*(?:{(.*)}\s*|(.*))$",
+                ");",
+            ),
+            (
+                r"/[\u000A\u000D\u2028\u2029]/",
+                r"[\u000A\u000D\u2028\u2029]",
+                ".test",
+            ),
+        ] {
+            let start = source.find(fragment).expect("WPT fragment must exist");
+
+            let literal = scan_literal(&source, start).unwrap();
+
+            assert_eq!(literal.pattern, expected_pattern);
+            assert_eq!(literal.flags, "");
+            assert!(
+                source[literal.end..].starts_with(following),
+                "fragment: {fragment}"
+            );
+        }
+    }
 }

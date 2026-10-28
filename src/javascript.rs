@@ -6,6 +6,11 @@ mod lexer;
 
 pub use lexer::{Token, TokenKind, tokenize};
 
+// The scanner will be connected to the lexer once lexical goals are available.
+#[allow(dead_code)]
+#[path = "javascript/regexp.rs"]
+pub(crate) mod regexp;
+
 #[path = "javascript/parser.rs"]
 mod parser;
 
