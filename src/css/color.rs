@@ -43,7 +43,12 @@ pub(super) fn parse_color(value: &str) -> Option<u32> {
 
     let channels: Vec<u8> = rgb
         .split(',')
-        .map(|channel| channel.trim().parse::<u8>())
+        .map(|channel| {
+            channel
+                .trim()
+                .parse::<i64>()
+                .map(|value| value.clamp(0, 255) as u8)
+        })
         .collect::<std::result::Result<_, _>>()
         .ok()?;
 
@@ -68,5 +73,13 @@ mod tests {
 
         assert_eq!(parse_color("#aBc"), Some(0x00_AA_BB_CC));
         assert_eq!(parse_color("#a1b2c3"), Some(0x00_A1_B2_C3));
+    }
+
+    #[test]
+    fn clamps_legacy_integer_rgb_channels() {
+        assert_eq!(parse_color("rgb(500, 0, 0)"), Some(0x00_FF_00_00));
+        assert_eq!(parse_color("rgb(-500, 64, 128)"), Some(0x00_00_40_80));
+        assert_eq!(parse_color("rgb(+10, 20, 30)"), Some(0x00_0A_14_1E));
+        assert_eq!(parse_color("rgb(2, wrong, 5)"), None);
     }
 }

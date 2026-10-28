@@ -330,4 +330,64 @@ mod tests {
 
         assert_eq!(count, 10, "expected ten WPT cases");
     }
+
+    #[test]
+    fn wpt_legacy_rgb_integer_clamping_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/css-color/parsing/color-valid-rgb.html"
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+        let mut count = 0;
+
+        for line in source.lines().map(str::trim) {
+            if !line.starts_with("[\"rgb(") {
+                continue;
+            }
+
+            let json = line.strip_suffix(',').unwrap_or(line);
+            let record = crate::javascript::parse_json(json).expect("WPT case must parse");
+            let fields = record.as_array().expect("WPT case must be an array");
+
+            let input = fields[0]
+                .as_string()
+                .expect("WPT case must contain an input string");
+
+            if !matches!(input, "rgb(500, 0, 0)" | "rgb(-500, 64, 128)") {
+                continue;
+            }
+
+            let expected = fields[1]
+                .as_string()
+                .expect("WPT case must contain an expected string");
+
+            let compute_color = |value: &str| {
+                let inline_style = format!("color: {value}");
+
+                let element = Element {
+                    tag: "p",
+                    id: None,
+                    classes: &[],
+                    inline_style: Some(&inline_style),
+                };
+
+                compute_style(&element, TextStyle::initial(), &[]).color
+            };
+
+            let expected_color = compute_color(expected);
+
+            assert_ne!(
+                expected_color,
+                TextStyle::initial().color,
+                "unsupported WPT expectation: {expected}"
+            );
+
+            assert_eq!(compute_color(input), expected_color, "input: {input}");
+
+            count += 1;
+        }
+
+        assert_eq!(count, 2, "expected two legacy integer RGB WPT cases");
+    }
 }

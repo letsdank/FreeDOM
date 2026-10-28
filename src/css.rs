@@ -1045,4 +1045,22 @@ mod tests {
 
         assert_eq!(style.color, 0x00_00_80_00);
     }
+
+    #[test]
+    fn cascades_clamped_rgb_colors() {
+        let stylesheets = ["p { color: rgb(-500, 64, 128) }".to_owned()];
+
+        let rules = build_author_rules(&stylesheets);
+
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(style.color, 0x00_00_40_80);
+    }
 }
