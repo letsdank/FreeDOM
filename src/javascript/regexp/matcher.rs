@@ -7,7 +7,7 @@
 
 use super::{
     RegExpFlags,
-    pattern::{Pattern, PredefinedClass, Term},
+    pattern::{ClassItem, Pattern, PredefinedClass, Term},
 };
 
 const MAX_STEPS: usize = 200_000;
@@ -106,6 +106,22 @@ fn match_pattern(
                     Term::CharacterClass { class, negated } => {
                         if let Some(&unit) = input.get(position) {
                             if class_matches(*class, unit) != *negated {
+                                next.push(position + 1);
+                            }
+                        }
+                    }
+
+                    Term::BracketClass { negated, items } => {
+                        if let Some(&unit) = input.get(position) {
+                            let included = items.iter().any(|item| match item {
+                                ClassItem::Range { start, end } => (*start..=*end).contains(&unit),
+
+                                ClassItem::Predefined { class, negated } => {
+                                    class_matches(*class, unit) != *negated
+                                }
+                            });
+
+                            if included != *negated {
                                 next.push(position + 1);
                             }
                         }
@@ -341,6 +357,34 @@ mod tests {
             let result = search(r"^\s$", &input, 0, "").unwrap();
 
             assert!(result.is_some(), "character: U+{unit:04X}");
+        }
+    }
+
+    #[test]
+    fn matches_bracket_classes_and_ranges() {
+        for (pattern, input, expected) in [
+            (r"^[a-z]$", "m", true),
+            (r"^[a-z]$", "M", false),
+            (r"^[^0-9]$", "x", true),
+            (r"^[^0-9]$", "3", false),
+            (r"^[\s_]$", "\n", true),
+            (r"^[\s_]$", "_", true),
+            (r"^[\D]$", "x", true),
+            (r"^[\D]$", "7", false),
+            (r"^[-a]$", "-", true),
+            (r"^[a-]$", "-", true),
+            (r"^[\b]$", "\u{0008}", true),
+            (r"^[\]]$", "]", true),
+            (r"^[]$", "x", false),
+            (r"^[^]$", "\n", true),
+        ] {
+            let result = search(pattern, input, 0, "").unwrap();
+
+            assert_eq!(
+                result.is_some(),
+                expected,
+                "pattern: {pattern:?}, input: {input:?}"
+            );
         }
     }
 }

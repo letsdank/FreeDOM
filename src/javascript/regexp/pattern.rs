@@ -2,8 +2,8 @@
 //!
 //! <https://tc39.es/ecma262/#sec-patterns>
 //!
-//! Matching, quantifiers, character classes, backreferences, and Unicode
-//! modes are not implemented here yet.
+//! Quantifiers, backreferences, and Unicode modes are not implemented here yet.
+//! Bracket classes currently supports BMP literals, ranges, and predefined classes.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Pattern {
@@ -20,9 +20,25 @@ pub(crate) enum Term {
         class: PredefinedClass,
         negated: bool,
     },
+    BracketClass {
+        negated: bool,
+        items: Vec<ClassItem>,
+    },
     Group {
         capturing: bool,
         pattern: Box<Pattern>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ClassItem {
+    Range {
+        start: u16,
+        end: u16,
+    },
+    Predefined {
+        class: PredefinedClass,
+        negated: bool,
     },
 }
 
@@ -40,6 +56,8 @@ pub(crate) enum PatternErrorKind {
     DanglingEscape,
     Unsupported(char),
     NestingLimit,
+    UnterminatedCharacterClass,
+    InvalidCharacterClassRange,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,8 +115,9 @@ impl Parser<'_> {
             '$' => Ok(Term::End),
             '(' => self.group(offset, depth),
             '\\' => self.escape(offset),
+            '[' => self.bracket_class(offset),
 
-            '*' | '+' | '?' | '[' | ']' | '{' | '}' => Err(PatternError {
+            '*' | '+' | '?' | ']' | '{' | '}' => Err(PatternError {
                 offset,
                 kind: PatternErrorKind::Unsupported(character),
             }),
@@ -193,6 +212,122 @@ impl Parser<'_> {
         };
 
         Ok(Term::Literal(value))
+    }
+
+    fn bracket_class(&mut self, class_start: usize) -> Result<Term, PatternError> {
+        let negated = if self.peek() == Some('^') {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        let mut items = Vec::new();
+
+        loop {
+            match self.peek() {
+                None => {
+                    return Err(PatternError {
+                        offset: class_start,
+                        kind: PatternErrorKind::UnterminatedCharacterClass,
+                    });
+                }
+
+                Some(']') => {
+                    self.advance();
+
+                    return Ok(Term::BracketClass { negated, items });
+                }
+
+                _ => {}
+            }
+
+            let first = self.class_atom()?;
+
+            if self.peek() == Some('-') && !self.source[self.offset + 1..].starts_with(']') {
+                let dash_offset = self.offset;
+                self.advance();
+
+                if self.peek().is_none() {
+                    return Err(PatternError {
+                        offset: class_start,
+                        kind: PatternErrorKind::UnterminatedCharacterClass,
+                    });
+                }
+
+                let second = self.class_atom()?;
+
+                match (first, second) {
+                    (
+                        ClassItem::Range {
+                            start,
+                            end: first_end,
+                        },
+                        ClassItem::Range {
+                            start: second_start,
+                            end,
+                        },
+                    ) if start == first_end && second_start == end => {
+                        if start > end {
+                            return Err(PatternError {
+                                offset: dash_offset,
+                                kind: PatternErrorKind::InvalidCharacterClassRange,
+                            });
+                        }
+
+                        items.push(ClassItem::Range { start, end });
+                    }
+
+                    _ => {
+                        return Err(PatternError {
+                            offset: dash_offset,
+                            kind: PatternErrorKind::Unsupported('-'),
+                        });
+                    }
+                }
+            } else {
+                items.push(first);
+            }
+        }
+    }
+
+    fn class_atom(&mut self) -> Result<ClassItem, PatternError> {
+        let offset = self.offset;
+        let character = self.advance().unwrap();
+
+        let term = if character == '\\' {
+            if self.peek() == Some('b') {
+                self.advance();
+                Term::Literal('\u{0008}')
+            } else if self.peek() == Some('-') {
+                self.advance();
+                Term::Literal('-')
+            } else {
+                self.escape(offset)?
+            }
+        } else {
+            Term::Literal(character)
+        };
+
+        match term {
+            Term::Literal(character) if (character as u32) <= 0xFFFF => {
+                let unit = character as u16;
+
+                Ok(ClassItem::Range {
+                    start: unit,
+                    end: unit,
+                })
+            }
+
+            Term::Literal(character) => Err(PatternError {
+                offset,
+                kind: PatternErrorKind::Unsupported(character),
+            }),
+
+            Term::CharacterClass { class, negated } => Ok(ClassItem::Predefined { class, negated }),
+
+            _ => unreachable!(),
+        }
     }
 
     fn peek(&self) -> Option<char> {
@@ -301,6 +436,29 @@ mod tests {
         assert_eq!(
             parse(&input).unwrap_err().kind,
             PatternErrorKind::NestingLimit,
+        );
+    }
+
+    #[test]
+    fn validates_bracket_class_ranges_and_termination() {
+        assert_eq!(
+            parse("[z-a]").unwrap_err().kind,
+            PatternErrorKind::InvalidCharacterClassRange,
+        );
+
+        assert_eq!(
+            parse("[abc").unwrap_err().kind,
+            PatternErrorKind::UnterminatedCharacterClass,
+        );
+
+        assert_eq!(
+            parse(r"[\d-a]").unwrap_err().kind,
+            PatternErrorKind::Unsupported('-')
+        );
+
+        assert_eq!(
+            parse("[😀]").unwrap_err().kind,
+            PatternErrorKind::Unsupported('😀'),
         );
     }
 }
