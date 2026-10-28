@@ -112,4 +112,28 @@ mod tests {
         assert_eq!(pattern.alternatives, vec![vec![Term::Literal('\n')]]);
         assert!(flags.global);
     }
+
+    #[test]
+    fn matches_newline_regexp_from_upstream_testharness() {
+        use crate::javascript::regexp::{
+            matcher::{Match, find},
+            scan_literal,
+        };
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT testharness.js must exist");
+        let start = source.find(r"/\n/g").expect("WPT fragment must exist");
+        let literal = scan_literal(&source, start).unwrap();
+        let pattern = literal.parse_pattern().unwrap();
+        let flags = literal.parse_flags().unwrap();
+
+        assert_eq!(
+            find(&pattern, "ab\nc", 0, flags),
+            Ok(Some(Match { start: 2, end: 3 })),
+        );
+    }
 }
