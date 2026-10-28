@@ -1028,3 +1028,44 @@ fn evaluates_typeof_expressions() {
     )
     .unwrap();
 }
+
+#[test]
+fn tokenizes_equality_operators_without_consuming_following_tokens() {
+    let tokens = tokenize("= == === => ! != !== ==x !=y").unwrap();
+
+    let kind: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        kind,
+        vec![
+            TokenKind::Assign,
+            TokenKind::Equal,
+            TokenKind::StrictEqual,
+            TokenKind::Arrow,
+            TokenKind::Not,
+            TokenKind::NotEqual,
+            TokenKind::StrictNotEqual,
+            TokenKind::Equal,
+            TokenKind::Identifier("x".to_owned()),
+            TokenKind::NotEqual,
+            TokenKind::Identifier("y".to_owned()),
+            TokenKind::EndOfFile,
+        ]
+    );
+}
+
+#[test]
+fn evaluates_equality_operators() {
+    for (source, expected) in [
+        ("1 == '1'", true),
+        ("1 != '1'", false),
+        ("1 === '1'", false),
+        ("1 !== '1'", true),
+        ("2 == 3", false),
+        ("2 != 3", true),
+    ] {
+        let result = evaluate(source).unwrap();
+
+        assert_eq!(result, Value::Boolean(expected), "source: {source}");
+    }
+}

@@ -139,23 +139,35 @@ impl<'source> Lexer<'source> {
                 '*' => self.push(TokenKind::Star, offset),
                 '/' => self.push(TokenKind::Slash, offset),
 
-                '=' if self.consume_if('=') && self.consume_if('=') => {
-                    self.push(TokenKind::StrictEqual, offset);
+                '=' => {
+                    let kind = if self.consume_if('=') {
+                        if self.consume_if('=') {
+                            TokenKind::StrictEqual
+                        } else {
+                            TokenKind::Equal
+                        }
+                    } else if self.consume_if('>') {
+                        TokenKind::Arrow
+                    } else {
+                        TokenKind::Assign
+                    };
+
+                    self.push(kind, offset);
                 }
 
-                '=' if self.consume_if('=') => self.push(TokenKind::Equal, offset),
+                '!' => {
+                    let kind = if self.consume_if('=') {
+                        if self.consume_if('=') {
+                            TokenKind::StrictNotEqual
+                        } else {
+                            TokenKind::NotEqual
+                        }
+                    } else {
+                        TokenKind::Not
+                    };
 
-                '=' if self.consume_if('>') => self.push(TokenKind::Arrow, offset),
-
-                '=' => self.push(TokenKind::Assign, offset),
-
-                '!' if self.consume_if('=') && self.consume_if('=') => {
-                    self.push(TokenKind::StrictNotEqual, offset);
+                    self.push(kind, offset);
                 }
-
-                '!' if self.consume_if('=') => self.push(TokenKind::NotEqual, offset),
-
-                '!' => self.push(TokenKind::Not, offset),
 
                 '<' if self.consume_if('=') => self.push(TokenKind::LessEqual, offset),
                 '<' => self.push(TokenKind::Less, offset),
