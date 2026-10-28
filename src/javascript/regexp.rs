@@ -3,8 +3,13 @@
 //! Lexical grammar:
 //! <https://tc39.es/ecma262/#sec-literals-regular-expression-literals>
 //!
-//! This scanner does not parse patterns or validate flags. Flag scanning is
-//! currently limited to ASCII identifier characters.
+//! The literal scanner does not parse patterns. Flag scanning is currently
+//! limiter to ASCII identifier characters; validation is a separate step.
+
+#[path = "regexp/flags.rs"]
+mod flags;
+
+pub(crate) use flags::{RegExpFlagError, RegExpFlags};
 
 use super::lexer::LexError;
 
@@ -13,6 +18,12 @@ pub(crate) struct RegExpLiteral<'a> {
     pub(crate) pattern: &'a str,
     pub(crate) flags: &'a str,
     pub(crate) end: usize,
+}
+
+impl RegExpLiteral<'_> {
+    pub(crate) fn parse_flags(&self) -> Result<RegExpFlags, RegExpFlagError> {
+        RegExpFlags::parse(self.flags)
+    }
 }
 
 pub(crate) fn scan_literal(source: &str, start: usize) -> Result<RegExpLiteral<'_>, LexError> {
@@ -97,6 +108,7 @@ mod tests {
 
         assert_eq!(literal.pattern, r"a\/b[/-]c");
         assert_eq!(literal.flags, "gi");
+        assert_eq!(literal.parse_flags().unwrap().to_canonical_string(), "gi");
         assert_eq!(&source[literal.end..], "; 8 / 2");
     }
 
@@ -131,5 +143,13 @@ mod tests {
         for source in ["// comment", "/* comment */", "abc"] {
             assert!(scan_literal(source, 0).is_err(), "source: {source:?}");
         }
+    }
+
+    #[test]
+    fn scanning_and_flag_validation_are_separate() {
+        let literal = scan_literal("/a/gg;", 0).unwrap();
+
+        assert_eq!(literal.flags, "gg");
+        assert!(literal.parse_flags().is_err());
     }
 }

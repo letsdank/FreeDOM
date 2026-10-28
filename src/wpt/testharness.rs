@@ -71,4 +71,26 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn validates_regular_expression_flags_from_upstream_testharness() {
+        use crate::javascript::regexp::scan_literal;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT testharness.js must exist");
+
+        for fragment in [r"/\n/g", r"/\s/g"] {
+            let start = source.find(fragment).expect("WPT fragment must exist");
+            let literal = scan_literal(&source, start).unwrap();
+            let flags = literal.parse_flags().unwrap();
+
+            assert!(flags.global);
+            assert_eq!(flags.to_canonical_string(), "g");
+            assert_eq!(&source[start..literal.end], fragment);
+        }
+    }
 }
