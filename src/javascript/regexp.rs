@@ -4,10 +4,13 @@
 //! <https://tc39.es/ecma262/#sec-literals-regular-expression-literals>
 //!
 //! The literal scanner does not parse patterns. Flag scanning is currently
-//! limiter to ASCII identifier characters; validation is a separate step.
+//! limited to ASCII identifier characters; validation is a separate step.
 
 #[path = "regexp/flags.rs"]
 mod flags;
+
+#[path = "regexp/pattern.rs"]
+pub(crate) mod pattern;
 
 pub(crate) use flags::{RegExpFlagError, RegExpFlags};
 
@@ -23,6 +26,10 @@ pub(crate) struct RegExpLiteral<'a> {
 impl RegExpLiteral<'_> {
     pub(crate) fn parse_flags(&self) -> Result<RegExpFlags, RegExpFlagError> {
         RegExpFlags::parse(self.flags)
+    }
+
+    pub(crate) fn parse_pattern(&self) -> Result<pattern::Pattern, pattern::PatternError> {
+        pattern::parse(self.pattern)
     }
 }
 

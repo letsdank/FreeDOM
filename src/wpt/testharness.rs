@@ -93,4 +93,23 @@ mod tests {
             assert_eq!(&source[start..literal.end], fragment);
         }
     }
+
+    #[test]
+    fn parses_newline_regexp_from_upstream_testharness() {
+        use crate::javascript::regexp::{pattern::Term, scan_literal};
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT testharness.js must exist");
+        let start = source.find(r"/\n/g").expect("WPT fragment must exist");
+        let literal = scan_literal(&source, start).unwrap();
+        let pattern = literal.parse_pattern().unwrap();
+        let flags = literal.parse_flags().unwrap();
+
+        assert_eq!(pattern.alternatives, vec![vec![Term::Literal('\n')]]);
+        assert!(flags.global);
+    }
 }
