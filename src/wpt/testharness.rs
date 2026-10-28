@@ -136,4 +136,28 @@ mod tests {
             Ok(Some(Match { start: 2, end: 3 })),
         );
     }
+
+    #[test]
+    fn matches_whitespace_regexp_from_upstream_testharness() {
+        use crate::javascript::regexp::{
+            matcher::{Match, find},
+            scan_literal,
+        };
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT testharness.js must exist");
+        let start = source.find(r"/\s/g").expect("WPT fragment must exist");
+        let literal = scan_literal(&source, start).unwrap();
+        let pattern = literal.parse_pattern().unwrap();
+        let flags = literal.parse_flags().unwrap();
+
+        assert_eq!(
+            find(&pattern, "a\u{00A0}b", 0, flags),
+            Ok(Some(Match { start: 1, end: 2 })),
+        );
+    }
 }

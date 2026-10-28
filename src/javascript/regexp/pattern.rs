@@ -16,10 +16,21 @@ pub(crate) enum Term {
     Any,
     Start,
     End,
+    CharacterClass {
+        class: PredefinedClass,
+        negated: bool,
+    },
     Group {
         capturing: bool,
         pattern: Box<Pattern>,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PredefinedClass {
+    Digit,
+    Word,
+    Space,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,6 +160,20 @@ impl Parser<'_> {
             });
         };
 
+        let class = match character {
+            'd' => Some((PredefinedClass::Digit, false)),
+            'D' => Some((PredefinedClass::Digit, true)),
+            'w' => Some((PredefinedClass::Word, false)),
+            'W' => Some((PredefinedClass::Word, true)),
+            's' => Some((PredefinedClass::Space, false)),
+            'S' => Some((PredefinedClass::Space, true)),
+            _ => None,
+        };
+
+        if let Some((class, negated)) = class {
+            return Ok(Term::CharacterClass { class, negated });
+        }
+
         let value = match character {
             'n' => '\n',
             'r' => '\r',
@@ -239,8 +264,8 @@ mod tests {
     #[test]
     fn distinguishes_unsupported_features_from_syntax_errors() {
         assert_eq!(
-            parse(r"\d").unwrap_err().kind,
-            PatternErrorKind::Unsupported('d'),
+            parse(r"\p").unwrap_err().kind,
+            PatternErrorKind::Unsupported('p'),
         );
 
         assert_eq!(

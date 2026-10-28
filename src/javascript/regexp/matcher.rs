@@ -7,7 +7,7 @@
 
 use super::{
     RegExpFlags,
-    pattern::{Pattern, Term},
+    pattern::{Pattern, PredefinedClass, Term},
 };
 
 const MAX_STEPS: usize = 200_000;
@@ -103,6 +103,14 @@ fn match_pattern(
                         }
                     }
 
+                    Term::CharacterClass { class, negated } => {
+                        if let Some(&unit) = input.get(position) {
+                            if class_matches(*class, unit) != *negated {
+                                next.push(position + 1);
+                            }
+                        }
+                    }
+
                     Term::Start => {
                         if position == 0
                             || (flags.multiline && is_line_terminator(input[position - 1]))
@@ -149,6 +157,39 @@ fn step(budget: &mut usize) -> Result<(), MatchError> {
 
 fn is_line_terminator(unit: u16) -> bool {
     matches!(unit, 0x000A | 0x000D | 0x2028 | 0x2029)
+}
+
+// https://tc39.es/ecma262/#sec-runtime-semantics-compilecharacterclassescape
+fn class_matches(class: PredefinedClass, unit: u16) -> bool {
+    match class {
+        PredefinedClass::Digit => {
+            matches!(unit, 0x30..=0x39)
+        }
+
+        PredefinedClass::Word => {
+            matches!(
+                unit,
+                0x30..=0x39|0x41..=0x5A|0x5F|0x61..=0x7A
+            )
+        }
+
+        PredefinedClass::Space => {
+            matches!(
+                unit,
+                0x0009..=0x000D
+                | 0x0020
+                | 0x00A0
+                | 0x1680
+                | 0x2000..=0x200A
+                | 0x2028
+                | 0x2029
+                | 0x202F
+                | 0x205F
+                | 0x3000
+                | 0xFEFF
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -260,5 +301,46 @@ mod tests {
         let input = "a".repeat(18);
 
         assert_eq!(search(&pattern, &input, 0, ""), Err(MatchError::StepLimit),);
+    }
+
+    #[test]
+    fn matches_predefined_character_classes() {
+        for (pattern, input, expected) in [
+            (r"^\d$", "5", true),
+            (r"^\d$", "٥", false),
+            (r"^\D$", "x", true),
+            (r"^\D$", "5", false),
+            (r"^\w$", "_", true),
+            (r"^\w$", "é", false),
+            (r"^\W$", "é", true),
+            (r"^\W$", "A", false),
+            (r"^\s$", "\u{FEFF}", true),
+            (r"^\s$", "\u{0085}", false),
+            (r"^\S$", "\u{0085}", true),
+            (r"^\S$", "\n", false),
+            (r"^\D$", "", false),
+        ] {
+            let result = search(pattern, input, 0, "").unwrap();
+
+            assert_eq!(
+                result.is_some(),
+                expected,
+                "pattern: {pattern:?}, input: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn matches_ecmascript_whitespace_and_line_terminators() {
+        for unit in [
+            0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x0020, 0x00A0, 0x1680, 0x2000, 0x2001, 0x2002,
+            0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F,
+            0x205F, 0x3000, 0xFEFF,
+        ] {
+            let input = char::from_u32(unit).unwrap().to_string();
+            let result = search(r"^\s$", &input, 0, "").unwrap();
+
+            assert!(result.is_some(), "character: U+{unit:04X}");
+        }
     }
 }
