@@ -16,6 +16,9 @@ pub(crate) enum Term {
     Any,
     Start,
     End,
+    WordBoundary {
+        negated: bool,
+    },
     CharacterClass {
         class: PredefinedClass,
         negated: bool,
@@ -149,7 +152,7 @@ impl Parser<'_> {
             _ => return Ok(term),
         };
 
-        if matches!(term, Term::Start | Term::End) {
+        if matches!(term, Term::Start | Term::End | Term::WordBoundary { .. }) {
             return Err(PatternError {
                 offset: self.offset,
                 kind: PatternErrorKind::Unsupported(self.peek().unwrap()),
@@ -304,6 +307,12 @@ impl Parser<'_> {
             });
         };
 
+        match character {
+            'b' => return Ok(Term::WordBoundary { negated: false }),
+            'B' => return Ok(Term::WordBoundary { negated: true }),
+            _ => {}
+        }
+
         let class = match character {
             'd' => Some((PredefinedClass::Digit, false)),
             'D' => Some((PredefinedClass::Digit, true)),
@@ -450,6 +459,11 @@ impl Parser<'_> {
             }),
 
             Term::CharacterClass { class, negated } => Ok(ClassItem::Predefined { class, negated }),
+
+            Term::WordBoundary { .. } => Err(PatternError {
+                offset,
+                kind: PatternErrorKind::Unsupported('B'),
+            }),
 
             _ => unreachable!(),
         }
@@ -622,5 +636,23 @@ mod tests {
         assert!(parse("a{1}").is_ok());
         assert!(parse("a{2,}").is_ok());
         assert!(parse("a{2,4}?").is_ok());
+    }
+
+    #[test]
+    fn word_boundaries_are_not_quantifiable() {
+        assert_eq!(
+            parse(r"\b+").unwrap_err().kind,
+            PatternErrorKind::Unsupported('+'),
+        );
+
+        assert_eq!(
+            parse(r"\B{2}").unwrap_err().kind,
+            PatternErrorKind::Unsupported('{'),
+        );
+
+        assert_eq!(
+            parse(r"[\B]").unwrap_err().kind,
+            PatternErrorKind::Unsupported('B'),
+        );
     }
 }

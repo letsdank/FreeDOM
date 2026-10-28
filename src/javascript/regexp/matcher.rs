@@ -160,6 +160,23 @@ fn match_pattern(
                             term, *min, *max, *greedy, input, position, flags, budget,
                         )?);
                     }
+
+                    Term::WordBoundary { negated } => {
+                        let left_word = position
+                            .checked_sub(1)
+                            .and_then(|index| input.get(index))
+                            .is_some_and(|&unit| class_matches(PredefinedClass::Word, unit));
+
+                        let right_word = input
+                            .get(position)
+                            .is_some_and(|&unit| class_matches(PredefinedClass::Word, unit));
+
+                        let boundary = left_word != right_word;
+
+                        if boundary != *negated {
+                            next.push(position);
+                        }
+                    }
                 }
             }
 
@@ -539,5 +556,66 @@ mod tests {
         let matched = find(&pattern, "abcdefghi", 0, flags).unwrap();
 
         assert_eq!(matched, Some(Match { start: 0, end: 5 }),);
+    }
+
+    #[test]
+    fn matches_word_boundaries_without_consuming_characters() {
+        for (pattern, input, expected) in [
+            (r"\bcat\b", "a cat!", Some((2, 5))),
+            (r"\bcat\b", "concatenate", None),
+            (r"\Bcat\B", "scats", Some((1, 4))),
+            (r"\B", "", Some((0, 0))),
+            (r"\b", "", None),
+            (r"\b", "éa", Some((1, 1))),
+            (r"\b_\b", "_", Some((0, 1))),
+            (r"^[\b]$", "\u{0008}", Some((0, 1))),
+        ] {
+            let result = search(pattern, input, 0, "")
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn matches_word_boundaries_from_test262_fixtures() {
+        use crate::javascript::regexp::scan_literal;
+
+        for (file, fragment, input, expected) in [
+            (
+                "S15.10.2.6_A3_T2.js",
+                r"/ot\b/",
+                "pilot\nsoviet robot\topenoffice",
+                (3, 5),
+            ),
+            (
+                "S15.10.2.6_A4_T1.js",
+                r"/\Bevil\B/",
+                "devils arise\tfor\nevil",
+                (1, 5),
+            ),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata/test262/test/built-ins/RegExp")
+                .join(file);
+
+            let source = std::fs::read_to_string(path).expect("Test262 fixture must exist");
+            let start = source.find(fragment).expect("Test262 regexp must exist");
+            let literal = scan_literal(&source, start).unwrap();
+            let pattern = literal.parse_pattern().unwrap();
+            let flags = literal.parse_flags().unwrap();
+
+            let result = find(&pattern, input, 0, flags).unwrap();
+
+            assert_eq!(
+                result,
+                Some(Match {
+                    start: expected.0,
+                    end: expected.1,
+                }),
+                "fixture: {file}",
+            );
+        }
     }
 }
