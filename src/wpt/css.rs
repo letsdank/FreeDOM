@@ -195,4 +195,55 @@ mod tests {
 
         assert_eq!(span_style.color, 0x00_FF_00_00);
     }
+
+    #[test]
+    fn wpt_font_size_em_parent_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/CSS2/fonts/font-size-rule-004.xht",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+
+        let document = Document::parse(&source);
+
+        let style_element = document
+            .first_element("style")
+            .expect("WPT fixture must contain a style element");
+
+        let stylesheet = style_element
+            .children
+            .iter()
+            .filter_map(|node| match node {
+                Node::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        let rules = build_author_rules(&[stylesheet]);
+
+        let parent = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let parent_style = compute_style(&parent, TextStyle::initial(), &rules);
+
+        assert_eq!(parent_style.font_size, 18.0);
+
+        for id in ["span1", "span2"] {
+            let element = Element {
+                tag: "span",
+                id: Some(id),
+                classes: &[],
+                inline_style: None,
+            };
+
+            let style = compute_style(&element, parent_style.clone(), &rules);
+
+            assert_eq!(style.font_size, 27.0, "element: {id}");
+        }
+    }
 }

@@ -556,6 +556,7 @@ pub(crate) fn compute_style(
     inherited_style: TextStyle,
     rules: &[CssRule],
 ) -> TextStyle {
+    let parent_font_size = inherited_style.font_size;
     let mut style = default_style(&element.tag, inherited_style);
 
     let mut matching_rules: Vec<&CssRule> = rules
@@ -566,12 +567,16 @@ pub(crate) fn compute_style(
     matching_rules.sort_by_key(|rule| (rule.specificity, rule.source_order));
 
     for rule in matching_rules {
-        apply_declarations(&mut style, &rule.declarations);
+        apply_declarations(&mut style, &rule.declarations, parent_font_size);
     }
 
     if let Some(inline_style) = &element.inline_style {
         let declarations = parse_declaration_list(inline_style);
-        apply_declarations(&mut style, &parse_text_declarations(&declarations));
+        apply_declarations(
+            &mut style,
+            &parse_text_declarations(&declarations),
+            parent_font_size,
+        );
     }
 
     style
@@ -663,7 +668,7 @@ pub(crate) fn matching_declarations<'a>(
         .collect()
 }
 
-fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
+fn apply_declarations(style: &mut TextStyle, declarations: &Declarations, parent_font_size: f32) {
     if let Some(color) = declarations.color {
         style.color = color;
     }
@@ -671,7 +676,7 @@ fn apply_declarations(style: &mut TextStyle, declarations: &Declarations) {
     if let Some(font_size) = declarations.font_size {
         style.font_size = match font_size {
             FontSize::Pixels(pixels) => pixels,
-            FontSize::Em(em) => style.font_size * em,
+            FontSize::Em(em) => parent_font_size * em,
         };
     }
 
@@ -988,5 +993,38 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
         assert_eq!(style.color, 0x00_00_80_00);
+    }
+
+    #[test]
+    fn relative_font_sizes_use_parent_not_previous_cascade_values() {
+        let stylesheets = ["h1 { font-size: 2em } .lead { font-size: 3em }".to_owned()];
+
+        let rules = build_author_rules(&stylesheets);
+        let classes = vec!["lead".to_owned()];
+
+        let element = Element {
+            tag: "h1",
+            id: None,
+            classes: &classes,
+            inline_style: Some("font-size: 1.5em"),
+        };
+
+        let mut parent_style = TextStyle::initial();
+        parent_style.font_size = 20.0;
+
+        let style = compute_style(&element, parent_style.clone(), &rules);
+
+        assert_eq!(style.font_size, 30.0);
+
+        let element_without_inline = Element {
+            tag: "h1",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let style = compute_style(&element_without_inline, parent_style, &rules);
+
+        assert_eq!(style.font_size, 60.0);
     }
 }
