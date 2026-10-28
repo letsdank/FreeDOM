@@ -926,3 +926,37 @@ fn id_specificity_exceeds_many_classes_in_svg() {
 
     assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
 }
+
+#[test]
+fn important_stylesheet_fill_beats_normal_inline_fill() {
+    let document = parse_svg(
+        r#"
+            <svg>
+                <style>
+                    rect { fill: green !important }
+                    #target { fill: red }
+                </style>
+
+                <rect id="target" style="fill: blue" width="10" height="10"/>
+            </svg>
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
+}
+
+#[test]
+fn important_inline_fill_beats_important_stylesheet_fill() {
+    let document = parse_svg(
+        r#"
+            <svg>
+                <style>rect { fill: green !important }</style>
+                <rect style="fill: blue !important" width="10" height="10"/>
+            </svg>
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(document.shapes[0].fill, Some(Color::rgba(0, 0, 255, 255)));
+}

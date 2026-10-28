@@ -258,7 +258,10 @@ fn parse_gradient_stop(element: &HtmlElement) -> Result<GradientStop, SvgError> 
         .unwrap_or(1.0);
 
     if let Some(style) = attribute(element, "style") {
-        for declaration in parse_declaration_list(style) {
+        let mut declarations = parse_declaration_list(style);
+        declarations.sort_by_key(|declaration| declaration.important);
+
+        for declaration in declarations {
             match declaration.name.as_str() {
                 "stop-color" => {
                     color = parse_solid_color(&declaration.value)?.unwrap_or(Color::TRANSPARENT);

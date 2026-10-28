@@ -127,11 +127,79 @@ fn append_declaration(source: &str, declarations: &mut Vec<CssDeclaration>) {
     let name = name.trim().to_ascii_lowercase();
 
     if !name.is_empty() {
+        let (value, important) = split_important(value.trim());
+
         declarations.push(CssDeclaration {
             name,
             value: value.trim().to_owned(),
+            important,
         });
     }
+}
+
+fn split_important(value: &str) -> (&str, bool) {
+    let mut quote = None;
+    let mut closing_delimiters = Vec::new();
+    let mut characters = value.char_indices().peekable();
+    let mut bang = None;
+
+    while let Some((index, character)) = characters.next() {
+        if character == '\\' {
+            characters.next();
+            continue;
+        }
+
+        if let Some(delimiter) = quote {
+            if character == delimiter {
+                quote = None;
+            }
+
+            continue;
+        }
+
+        if character == '/' && characters.peek().is_some_and(|&(_, next)| next == '*') {
+            characters.next();
+
+            while let Some((_, next)) = characters.next() {
+                if next == '*'
+                    && characters
+                        .peek()
+                        .is_some_and(|&(_, character)| character == '/')
+                {
+                    characters.next();
+                    break;
+                }
+            }
+
+            continue;
+        }
+
+        match character {
+            '\'' | '"' => quote = Some(character),
+
+            '(' => closing_delimiters.push(')'),
+            '[' => closing_delimiters.push(']'),
+            '{' => closing_delimiters.push('}'),
+
+            ')' | ']' | '}' if closing_delimiters.last() == Some(&character) => {
+                closing_delimiters.pop();
+            }
+
+            '!' if closing_delimiters.is_empty() => {
+                bang = Some(index);
+            }
+
+            _ => {}
+        }
+    }
+
+    if let Some(index) = bang {
+        if value[index + 1..].trim().eq_ignore_ascii_case("important") {
+            return (value[..index].trim_end(), true);
+        }
+    }
+
+    (value, false)
 }
 
 #[cfg(test)]
@@ -192,5 +260,20 @@ mod tests {
         );
 
         assert_eq!(split_top_level_commas(r".a\\, .b"), vec![r".a\\", " .b"]);
+    }
+
+    #[test]
+    fn identifies_only_top_level_important() {
+        let source = r#"color: green ! ImPoRtAnT; content: 'not!important'; x: url(a!important); y: a\!important"#;
+
+        let declarations = parse_declaration_list(source);
+
+        assert_eq!(declarations.len(), 4);
+        assert_eq!(declarations[0].value, "green");
+        assert!(declarations[0].important);
+
+        for declaration in &declarations[1..] {
+            assert!(!declaration.important);
+        }
     }
 }

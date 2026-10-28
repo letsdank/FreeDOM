@@ -83,13 +83,14 @@ pub(crate) struct CssRule {
     selector: Selector,
     specificity: Specificity,
     source_order: usize,
-    declarations: Declarations,
+    declarations: Vec<CssDeclaration>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CssDeclaration {
     pub(crate) name: String,
     pub(crate) value: String,
+    pub(crate) important: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,7 +122,7 @@ pub(crate) fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
             selector: rule.selector,
             specificity: rule.specificity,
             source_order: rule.source_order,
-            declarations: parse_text_declarations(&rule.declarations),
+            declarations: rule.declarations,
         })
         .collect()
 }
@@ -196,7 +197,7 @@ fn declaration_value<'a>(declarations: &'a [CssDeclaration], name: &str) -> Opti
     declarations
         .iter()
         .rev()
-        .find(|declaration| declaration.name == name)
+        .find(|declaration| declaration.name == name && !declaration.important)
         .map(|declaration| declaration.value.as_str())
 }
 
@@ -566,17 +567,26 @@ pub(crate) fn compute_style(
 
     matching_rules.sort_by_key(|rule| (rule.specificity, rule.source_order));
 
-    for rule in matching_rules {
-        apply_declarations(&mut style, &rule.declarations, parent_font_size);
-    }
+    let inline_declarations = element
+        .inline_style
+        .map(parse_declaration_list)
+        .unwrap_or_default();
 
-    if let Some(inline_style) = &element.inline_style {
-        let declarations = parse_declaration_list(inline_style);
-        apply_declarations(
-            &mut style,
-            &parse_text_declarations(&declarations),
-            parent_font_size,
-        );
+    let mut declarations: Vec<&CssDeclaration> = matching_rules
+        .into_iter()
+        .flat_map(|rule| &rule.declarations)
+        .collect();
+
+    declarations.extend(inline_declarations.iter());
+
+    // Stable sorting keeps specificity, source order, and inline precedence
+    // within each importance group.
+    declarations.sort_by_key(|declaration| declaration.important);
+
+    for declaration in declarations {
+        let parsed = parse_text_declarations(std::slice::from_ref(declaration));
+
+        apply_declarations(&mut style, &parsed, parent_font_size);
     }
 
     style
@@ -662,10 +672,14 @@ pub(crate) fn matching_declarations<'a>(
 
     matching_rules.sort_by_key(|rule| (rule.specificity, rule.source_order));
 
-    matching_rules
+    let mut declarations: Vec<_> = matching_rules
         .into_iter()
         .flat_map(|rule| rule.declarations.iter())
-        .collect()
+        .collect();
+
+    declarations.sort_by_key(|declaration| declaration.important);
+
+    declarations
 }
 
 fn apply_declarations(style: &mut TextStyle, declarations: &Declarations, parent_font_size: f32) {
@@ -1026,5 +1040,40 @@ mod tests {
         let style = compute_style(&element_without_inline, parent_style, &rules);
 
         assert_eq!(style.font_size, 60.0);
+    }
+
+    #[test]
+    fn important_overrides_normal_rules_and_inline_style() {
+        let stylesheets = [
+            "p { color: green !important; font-size: 2em !IMPORTANT; color: red; } \
+             #target { color: red; font-size: 30px }"
+                .to_owned(),
+        ];
+
+        let rules = build_author_rules(&stylesheets);
+
+        let element = Element {
+            tag: "p",
+            id: Some("target"),
+            classes: &[],
+            inline_style: Some("color: blue; font-size: 40px"),
+        };
+
+        let mut parent = TextStyle::initial();
+        parent.font_size = 12.0;
+
+        let style = compute_style(&element, parent.clone(), &rules);
+
+        assert_eq!(style.color, 0x00_00_80_00);
+        assert_eq!(style.font_size, 24.0);
+
+        let important_inline = Element {
+            inline_style: Some("color: blue !important"),
+            ..element
+        };
+
+        let style = compute_style(&important_inline, parent.clone(), &rules);
+
+        assert_eq!(style.color, 0x00_00_00_FF);
     }
 }

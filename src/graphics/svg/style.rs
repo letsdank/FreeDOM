@@ -50,14 +50,17 @@ pub(super) fn resolve_style(
         inline_style: None,
     };
 
-    for declaration in matching_declarations(css_rules, &css_element) {
-        apply_svg_declaration(&mut style, &declaration.name, &declaration.value)?;
-    }
+    let inline_declarations = attribute(element, "style")
+        .map(parse_declaration_list)
+        .unwrap_or_default();
 
-    if let Some(value) = attribute(element, "style") {
-        for declaration in parse_declaration_list(value) {
-            apply_svg_declaration(&mut style, &declaration.name, &declaration.value)?;
-        }
+    let mut declarations = matching_declarations(css_rules, &css_element);
+
+    declarations.extend(inline_declarations.iter());
+    declarations.sort_by_key(|declaration| declaration.important);
+
+    for declaration in declarations {
+        apply_svg_declaration(&mut style, &declaration.name, &declaration.value)?;
     }
 
     Ok(style)

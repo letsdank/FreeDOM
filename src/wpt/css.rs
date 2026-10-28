@@ -246,4 +246,44 @@ mod tests {
             assert_eq!(style.font_size, 27.0, "element: {id}");
         }
     }
+
+    #[test]
+    fn wpt_important_vs_inline_font_size_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/css-cascade/important-vs-inline-002.html"
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+        let document = Document::parse(&source);
+
+        let style_element = document
+            .first_element("style")
+            .expect("WPT fixture must contain a style element");
+
+        let stylesheet = style_element
+            .children
+            .iter()
+            .filter_map(|node| match node {
+                Node::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        let rules = build_author_rules(&[stylesheet]);
+        let classes = vec!["outer".to_owned()];
+
+        for inline in ["font-size: 24px", "font-size: 36px"] {
+            let element = Element {
+                tag: "p",
+                id: Some("el"),
+                classes: &classes,
+                inline_style: Some(inline),
+            };
+
+            let style = compute_style(&element, TextStyle::initial(), &rules);
+
+            assert_eq!(style.font_size, 18.0);
+        }
+    }
 }
