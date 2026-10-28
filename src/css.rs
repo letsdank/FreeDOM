@@ -3,12 +3,14 @@
 //! Syntax: <https://www.w3.org/TR/css-syntax-3/>
 //! Cascade: <https://www.w3.org/TR/css-cascade-4/>
 
+mod color;
 mod comments;
 mod ident;
 mod input;
 mod specificity;
 mod syntax;
 
+use self::color::parse_color;
 use self::comments::remove_css_comments;
 use self::ident::consume_identifier;
 pub(crate) use self::input::preprocess_input;
@@ -456,53 +458,6 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
     }
 
     parsed
-}
-
-fn parse_color(value: &str) -> Option<u32> {
-    let value = value.trim().to_ascii_lowercase();
-
-    match value.as_str() {
-        "black" => return Some(0x00_00_00_00),
-        "white" => return Some(0x00_FF_FF_FF),
-        "red" => return Some(0x00_FF_00_00),
-        "green" => return Some(0x00_00_80_00),
-        "blue" => return Some(0x00_00_00_FF),
-        "yellow" => return Some(0x00_FF_FF_00),
-        "gray" | "grey" => return Some(0x00_80_80_80),
-        "purple" => return Some(0x00_80_00_80),
-        _ => {}
-    }
-
-    if let Some(hex) = value.strip_prefix('#') {
-        return match hex.len() {
-            3 => {
-                let red = u8::from_str_radix(&hex[0..1], 16).ok()?;
-                let green = u8::from_str_radix(&hex[1..2], 16).ok()?;
-                let blue = u8::from_str_radix(&hex[2..3], 16).ok()?;
-
-                Some(((red as u32 * 17) << 16) | ((green as u32 * 17) << 8) | (blue as u32 * 17))
-            }
-
-            6 => Some(u32::from_str_radix(hex, 16).ok()?),
-
-            _ => None,
-        };
-    }
-
-    let rgb = value.strip_prefix("rgb(")?.strip_suffix(')')?;
-    let channels: Vec<u8> = rgb
-        .split(',')
-        .map(|channel| channel.trim().parse::<u8>())
-        .collect::<std::result::Result<_, _>>()
-        .ok()?;
-
-    if channels.len() == 3 {
-        return Some(
-            ((channels[0] as u32) << 16) | ((channels[1] as u32) << 8) | channels[2] as u32,
-        );
-    }
-
-    None
 }
 
 fn parse_font_size(value: &str) -> Option<FontSize> {
@@ -1075,5 +1030,19 @@ mod tests {
         let style = compute_style(&important_inline, parent.clone(), &rules);
 
         assert_eq!(style.color, 0x00_00_00_FF);
+    }
+
+    #[test]
+    fn invalid_unicode_hex_color_preserves_previous_value() {
+        let element = Element {
+            tag: "p",
+            id: None,
+            classes: &[],
+            inline_style: Some("color: green; color: #éa"),
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &[]);
+
+        assert_eq!(style.color, 0x00_00_80_00);
     }
 }

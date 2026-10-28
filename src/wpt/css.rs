@@ -286,4 +286,48 @@ mod tests {
             assert_eq!(style.font_size, 18.0);
         }
     }
+
+    #[test]
+    fn wpt_invalid_hex_color_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/css-color/parsing/color-invalid-hex-color.html"
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+        let mut count = 0;
+
+        for line in source.lines().map(str::trim) {
+            if !line.starts_with("[\"#") {
+                continue;
+            }
+
+            let json = line.strip_suffix(',').unwrap_or(line);
+
+            let record = crate::javascript::parse_json(json).expect("WPT case must parse");
+
+            let fields = record.as_array().expect("WPT case must be an array");
+
+            let value = fields[0]
+                .as_string()
+                .expect("WPT case must contain a color string");
+
+            let inline_style = format!("color: green; color: {value}");
+
+            let element = Element {
+                tag: "p",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let style = compute_style(&element, TextStyle::initial(), &[]);
+
+            assert_eq!(style.color, 0x00_00_80_00, "invalid color: {value:?}");
+
+            count += 1;
+        }
+
+        assert_eq!(count, 10, "expected ten WPT cases");
+    }
 }
