@@ -64,6 +64,8 @@ pub(crate) enum PatternErrorKind {
     NestingLimit,
     UnterminatedCharacterClass,
     InvalidCharacterClassRange,
+    InvalidQuantifierRange,
+    QuantifierTooLarge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,10 +136,16 @@ impl Parser<'_> {
     }
 
     fn quantity(&mut self, term: Term) -> Result<Term, PatternError> {
-        let (min, max) = match self.peek() {
-            Some('*') => (0, None),
-            Some('+') => (1, None),
-            Some('?') => (0, Some(1)),
+        let (min, max, end) = match self.peek() {
+            Some('*') => (0, None, self.offset + 1),
+            Some('+') => (1, None, self.offset + 1),
+            Some('?') => (0, Some(1), self.offset + 1),
+
+            Some('{') => match self.counted_quantifier()? {
+                Some(value) => value,
+                None => return Ok(term),
+            },
+
             _ => return Ok(term),
         };
 
@@ -157,7 +165,7 @@ impl Parser<'_> {
             }
         }
 
-        self.advance();
+        self.offset = end;
 
         let greedy = if self.peek() == Some('?') {
             self.advance();
@@ -172,6 +180,75 @@ impl Parser<'_> {
             max,
             greedy,
         })
+    }
+
+    fn counted_quantifier(&self) -> Result<Option<(usize, Option<usize>, usize)>, PatternError> {
+        let bytes = self.source.as_bytes();
+        let mut cursor = self.offset + 1;
+
+        let min_start = cursor;
+
+        while bytes.get(cursor).is_some_and(u8::is_ascii_digit) {
+            cursor += 1;
+        }
+
+        if cursor == min_start {
+            return Ok(None);
+        }
+
+        let min_end = cursor;
+        let mut max_range = None;
+        let mut open_ended = false;
+
+        if bytes.get(cursor) == Some(&b',') {
+            cursor += 1;
+
+            let max_start = cursor;
+
+            while bytes.get(cursor).is_some_and(u8::is_ascii_digit) {
+                cursor += 1;
+            }
+
+            if cursor == max_start {
+                open_ended = true;
+            } else {
+                max_range = Some((max_start, cursor));
+            }
+        }
+
+        if bytes.get(cursor) != Some(&b'}') {
+            return Ok(None);
+        }
+
+        let too_large = || PatternError {
+            offset: self.offset,
+            kind: PatternErrorKind::QuantifierTooLarge,
+        };
+
+        let min = self.source[min_start..min_end]
+            .parse::<usize>()
+            .map_err(|_| too_large())?;
+
+        let max = if open_ended {
+            None
+        } else if let Some((start, end)) = max_range {
+            Some(
+                self.source[start..end]
+                    .parse::<usize>()
+                    .map_err(|_| too_large())?,
+            )
+        } else {
+            Some(min)
+        };
+
+        if max.is_some_and(|max| min > max) {
+            return Err(PatternError {
+                offset: self.offset,
+                kind: PatternErrorKind::InvalidQuantifierRange,
+            });
+        }
+
+        Ok(Some((min, max, cursor + 1)))
     }
 
     fn group(&mut self, group_start: usize, depth: usize) -> Result<Term, PatternError> {
@@ -518,5 +595,32 @@ mod tests {
         );
 
         assert!(parse("(?:😀)*").is_ok());
+    }
+
+    #[test]
+    fn validates_counted_quantifiers() {
+        assert_eq!(
+            parse("a{4,3}").unwrap_err().kind,
+            PatternErrorKind::InvalidQuantifierRange,
+        );
+
+        assert_eq!(
+            parse("a{99999999999999999999999999999999}")
+                .unwrap_err()
+                .kind,
+            PatternErrorKind::QuantifierTooLarge,
+        );
+
+        for input in ["a{}", "a{,2}", "a{1,2", "a{1,2,3}"] {
+            assert_eq!(
+                parse(input).unwrap_err().kind,
+                PatternErrorKind::Unsupported('{'),
+                "input: {input}",
+            );
+        }
+
+        assert!(parse("a{1}").is_ok());
+        assert!(parse("a{2,}").is_ok());
+        assert!(parse("a{2,4}?").is_ok());
     }
 }

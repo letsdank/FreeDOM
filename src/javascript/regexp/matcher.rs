@@ -491,4 +491,53 @@ mod tests {
             assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
         }
     }
+
+    #[test]
+    fn matches_counted_quantifiers() {
+        for (pattern, input, expected) in [
+            ("a{2}", "aaaa", Some((0, 2))),
+            ("a{0}", "aaa", Some((0, 0))),
+            ("a{2,}", "aaaa", Some((0, 4))),
+            ("a{2,3}", "aaaa", Some((0, 3))),
+            ("a{2,3}?", "aaaa", Some((0, 2))),
+            ("a{2,3}?b", "aaab", Some((0, 4))),
+            ("a{2,3}ab", "aaaab", Some((0, 5))),
+            ("(?:ab){2}", "abab", Some((0, 4))),
+            ("(?:a|){2}", "a", Some((0, 1))),
+            ("a{2}", "a", None),
+        ] {
+            let result = search(pattern, input, 0, "")
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn matches_counted_quantifier_from_test262_fixture() {
+        use crate::javascript::regexp::scan_literal;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/test262/test/built-ins/RegExp/S15.10.2.5_A1_T1.js",
+        );
+
+        let source = std::fs::read_to_string(path).expect("Test262 fixture must exist");
+
+        assert!(source.contains(r#"var __executed = /a[a-z]{2,4}/.exec("abcdefghi");"#));
+        assert!(source.contains(r#"var __expected = ["abcde"];"#));
+
+        let start = source
+            .find("/a[a-z]{2,4}")
+            .expect("Test262 regexp must exist");
+
+        let literal = scan_literal(&source, start).unwrap();
+        let pattern = literal.parse_pattern().unwrap();
+        let flags = literal.parse_flags().unwrap();
+
+        let matched = find(&pattern, "abcdefghi", 0, flags).unwrap();
+
+        assert_eq!(matched, Some(Match { start: 0, end: 5 }),);
+    }
 }
