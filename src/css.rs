@@ -300,11 +300,16 @@ fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &m
 
         let declarations = parse_declaration_list(declaration_text);
 
-        for selector_text in syntax::split_top_level_commas(selector_text) {
-            let Some((selector, specificity)) = parse_selector(selector_text.trim()) else {
-                continue;
-            };
+        let selectors = syntax::split_top_level_commas(selector_text)
+            .into_iter()
+            .map(|selector| parse_selector(selector.trim()))
+            .collect::<Option<Vec<_>>>();
 
+        let Some(selectors) = selectors else {
+            continue;
+        };
+
+        for (selector, specificity) in selectors {
             rules.push(CascadeRule {
                 selector,
                 specificity,
@@ -924,5 +929,22 @@ mod tests {
 
             assert_eq!(style.color, 0x00_00_80_00);
         }
+    }
+
+    #[test]
+    fn ignores_entire_rule_with_invalid_selector_list() {
+        for source in [
+            "p,,div { color: red }",
+            "p, .123 { color: red }",
+            "p, { color: red }",
+        ] {
+            let rules = build_author_rules(&[source.to_owned()]);
+
+            assert!(rules.is_empty(), "source: {source}");
+        }
+
+        let rules = build_author_rules(&["p, div { color: green }".to_owned()]);
+
+        assert_eq!(rules.len(), 2);
     }
 }

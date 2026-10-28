@@ -112,4 +112,36 @@ mod tests {
 
         assert_eq!(count, 5, "expected five WPT NUL cases");
     }
+
+    #[test]
+    fn wpt_bad_selector_rule_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/CSS2/syntax/bad-selector-001.xht",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+
+        let document = Document::parse(&source);
+
+        let style_element = document
+            .first_element("style")
+            .expect("WPT fixture must contain a style element");
+
+        let stylesheet = style_element
+            .children
+            .iter()
+            .filter_map(|node| match node {
+                Node::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        let rules = build_author_rules(&[stylesheet]);
+
+        assert!(
+            rules.is_empty(),
+            "the invalid selector list must discard the rule"
+        );
+    }
 }
