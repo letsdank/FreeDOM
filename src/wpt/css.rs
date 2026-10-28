@@ -482,4 +482,63 @@ mod tests {
 
         assert_eq!(count, 1, "expected the 20% WPT case");
     }
+
+    #[test]
+    fn wpt_font_size_defaulting_keywords_subset() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/css/css-fonts/font-size-computed-keyword.html",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT CSS fixture must exist");
+        let document = Document::parse(&source);
+
+        let style_element = document
+            .first_element("style")
+            .expect("WPT fixture must contain a style element");
+
+        let stylesheet = style_element
+            .children
+            .iter()
+            .filter_map(|node| match node {
+                Node::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        // The fixture's "large" keyword is not implemented yet.
+        let rules = build_author_rules(&[".large { font-size: 30px }".to_owned(), stylesheet]);
+
+        let mut parent = TextStyle::initial();
+        parent.font_size = 24.0;
+
+        let large_classes = vec!["large".to_owned()];
+
+        let large = Element {
+            tag: "div",
+            id: None,
+            classes: &large_classes,
+            inline_style: None,
+        };
+
+        assert_eq!(
+            compute_style(&large, TextStyle::initial(), &rules).font_size,
+            30.0
+        );
+
+        for (keyword, expected) in [("initial", 16.0), ("inherit", 24.0), ("unset", 24.0)] {
+            let classes = vec!["large".to_owned(), keyword.to_owned()];
+
+            let element = Element {
+                tag: "div",
+                id: None,
+                classes: &classes,
+                inline_style: None,
+            };
+
+            let style = compute_style(&element, parent.clone(), &rules);
+
+            assert_eq!(style.font_size, expected, "keyword: {keyword}");
+        }
+    }
 }

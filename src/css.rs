@@ -69,6 +69,8 @@ enum FontSize {
     Pixels(f32),
     Em(f32),
     Percentage(f32),
+    Inherit,
+    Initial,
 }
 
 #[derive(Clone, Default)]
@@ -464,6 +466,14 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
 fn parse_font_size(value: &str) -> Option<FontSize> {
     let value = value.trim().to_ascii_lowercase();
 
+    // font-size is inherited, so unset behaves like inherit.
+    // https://www.w3.org/TR/css-cascade-5/#defaulting-keywords
+    match value.as_str() {
+        "inherit" | "unset" => return Some(FontSize::Inherit),
+        "initial" => return Some(FontSize::Initial),
+        _ => {}
+    }
+
     if value.parse::<f32>().ok() == Some(0.0) {
         return Some(FontSize::Pixels(0.0));
     }
@@ -658,6 +668,8 @@ fn apply_declarations(style: &mut TextStyle, declarations: &Declarations, parent
             FontSize::Pixels(pixels) => pixels,
             FontSize::Em(em) => parent_font_size * em,
             FontSize::Percentage(percent) => parent_font_size * (percent / 100.0),
+            FontSize::Inherit => parent_font_size,
+            FontSize::Initial => TextStyle::initial().font_size,
         };
     }
 
@@ -1139,5 +1151,37 @@ mod tests {
 
             assert_eq!(style.font_size, 18.0, "value: {value}");
         }
+    }
+
+    #[test]
+    fn font_size_defaulting_keywords_follow_cascade() {
+        let mut parent = TextStyle::initial();
+        parent.font_size = 24.0;
+
+        for (value, expected) in [("inherit", 24.0), ("unset", 24.0), ("INITIAL", 16.0)] {
+            let inline_style = format!("font-size: 30px; font-size: {value}");
+
+            let element = Element {
+                tag: "h1",
+                id: None,
+                classes: &[],
+                inline_style: Some(&inline_style),
+            };
+
+            let style = compute_style(&element, parent.clone(), &[]);
+
+            assert_eq!(style.font_size, expected, "value: {value}");
+        }
+
+        let important = Element {
+            tag: "p",
+            id: None,
+            classes: &[],
+            inline_style: Some("font-size: inherit !important; font-size: 30px"),
+        };
+
+        let style = compute_style(&important, parent, &[]);
+
+        assert_eq!(style.font_size, 24.0);
     }
 }

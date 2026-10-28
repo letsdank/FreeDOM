@@ -1547,4 +1547,20 @@ mod tests {
 
         assert_eq!(page.blocks[0].style.font_size, 30.0);
     }
+
+    #[test]
+    fn font_size_inherit_flows_through_page_styles() {
+        let page = parse_html(
+            "https://example.test",
+            r#"
+                <style>
+                    div { font-size: 24px }
+                    p { font-size: 30px; font-size: inherit }
+                </style>
+                <div><p>Hello</p></div>
+            "#,
+        );
+
+        assert_eq!(page.blocks[0].style.font_size, 24.0);
+    }
 }
