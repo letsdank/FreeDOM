@@ -105,15 +105,30 @@ impl<'source> Lexer<'source> {
     }
 
     fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
+        while self.scan_next()? {}
+
+        self.push(TokenKind::EndOfFile, self.index);
+
+        Ok(self.tokens)
+    }
+
+    // Scans one token at a time; lexical-goal selection will be added separately.
+    fn scan_next(&mut self) -> Result<bool, LexError> {
         while let Some(character) = self.advance() {
             let offset = self.index - character.len_utf8();
 
             match character {
-                character if character.is_ascii_whitespace() => {}
+                character if character.is_ascii_whitespace() => continue,
 
-                '/' if self.consume_if('/') => self.skip_line_comment(),
+                '/' if self.consume_if('/') => {
+                    self.skip_line_comment();
+                    continue;
+                }
 
-                '/' if self.consume_if('*') => self.skip_block_comment(offset)?,
+                '/' if self.consume_if('*') => {
+                    self.skip_block_comment(offset)?;
+                    continue;
+                }
 
                 '"' | '\'' => self.read_string(character, offset)?,
 
@@ -132,6 +147,7 @@ impl<'source> Lexer<'source> {
                 ';' => self.push(TokenKind::Semicolon, offset),
                 ':' => self.push(TokenKind::Colon, offset),
                 '?' => self.push(TokenKind::Question, offset),
+
                 '+' if self.consume_if('+') => self.push(TokenKind::PlusPlus, offset),
                 '-' if self.consume_if('-') => self.push(TokenKind::MinusMinus, offset),
                 '+' => self.push(TokenKind::Plus, offset),
@@ -185,11 +201,11 @@ impl<'source> Lexer<'source> {
                     });
                 }
             }
+
+            return Ok(true);
         }
 
-        self.push(TokenKind::EndOfFile, self.index);
-
-        Ok(self.tokens)
+        Ok(false)
     }
 
     fn read_string(&mut self, quote: char, offset: usize) -> Result<(), LexError> {
@@ -415,4 +431,70 @@ fn is_identifier_start(character: char) -> bool {
 
 fn is_identifier_continue(character: char) -> bool {
     is_identifier_start(character) || character.is_ascii_digit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Lexer, TokenKind, tokenize};
+
+    #[test]
+    fn scans_one_token_at_a_time_and_skips_comments() {
+        let mut lexer = Lexer::new("  /* comment */ let x = 8 / 2; // end");
+        let mut counts = Vec::new();
+
+        while lexer.scan_next().unwrap() {
+            counts.push(lexer.tokens.len());
+        }
+
+        assert_eq!(counts, (1..=7).collect::<Vec<_>>());
+        assert_eq!(lexer.tokens[4].kind, TokenKind::Slash);
+        assert!(!lexer.scan_next().unwrap());
+    }
+
+    #[test]
+    fn incremental_and_batch_scanning_agree() {
+        let source = "let x = 'é'; // comment\nx = x + 'a';";
+        let expected = tokenize(source).unwrap();
+
+        let mut lexer = Lexer::new(source);
+
+        while lexer.scan_next().unwrap() {}
+
+        assert_eq!(lexer.tokens, expected[..expected.len() - 1]);
+        assert_eq!(lexer.index, source.len());
+    }
+
+    #[test]
+    fn scans_wpt_harness_prefix_before_first_regexp_literal() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let start = source
+            .find(r"/^\(\)\s*=>\s*(?:{(.*)}\s*|(.*))$/")
+            .expect("WPT RegExp must exist");
+
+        let prefix = &source[..start];
+        let expected = tokenize(prefix).unwrap();
+
+        let mut lexer = Lexer::new(prefix);
+
+        while lexer.scan_next().unwrap() {}
+
+        assert_eq!(lexer.tokens, expected[..expected.len() - 1]);
+        assert_eq!(lexer.index, start);
+    }
+
+    #[test]
+    fn reports_unterminated_comment_while_scanning() {
+        let mut lexer = Lexer::new("let /*");
+
+        assert!(lexer.scan_next().unwrap());
+
+        let error = lexer.scan_next().unwrap_err();
+
+        assert_eq!(error.offset, 4);
+        assert_eq!(error.message, "unterminated block comment");
+    }
 }
