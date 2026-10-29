@@ -91,14 +91,14 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(source).tokenize()
 }
 
-struct Lexer<'source> {
+pub(super) struct Lexer<'source> {
     source: &'source str,
     index: usize,
     tokens: Vec<Token>,
 }
 
 impl<'source> Lexer<'source> {
-    fn new(source: &'source str) -> Self {
+    pub(super) fn new(source: &'source str) -> Self {
         Self {
             source,
             index: 0,
@@ -107,11 +107,35 @@ impl<'source> Lexer<'source> {
     }
 
     fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
-        while self.scan_next()? {}
+        loop {
+            let token = self.next_token(false)?;
+            let at_end = token.kind == TokenKind::EndOfFile;
 
-        self.push(TokenKind::EndOfFile, self.index);
+            self.tokens.push(token);
 
-        Ok(self.tokens)
+            if at_end {
+                return Ok(self.tokens);
+            }
+        }
+    }
+
+    // Selects the slash mode for exactly one token. Other lexical goals are
+    // not implemented yet.
+    pub(super) fn next_token(&mut self, allow_regexp: bool) -> Result<Token, LexError> {
+        let found = if allow_regexp {
+            self.scan_next_with_regexp(true)?
+        } else {
+            self.scan_next()?
+        };
+
+        if found {
+            Ok(self.tokens.pop().expect("scanning a token must append it"))
+        } else {
+            Ok(Token {
+                kind: TokenKind::EndOfFile,
+                offset: self.index,
+            })
+        }
     }
 
     fn scan_next(&mut self) -> Result<bool, LexError> {
@@ -597,5 +621,76 @@ mod tests {
 
         assert!(lexer.scan_next().unwrap());
         assert_eq!(lexer.tokens.last().unwrap().kind, TokenKind::RightParen);
+    }
+
+    #[test]
+    fn next_token_accepts_a_slash_mode_for_each_token() {
+        let mut lexer = Lexer::new(" /é/gi / 2");
+
+        let regexp = lexer.next_token(true).unwrap();
+
+        assert_eq!(regexp.offset, 1);
+        assert_eq!(
+            regexp.kind,
+            TokenKind::RegExpLiteral {
+                pattern: "é".to_owned(),
+                flags: "gi".to_owned(),
+            }
+        );
+
+        let divide = lexer.next_token(false).unwrap();
+
+        assert_eq!(divide.offset, 8);
+        assert_eq!(divide.kind, TokenKind::Slash);
+        assert_eq!(
+            lexer.next_token(false).unwrap().kind,
+            TokenKind::Number(2.0)
+        );
+    }
+
+    #[test]
+    fn next_token_keeps_eof_stable_and_preserves_errors() {
+        let mut lexer = Lexer::new("é");
+        let error = lexer.next_token(false).unwrap_err();
+
+        assert_eq!(error.offset, 0);
+
+        let mut empty = Lexer::new(" /* ok */ ");
+        let eof = empty.next_token(false).unwrap();
+
+        assert_eq!(eof.kind, TokenKind::EndOfFile);
+        assert_eq!(eof.offset, " /* ok */ ".len());
+        assert_eq!(empty.next_token(true).unwrap(), eof);
+
+        let mut invalid = Lexer::new("/oops");
+        let error = invalid.next_token(true).unwrap_err();
+
+        assert_eq!(error.message, "unterminated regular expression");
+    }
+
+    #[test]
+    fn next_token_reads_wpt_regexp_literal_and_suffix() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = r"/^\(\)\s*=>\s*(?:{(.*)}\s*|(.*))$/";
+        let start = source.find(fragment).expect("WPT RegExp must exist");
+
+        let mut lexer = Lexer::new(&source[start..]);
+        let token = lexer.next_token(true).unwrap();
+
+        // The lexer receives a slice, so its offsets are relative to that slice.
+        assert_eq!(token.offset, 0);
+        assert_eq!(
+            token.kind,
+            TokenKind::RegExpLiteral {
+                pattern: fragment[1..fragment.len() - 1].to_owned(),
+                flags: String::new(),
+            }
+        );
+
+        assert_eq!(lexer.next_token(false).unwrap().kind, TokenKind::RightParen);
     }
 }
