@@ -1213,3 +1213,68 @@ fn indexed_regexp_properties_share_state() {
     )
     .unwrap();
 }
+
+#[test]
+fn arrays_support_named_properties_and_indexed_access() {
+    evaluate(
+        r#"
+            const values = [1, 2];
+            const alias = values;
+
+            values.index = 7;
+            values["input"] = "abc";
+
+            assert_equals(alias["index"], 7);
+            assert_equals(alias.input, "abc");
+            assert_equals(values.length, 2);
+            assert_equals(values["length"], 2);
+            assert_equals(values.missing, undefined);
+
+            values["01"] = 99;
+            values["4294967295"] = 88;
+
+            assert_equals(values["01"], 99);
+            assert_equals(values[1], 2);
+            assert_equals(values["4294967295"], 88);
+            assert_equals(values.length, 2);
+
+            values[4] = 5;
+            assert_equals(values.length, 5);
+            assert_equals(values[4], 5);
+            assert_equals(values[3], undefined);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn array_named_properties_coexist_with_methods() {
+    evaluate(
+        r#"
+            const values = [1, 2];
+            values.index = 7;
+
+            assert_equals(values["push"](3), 3);
+            assert_equals(values.join("-"), "1-2-3");
+            assert_equals(values.pop(), 3);
+            assert_equals(values.length, 2);
+            assert_equals(values.index, 7);
+
+            values.push = "overridden";
+            assert_equals(values.push, "overridden");
+            assert_equals(values["push"], "overridden");
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn array_length_assignment_is_explicitly_unsupported() {
+    let error = evaluate("const values = [1]; values.length = 0;").unwrap_err();
+
+    assert!(
+        error
+            .message
+            .contains("Array.length assignment is not implemented")
+    );
+}

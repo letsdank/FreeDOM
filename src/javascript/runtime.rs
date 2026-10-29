@@ -304,7 +304,7 @@ impl Interpreter {
                             "TypeError: for-of currently requires an Array",
                         ));
                     };
-                    let values = values.borrow().clone();
+                    let values = values.borrow().values.clone();
 
                     let previous_binding = self.variables.insert(binding.clone(), Value::Undefined);
 
@@ -386,24 +386,7 @@ impl Interpreter {
                         Ok(Value::TestContextMethod(TestContextMethod::AddCleanup))
                     }
 
-                    (Value::Array(values), "length") => {
-                        Ok(Value::Number(values.borrow().len() as f64))
-                    }
-
-                    (Value::Array(values), "push") => Ok(Value::ArrayMethod {
-                        receiver: values,
-                        method: ArrayMethodKind::Push,
-                    }),
-
-                    (Value::Array(values), "pop") => Ok(Value::ArrayMethod {
-                        receiver: values,
-                        method: ArrayMethodKind::Pop,
-                    }),
-
-                    (Value::Array(values), "join") => Ok(Value::ArrayMethod {
-                        receiver: values,
-                        method: ArrayMethodKind::Join,
-                    }),
+                    (Value::Array(values), property) => Ok(Self::array_get(values, property)),
 
                     (Value::Object(values), property) => Ok(values
                         .borrow()
@@ -718,6 +701,10 @@ impl Interpreter {
     }
 
     fn index_value(&self, object: Value, index: Value) -> Result<Value, JsError> {
+        if let Value::Array(values) = object {
+            return Ok(Self::array_get(values, &index.to_js_string()));
+        }
+
         if let Value::Object(values) = object {
             return Ok(values
                 .borrow()
@@ -749,12 +736,6 @@ impl Interpreter {
         }
 
         match object {
-            Value::Array(values) => Ok(values
-                .borrow()
-                .get(index as usize)
-                .cloned()
-                .unwrap_or(Value::Undefined)),
-
             Value::Attributes(node_id) => Ok(self
                 .current_document_element(node_id)
                 .and_then(|element| element.attributes.get(index as usize))
@@ -1102,6 +1083,8 @@ impl Interpreter {
                         Ok(())
                     }
 
+                    Value::Array(values) => Self::array_set(values, property, value),
+
                     Value::Element(_) => Err(JsError::runtime(format!(
                         "Element.{property} is not implemented yet"
                     ))),
@@ -1123,28 +1106,7 @@ impl Interpreter {
                         Ok(())
                     }
 
-                    Value::Array(values) => {
-                        let Some(index) = self.to_number(&index) else {
-                            return Err(JsError::runtime("TypeError: array index must be numeric"));
-                        };
-
-                        if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
-                            return Err(JsError::runtime(
-                                "RangeError: array index must be a non-negative integer",
-                            ));
-                        }
-
-                        let index = index as usize;
-                        let mut values = values.borrow_mut();
-
-                        if index >= values.len() {
-                            values.resize(index + 1, Value::Undefined);
-                        }
-
-                        values[index] = value;
-
-                        Ok(())
-                    }
+                    Value::Array(values) => Self::array_set(values, &index.to_js_string(), value),
 
                     Value::RegExp(regexp) if index.to_js_string() == "lastIndex" => {
                         regexp.inner.borrow_mut().last_index = value;
@@ -1163,11 +1125,94 @@ impl Interpreter {
         }
     }
 
+    // ECMAScript array indices exclude 2^32 - 1 and non-canonical strings.
+    // https://tc39.es/ecma262/#array-index
+    fn array_index(name: &str) -> Option<usize> {
+        if name.is_empty()
+            || (name.len() > 1 && name.starts_with('0'))
+            || !name.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+
+        let index = name.parse::<u32>().ok()?;
+
+        if index == u32::MAX {
+            return None;
+        }
+
+        usize::try_from(index).ok()
+    }
+
+    fn array_get(receiver: ArrayStorage, name: &str) -> Value {
+        if name == "length" {
+            return Value::Number(receiver.borrow().values.len() as f64);
+        }
+
+        if let Some(index) = Self::array_index(name) {
+            return receiver
+                .borrow()
+                .values
+                .get(index)
+                .cloned()
+                .unwrap_or(Value::Undefined);
+        }
+
+        let own = receiver.borrow().properties.get(name).cloned();
+
+        if let Some(value) = own {
+            return value;
+        }
+
+        let method = match name {
+            "push" => ArrayMethodKind::Push,
+            "pop" => ArrayMethodKind::Pop,
+            "join" => ArrayMethodKind::Join,
+            _ => return Value::Undefined,
+        };
+
+        Value::ArrayMethod { receiver, method }
+    }
+
+    fn array_set(receiver: ArrayStorage, name: &str, value: Value) -> Result<(), JsError> {
+        if name == "length" {
+            return Err(JsError::runtime(
+                "Array.length assignment is not implemented yet",
+            ));
+        }
+
+        let mut array = receiver.borrow_mut();
+
+        if let Some(index) = Self::array_index(name) {
+            let length = index
+                .checked_add(1)
+                .ok_or_else(|| JsError::runtime("array index is too large"))?;
+
+            if length > array.values.len() {
+                let additional = length - array.values.len();
+
+                array
+                    .values
+                    .try_reserve(additional)
+                    .map_err(|_| JsError::runtime("array allocation failed"))?;
+
+                array.values.resize(length, Value::Undefined);
+            }
+
+            array.values[index] = value;
+        } else {
+            array.properties.set(name.to_owned(), value);
+        }
+
+        Ok(())
+    }
+
     fn array_push(receiver: ArrayStorage, values: Vec<Value>) -> Result<Value, JsError> {
         let mut receiver = receiver.borrow_mut();
-        receiver.extend(values);
 
-        Ok(Value::Number(receiver.len() as f64))
+        receiver.values.extend(values);
+
+        Ok(Value::Number(receiver.values.len() as f64))
     }
 
     fn array_pop(receiver: ArrayStorage, values: Vec<Value>) -> Result<Value, JsError> {
@@ -1177,7 +1222,11 @@ impl Interpreter {
             ));
         }
 
-        Ok(receiver.borrow_mut().pop().unwrap_or(Value::Undefined))
+        Ok(receiver
+            .borrow_mut()
+            .values
+            .pop()
+            .unwrap_or(Value::Undefined))
     }
 
     fn object_keys(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -1217,6 +1266,7 @@ impl Interpreter {
 
         let joined = receiver
             .borrow()
+            .values
             .iter()
             .map(|value| match value {
                 Value::Undefined | Value::Null => String::new(),

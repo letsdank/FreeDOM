@@ -121,7 +121,13 @@ impl ObjectState {
     }
 }
 
-pub(crate) type ArrayStorage = Rc<RefCell<Vec<Value>>>;
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ArrayState {
+    values: Vec<Value>,
+    properties: ObjectState,
+}
+
+pub(crate) type ArrayStorage = Rc<RefCell<ArrayState>>;
 pub(crate) type ObjectStorage = Rc<RefCell<ObjectState>>;
 
 #[derive(Clone, Debug)]
@@ -196,6 +202,7 @@ impl Value {
 
             Self::Array(values) => values
                 .borrow()
+                .values
                 .iter()
                 .map(|value| value.to_js_string())
                 .collect::<Vec<_>>()
@@ -230,7 +237,10 @@ impl Value {
     }
 
     pub(crate) fn array(values: Vec<Value>) -> Self {
-        Self::Array(Rc::new(RefCell::new(values)))
+        Self::Array(Rc::new(RefCell::new(ArrayState {
+            values,
+            properties: ObjectState::default(),
+        })))
     }
 
     pub(crate) fn object(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
@@ -239,7 +249,7 @@ impl Value {
 
     pub fn as_array(&self) -> Option<Vec<Value>> {
         match self {
-            Self::Array(values) => Some(values.borrow().clone()),
+            Self::Array(values) => Some(values.borrow().values.clone()),
             _ => None,
         }
     }
