@@ -37,7 +37,7 @@ impl Interpreter {
 
             Expression::Identifier(name) => {
                 self.variables.get(name).cloned().ok_or_else(|| {
-                    JsError::runtime(format!("ReferenceError: ${name} is not defined"))
+                    JsError::runtime(format!("ReferenceError: {name} is not defined"))
                 })
             }
 
@@ -133,6 +133,14 @@ impl Interpreter {
             }
 
             Expression::TypeOf(expression) => {
+                // An unresolvable identifier is handled specially by typeof.
+                // https://tc39.es/ecma262/#sec-typeof-operator
+                if let Expression::Identifier(name) = expression.as_ref() {
+                    if !self.variables.contains_key(name) {
+                        return Ok(Value::String("undefined".to_owned()));
+                    }
+                }
+
                 let value = self.evaluate_expression(expression)?;
                 Ok(Value::String(Self::type_of(&value).to_owned()))
             }
@@ -217,6 +225,47 @@ mod tests {
         assert_eq!(
             result,
             Value::String("https://example.org/dir/child".to_owned())
+        );
+    }
+
+    #[test]
+    fn typeof_undeclared_identifier_returns_undefined() {
+        assert_eq!(
+            evaluate("typeof missing;").unwrap(),
+            Value::String("undefined".to_owned())
+        );
+
+        assert_eq!(
+            evaluate("typeof (missing);").unwrap(),
+            Value::String("undefined".to_owned())
+        );
+
+        assert_eq!(
+            evaluate("typeof $missing;").unwrap(),
+            Value::String("undefined".to_owned())
+        );
+
+        assert_eq!(
+            evaluate("let present = 42; typeof present;").unwrap(),
+            Value::String("number".to_owned())
+        );
+    }
+
+    #[test]
+    fn undeclared_identifiers_still_report_reference_errors() {
+        assert_eq!(
+            evaluate("missing;").unwrap_err().message,
+            "ReferenceError: missing is not defined"
+        );
+
+        assert_eq!(
+            evaluate("$missing;").unwrap_err().message,
+            "ReferenceError: $missing is not defined"
+        );
+
+        assert_eq!(
+            evaluate("typeof missing.value;").unwrap_err().message,
+            "ReferenceError: missing is not defined"
         );
     }
 }
