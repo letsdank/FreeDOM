@@ -37,6 +37,10 @@ pub(crate) enum Term {
         max: Option<usize>,
         greedy: bool,
     },
+    Lookahead {
+        negated: bool,
+        pattern: Box<Pattern>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,7 +156,10 @@ impl Parser<'_> {
             _ => return Ok(term),
         };
 
-        if matches!(term, Term::Start | Term::End | Term::WordBoundary { .. }) {
+        if matches!(
+            term,
+            Term::Start | Term::End | Term::WordBoundary { .. } | Term::Lookahead { .. }
+        ) {
             return Err(PatternError {
                 offset: self.offset,
                 kind: PatternErrorKind::Unsupported(self.peek().unwrap()),
@@ -257,6 +264,12 @@ impl Parser<'_> {
     fn group(&mut self, group_start: usize, depth: usize) -> Result<Term, PatternError> {
         const MAX_GROUP_DEPTH: usize = 128;
 
+        enum GroupKind {
+            Capturing,
+            NonCapturing,
+            Lookahead { negated: bool },
+        }
+
         if depth >= MAX_GROUP_DEPTH {
             return Err(PatternError {
                 offset: group_start,
@@ -264,22 +277,24 @@ impl Parser<'_> {
             });
         }
 
-        let capturing = if self.peek() == Some('?') {
+        let kind = if self.peek() == Some('?') {
             let question_offset = self.offset;
             self.advance();
 
-            if self.peek() != Some(':') {
-                return Err(PatternError {
-                    offset: question_offset,
-                    kind: PatternErrorKind::Unsupported('?'),
-                });
+            match self.advance() {
+                Some(':') => GroupKind::NonCapturing,
+                Some('=') => GroupKind::Lookahead { negated: false },
+                Some('!') => GroupKind::Lookahead { negated: true },
+
+                _ => {
+                    return Err(PatternError {
+                        offset: question_offset,
+                        kind: PatternErrorKind::Unsupported('?'),
+                    });
+                }
             }
-
-            self.advance();
-
-            false
         } else {
-            true
+            GroupKind::Capturing
         };
 
         let pattern = self.disjunction(true, depth + 1)?;
@@ -293,10 +308,22 @@ impl Parser<'_> {
 
         self.advance();
 
-        Ok(Term::Group {
-            capturing,
-            pattern: Box::new(pattern),
-        })
+        match kind {
+            GroupKind::Capturing => Ok(Term::Group {
+                capturing: true,
+                pattern: Box::new(pattern),
+            }),
+
+            GroupKind::NonCapturing => Ok(Term::Group {
+                capturing: false,
+                pattern: Box::new(pattern),
+            }),
+
+            GroupKind::Lookahead { negated } => Ok(Term::Lookahead {
+                negated,
+                pattern: Box::new(pattern),
+            }),
+        }
     }
 
     fn escape(&mut self, escape_start: usize) -> Result<Term, PatternError> {
@@ -548,7 +575,7 @@ mod tests {
         );
 
         assert_eq!(
-            parse("(?=a)").unwrap_err().kind,
+            parse("(?<=a)").unwrap_err().kind,
             PatternErrorKind::Unsupported('?'),
         );
 
@@ -653,6 +680,24 @@ mod tests {
         assert_eq!(
             parse(r"[\B]").unwrap_err().kind,
             PatternErrorKind::Unsupported('B'),
+        );
+    }
+
+    #[test]
+    fn lookahead_is_not_quantified_in_this_subset() {
+        assert_eq!(
+            parse("(?=a)*").unwrap_err().kind,
+            PatternErrorKind::Unsupported('*'),
+        );
+
+        assert_eq!(
+            parse("(?!a){2}").unwrap_err().kind,
+            PatternErrorKind::Unsupported('{'),
+        );
+
+        assert_eq!(
+            parse("(?=a").unwrap_err().kind,
+            PatternErrorKind::UnterminatedGroup,
         );
     }
 }

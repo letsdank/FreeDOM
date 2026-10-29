@@ -177,6 +177,15 @@ fn match_pattern(
                             next.push(position);
                         }
                     }
+
+                    Term::Lookahead { negated, pattern } => {
+                        let found =
+                            !match_pattern(pattern, input, position, flags, budget)?.is_empty();
+
+                        if found != *negated {
+                            next.push(position);
+                        }
+                    }
                 }
             }
 
@@ -594,6 +603,62 @@ mod tests {
                 r"/\Bevil\B/",
                 "devils arise\tfor\nevil",
                 (1, 5),
+            ),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata/test262/test/built-ins/RegExp")
+                .join(file);
+
+            let source = std::fs::read_to_string(path).expect("Test262 fixture must exist");
+            let start = source.find(fragment).expect("Test262 regexp must exist");
+            let literal = scan_literal(&source, start).unwrap();
+            let pattern = literal.parse_pattern().unwrap();
+            let flags = literal.parse_flags().unwrap();
+
+            let result = find(&pattern, input, 0, flags).unwrap();
+
+            assert_eq!(
+                result,
+                Some(Match {
+                    start: expected.0,
+                    end: expected.1,
+                }),
+                "fixture: {file}",
+            );
+        }
+    }
+
+    #[test]
+    fn matches_positive_and_negative_lookahead() {
+        for (pattern, input, expected) in [
+            ("a(?=b)", "ab", Some((0, 1))),
+            ("a(?=b)b", "ab", Some((0, 2))),
+            ("a(?!b)", "ac", Some((0, 1))),
+            ("a(?!b)", "ab", None),
+            ("(?=a|b)b", "b", Some((0, 1))),
+            ("(?!a|b)c", "c", Some((0, 1))),
+            ("(?=)", "", Some((0, 0))),
+            ("(?!)", "", None),
+        ] {
+            let result = search(pattern, input, 0, "")
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn matches_lookahead_spans_from_test262_fixtures() {
+        use crate::javascript::regexp::scan_literal;
+
+        for (file, fragment, input, expected) in [
+            ("S15.10.2.8_A1_T1.js", r"/(?=(a+))/", "baaabac", (1, 1)),
+            (
+                "S15.10.2.8_A2_T2.js",
+                r"/Java(?!Script)([A-Z]\w*)/",
+                "using of JavaBeans technology",
+                (9, 18),
             ),
         ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
