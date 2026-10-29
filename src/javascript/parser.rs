@@ -10,6 +10,9 @@ mod statement;
 #[path = "parser/primary.rs"]
 mod primary;
 
+#[path = "parser/function.rs"]
+mod function;
+
 pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
     let tokens = tokenize(source).map_err(|error| JsError {
         offset: Some(error.offset),
@@ -334,63 +337,6 @@ impl Parser {
         Ok(expression)
     }
 
-    fn parse_function_expression(&mut self) -> Result<Expression, JsError> {
-        self.cursor
-            .consume(&TokenKind::LeftParen, "expected '(' after function keyword")?;
-
-        let parameters = self.parse_function_parameters()?;
-        let body = self.parse_function_body()?;
-
-        Ok(Expression::Function(UserFunction { parameters, body }))
-    }
-
-    fn parse_function_parameters(&mut self) -> Result<Vec<String>, JsError> {
-        let mut parameters = Vec::new();
-
-        if self.cursor.consume_optional(&TokenKind::RightParen) {
-            return Ok(parameters);
-        }
-
-        loop {
-            let (parameter, _) = self.consume_identifier("expected a function identifier")?;
-
-            parameters.push(parameter);
-
-            if self.cursor.consume_optional(&TokenKind::Comma) {
-                continue;
-            }
-
-            self.cursor.consume(
-                &TokenKind::RightParen,
-                "expected ',' or ')' after function parameter",
-            )?;
-
-            return Ok(parameters);
-        }
-    }
-
-    fn parse_function_body(&mut self) -> Result<Vec<Statement>, JsError> {
-        self.cursor
-            .consume(&TokenKind::LeftBrace, "expected '{' before function body")?;
-
-        let mut body = Vec::new();
-
-        while !self.cursor.check(&TokenKind::RightBrace) {
-            if self.cursor.check(&TokenKind::EndOfFile) {
-                return Err(JsError::syntax(
-                    self.cursor.peek().offset,
-                    "unterminated function body",
-                ));
-            }
-
-            body.push(self.parse_statement()?);
-        }
-
-        self.cursor.advance();
-
-        Ok(body)
-    }
-
     fn parse_new_expression(&mut self, offset: usize) -> Result<Expression, JsError> {
         let (constructor, _) = self.consume_identifier("expected a constructor after 'new'")?;
 
@@ -407,31 +353,6 @@ impl Parser {
             constructor,
             arguments,
         })
-    }
-
-    fn parse_arguments(&mut self) -> Result<Vec<Expression>, JsError> {
-        let mut arguments = Vec::new();
-
-        if self.cursor.consume_optional(&TokenKind::RightParen) {
-            return Ok(arguments);
-        }
-
-        loop {
-            arguments.push(self.parse_expression()?);
-
-            if self.cursor.consume_optional(&TokenKind::Comma) {
-                if self.cursor.consume_optional(&TokenKind::RightParen) {
-                    return Ok(arguments);
-                }
-
-                continue;
-            }
-
-            self.cursor
-                .consume(&TokenKind::RightParen, "expected ',' or ')' after argument")?;
-
-            return Ok(arguments);
-        }
     }
 
     fn consume_identifier(&mut self, message: &str) -> Result<(String, usize), JsError> {
