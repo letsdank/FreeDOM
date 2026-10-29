@@ -37,6 +37,7 @@ struct State {
 pub(crate) enum MatchError {
     UnsupportedFlag(char),
     StepLimit,
+    UnresolvedNamedBackreference,
 }
 
 pub(crate) fn find(
@@ -270,7 +271,10 @@ fn match_pattern(
                         }
                     }
 
-                    Term::Backreference { index, .. } => {
+                    Term::Backreference { index, .. }
+                    | Term::NamedBackreference {
+                        index: Some(index), ..
+                    } => {
                         if let Some(capture) = state.groups[*index] {
                             let captured = &input[capture.start..capture.end];
 
@@ -292,6 +296,10 @@ fn match_pattern(
                             // A valid backreference to an unmatched group matches an empty string.
                             push_position(position);
                         }
+                    }
+
+                    Term::NamedBackreference { index: None, .. } => {
+                        return Err(MatchError::UnresolvedNamedBackreference);
                     }
                 }
             }
@@ -1035,6 +1043,45 @@ mod tests {
         assert_eq!(
             search(r"(?<letter>a)(b)\1", "aba", 0, ""),
             Ok(Some(Match { start: 0, end: 3 }))
+        );
+    }
+
+    #[test]
+    fn matches_named_backreferences() {
+        let cases = [
+            (r"(?<word>ab)\k<word>", "abab", "", Some((0, 4))),
+            (r"(?<word>a|ab)\k<word>c", "ababc", "", Some((0, 5))),
+            (r"\k<x>(?<x>a)", "a", "", Some((0, 1))),
+            (r"(?<x>a)?b\k<x>", "b", "", Some((0, 1))),
+            (r"(?<x>a)\k<x>", "aA", "i", Some((0, 2))),
+            (r"(?<x>a)\k<x>", "aA", "", None),
+            (r"(?<x>😀)\k<x>", "😀😀", "", Some((0, 4))),
+        ];
+
+        for (pattern, input, flags, expected) in cases {
+            let actual = search(pattern, input, 0, flags)
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(actual, expected, "pattern: {pattern:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_an_unresolved_internal_named_reference_without_panicking() {
+        let pattern = pattern::Pattern {
+            alternatives: vec![vec![pattern::Term::NamedBackreference {
+                name: "x".into(),
+                index: None,
+                offset: 0,
+            }]],
+        };
+
+        let flags = RegExpFlags::parse("").unwrap();
+
+        assert_eq!(
+            find(&pattern, "", 0, flags),
+            Err(MatchError::UnresolvedNamedBackreference),
         );
     }
 }

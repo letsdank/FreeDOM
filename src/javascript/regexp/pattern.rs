@@ -2,8 +2,7 @@
 //!
 //! <https://tc39.es/ecma262/#sec-patterns>
 //!
-//! Named backreferences, legacy decimal escapes, and Unicode modes are not
-//! implemented here yet.
+//! Legacy decimal escapes and Unicode modes are not implemented here yet.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Pattern {
@@ -114,6 +113,11 @@ pub(crate) enum Term {
         /// Byte offset of the escape in the pattern source.
         offset: usize,
     },
+    NamedBackreference {
+        name: String,
+        index: Option<usize>,
+        offset: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,6 +154,7 @@ pub(crate) enum PatternErrorKind {
     UnsupportedDecimalEscape,
     UnsupportedGroupName,
     UnsupportedDuplicateGroupName,
+    UnsupportedNamedReference,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,11 +172,62 @@ pub(crate) fn parse(source: &str) -> Result<Pattern, PatternError> {
         group_names: Vec::new(),
     };
 
-    let pattern = parser.disjunction(false, 0)?;
+    let mut pattern = parser.disjunction(false, 0)?;
 
+    let names: Vec<(String, usize)> = pattern
+        .named_captures()
+        .into_iter()
+        .map(|(name, index)| (name.to_owned(), index))
+        .collect();
+
+    resolve_named_references(&mut pattern, &names)?;
     validate_backreferences(&pattern, parser.next_capture_index - 1)?;
 
     Ok(pattern)
+}
+
+// Named references may precede their group, so resolve them after parsing.
+// https://tc39.es/ecma262/#sec-runtime-semantics-compileatom
+fn resolve_named_references(
+    pattern: &mut Pattern,
+    names: &[(String, usize)],
+) -> Result<(), PatternError> {
+    fn resolve_term(term: &mut Term, names: &[(String, usize)]) -> Result<(), PatternError> {
+        match term {
+            Term::NamedBackreference {
+                name,
+                index,
+                offset,
+            } => {
+                let found = names
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+                    .map(|(_, value)| *value)
+                    .ok_or(PatternError {
+                        offset: *offset,
+                        kind: PatternErrorKind::UnsupportedNamedReference,
+                    })?;
+
+                *index = Some(found);
+
+                Ok(())
+            }
+
+            Term::Group { pattern, .. } | Term::Lookahead { pattern, .. } => {
+                resolve_named_references(pattern, names)
+            }
+
+            Term::Repeat { term, .. } => resolve_term(term, names),
+
+            _ => Ok(()),
+        }
+    }
+
+    for term in pattern.alternatives.iter_mut().flatten() {
+        resolve_term(term, names)?;
+    }
+
+    Ok(())
 }
 
 // Decimal escapes that do not refer to a capturing group may use legacy
@@ -568,6 +624,25 @@ impl Parser<'_> {
                 });
             }
 
+            'k' => {
+                if self.peek() != Some('<') {
+                    return Err(PatternError {
+                        offset: escape_start,
+                        kind: PatternErrorKind::Unsupported('k'),
+                    });
+                }
+
+                self.advance();
+
+                let name = self.group_name(escape_start)?;
+
+                return Ok(Term::NamedBackreference {
+                    name,
+                    index: None,
+                    offset: escape_start,
+                });
+            }
+
             _ => {}
         }
 
@@ -594,7 +669,6 @@ impl Parser<'_> {
 
             '^' | '$' | '\\' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
             | '/' => character,
-
             _ => {
                 return Err(PatternError {
                     offset: escape_start,
@@ -731,6 +805,11 @@ impl Parser<'_> {
             } else if self.peek() == Some('-') {
                 self.advance();
                 Term::Literal('-')
+            } else if self.peek() == Some('k') {
+                return Err(PatternError {
+                    offset,
+                    kind: PatternErrorKind::Unsupported('k'),
+                });
             } else if self
                 .peek()
                 .is_some_and(|character| matches!(character, '1'..='9'))
@@ -1145,6 +1224,41 @@ mod tests {
         assert_eq!(
             parse(r"(?<=a)b").unwrap_err().kind,
             PatternErrorKind::Unsupported('?'),
+        );
+    }
+
+    #[test]
+    fn resolves_named_references_across_the_whole_pattern() {
+        let pattern =
+            parse(r"\k<later>(?<first>a)(?=(?:\k<later>))(?<later>b)(?:\k<first>)+").unwrap();
+
+        assert_eq!(pattern.named_captures(), vec![("first", 1), ("later", 2)]);
+
+        assert_eq!(
+            pattern.alternatives[0][0],
+            Term::NamedBackreference {
+                name: "later".to_owned(),
+                index: Some(2),
+                offset: 0,
+            }
+        );
+
+        for source in [
+            r"\k<unknown>",
+            r"(?<a>x)\k<b>",
+            r"(?<a>x)(?=\k<b>)",
+            r"(?<a>x)(?:\k<b>)+",
+        ] {
+            assert_eq!(
+                parse(source).unwrap_err().kind,
+                PatternErrorKind::UnsupportedNamedReference,
+                "{source:?}"
+            );
+        }
+
+        assert_eq!(
+            parse(r"[\k<x>]").unwrap_err().kind,
+            PatternErrorKind::Unsupported('k'),
         );
     }
 }
