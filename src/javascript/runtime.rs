@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use crate::url::Url;
 
 use super::{
-    ArrayMethodKind, ArrayStorage, BinaryOperator, DocumentMethod, DocumentState, ElementMethod,
-    Expression, JsError, NativeFunction, RegExpState, RegExpValue, Statement, TestContextMethod,
-    UserFunction, Value,
+    ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
+    JsError, NativeFunction, RegExpState, RegExpValue, Statement, TestContextMethod, UserFunction,
+    Value,
 };
 
 #[path = "runtime/dom.rs"]
@@ -13,6 +13,9 @@ mod dom_bindings;
 
 #[path = "runtime/regexp.rs"]
 mod regexp_bindings;
+
+#[path = "runtime/array.rs"]
+mod array;
 
 #[derive(Clone, Debug)]
 struct Cleanup {
@@ -1162,110 +1165,6 @@ impl Interpreter {
         }
     }
 
-    // ECMAScript array indices exclude 2^32 - 1 and non-canonical strings.
-    // https://tc39.es/ecma262/#array-index
-    fn array_index(name: &str) -> Option<usize> {
-        if name.is_empty()
-            || (name.len() > 1 && name.starts_with('0'))
-            || !name.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return None;
-        }
-
-        let index = name.parse::<u32>().ok()?;
-
-        if index == u32::MAX {
-            return None;
-        }
-
-        usize::try_from(index).ok()
-    }
-
-    fn array_get(receiver: ArrayStorage, name: &str) -> Value {
-        if name == "length" {
-            return Value::Number(receiver.borrow().values.len() as f64);
-        }
-
-        if let Some(index) = Self::array_index(name) {
-            return receiver
-                .borrow()
-                .values
-                .get(index)
-                .cloned()
-                .unwrap_or(Value::Undefined);
-        }
-
-        let own = receiver.borrow().properties.get(name).cloned();
-
-        if let Some(value) = own {
-            return value;
-        }
-
-        let method = match name {
-            "push" => ArrayMethodKind::Push,
-            "pop" => ArrayMethodKind::Pop,
-            "join" => ArrayMethodKind::Join,
-            _ => return Value::Undefined,
-        };
-
-        Value::ArrayMethod { receiver, method }
-    }
-
-    fn array_set(receiver: ArrayStorage, name: &str, value: Value) -> Result<(), JsError> {
-        if name == "length" {
-            return Err(JsError::runtime(
-                "Array.length assignment is not implemented yet",
-            ));
-        }
-
-        let mut array = receiver.borrow_mut();
-
-        if let Some(index) = Self::array_index(name) {
-            let length = index
-                .checked_add(1)
-                .ok_or_else(|| JsError::runtime("array index is too large"))?;
-
-            if length > array.values.len() {
-                let additional = length - array.values.len();
-
-                array
-                    .values
-                    .try_reserve(additional)
-                    .map_err(|_| JsError::runtime("array allocation failed"))?;
-
-                array.values.resize(length, Value::Undefined);
-            }
-
-            array.values[index] = value;
-        } else {
-            array.properties.set(name.to_owned(), value);
-        }
-
-        Ok(())
-    }
-
-    fn array_push(receiver: ArrayStorage, values: Vec<Value>) -> Result<Value, JsError> {
-        let mut receiver = receiver.borrow_mut();
-
-        receiver.values.extend(values);
-
-        Ok(Value::Number(receiver.values.len() as f64))
-    }
-
-    fn array_pop(receiver: ArrayStorage, values: Vec<Value>) -> Result<Value, JsError> {
-        if !values.is_empty() {
-            return Err(JsError::runtime(
-                "TypeError: Array.pop expects no arguments",
-            ));
-        }
-
-        Ok(receiver
-            .borrow_mut()
-            .values
-            .pop()
-            .unwrap_or(Value::Undefined))
-    }
-
     fn object_keys(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
         if arguments.len() != 1 {
             return Err(JsError::runtime(
@@ -1287,32 +1186,6 @@ impl Interpreter {
                 .map(Value::String)
                 .collect(),
         ))
-    }
-
-    fn array_join(receiver: ArrayStorage, arguments: Vec<Value>) -> Result<Value, JsError> {
-        if arguments.len() > 1 {
-            return Err(JsError::runtime(
-                "TypeError: Array.join expects zero or one argument",
-            ));
-        }
-
-        let separator = match arguments.first() {
-            None | Some(Value::Undefined) => ",".to_owned(),
-            Some(value) => value.to_js_string(),
-        };
-
-        let joined = receiver
-            .borrow()
-            .values
-            .iter()
-            .map(|value| match value {
-                Value::Undefined | Value::Null => String::new(),
-                value => value.to_js_string(),
-            })
-            .collect::<Vec<_>>()
-            .join(&separator);
-
-        Ok(Value::String(joined))
     }
 
     fn evaluate_call(
