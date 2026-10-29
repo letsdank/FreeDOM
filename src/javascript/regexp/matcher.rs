@@ -30,6 +30,17 @@ pub(crate) fn find(
     from: usize,
     flags: RegExpFlags,
 ) -> Result<Option<Match>, MatchError> {
+    let units: Vec<u16> = input.encode_utf16().collect();
+
+    find_utf16(pattern, &units, from, flags)
+}
+
+pub(crate) fn find_utf16(
+    pattern: &Pattern,
+    units: &[u16],
+    from: usize,
+    flags: RegExpFlags,
+) -> Result<Option<Match>, MatchError> {
     for (enabled, flag) in [
         (flags.ignore_case, 'i'),
         (flags.unicode, 'u'),
@@ -39,8 +50,6 @@ pub(crate) fn find(
             return Err(MatchError::UnsupportedFlag(flag));
         }
     }
-
-    let units: Vec<u16> = input.encode_utf16().collect();
 
     if from > units.len() {
         return Ok(None);
@@ -91,6 +100,12 @@ fn match_pattern(
                             .is_some_and(|rest| rest.starts_with(encoded))
                         {
                             next.push(position + encoded.len());
+                        }
+                    }
+
+                    Term::CodeUnit(unit) => {
+                        if input.get(position) == Some(unit) {
+                            next.push(position + 1);
                         }
                     }
 
@@ -681,6 +696,24 @@ mod tests {
                 }),
                 "fixture: {file}",
             );
+        }
+    }
+
+    #[test]
+    fn matches_hex_and_surrogate_code_units() {
+        for (pattern, input, expected) in [
+            (r"^\x41\u0042$", "AB", Some((0, 2))),
+            (r"\ud83d", "😀", Some((0, 1))),
+            (r"\ude00", "😀", Some((1, 2))),
+            (r"\ud83d\ude00", "😀", Some((0, 2))),
+            (r"[\ud800-\udbff]+", "😀", Some((0, 1))),
+            (r"\u0041{2}", "AA", Some((0, 2))),
+        ] {
+            let result = search(pattern, input, 0, "")
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
         }
     }
 }

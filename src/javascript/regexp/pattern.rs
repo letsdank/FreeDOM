@@ -13,6 +13,7 @@ pub(crate) struct Pattern {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Term {
     Literal(char),
+    CodeUnit(u16),
     Any,
     Start,
     End,
@@ -337,6 +338,8 @@ impl Parser<'_> {
         match character {
             'b' => return Ok(Term::WordBoundary { negated: false }),
             'B' => return Ok(Term::WordBoundary { negated: true }),
+            'x' => return self.hex_escape(escape_start, character, 2),
+            'u' => return self.hex_escape(escape_start, character, 4),
             _ => {}
         }
 
@@ -373,6 +376,30 @@ impl Parser<'_> {
         };
 
         Ok(Term::Literal(value))
+    }
+
+    fn hex_escape(&mut self, start: usize, kind: char, count: usize) -> Result<Term, PatternError> {
+        let error = || PatternError {
+            offset: start,
+            kind: PatternErrorKind::Unsupported(kind),
+        };
+
+        let bytes = self
+            .source
+            .as_bytes()
+            .get(self.offset..self.offset + count)
+            .ok_or_else(error)?;
+
+        let mut value = 0_u16;
+
+        for &byte in bytes {
+            let digit = (byte as char).to_digit(16).ok_or_else(error)?;
+            value = (value << 4) | digit as u16;
+        }
+
+        self.offset += count;
+
+        Ok(Term::CodeUnit(value))
     }
 
     fn bracket_class(&mut self, class_start: usize) -> Result<Term, PatternError> {
@@ -490,6 +517,11 @@ impl Parser<'_> {
             Term::WordBoundary { .. } => Err(PatternError {
                 offset,
                 kind: PatternErrorKind::Unsupported('B'),
+            }),
+
+            Term::CodeUnit(unit) => Ok(ClassItem::Range {
+                start: unit,
+                end: unit,
             }),
 
             _ => unreachable!(),
@@ -699,5 +731,32 @@ mod tests {
             parse("(?=a").unwrap_err().kind,
             PatternErrorKind::UnterminatedGroup,
         );
+    }
+
+    #[test]
+    fn parses_hexadecimal_code_unit_escapes() {
+        let pattern = parse(r"\x41\u0042\ud83d").unwrap();
+
+        assert_eq!(
+            pattern.alternatives,
+            vec![vec![
+                Term::CodeUnit(0x0041),
+                Term::CodeUnit(0x0042),
+                Term::CodeUnit(0xD83D),
+            ]],
+        );
+
+        for (input, kind) in [
+            (r"\x4", 'x'),
+            (r"\xZZ", 'x'),
+            (r"\u123", 'u'),
+            (r"\u{41}", 'u'),
+        ] {
+            assert_eq!(
+                parse(input).unwrap_err().kind,
+                PatternErrorKind::Unsupported(kind),
+                "input: {input}"
+            );
+        }
     }
 }

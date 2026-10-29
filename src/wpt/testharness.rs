@@ -220,4 +220,43 @@ mod tests {
 
         assert_eq!(find(&pattern, "${a b}", 0, flags), Ok(None),);
     }
+
+    #[test]
+    fn parses_and_matches_surrogate_pattern_from_upstream_testharness() {
+        use crate::javascript::regexp::{
+            matcher::{Match, find, find_utf16},
+            scan_literal,
+        };
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js",
+        );
+
+        let source = std::fs::read_to_string(path).expect("WPT testharness.js must exist");
+
+        let fragment =
+            r"/([\ud800-\udbff]+)(?![\udc00-\udfff])|(^|[^\ud800-\udbff])([\udc00-\udfff]+)/g";
+
+        let start = source.find(fragment).expect("WPT fragment must exist");
+        let literal = scan_literal(&source, start).unwrap();
+        let pattern = literal.parse_pattern().unwrap();
+        let flags = literal.parse_flags().unwrap();
+
+        for input in ["abc", "a😀z", "😀😀"] {
+            assert_eq!(find(&pattern, input, 0, flags), Ok(None), "input: {input}");
+        }
+
+        assert_eq!(
+            find_utf16(&pattern, &[0x0061, 0xD800, 0x0062], 0, flags),
+            Ok(Some(Match { start: 1, end: 2 }))
+        );
+
+        assert_eq!(
+            find_utf16(&pattern, &[0xDC00], 0, flags),
+            Ok(Some(Match { start: 0, end: 1 }))
+        );
+
+        assert_eq!(find_utf16(&pattern, &[0xD83D, 0xDE00], 0, flags), Ok(None),);
+    }
 }
