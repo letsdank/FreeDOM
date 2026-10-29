@@ -6,6 +6,9 @@ mod lexer;
 #[path = "javascript/token_cursor.rs"]
 mod token_cursor;
 
+#[path = "javascript/token_stream.rs"]
+mod token_stream;
+
 pub use lexer::{Token, TokenKind, tokenize};
 
 // The scanner will be connected to the lexer once lexical goals are available.

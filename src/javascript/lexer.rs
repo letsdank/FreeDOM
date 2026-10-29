@@ -1,3 +1,4 @@
+use super::token_stream::TokenStream;
 use std::{error::Error, fmt};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,62 +104,6 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
     }
 }
 
-/// A one-token lookahead stream with explicit slash-mode selection.
-///
-/// Changing the mode rescans a buffered slash without consuming it.
-/// Other ECMAScript lexical goals are not implemented yet.
-pub(super) struct TokenStream<'source> {
-    lexer: Lexer<'source>,
-    buffered: Option<(Token, bool)>,
-}
-
-impl<'source> TokenStream<'source> {
-    pub(super) fn new(source: &'source str) -> Self {
-        Self {
-            lexer: Lexer::new(source),
-            buffered: None,
-        }
-    }
-
-    pub(super) fn peek(&mut self, allow_regexp: bool) -> Result<&Token, LexError> {
-        let rescan = self.buffered.as_ref().is_some_and(|(token, old_mode)| {
-            *old_mode != allow_regexp
-                && matches!(
-                    token.kind,
-                    TokenKind::Slash | TokenKind::RegExpLiteral { .. }
-                )
-        });
-
-        if rescan {
-            let (token, _) = self.buffered.take().expect("buffered token must exist");
-
-            self.lexer.index = token.offset;
-        }
-
-        if self.buffered.is_none() {
-            let checkpoint = self.lexer.index;
-
-            let token = match self.lexer.next_token(allow_regexp) {
-                Ok(token) => token,
-                Err(error) => {
-                    self.lexer.index = checkpoint;
-                    return Err(error);
-                }
-            };
-
-            self.buffered = Some((token, allow_regexp));
-        }
-
-        Ok(&self.buffered.as_ref().expect("buffered token must exist").0)
-    }
-
-    pub(super) fn advance(&mut self, allow_regexp: bool) -> Result<Token, LexError> {
-        self.peek(allow_regexp)?;
-
-        Ok(self.buffered.take().expect("buffered token must exist").0)
-    }
-}
-
 pub(super) struct Lexer<'source> {
     source: &'source str,
     index: usize,
@@ -172,6 +117,15 @@ impl<'source> Lexer<'source> {
             index: 0,
             tokens: Vec::new(),
         }
+    }
+
+    pub(super) fn checkpoint(&self) -> usize {
+        self.index
+    }
+
+    pub(super) fn restore(&mut self, checkpoint: usize) {
+        debug_assert!(self.source.is_char_boundary(checkpoint));
+        self.index = checkpoint;
     }
 
     // Selects the slash mode for exactly one token. Other lexical goals are
@@ -532,7 +486,8 @@ fn is_identifier_continue(character: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lexer, TokenKind, TokenStream, tokenize};
+    use super::{Lexer, TokenKind, tokenize};
+    use crate::javascript::token_stream::TokenStream;
 
     #[test]
     fn scans_one_token_at_a_time_and_skips_comments() {
