@@ -1422,3 +1422,25 @@ fn assert_equals_rejects_distinct_arrays_with_equal_contents() {
 
     assert!(error.message.contains("AssertionError"));
 }
+
+#[test]
+fn uses_string_numeric_grammar_for_arithmetic_and_regexp() {
+    evaluate(
+        r#"
+            assert_equals(1 * "0x10", 16);
+            assert_equals(1 * "0b101", 5);
+            assert_equals(1 * "0o10", 8);
+            assert_equals(1 * " 1.5 ", 1.5);
+
+            assert_equals(1 * "invalid", 0 / 0);
+            assert_equals(1 * undefined, 0 / 0);
+
+            const re = new RegExp("a", "g");
+            re.lastIndex = "0x2";
+
+            assert_true(re.test("aba"));
+            assert_equals(re.lastIndex, 3);
+        "#,
+    )
+    .unwrap();
+}

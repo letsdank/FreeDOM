@@ -119,18 +119,11 @@ impl Interpreter {
 
             Value::Boolean(false) | Value::Null => Some(0.0),
 
-            Value::String(value) => {
-                let value = value.trim();
+            Value::String(value) => Some(crate::javascript::number::string_to_number(value)),
 
-                if value.is_empty() {
-                    Some(0.0)
-                } else {
-                    value.parse::<f64>().ok()
-                }
-            }
+            Value::Undefined => Some(f64::NAN),
 
-            Value::Undefined
-            | Value::Array(_)
+            Value::Array(_)
             | Value::Object(_)
             | Value::Url(_)
             | Value::NativeFunction(_)

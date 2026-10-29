@@ -30,6 +30,9 @@ mod runtime;
 #[path = "javascript/ast.rs"]
 mod ast;
 
+#[path = "javascript/number.rs"]
+mod number;
+
 pub(crate) use ast::{BinaryOperator, Expression, Statement, UserFunction};
 
 use runtime::{Completion, Interpreter};
