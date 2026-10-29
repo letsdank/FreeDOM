@@ -1278,3 +1278,72 @@ fn array_length_assignment_is_explicitly_unsupported() {
             .contains("Array.length assignment is not implemented")
     );
 }
+
+#[test]
+fn regexp_exec_returns_captures_properties_and_named_indices() {
+    evaluate(
+        r#"
+            const re = new RegExp("(?<letter>a)(b)?", "dg");
+
+            assert_equals(typeof re.exec, "function");
+
+            const result = re.exec("zab");
+
+            assert_equals(result.length, 3);
+            assert_equals(result[0], "ab");
+            assert_equals(result[1], "a");
+            assert_equals(result[2], "b");
+
+            assert_equals(result.index, 1);
+            assert_equals(result.input, "zab");
+            assert_equals(result.groups.letter, "a");
+
+            assert_equals(result.indices[0][0], 1);
+            assert_equals(result.indices[0][1], 3);
+            assert_equals(result.indices[1][0], 1);
+            assert_equals(result.indices[1][1], 2);
+
+            assert_equals(result.indices.groups.letter[0], 1);
+            assert_equals(re.lastIndex, 3);
+
+            assert_equals(re["exec"]("zab"), null);
+            assert_equals(re.lastIndex, 0);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn regexp_exec_keeps_unmatched_groups_and_absent_indices_undefined() {
+    evaluate(
+        r#"
+            const re = new RegExp("(?<x>a)?b", "d");
+            const result = re.exec("b");
+
+            assert_equals(result[1], undefined);
+            assert_equals(result.groups.x, undefined);
+            assert_equals(result.indices[1], undefined);
+            assert_equals(result.indices.groups.x, undefined);
+
+            const plain = new RegExp("(a)").exec("a");
+
+            assert_equals(plain.groups, undefined);
+            assert_equals(plain.indices, undefined);
+
+            const indexed = new RegExp("(a)", "d").exec("😀a");
+
+            assert_equals(indexed.index, 2);
+            assert_equals(indexed.indices[1][0], 2);
+            assert_equals(indexed.indices[1][1], 3);
+            assert_equals(indexed.indices.groups, undefined);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn regexp_exec_rejects_unpaired_surrogates_without_lossy_conversion() {
+    let error = evaluate(r#"new RegExp(".", "g").exec("😀");"#).unwrap_err();
+
+    assert!(error.message.contains("unpaired UTF-16 surrogate"))
+}

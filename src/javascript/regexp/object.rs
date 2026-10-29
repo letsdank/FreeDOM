@@ -131,6 +131,10 @@ impl RegExp {
             named_groups,
         }))
     }
+
+    pub(crate) fn has_indices(&self) -> bool {
+        self.flags.has_indices
+    }
 }
 
 #[cfg(test)]
@@ -409,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn named_groups_in_unmatched_alternatices_are_present() {
+    fn named_groups_in_unmatched_alternatives_are_present() {
         let mut re = RegExp::compile(r"(?<left>a)|(?<right>b)", "").unwrap();
 
         let result = re.exec_result(&units("b")).unwrap().unwrap();

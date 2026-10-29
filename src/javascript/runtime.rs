@@ -11,6 +11,9 @@ use super::{
 #[path = "runtime/dom.rs"]
 mod dom_bindings;
 
+#[path = "runtime/regexp.rs"]
+mod regexp_bindings;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: UserFunction,
@@ -606,6 +609,8 @@ impl Interpreter {
 
                     (Value::RegExp(regexp), "test") => Ok(Value::RegExpTest(regexp)),
 
+                    (Value::RegExp(regexp), "exec") => Ok(Value::RegExpExec(regexp)),
+
                     (_, property) => Err(JsError::runtime(format!(
                         "cannot read property {property:?} from this value"
                     ))),
@@ -718,6 +723,8 @@ impl Interpreter {
                 "lastIndex" => Ok(regexp.inner.borrow().last_index.clone()),
 
                 "test" => Ok(Value::RegExpTest(regexp)),
+
+                "exec" => Ok(Value::RegExpExec(regexp)),
 
                 property => Err(JsError::runtime(format!(
                     "cannot read property {property:?} from this value"
@@ -924,6 +931,7 @@ impl Interpreter {
             | Value::ObjectConstructor
             | Value::TestContextMethod(_)
             | Value::RegExpTest(_)
+            | Value::RegExpExec(_)
             | Value::ArrayMethod { .. } => "function",
         }
     }
@@ -966,6 +974,7 @@ impl Interpreter {
             | Value::ObjectConstructor
             | Value::RegExp(_)
             | Value::RegExpTest(_)
+            | Value::RegExpExec(_)
             | Value::TestContext => None,
         }
     }
@@ -1395,20 +1404,24 @@ impl Interpreter {
                 let input = values.first().unwrap_or(&Value::Undefined).to_js_string();
 
                 let units: Vec<u16> = input.encode_utf16().collect();
-                let mut state = regexp.inner.borrow_mut();
-                let start = Self::regexp_last_index(&state.last_index)?;
 
-                state.regexp.set_last_index(start);
-
-                let matched = state.regexp.test(&units).map_err(|error| {
-                    JsError::runtime(format!("RegExp execution failed: {error:?}"))
-                })?;
-
-                if state.regexp.uses_last_index() {
-                    state.last_index = Value::Number(state.regexp.last_index() as f64);
-                }
+                let matched = Self::run_regexp(&regexp, &units)?.is_some();
 
                 Ok(Value::Boolean(matched))
+            }
+
+            Value::RegExpExec(regexp) => {
+                let input = values.first().unwrap_or(&Value::Undefined).to_js_string();
+
+                let units: Vec<u16> = input.encode_utf16().collect();
+
+                let has_indices = regexp.inner.borrow().regexp.has_indices();
+
+                match Self::run_regexp(&regexp, &units)? {
+                    None => Ok(Value::Null),
+
+                    Some(result) => Self::regexp_exec_value(input, &units, result, has_indices),
+                }
             }
 
             _ => Err(JsError::runtime("TypeError: this value is not callable")),

@@ -189,6 +189,7 @@ pub enum Value {
     ObjectConstructor,
     RegExp(RegExpValue),
     RegExpTest(RegExpValue),
+    RegExpExec(RegExpValue),
 }
 
 impl Value {
@@ -233,6 +234,7 @@ impl Value {
             // RegExp.prototype.toString is not implemented yet.
             Self::RegExp(_) => "[object RegExp]".to_owned(),
             Self::RegExpTest(_) => "function".to_owned(),
+            Self::RegExpExec(_) => "function".to_owned(),
         }
     }
 
