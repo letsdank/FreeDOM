@@ -4,8 +4,7 @@ use crate::url::Url;
 
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
-    JsError, NativeFunction, RegExpState, RegExpValue, Statement, TestContextMethod, UserFunction,
-    Value,
+    JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
 };
 
 #[path = "runtime/dom.rs"]
@@ -1262,72 +1261,5 @@ impl Interpreter {
         .map_err(|error| JsError::runtime(format!("TypeError: invalid URL: {error}")))?;
 
         Ok(Value::Url(url))
-    }
-
-    fn construct_regexp(&mut self, arguments: &[Expression]) -> Result<Value, JsError> {
-        let mut values = Vec::with_capacity(arguments.len());
-
-        for argument in arguments {
-            values.push(self.evaluate_expression(argument)?);
-        }
-
-        let pattern = match values.first() {
-            None | Some(Value::Undefined) => String::new(),
-
-            Some(Value::RegExp(_)) => {
-                return Err(JsError::runtime(
-                    "RegExp construction from another RegExp is not implemented yet",
-                ));
-            }
-
-            Some(value) => value.to_js_string(),
-        };
-
-        let flags = match values.get(1) {
-            None | Some(Value::Undefined) => String::new(),
-            Some(value) => value.to_js_string(),
-        };
-
-        let regexp = super::regexp::object::RegExp::compile(&pattern, &flags)
-            .map_err(|error| JsError::runtime(format!("RegExp compilation failed: {error:?}")))?;
-
-        Ok(Value::RegExp(RegExpValue {
-            inner: std::rc::Rc::new(std::cell::RefCell::new(RegExpState {
-                regexp,
-                last_index: Value::Number(0.0),
-            })),
-        }))
-    }
-
-    // Object ToPrimitive is not implemented here yet.
-    // https://tc39.es/ecma262/#sec-tolength
-    fn regexp_last_index(value: &Value) -> Result<usize, JsError> {
-        let number = match value {
-            Value::Number(number) => *number,
-
-            Value::Boolean(value) => {
-                if *value {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-
-            Value::Null => 0.0,
-
-            Value::Undefined => f64::NAN,
-
-            Value::String(value) => {
-                return Ok(super::regexp::last_index::from_string(value));
-            }
-
-            _ => {
-                return Err(JsError::runtime(
-                    "RegExp lastIndex conversion is not implemented for this value",
-                ));
-            }
-        };
-
-        Ok(super::regexp::last_index::from_number(number))
     }
 }
