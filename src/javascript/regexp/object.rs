@@ -15,6 +15,22 @@ pub(crate) struct RegExp {
     pattern: Pattern,
     flags: RegExpFlags,
     last_index: usize,
+    named_captures: Vec<(String, usize)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct NamedCapture {
+    pub(crate) name: String,
+    pub(crate) index: usize,
+    pub(crate) span: Option<Match>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ExecResult {
+    pub(crate) captures: CaptureMatch,
+
+    /// None means the pattern contains no named groups.
+    pub(crate) named_groups: Option<Vec<NamedCapture>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,10 +52,17 @@ impl RegExp {
 
         let pattern = pattern::parse(source).map_err(CompileError::Pattern)?;
 
+        let named_captures = pattern
+            .named_captures()
+            .into_iter()
+            .map(|(name, index)| (name.to_owned(), index))
+            .collect();
+
         Ok(Self {
             pattern,
             flags,
             last_index: 0,
+            named_captures,
         })
     }
 
@@ -69,11 +92,39 @@ impl RegExp {
 
         Ok(result)
     }
+
+    // RegExpBuiltinExec creates named group even if none of them matched.
+    // https://tc39.es/ecma262/#sec-regexpbuiltinexec
+    pub(crate) fn exec_result(&mut self, input: &[u16]) -> Result<Option<ExecResult>, MatchError> {
+        let Some(captures) = self.exec_captures(input)? else {
+            return Ok(None);
+        };
+
+        let named_groups = if self.named_captures.is_empty() {
+            None
+        } else {
+            Some(
+                self.named_captures
+                    .iter()
+                    .map(|(name, index)| NamedCapture {
+                        name: name.clone(),
+                        index: *index,
+                        span: captures.groups[*index],
+                    })
+                    .collect(),
+            )
+        };
+
+        Ok(Some(ExecResult {
+            captures,
+            named_groups,
+        }))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CompileError, RegExp};
+    use super::{CompileError, NamedCapture, RegExp};
     use crate::javascript::regexp::matcher::{Match, MatchError};
 
     fn units(input: &str) -> Vec<u16> {
@@ -289,5 +340,83 @@ mod tests {
 
         assert_eq!(re.exec_captures(&input), Err(MatchError::StepLimit));
         assert_eq!(re.last_index(), 1);
+    }
+
+    #[test]
+    fn exec_result_distinguishes_absent_unmatched_and_empty_groups() {
+        let mut no_names = RegExp::compile("(a)", "").unwrap();
+
+        let result = no_names.exec_result(&units("a")).unwrap().unwrap();
+
+        assert_eq!(result.named_groups, None);
+        assert_eq!(result.captures.groups[1], Some(Match { start: 0, end: 1 }));
+
+        let mut re = RegExp::compile("(?<first>a)?(b)(?<last>c*)", "").unwrap();
+        let result = re.exec_result(&units("b")).unwrap().unwrap();
+
+        assert_eq!(result.captures.span, Match { start: 0, end: 1 });
+
+        assert_eq!(
+            result.named_groups,
+            Some(vec![
+                NamedCapture {
+                    name: "first".into(),
+                    index: 1,
+                    span: None,
+                },
+                NamedCapture {
+                    name: "last".into(),
+                    index: 3,
+                    span: Some(Match { start: 1, end: 1 })
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn exec_result_preserves_utf16_and_global_state() {
+        let mut re = RegExp::compile(r"(?<unit>\ud800)", "g").unwrap();
+        let input = [0xd800, 0x0061, 0xd800];
+
+        let first = re.exec_result(&input).unwrap().unwrap();
+        let group = &first.named_groups.as_ref().unwrap()[0];
+        let span = group.span.unwrap();
+
+        assert_eq!(&input[span.start..span.end], &[0xd800]);
+        assert_eq!(re.last_index(), 1);
+
+        let second = re.exec_result(&input).unwrap().unwrap();
+
+        assert_eq!(
+            second.named_groups.unwrap()[0].span,
+            Some(Match { start: 2, end: 3 }),
+        );
+        assert_eq!(re.last_index(), 3);
+
+        assert_eq!(re.exec_result(&input).unwrap(), None);
+        assert_eq!(re.last_index(), 0);
+    }
+
+    #[test]
+    fn named_groups_in_unmatched_alternatices_are_present() {
+        let mut re = RegExp::compile(r"(?<left>a)|(?<right>b)", "").unwrap();
+
+        let result = re.exec_result(&units("b")).unwrap().unwrap();
+
+        assert_eq!(
+            result.named_groups,
+            Some(vec![
+                NamedCapture {
+                    name: "left".into(),
+                    index: 1,
+                    span: None,
+                },
+                NamedCapture {
+                    name: "right".into(),
+                    index: 2,
+                    span: Some(Match { start: 0, end: 1 })
+                }
+            ])
+        );
     }
 }
