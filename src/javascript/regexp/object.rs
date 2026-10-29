@@ -78,6 +78,13 @@ impl RegExp {
         Ok(self.exec_captures(input)?.map(|result| result.span))
     }
 
+    // This is the built-in matching path only; RegExpExec overrides are not
+    // supported by the JavaScript runtime yet.
+    // https://tc39.es/ecma262/#sec-regexp.prototype.test
+    pub(crate) fn test(&mut self, input: &[u16]) -> Result<bool, MatchError> {
+        Ok(self.exec(input)?.is_some())
+    }
+
     pub(crate) fn exec_captures(
         &mut self,
         input: &[u16],
@@ -418,5 +425,66 @@ mod tests {
                 }
             ])
         );
+    }
+
+    #[test]
+    fn test_uses_the_same_global_last_index_as_exec() {
+        let mut re = RegExp::compile("(?<letter>a)", "g").unwrap();
+        let input = units("aba");
+
+        assert_eq!(re.test(&input), Ok(true));
+        assert_eq!(re.last_index(), 1);
+
+        assert_eq!(re.exec(&input), Ok(Some(Match { start: 2, end: 3 })));
+        assert_eq!(re.last_index(), 3);
+
+        assert_eq!(re.test(&input), Ok(false));
+        assert_eq!(re.last_index(), 0);
+    }
+
+    #[test]
+    fn test_respects_sticky_and_stateless_modes() {
+        let mut sticky = RegExp::compile("b", "y").unwrap();
+        sticky.set_last_index(1);
+
+        assert_eq!(sticky.test(&units("ab")), Ok(true));
+        assert_eq!(sticky.last_index(), 2);
+
+        assert_eq!(sticky.test(&units("ab")), Ok(false));
+        assert_eq!(sticky.last_index(), 0);
+
+        let mut plain = RegExp::compile("a", "").unwrap();
+        plain.set_last_index(42);
+
+        assert_eq!(plain.test(&units("a")), Ok(true));
+        assert_eq!(plain.test(&units("b")), Ok(false));
+        assert_eq!(plain.last_index(), 42);
+    }
+
+    #[test]
+    fn test_keeps_empty_global_match_position() {
+        let mut re = RegExp::compile("a*", "g").unwrap();
+        re.set_last_index(1);
+
+        for _ in 0..2 {
+            assert_eq!(re.test(&units("b")), Ok(true));
+            assert_eq!(re.last_index(), 1);
+        }
+    }
+
+    #[test]
+    fn test_accepts_utf16_code_units_and_propagates_errors() {
+        let mut re = RegExp::compile(r"\ud800", "g").unwrap();
+
+        assert_eq!(re.test(&[0xd800]), Ok(true));
+        assert_eq!(re.last_index(), 1);
+
+        let mut expensive = RegExp::compile(&"(a|a)".repeat(18), "g").unwrap();
+        expensive.set_last_index(1);
+
+        let input = units(&format!("x{}", "a".repeat(18)));
+
+        assert_eq!(expensive.test(&input), Err(MatchError::StepLimit),);
+        assert_eq!(expensive.last_index(), 1);
     }
 }
