@@ -88,7 +88,75 @@ impl fmt::Display for LexError {
 impl Error for LexError {}
 
 pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
-    Lexer::new(source).tokenize()
+    let mut stream = TokenStream::new(source);
+    let mut tokens = Vec::new();
+
+    loop {
+        let token = stream.advance(false)?;
+        let at_end = token.kind == TokenKind::EndOfFile;
+
+        tokens.push(token);
+
+        if at_end {
+            return Ok(tokens);
+        }
+    }
+}
+
+/// A one-token lookahead stream with explicit slash-mode selection.
+///
+/// Changing the mode rescans a buffered slash without consuming it.
+/// Other ECMAScript lexical goals are not implemented yet.
+pub(super) struct TokenStream<'source> {
+    lexer: Lexer<'source>,
+    buffered: Option<(Token, bool)>,
+}
+
+impl<'source> TokenStream<'source> {
+    pub(super) fn new(source: &'source str) -> Self {
+        Self {
+            lexer: Lexer::new(source),
+            buffered: None,
+        }
+    }
+
+    pub(super) fn peek(&mut self, allow_regexp: bool) -> Result<&Token, LexError> {
+        let rescan = self.buffered.as_ref().is_some_and(|(token, old_mode)| {
+            *old_mode != allow_regexp
+                && matches!(
+                    token.kind,
+                    TokenKind::Slash | TokenKind::RegExpLiteral { .. }
+                )
+        });
+
+        if rescan {
+            let (token, _) = self.buffered.take().expect("buffered token must exist");
+
+            self.lexer.index = token.offset;
+        }
+
+        if self.buffered.is_none() {
+            let checkpoint = self.lexer.index;
+
+            let token = match self.lexer.next_token(allow_regexp) {
+                Ok(token) => token,
+                Err(error) => {
+                    self.lexer.index = checkpoint;
+                    return Err(error);
+                }
+            };
+
+            self.buffered = Some((token, allow_regexp));
+        }
+
+        Ok(&self.buffered.as_ref().expect("buffered token must exist").0)
+    }
+
+    pub(super) fn advance(&mut self, allow_regexp: bool) -> Result<Token, LexError> {
+        self.peek(allow_regexp)?;
+
+        Ok(self.buffered.take().expect("buffered token must exist").0)
+    }
 }
 
 pub(super) struct Lexer<'source> {
@@ -103,19 +171,6 @@ impl<'source> Lexer<'source> {
             source,
             index: 0,
             tokens: Vec::new(),
-        }
-    }
-
-    fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
-        loop {
-            let token = self.next_token(false)?;
-            let at_end = token.kind == TokenKind::EndOfFile;
-
-            self.tokens.push(token);
-
-            if at_end {
-                return Ok(self.tokens);
-            }
         }
     }
 
@@ -477,7 +532,7 @@ fn is_identifier_continue(character: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lexer, TokenKind, tokenize};
+    use super::{Lexer, TokenKind, TokenStream, tokenize};
 
     #[test]
     fn scans_one_token_at_a_time_and_skips_comments() {
@@ -692,5 +747,91 @@ mod tests {
         );
 
         assert_eq!(lexer.next_token(false).unwrap().kind, TokenKind::RightParen);
+    }
+
+    #[test]
+    fn stream_rescans_lookahead_when_slash_mode_changes() {
+        let mut stream = TokenStream::new(" /*comment*/ /é/gi / 2");
+        let first_offset = " /*comment*/ ".len();
+
+        assert_eq!(stream.peek(false).unwrap().kind, TokenKind::Slash);
+
+        let regexp = stream.peek(true).unwrap().clone();
+
+        assert_eq!(regexp.offset, first_offset);
+        assert_eq!(
+            regexp.kind,
+            TokenKind::RegExpLiteral {
+                pattern: "é".to_owned(),
+                flags: "gi".to_owned(),
+            }
+        );
+
+        assert_eq!(stream.peek(false).unwrap().kind, TokenKind::Slash);
+        assert_eq!(stream.advance(true).unwrap(), regexp);
+        assert_eq!(stream.advance(false).unwrap().kind, TokenKind::Slash);
+        assert_eq!(stream.advance(false).unwrap().kind, TokenKind::Number(2.0));
+    }
+
+    #[test]
+    fn stream_recovers_position_after_failed_regexp_preview() {
+        let mut stream = TokenStream::new("  /abc");
+
+        let error = stream.peek(true).unwrap_err();
+        assert_eq!(error.message, "unterminated regular expression");
+
+        let slash = stream.advance(false).unwrap();
+
+        assert_eq!(slash.offset, 2);
+        assert_eq!(slash.kind, TokenKind::Slash);
+        assert_eq!(
+            stream.advance(false).unwrap().kind,
+            TokenKind::Identifier("abc".to_owned())
+        );
+    }
+
+    #[test]
+    fn stream_keeps_non_slash_lookahead_and_eof_stable() {
+        let mut stream = TokenStream::new("x");
+
+        let token = stream.peek(false).unwrap().clone();
+
+        assert_eq!(stream.peek(true).unwrap(), &token);
+        assert_eq!(stream.advance(true).unwrap(), token);
+
+        let end = stream.peek(false).unwrap().clone();
+
+        assert_eq!(end.kind, TokenKind::EndOfFile);
+        assert_eq!(end.offset, 1);
+        assert_eq!(stream.advance(true).unwrap(), end);
+        assert_eq!(stream.advance(false).unwrap(), end);
+    }
+
+    #[test]
+    fn stream_rescans_wpt_harness_regexp() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = r"/^\(\)\s*=>\s*(?:{(.*)}\s*|(.*))$/";
+        let start = source.find(fragment).expect("WPT RegExp must exist");
+
+        let mut stream = TokenStream::new(&source[start..]);
+
+        assert_eq!(stream.peek(false).unwrap().kind, TokenKind::Slash);
+
+        let token = stream.advance(true).unwrap();
+
+        assert_eq!(token.offset, 0);
+        assert_eq!(
+            token.kind,
+            TokenKind::RegExpLiteral {
+                pattern: fragment[1..fragment.len() - 1].to_owned(),
+                flags: String::new(),
+            }
+        );
+
+        assert_eq!(stream.advance(false).unwrap().kind, TokenKind::RightParen);
     }
 }
