@@ -6,6 +6,8 @@ pub enum TokenKind {
     String(String),
     Number(f64),
 
+    RegExpLiteral { pattern: String, flags: String },
+
     Let,
     Const,
     Var,
@@ -112,8 +114,13 @@ impl<'source> Lexer<'source> {
         Ok(self.tokens)
     }
 
-    // Scans one token at a time; lexical-goal selection will be added separately.
     fn scan_next(&mut self) -> Result<bool, LexError> {
+        self.scan_next_with_regexp(false)
+    }
+
+    // The caller selects whether a slash can start a RegExp literal.
+    // This is not yet the complete ECMAScript lexical-goal mechanism.
+    fn scan_next_with_regexp(&mut self, allow_regexp: bool) -> Result<bool, LexError> {
         while let Some(character) = self.advance() {
             let offset = self.index - character.len_utf8();
 
@@ -153,6 +160,17 @@ impl<'source> Lexer<'source> {
                 '+' => self.push(TokenKind::Plus, offset),
                 '-' => self.push(TokenKind::Minus, offset),
                 '*' => self.push(TokenKind::Star, offset),
+
+                '/' if allow_regexp => {
+                    let literal = super::regexp::scan_literal(self.source, offset)?;
+
+                    let pattern = literal.pattern.to_owned();
+                    let flags = literal.flags.to_owned();
+
+                    self.index = literal.end;
+                    self.push(TokenKind::RegExpLiteral { pattern, flags }, offset);
+                }
+
                 '/' => self.push(TokenKind::Slash, offset),
 
                 '=' => {
@@ -496,5 +514,88 @@ mod tests {
 
         assert_eq!(error.offset, 4);
         assert_eq!(error.message, "unterminated block comment");
+    }
+
+    #[test]
+    fn slash_mode_distinguishes_division_ang_regexp() {
+        let mut division = Lexer::new("/a/g");
+
+        assert!(division.scan_next_with_regexp(false).unwrap());
+        assert_eq!(division.tokens[0].kind, TokenKind::Slash);
+
+        let mut regexp = Lexer::new("/a/g");
+
+        assert!(regexp.scan_next_with_regexp(true).unwrap());
+        assert_eq!(
+            regexp.tokens[0].kind,
+            TokenKind::RegExpLiteral {
+                pattern: "a".to_owned(),
+                flags: "g".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn scans_unicode_regexp_after_comment_and_preserves_following_token() {
+        let source = r"/* note */ /é[\/]x/gi.test";
+        let mut lexer = Lexer::new(source);
+
+        assert!(lexer.scan_next_with_regexp(true).unwrap());
+
+        assert_eq!(lexer.tokens[0].offset, source.find("/é").unwrap());
+        assert_eq!(
+            lexer.tokens[0].kind,
+            TokenKind::RegExpLiteral {
+                pattern: r"é[\/]x".to_owned(),
+                flags: "gi".to_owned(),
+            }
+        );
+
+        assert!(lexer.scan_next().unwrap());
+        assert_eq!(lexer.tokens[1].kind, TokenKind::Dot);
+    }
+
+    #[test]
+    fn reports_unterminated_regexp_when_enabled() {
+        let mut lexer = Lexer::new("/abc");
+
+        let error = lexer.scan_next_with_regexp(true).unwrap_err();
+
+        assert_eq!(error.offset, 0);
+        assert_eq!(error.message, "unterminated regular expression");
+    }
+
+    #[test]
+    fn scans_first_wpt_harness_regexp_after_its_prefix() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = r"/^\(\)\s*=>\s*(?:{(.*)}\s*|(.*))$/";
+        let start = source.find(fragment).expect("WPT RegExp must exist");
+
+        let mut lexer = Lexer::new(source);
+
+        while lexer.index < start {
+            assert!(lexer.scan_next().unwrap());
+        }
+
+        assert_eq!(lexer.index, start);
+        assert!(lexer.scan_next_with_regexp(true).unwrap());
+
+        let token = lexer.tokens.last().unwrap();
+
+        assert_eq!(token.offset, start);
+        assert_eq!(
+            token.kind,
+            TokenKind::RegExpLiteral {
+                pattern: fragment[1..fragment.len() - 1].to_owned(),
+                flags: String::new(),
+            }
+        );
+
+        assert!(lexer.scan_next().unwrap());
+        assert_eq!(lexer.tokens.last().unwrap().kind, TokenKind::RightParen);
     }
 }
