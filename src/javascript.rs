@@ -126,7 +126,13 @@ pub(crate) type ObjectStorage = Rc<RefCell<ObjectState>>;
 
 #[derive(Clone, Debug)]
 pub struct RegExpValue {
-    inner: Rc<RefCell<regexp::object::RegExp>>,
+    inner: Rc<RefCell<RegExpState>>,
+}
+
+#[derive(Debug)]
+struct RegExpState {
+    regexp: regexp::object::RegExp,
+    last_index: Value,
 }
 
 impl PartialEq for RegExpValue {

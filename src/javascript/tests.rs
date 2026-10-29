@@ -1126,3 +1126,80 @@ fn regexp_constructor_evaluate_extra_arguments() {
     )
     .unwrap();
 }
+
+#[test]
+fn regexp_last_index_preserves_assigned_values_until_matching() {
+    evaluate(
+        r#"
+            const re = new RegExp("a", "g");
+            const alias = re;
+
+            re.lastIndex = 1.9;
+            assert_equals(alias.lastIndex, 1.9);
+
+            assert_true(alias.test("aba"));
+            assert_equals(re.lastIndex, 3);
+
+            re.lastIndex = 0 - 4;
+            assert_true(re.test("aba"));
+            assert_equals(alias.lastIndex, 1);
+
+            re.lastIndex = true;
+            assert_true(re.test("aba"));
+            assert_equals(re.lastIndex, 3);
+
+            re.lastIndex = null;
+            assert_true(re.test("aba"));
+            assert_equals(re.lastIndex, 1);
+
+            re.lastIndex = undefined;
+            assert_true(re.test("aba"));
+            assert_equals(re.lastIndex, 1);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn regexp_stateless_test_preserves_original_last_index() {
+    evaluate(
+        r#"
+            const re = new RegExp("a");
+            re.lastIndex = 4.5;
+
+            assert_true(re.test("a"));
+            assert_equals(re.lastIndex, 4.5);
+
+            assert_false(re.test("b"));
+            assert_equals(re.lastIndex, 4.5);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn regexp_last_index_keeps_strings_but_does_not_coerce_them_yet() {
+    evaluate(
+        r#"
+            const re = new RegExp("a", "g");
+            re.lastIndex = "2";
+            assert_equals(re.lastIndex, "2");
+        "#,
+    )
+    .unwrap();
+
+    let error = evaluate(
+        r#"
+            const re = new RegExp("a", "g");
+            re.lastIndex = "2";
+            re.test("aba");
+        "#,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .message
+            .contains("lastIndex conversion is not implemented")
+    );
+}

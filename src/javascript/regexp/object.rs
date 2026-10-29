@@ -70,6 +70,10 @@ impl RegExp {
         self.last_index
     }
 
+    pub(crate) fn uses_last_index(&self) -> bool {
+        self.flags.global || self.flags.sticky
+    }
+
     pub(crate) fn set_last_index(&mut self, value: usize) {
         self.last_index = value;
     }

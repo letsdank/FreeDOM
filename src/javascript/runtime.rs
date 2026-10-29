@@ -4,8 +4,8 @@ use crate::url::Url;
 
 use super::{
     ArrayMethodKind, ArrayStorage, BinaryOperator, DocumentMethod, DocumentState, ElementMethod,
-    Expression, JsError, NativeFunction, RegExpValue, Statement, TestContextMethod, UserFunction,
-    Value,
+    Expression, JsError, NativeFunction, RegExpState, RegExpValue, Statement, TestContextMethod,
+    UserFunction, Value,
 };
 
 #[path = "runtime/dom.rs"]
@@ -618,7 +618,7 @@ impl Interpreter {
                     ))),
 
                     (Value::RegExp(regexp), "lastIndex") => {
-                        Ok(Value::Number(regexp.inner.borrow().last_index() as f64))
+                        Ok(regexp.inner.borrow().last_index.clone())
                     }
 
                     (Value::RegExp(regexp), "test") => Ok(Value::RegExpTest(regexp)),
@@ -1085,6 +1085,11 @@ impl Interpreter {
                         }
                     }
 
+                    Value::RegExp(regexp) if property == "lastIndex" => {
+                        regexp.inner.borrow_mut().last_index = value;
+                        Ok(())
+                    }
+
                     Value::Element(_) => Err(JsError::runtime(format!(
                         "Element.{property} is not implemented yet"
                     ))),
@@ -1323,10 +1328,18 @@ impl Interpreter {
                 let input = values.first().unwrap_or(&Value::Undefined).to_js_string();
 
                 let units: Vec<u16> = input.encode_utf16().collect();
+                let mut state = regexp.inner.borrow_mut();
+                let start = Self::regexp_last_index(&state.last_index)?;
 
-                let matched = regexp.inner.borrow_mut().test(&units).map_err(|error| {
+                state.regexp.set_last_index(start);
+
+                let matched = state.regexp.test(&units).map_err(|error| {
                     JsError::runtime(format!("RegExp execution failed: {error:?}"))
                 })?;
+
+                if state.regexp.uses_last_index() {
+                    state.last_index = Value::Number(state.regexp.last_index() as f64);
+                }
 
                 Ok(Value::Boolean(matched))
             }
@@ -1643,7 +1656,45 @@ impl Interpreter {
             .map_err(|error| JsError::runtime(format!("RegExp compilation failed: {error:?}")))?;
 
         Ok(Value::RegExp(RegExpValue {
-            inner: std::rc::Rc::new(std::cell::RefCell::new(regexp)),
+            inner: std::rc::Rc::new(std::cell::RefCell::new(RegExpState {
+                regexp,
+                last_index: Value::Number(0.0),
+            })),
         }))
+    }
+
+    // ToLength currently supports Number, Boolean, null, and undefined only.
+    // String conversion and object ToPrimitive are not implemented here.
+    // https://tc39.es/ecma262/#sec-tolength
+    fn regexp_last_index(value: &Value) -> Result<usize, JsError> {
+        let number = match value {
+            Value::Number(number) => *number,
+
+            Value::Boolean(value) => {
+                if *value {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+
+            Value::Null => 0.0,
+
+            Value::Undefined => f64::NAN,
+
+            _ => {
+                return Err(JsError::runtime(
+                    "RegExp lastIndex conversion is not implemented for this value",
+                ));
+            }
+        };
+
+        if number.is_nan() || number <= 0.0 {
+            return Ok(0);
+        }
+
+        const MAX_LENGTH: f64 = 9_007_199_254_740_991.0;
+
+        Ok(number.floor().min(MAX_LENGTH) as usize)
     }
 }
