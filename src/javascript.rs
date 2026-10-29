@@ -124,6 +124,17 @@ impl ObjectState {
 pub(crate) type ArrayStorage = Rc<RefCell<Vec<Value>>>;
 pub(crate) type ObjectStorage = Rc<RefCell<ObjectState>>;
 
+#[derive(Clone, Debug)]
+pub struct RegExpValue {
+    inner: Rc<RefCell<regexp::object::RegExp>>,
+}
+
+impl PartialEq for RegExpValue {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArrayMethodKind {
     Push,
@@ -164,6 +175,8 @@ pub enum Value {
     NodeList(Vec<u64>),
     ClassList(u64),
     ObjectConstructor,
+    RegExp(RegExpValue),
+    RegExpTest(RegExpValue),
 }
 
 impl Value {
@@ -203,6 +216,10 @@ impl Value {
             Self::NodeList(_) => "[object NodeList]".to_owned(),
             Self::ClassList(_) => "[object DOMTokenList]".to_owned(),
             Self::ObjectConstructor => "function".to_owned(),
+
+            // RegExp.prototype.toString is not implemented yet.
+            Self::RegExp(_) => "[object RegExp]".to_owned(),
+            Self::RegExpTest(_) => "function".to_owned(),
         }
     }
 

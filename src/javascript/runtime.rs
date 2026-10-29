@@ -4,7 +4,8 @@ use crate::url::Url;
 
 use super::{
     ArrayMethodKind, ArrayStorage, BinaryOperator, DocumentMethod, DocumentState, ElementMethod,
-    Expression, JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
+    Expression, JsError, NativeFunction, RegExpValue, Statement, TestContextMethod, UserFunction,
+    Value,
 };
 
 #[path = "runtime/dom.rs"]
@@ -616,6 +617,12 @@ impl Interpreter {
                         "Document.{property} is not implemented yet"
                     ))),
 
+                    (Value::RegExp(regexp), "lastIndex") => {
+                        Ok(Value::Number(regexp.inner.borrow().last_index() as f64))
+                    }
+
+                    (Value::RegExp(regexp), "test") => Ok(Value::RegExpTest(regexp)),
+
                     (_, property) => Err(JsError::runtime(format!(
                         "cannot read property {property:?} from this value"
                     ))),
@@ -909,6 +916,7 @@ impl Interpreter {
             | Value::Attribute { .. }
             | Value::NodeList(_)
             | Value::ClassList(_)
+            | Value::RegExp(_)
             | Value::TestContext => "object",
 
             Value::Boolean(_) => "boolean",
@@ -922,6 +930,7 @@ impl Interpreter {
             | Value::ElementConstructor(_)
             | Value::ObjectConstructor
             | Value::TestContextMethod(_)
+            | Value::RegExpTest(_)
             | Value::ArrayMethod { .. } => "function",
         }
     }
@@ -962,6 +971,8 @@ impl Interpreter {
             | Value::ClassList(_)
             | Value::ArrayMethod { .. }
             | Value::ObjectConstructor
+            | Value::RegExp(_)
+            | Value::RegExpTest(_)
             | Value::TestContext => None,
         }
     }
@@ -1308,6 +1319,18 @@ impl Interpreter {
 
             Value::Function(function) => self.call_function(&function, values),
 
+            Value::RegExpTest(regexp) => {
+                let input = values.first().unwrap_or(&Value::Undefined).to_js_string();
+
+                let units: Vec<u16> = input.encode_utf16().collect();
+
+                let matched = regexp.inner.borrow_mut().test(&units).map_err(|error| {
+                    JsError::runtime(format!("RegExp execution failed: {error:?}"))
+                })?;
+
+                Ok(Value::Boolean(matched))
+            }
+
             _ => Err(JsError::runtime("TypeError: this value is not callable")),
         }
     }
@@ -1562,6 +1585,10 @@ impl Interpreter {
     }
 
     fn construct(&mut self, constructor: &str, arguments: &[Expression]) -> Result<Value, JsError> {
+        if constructor == "RegExp" {
+            return self.construct_regexp(arguments);
+        }
+
         if constructor != "URL" {
             return Err(JsError::runtime(format!(
                 "ReferenceError: constructor {constructor} is not defined"
@@ -1586,5 +1613,37 @@ impl Interpreter {
         .map_err(|error| JsError::runtime(format!("TypeError: invalid URL: {error}")))?;
 
         Ok(Value::Url(url))
+    }
+
+    fn construct_regexp(&mut self, arguments: &[Expression]) -> Result<Value, JsError> {
+        let mut values = Vec::with_capacity(arguments.len());
+
+        for argument in arguments {
+            values.push(self.evaluate_expression(argument)?);
+        }
+
+        let pattern = match values.first() {
+            None | Some(Value::Undefined) => String::new(),
+
+            Some(Value::RegExp(_)) => {
+                return Err(JsError::runtime(
+                    "RegExp construction from another RegExp is not implemented yet",
+                ));
+            }
+
+            Some(value) => value.to_js_string(),
+        };
+
+        let flags = match values.get(1) {
+            None | Some(Value::Undefined) => String::new(),
+            Some(value) => value.to_js_string(),
+        };
+
+        let regexp = super::regexp::object::RegExp::compile(&pattern, &flags)
+            .map_err(|error| JsError::runtime(format!("RegExp compilation failed: {error:?}")))?;
+
+        Ok(Value::RegExp(RegExpValue {
+            inner: std::rc::Rc::new(std::cell::RefCell::new(regexp)),
+        }))
     }
 }

@@ -1069,3 +1069,60 @@ fn evaluates_equality_operators() {
         assert_eq!(result, Value::Boolean(expected), "source: {source}");
     }
 }
+
+#[test]
+fn constructs_and_uses_regexp_objects() {
+    evaluate(
+        r#"
+            const re = new RegExp("a", "g");
+            const alias = re;
+
+            assert_equals(typeof re, "object");
+            assert_equals(typeof re.test, "function");
+
+            assert_true(re === alias);
+            assert_false(re === new RegExp("a", "g"));
+
+            assert_true(re.test("aba"));
+            assert_equals(alias.lastIndex, 1);
+
+            assert_true(alias.test("aba"));
+            assert_equals(re.lastIndex, 3);
+
+            assert_false(re.test("aba"));
+            assert_equals(re.lastIndex, 0);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn regexp_constructor_defaults_and_test_default_argument() {
+    evaluate(
+        r#"
+            const empty = new RegExp();
+            assert_true(empty.test("text"));
+
+            const re = new RegExp("undefined");
+            assert_true(re.test());
+
+            const implicit = new RegExp(undefined, undefined);
+            assert_true(implicit.test("x"));
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn regexp_constructor_evaluate_extra_arguments() {
+    evaluate(
+        r#"
+            let count = 0;
+            const re = new RegExp("a", "", count = 1);
+
+            assert_equals(count, 1);
+            assert_true(re.test("a"));
+        "#,
+    )
+    .unwrap();
+}
