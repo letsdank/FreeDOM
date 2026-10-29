@@ -18,6 +18,9 @@ pub(crate) mod pattern;
 #[path = "regexp/matcher.rs"]
 pub(crate) mod matcher;
 
+#[path = "regexp/object.rs"]
+pub(crate) mod object;
+
 pub(crate) use flags::{RegExpFlagError, RegExpFlags};
 
 use super::lexer::LexError;
