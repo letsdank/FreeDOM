@@ -6,47 +6,47 @@
 
 use super::{Expression, JsError, Parser, Statement, TokenKind, Value};
 
-impl Parser {
+impl Parser<'_> {
     pub(super) fn parse_statement(&mut self) -> Result<Statement, JsError> {
-        if self.cursor.consume_optional(&TokenKind::For) {
+        if self.cursor.consume_optional(&TokenKind::For)? {
             return self.parse_for_statement();
         }
 
-        if self.cursor.consume_optional(&TokenKind::Break) {
-            self.cursor.consume_optional(&TokenKind::Semicolon);
+        if self.cursor.consume_optional(&TokenKind::Break)? {
+            self.cursor.consume_optional(&TokenKind::Semicolon)?;
             return Ok(Statement::Break);
         }
 
-        if self.cursor.consume_optional(&TokenKind::Continue) {
-            self.cursor.consume_optional(&TokenKind::Semicolon);
+        if self.cursor.consume_optional(&TokenKind::Continue)? {
+            self.cursor.consume_optional(&TokenKind::Semicolon)?;
             return Ok(Statement::Continue);
         }
 
-        if self.cursor.consume_optional(&TokenKind::If) {
+        if self.cursor.consume_optional(&TokenKind::If)? {
             return self.parse_if_statement();
         }
 
-        if self.cursor.consume_optional(&TokenKind::While) {
+        if self.cursor.consume_optional(&TokenKind::While)? {
             return self.parse_while_statement();
         }
 
-        if self.cursor.consume_optional(&TokenKind::Return) {
+        if self.cursor.consume_optional(&TokenKind::Return)? {
             let value = self.parse_expression()?;
-            self.cursor.consume_optional(&TokenKind::Semicolon);
+            self.cursor.consume_optional(&TokenKind::Semicolon)?;
 
             return Ok(Statement::Return(value));
         }
 
         if matches!(
-            self.cursor.peek().kind,
+            self.cursor.peek()?.kind,
             TokenKind::Let | TokenKind::Const | TokenKind::Var
         ) {
-            self.cursor.advance();
+            self.cursor.advance()?;
             return self.parse_declaration();
         }
 
         let expression = self.parse_expression()?;
-        self.cursor.consume_optional(&TokenKind::Semicolon);
+        self.cursor.consume_optional(&TokenKind::Semicolon)?;
 
         Ok(Statement::Expression(expression))
     }
@@ -56,14 +56,14 @@ impl Parser {
             .consume(&TokenKind::LeftParen, "expected '(' after for")?;
 
         if matches!(
-            self.cursor.peek().kind,
+            self.cursor.peek()?.kind,
             TokenKind::Let | TokenKind::Const | TokenKind::Var
         ) {
-            self.cursor.advance();
+            self.cursor.advance()?;
 
             let (name, offset) = self.consume_identifier("expected a variable name")?;
 
-            if self.consume_contextual_keyword("of") {
+            if self.consume_contextual_keyword("of")? {
                 if name.is_empty() {
                     return Err(JsError::syntax(offset, "variable name cannot be empty"));
                 }
@@ -82,7 +82,7 @@ impl Parser {
                 });
             }
 
-            let value = if self.cursor.consume_optional(&TokenKind::Assign) {
+            let value = if self.cursor.consume_optional(&TokenKind::Assign)? {
                 self.parse_expression()?
             } else {
                 Expression::Literal(Value::Undefined)
@@ -93,7 +93,7 @@ impl Parser {
 
             let initializer = Some(Box::new(Statement::Declaration { name, value }));
 
-            let condition = if self.cursor.consume_optional(&TokenKind::Semicolon) {
+            let condition = if self.cursor.consume_optional(&TokenKind::Semicolon)? {
                 None
             } else {
                 let condition = self.parse_expression()?;
@@ -104,7 +104,7 @@ impl Parser {
                 Some(condition)
             };
 
-            let update = if self.cursor.check(&TokenKind::RightParen) {
+            let update = if self.cursor.check(&TokenKind::RightParen)? {
                 None
             } else {
                 Some(self.parse_expression()?)
@@ -123,7 +123,7 @@ impl Parser {
             });
         }
 
-        let initializer = if self.cursor.consume_optional(&TokenKind::Semicolon) {
+        let initializer = if self.cursor.consume_optional(&TokenKind::Semicolon)? {
             None
         } else {
             let expression = self.parse_expression()?;
@@ -134,7 +134,7 @@ impl Parser {
             Some(Box::new(Statement::Expression(expression)))
         };
 
-        let condition = if self.cursor.consume_optional(&TokenKind::Semicolon) {
+        let condition = if self.cursor.consume_optional(&TokenKind::Semicolon)? {
             None
         } else {
             let condition = self.parse_expression()?;
@@ -145,7 +145,7 @@ impl Parser {
             Some(condition)
         };
 
-        let update = if self.cursor.check(&TokenKind::RightParen) {
+        let update = if self.cursor.check(&TokenKind::RightParen)? {
             None
         } else {
             Some(self.parse_expression()?)
@@ -189,7 +189,7 @@ impl Parser {
 
         let then_body = self.parse_statement_body()?;
 
-        let else_body = if self.cursor.consume_optional(&TokenKind::Else) {
+        let else_body = if self.cursor.consume_optional(&TokenKind::Else)? {
             self.parse_statement_body()?
         } else {
             Vec::new()
@@ -203,16 +203,16 @@ impl Parser {
     }
 
     fn parse_statement_body(&mut self) -> Result<Vec<Statement>, JsError> {
-        if !self.cursor.consume_optional(&TokenKind::LeftBrace) {
+        if !self.cursor.consume_optional(&TokenKind::LeftBrace)? {
             return Ok(vec![self.parse_statement()?]);
         }
 
         let mut body = Vec::new();
 
-        while !self.cursor.check(&TokenKind::RightBrace) {
-            if self.cursor.check(&TokenKind::EndOfFile) {
+        while !self.cursor.check(&TokenKind::RightBrace)? {
+            if self.cursor.check(&TokenKind::EndOfFile)? {
                 return Err(JsError::syntax(
-                    self.cursor.peek().offset,
+                    self.cursor.peek()?.offset,
                     "unterminated statement block",
                 ));
             }
@@ -220,7 +220,7 @@ impl Parser {
             body.push(self.parse_statement()?);
         }
 
-        self.cursor.advance();
+        self.cursor.advance()?;
 
         Ok(body)
     }
@@ -228,13 +228,13 @@ impl Parser {
     fn parse_declaration(&mut self) -> Result<Statement, JsError> {
         let (name, offset) = self.consume_identifier("expected a variable name")?;
 
-        let value = if self.cursor.consume_optional(&TokenKind::Assign) {
+        let value = if self.cursor.consume_optional(&TokenKind::Assign)? {
             self.parse_expression()?
         } else {
             Expression::Literal(Value::Undefined)
         };
 
-        self.cursor.consume_optional(&TokenKind::Semicolon);
+        self.cursor.consume_optional(&TokenKind::Semicolon)?;
 
         if name.is_empty() {
             return Err(JsError::syntax(offset, "variable name cannot be empty"));

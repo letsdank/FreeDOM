@@ -5,7 +5,7 @@
 
 use super::{Expression, JsError, Parser, Statement, TokenKind, UserFunction};
 
-impl Parser {
+impl Parser<'_> {
     pub(super) fn parse_function_expression(&mut self) -> Result<Expression, JsError> {
         self.cursor
             .consume(&TokenKind::LeftParen, "expected '(' after function keyword")?;
@@ -19,7 +19,7 @@ impl Parser {
     fn parse_function_parameters(&mut self) -> Result<Vec<String>, JsError> {
         let mut parameters = Vec::new();
 
-        if self.cursor.consume_optional(&TokenKind::RightParen) {
+        if self.cursor.consume_optional(&TokenKind::RightParen)? {
             return Ok(parameters);
         }
 
@@ -28,7 +28,7 @@ impl Parser {
 
             parameters.push(parameter);
 
-            if self.cursor.consume_optional(&TokenKind::Comma) {
+            if self.cursor.consume_optional(&TokenKind::Comma)? {
                 continue;
             }
 
@@ -47,10 +47,10 @@ impl Parser {
 
         let mut body = Vec::new();
 
-        while !self.cursor.check(&TokenKind::RightBrace) {
-            if self.cursor.check(&TokenKind::EndOfFile) {
+        while !self.cursor.check(&TokenKind::RightBrace)? {
+            if self.cursor.check(&TokenKind::EndOfFile)? {
                 return Err(JsError::syntax(
-                    self.cursor.peek().offset,
+                    self.cursor.peek()?.offset,
                     "unterminated function body",
                 ));
             }
@@ -58,7 +58,7 @@ impl Parser {
             body.push(self.parse_statement()?);
         }
 
-        self.cursor.advance();
+        self.cursor.advance()?;
 
         Ok(body)
     }
@@ -66,15 +66,15 @@ impl Parser {
     pub(super) fn parse_arguments(&mut self) -> Result<Vec<Expression>, JsError> {
         let mut arguments = Vec::new();
 
-        if self.cursor.consume_optional(&TokenKind::RightParen) {
+        if self.cursor.consume_optional(&TokenKind::RightParen)? {
             return Ok(arguments);
         }
 
         loop {
             arguments.push(self.parse_expression()?);
 
-            if self.cursor.consume_optional(&TokenKind::Comma) {
-                if self.cursor.consume_optional(&TokenKind::RightParen) {
+            if self.cursor.consume_optional(&TokenKind::Comma)? {
+                if self.cursor.consume_optional(&TokenKind::RightParen)? {
                     return Ok(arguments);
                 }
 

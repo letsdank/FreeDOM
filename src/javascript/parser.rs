@@ -1,8 +1,11 @@
 use super::{
-    BinaryOperator, Expression, JsError, Statement, Token, TokenKind, UserFunction, Value, tokenize,
+    BinaryOperator, Expression, JsError, Statement, Token, TokenKind, UserFunction, Value,
 };
 
-use super::token_cursor::TokenCursor;
+use cursor::ParserCursor;
+
+#[path = "parser/cursor.rs"]
+mod cursor;
 
 #[path = "parser/statement.rs"]
 mod statement;
@@ -17,29 +20,24 @@ mod function;
 mod expression;
 
 pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
-    let tokens = tokenize(source).map_err(|error| JsError {
-        offset: Some(error.offset),
-        message: error.message,
-    })?;
-
-    Parser::new(tokens).parse_program()
+    Parser::new(source).parse_program()
 }
 
-struct Parser {
-    cursor: TokenCursor,
+struct Parser<'source> {
+    cursor: ParserCursor<'source>,
 }
 
-impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
+impl<'source> Parser<'source> {
+    fn new(source: &'source str) -> Self {
         Self {
-            cursor: TokenCursor::new(tokens),
+            cursor: ParserCursor::new(source),
         }
     }
 
     fn parse_program(&mut self) -> Result<Vec<Statement>, JsError> {
         let mut statements = Vec::new();
 
-        while !self.cursor.check(&TokenKind::EndOfFile) {
+        while !self.cursor.check(&TokenKind::EndOfFile)? {
             statements.push(self.parse_statement()?);
         }
 
@@ -47,7 +45,7 @@ impl Parser {
     }
 
     fn consume_identifier(&mut self, message: &str) -> Result<(String, usize), JsError> {
-        let token = self.cursor.advance();
+        let token = self.cursor.advance()?;
 
         match token.kind {
             TokenKind::Identifier(name) => Ok((name, token.offset)),
@@ -55,13 +53,13 @@ impl Parser {
         }
     }
 
-    fn consume_contextual_keyword(&mut self, keyword: &str) -> bool {
-        match &self.cursor.peek().kind {
+    fn consume_contextual_keyword(&mut self, keyword: &str) -> Result<bool, JsError> {
+        match &self.cursor.peek()?.kind {
             TokenKind::Identifier(identifier) if identifier == keyword => {
-                self.cursor.advance();
-                true
+                self.cursor.advance()?;
+                Ok(true)
             }
-            _ => false,
+            _ => Ok(false),
         }
     }
 }

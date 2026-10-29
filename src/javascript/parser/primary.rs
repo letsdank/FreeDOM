@@ -6,9 +6,9 @@
 
 use super::{Expression, JsError, Parser, TokenKind, UserFunction, Value};
 
-impl Parser {
+impl Parser<'_> {
     pub(super) fn parse_primary(&mut self) -> Result<Expression, JsError> {
-        let token = self.cursor.advance();
+        let token = self.cursor.advance()?;
 
         match token.kind {
             TokenKind::String(value) => Ok(Expression::Literal(Value::String(value))),
@@ -29,8 +29,8 @@ impl Parser {
             TokenKind::Function => self.parse_function_expression(),
 
             TokenKind::LeftParen => {
-                if self.cursor.consume_optional(&TokenKind::RightParen) {
-                    if self.cursor.consume_optional(&TokenKind::Arrow) {
+                if self.cursor.consume_optional(&TokenKind::RightParen)? {
+                    if self.cursor.consume_optional(&TokenKind::Arrow)? {
                         return Ok(Expression::Function(UserFunction {
                             parameters: Vec::new(),
                             body: self.parse_function_body()?,
@@ -43,21 +43,21 @@ impl Parser {
                     ));
                 }
 
-                if let TokenKind::Identifier(parameter) = self.cursor.peek().kind.clone() {
+                if let TokenKind::Identifier(parameter) = self.cursor.peek()?.kind.clone() {
                     let has_closing_parenthesis = self
                         .cursor
-                        .peek_n(1)
+                        .peek_n(1)?
                         .is_some_and(|token| matches!(token.kind, TokenKind::RightParen));
 
                     let has_arrow = self
                         .cursor
-                        .peek_n(2)
+                        .peek_n(2)?
                         .is_some_and(|token| matches!(token.kind, TokenKind::Arrow));
 
                     if has_closing_parenthesis && has_arrow {
-                        self.cursor.advance();
-                        self.cursor.advance();
-                        self.cursor.advance();
+                        self.cursor.advance()?;
+                        self.cursor.advance()?;
+                        self.cursor.advance()?;
 
                         return Ok(Expression::Function(UserFunction {
                             parameters: vec![parameter],
@@ -84,15 +84,15 @@ impl Parser {
     fn parse_array_literal(&mut self) -> Result<Expression, JsError> {
         let mut values = Vec::new();
 
-        if self.cursor.consume_optional(&TokenKind::RightBracket) {
+        if self.cursor.consume_optional(&TokenKind::RightBracket)? {
             return Ok(Expression::Array(values));
         }
 
         loop {
             values.push(self.parse_expression()?);
 
-            if self.cursor.consume_optional(&TokenKind::Comma) {
-                if self.cursor.consume_optional(&TokenKind::RightBracket) {
+            if self.cursor.consume_optional(&TokenKind::Comma)? {
+                if self.cursor.consume_optional(&TokenKind::RightBracket)? {
                     return Ok(Expression::Array(values));
                 }
 
@@ -111,12 +111,12 @@ impl Parser {
     fn parse_object_literal(&mut self) -> Result<Expression, JsError> {
         let mut properties = Vec::new();
 
-        if self.cursor.consume_optional(&TokenKind::RightBrace) {
+        if self.cursor.consume_optional(&TokenKind::RightBrace)? {
             return Ok(Expression::Object(properties));
         }
 
         loop {
-            let token = self.cursor.advance();
+            let token = self.cursor.advance()?;
 
             let name = match token.kind {
                 TokenKind::Identifier(name) | TokenKind::String(name) => name,
@@ -134,8 +134,8 @@ impl Parser {
             let value = self.parse_expression()?;
             properties.push((name, value));
 
-            if self.cursor.consume_optional(&TokenKind::Comma) {
-                if self.cursor.consume_optional(&TokenKind::RightBrace) {
+            if self.cursor.consume_optional(&TokenKind::Comma)? {
+                if self.cursor.consume_optional(&TokenKind::RightBrace)? {
                     return Ok(Expression::Object(properties));
                 }
 

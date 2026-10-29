@@ -6,7 +6,7 @@
 
 use super::{BinaryOperator, Expression, JsError, Parser, TokenKind, UserFunction};
 
-impl Parser {
+impl Parser<'_> {
     pub(super) fn parse_expression(&mut self) -> Result<Expression, JsError> {
         self.parse_assignment_expression()
     }
@@ -14,7 +14,7 @@ impl Parser {
     fn parse_conditional_expression(&mut self) -> Result<Expression, JsError> {
         let condition = self.parse_logical_or_expression()?;
 
-        if !self.cursor.consume_optional(&TokenKind::Question) {
+        if !self.cursor.consume_optional(&TokenKind::Question)? {
             return Ok(condition);
         }
 
@@ -35,15 +35,15 @@ impl Parser {
     }
 
     fn parse_assignment_expression(&mut self) -> Result<Expression, JsError> {
-        if let TokenKind::Identifier(parameter) = self.cursor.peek().kind.clone() {
+        if let TokenKind::Identifier(parameter) = self.cursor.peek()?.kind.clone() {
             let is_arrow = self
                 .cursor
-                .peek_n(1)
+                .peek_n(1)?
                 .is_some_and(|token| matches!(token.kind, TokenKind::Arrow));
 
             if is_arrow {
-                self.cursor.advance();
-                self.cursor.advance();
+                self.cursor.advance()?;
+                self.cursor.advance()?;
 
                 return Ok(Expression::Function(UserFunction {
                     parameters: vec![parameter],
@@ -54,7 +54,7 @@ impl Parser {
 
         let expression = self.parse_conditional_expression()?;
 
-        if self.cursor.consume_optional(&TokenKind::Assign) {
+        if self.cursor.consume_optional(&TokenKind::Assign)? {
             let value = self.parse_assignment_expression()?;
 
             return Ok(Expression::Assignment {
@@ -69,7 +69,7 @@ impl Parser {
     fn parse_logical_or_expression(&mut self) -> Result<Expression, JsError> {
         let mut expression = self.parse_logical_and_expression()?;
 
-        while self.cursor.consume_optional(&TokenKind::Or) {
+        while self.cursor.consume_optional(&TokenKind::Or)? {
             let right = self.parse_logical_and_expression()?;
 
             expression = Expression::Binary {
@@ -85,7 +85,7 @@ impl Parser {
     fn parse_logical_and_expression(&mut self) -> Result<Expression, JsError> {
         let mut expression = self.parse_equality_expression()?;
 
-        while self.cursor.consume_optional(&TokenKind::And) {
+        while self.cursor.consume_optional(&TokenKind::And)? {
             let right = self.parse_equality_expression()?;
 
             expression = Expression::Binary {
@@ -102,13 +102,13 @@ impl Parser {
         let mut expression = self.parse_comparison_expression()?;
 
         loop {
-            let operator = if self.cursor.consume_optional(&TokenKind::StrictEqual) {
+            let operator = if self.cursor.consume_optional(&TokenKind::StrictEqual)? {
                 BinaryOperator::StrictEqual
-            } else if self.cursor.consume_optional(&TokenKind::StrictNotEqual) {
+            } else if self.cursor.consume_optional(&TokenKind::StrictNotEqual)? {
                 BinaryOperator::StrictNotEqual
-            } else if self.cursor.consume_optional(&TokenKind::Equal) {
+            } else if self.cursor.consume_optional(&TokenKind::Equal)? {
                 BinaryOperator::Equal
-            } else if self.cursor.consume_optional(&TokenKind::NotEqual) {
+            } else if self.cursor.consume_optional(&TokenKind::NotEqual)? {
                 BinaryOperator::NotEqual
             } else {
                 break;
@@ -130,15 +130,15 @@ impl Parser {
         let mut expression = self.parse_term_expression()?;
 
         loop {
-            let operator = if self.cursor.consume_optional(&TokenKind::LessEqual) {
+            let operator = if self.cursor.consume_optional(&TokenKind::LessEqual)? {
                 BinaryOperator::LessEqual
-            } else if self.cursor.consume_optional(&TokenKind::GreaterEqual) {
+            } else if self.cursor.consume_optional(&TokenKind::GreaterEqual)? {
                 BinaryOperator::GreaterEqual
-            } else if self.cursor.consume_optional(&TokenKind::Instanceof) {
+            } else if self.cursor.consume_optional(&TokenKind::Instanceof)? {
                 BinaryOperator::Instanceof
-            } else if self.cursor.consume_optional(&TokenKind::Less) {
+            } else if self.cursor.consume_optional(&TokenKind::Less)? {
                 BinaryOperator::Less
-            } else if self.cursor.consume_optional(&TokenKind::Greater) {
+            } else if self.cursor.consume_optional(&TokenKind::Greater)? {
                 BinaryOperator::Greater
             } else {
                 break;
@@ -160,9 +160,9 @@ impl Parser {
         let mut expression = self.parse_factor_expression()?;
 
         loop {
-            let operator = if self.cursor.consume_optional(&TokenKind::Plus) {
+            let operator = if self.cursor.consume_optional(&TokenKind::Plus)? {
                 BinaryOperator::Add
-            } else if self.cursor.consume_optional(&TokenKind::Minus) {
+            } else if self.cursor.consume_optional(&TokenKind::Minus)? {
                 BinaryOperator::Subtract
             } else {
                 break;
@@ -184,9 +184,9 @@ impl Parser {
         let mut expression = self.parse_unary_expression()?;
 
         loop {
-            let operator = if self.cursor.consume_optional(&TokenKind::Star) {
+            let operator = if self.cursor.consume_optional(&TokenKind::Star)? {
                 BinaryOperator::Multiply
-            } else if self.cursor.consume_optional(&TokenKind::Slash) {
+            } else if self.cursor.consume_optional(&TokenKind::Slash)? {
                 BinaryOperator::Divide
             } else {
                 break;
@@ -205,7 +205,7 @@ impl Parser {
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, JsError> {
-        if self.cursor.consume_optional(&TokenKind::PlusPlus) {
+        if self.cursor.consume_optional(&TokenKind::PlusPlus)? {
             return Ok(Expression::Update {
                 target: Box::new(self.parse_unary_expression()?),
                 delta: 1.0,
@@ -213,7 +213,7 @@ impl Parser {
             });
         }
 
-        if self.cursor.consume_optional(&TokenKind::MinusMinus) {
+        if self.cursor.consume_optional(&TokenKind::MinusMinus)? {
             return Ok(Expression::Update {
                 target: Box::new(self.parse_unary_expression()?),
                 delta: -1.0,
@@ -221,11 +221,11 @@ impl Parser {
             });
         }
 
-        if self.cursor.consume_optional(&TokenKind::Typeof) {
+        if self.cursor.consume_optional(&TokenKind::Typeof)? {
             return Ok(Expression::TypeOf(Box::new(self.parse_unary_expression()?)));
         }
 
-        if self.cursor.consume_optional(&TokenKind::Not) {
+        if self.cursor.consume_optional(&TokenKind::Not)? {
             return Ok(Expression::Not(Box::new(self.parse_unary_expression()?)));
         }
 
@@ -236,7 +236,7 @@ impl Parser {
         let mut expression = self.parse_primary()?;
 
         loop {
-            if self.cursor.consume_optional(&TokenKind::Dot) {
+            if self.cursor.consume_optional(&TokenKind::Dot)? {
                 let (property, _) =
                     self.consume_identifier("expected a property name after '.'")?;
 
@@ -248,7 +248,7 @@ impl Parser {
                 continue;
             }
 
-            if self.cursor.consume_optional(&TokenKind::LeftBracket) {
+            if self.cursor.consume_optional(&TokenKind::LeftBracket)? {
                 let index = self.parse_expression()?;
 
                 self.cursor.consume(
@@ -264,7 +264,7 @@ impl Parser {
                 continue;
             }
 
-            if self.cursor.consume_optional(&TokenKind::LeftParen) {
+            if self.cursor.consume_optional(&TokenKind::LeftParen)? {
                 let arguments = self.parse_arguments()?;
 
                 expression = Expression::Call {
@@ -275,7 +275,7 @@ impl Parser {
                 continue;
             }
 
-            if self.cursor.consume_optional(&TokenKind::PlusPlus) {
+            if self.cursor.consume_optional(&TokenKind::PlusPlus)? {
                 expression = Expression::Update {
                     target: Box::new(expression),
                     delta: 1.0,
@@ -285,7 +285,7 @@ impl Parser {
                 continue;
             }
 
-            if self.cursor.consume_optional(&TokenKind::MinusMinus) {
+            if self.cursor.consume_optional(&TokenKind::MinusMinus)? {
                 expression = Expression::Update {
                     target: Box::new(expression),
                     delta: -1.0,

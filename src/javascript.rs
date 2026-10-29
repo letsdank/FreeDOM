@@ -3,13 +3,18 @@ use std::{error::Error, fmt};
 #[path = "javascript/lexer.rs"]
 mod lexer;
 
+#[cfg(test)]
 #[path = "javascript/token_cursor.rs"]
 mod token_cursor;
 
 #[path = "javascript/token_stream.rs"]
 mod token_stream;
 
-pub use lexer::{Token, TokenKind, tokenize};
+pub use lexer::{Token, TokenKind};
+
+// Keep the batch tokenizer available as a public entry point.
+#[allow(unused_imports)]
+pub use lexer::tokenize;
 
 // The scanner will be connected to the lexer once lexical goals are available.
 #[allow(dead_code)]
