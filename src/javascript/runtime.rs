@@ -787,8 +787,10 @@ impl Interpreter {
         right: Value,
     ) -> Result<Value, JsError> {
         match operator {
-            BinaryOperator::StrictEqual => Ok(Value::Boolean(left == right)),
-            BinaryOperator::StrictNotEqual => Ok(Value::Boolean(left != right)),
+            BinaryOperator::StrictEqual => Ok(Value::Boolean(Self::strictly_equals(&left, &right))),
+            BinaryOperator::StrictNotEqual => {
+                Ok(Value::Boolean(!Self::strictly_equals(&left, &right)))
+            }
 
             BinaryOperator::Equal => Ok(Value::Boolean(self.loosely_equals(&left, &right))),
             BinaryOperator::NotEqual => Ok(Value::Boolean(!self.loosely_equals(&left, &right))),
@@ -864,6 +866,32 @@ impl Interpreter {
         }
     }
 
+    // The heap-backed Array and Object variants compare by identity.
+    // https://tc39.es/ecma262/#sec-isstrictlyequal
+    fn strictly_equals(left: &Value, right: &Value) -> bool {
+        match (left, right) {
+            (Value::Array(left), Value::Array(right)) => std::rc::Rc::ptr_eq(left, right),
+
+            (Value::Object(left), Value::Object(right)) => std::rc::Rc::ptr_eq(left, right),
+
+            _ => left == right,
+        }
+    }
+
+    // WPT's assert_equals and assert_not_equals use SameValue, not ===.
+    // https://tc39.es/ecma262/#sec-samevalue
+    fn same_value(left: &Value, right: &Value) -> bool {
+        match (left, right) {
+            (Value::Number(left), Value::Number(right)) if left.is_nan() && right.is_nan() => true,
+
+            (Value::Number(left), Value::Number(right)) if *left == 0.0 && *right == 0.0 => {
+                left.is_sign_negative() == right.is_sign_negative()
+            }
+
+            _ => Self::strictly_equals(left, right),
+        }
+    }
+
     fn loosely_equals(&self, left: &Value, right: &Value) -> bool {
         match (left, right) {
             (Value::Undefined, Value::Null) | (Value::Null, Value::Undefined) => true,
@@ -872,7 +900,7 @@ impl Interpreter {
                 self.to_number(left) == self.to_number(right)
             }
 
-            _ => left == right,
+            _ => Self::strictly_equals(left, right),
         }
     }
 
@@ -1609,7 +1637,7 @@ impl Interpreter {
         let actual = &arguments[0];
         let expected = &arguments[1];
 
-        if actual == expected {
+        if Self::same_value(actual, expected) {
             return Ok(Value::Undefined);
         }
 
@@ -1665,7 +1693,7 @@ impl Interpreter {
             ));
         }
 
-        if arguments[0] != arguments[1] {
+        if !Self::same_value(&arguments[0], &arguments[1]) {
             return Ok(Value::Undefined);
         }
 

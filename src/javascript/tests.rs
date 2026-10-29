@@ -1347,3 +1347,78 @@ fn regexp_exec_rejects_unpaired_surrogates_without_lossy_conversion() {
 
     assert!(error.message.contains("unpaired UTF-16 surrogate"))
 }
+
+#[test]
+fn compares_arrays_and_objects_by_identity() {
+    evaluate(
+        r#"
+            const first = [1];
+            const alias = first;
+            const second = [1];
+
+            assert_true(first === alias);
+            assert_false(first === second);
+            assert_true(first !== second);
+            assert_false(first == second);
+
+            assert_equals(first, alias);
+            assert_not_equals(first, second);
+
+            const object = {value: 1};
+            const same = object;
+            const different = {value: 1};
+
+            assert_true(object === same);
+            assert_false(object === different);
+            assert_not_equals(object, different);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn regexp_indices_named_group_reuses_the_same_array() {
+    evaluate(
+        r#"
+            const result = new RegExp("(?<x>a)", "d").exec("a");
+
+            assert_true(
+                result.indices.groups.x === result.indices[1]
+            );
+
+            assert_false(
+                result.indices.groups.x === result.indices[0]
+            );
+
+            assert_not_equals(
+                result.indices[0],
+                result.indices[1]
+            );
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn wpt_assertions_use_same_value_for_nan_and_signed_zero() {
+    evaluate(
+        r#"
+            const nan = 0 / 0;
+            const negativeZero = 0 / (0 - 1);
+
+            assert_equals(nan, nan);
+            assert_not_equals(0, negativeZero);
+
+            assert_true(0 === negativeZero);
+            assert_false(nan === nan);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn assert_equals_rejects_distinct_arrays_with_equal_contents() {
+    let error = evaluate("assert_equals([1], [1]);").unwrap_err();
+
+    assert!(error.message.contains("AssertionError"));
+}
