@@ -5,9 +5,7 @@
 //!
 //! Host-offset bindings and property semantics are incomplete.
 
-use super::{
-    DocumentState, ElementMethod, Interpreter, JsError, NativeFunction, TestContextMethod, Value,
-};
+use super::{ElementMethod, Interpreter, JsError, NativeFunction, TestContextMethod, Value};
 use crate::javascript::DocumentMethod;
 
 impl Interpreter {
