@@ -18,6 +18,45 @@ impl Pattern {
             .map(captures_in_term)
             .sum()
     }
+
+    pub(crate) fn named_captures(&self) -> Vec<(&str, usize)> {
+        fn collect<'a>(pattern: &'a Pattern, result: &mut Vec<(&'a str, usize)>) {
+            fn visit<'a>(term: &'a Term, result: &mut Vec<(&'a str, usize)>) {
+                match term {
+                    Term::Group {
+                        name,
+                        capture_index,
+                        pattern,
+                    } => {
+                        if let (Some(name), Some(index)) = (name, capture_index) {
+                            result.push((name.as_str(), *index));
+                        }
+
+                        collect(pattern, result);
+                    }
+
+                    Term::Lookahead { pattern, .. } => {
+                        collect(pattern, result);
+                    }
+
+                    Term::Repeat { term, .. } => {
+                        visit(term, result);
+                    }
+
+                    _ => {}
+                }
+            }
+
+            for term in pattern.alternatives.iter().flatten() {
+                visit(term, result);
+            }
+        }
+
+        let mut result = Vec::new();
+        collect(self, &mut result);
+
+        result
+    }
 }
 
 fn captures_in_term(term: &Term) -> usize {
@@ -25,6 +64,7 @@ fn captures_in_term(term: &Term) -> usize {
         Term::Group {
             capture_index,
             pattern,
+            ..
         } => usize::from(capture_index.is_some()) + pattern.capture_count(),
 
         Term::Lookahead { pattern, .. } => pattern.capture_count(),
@@ -55,6 +95,7 @@ pub(crate) enum Term {
     },
     Group {
         capture_index: Option<usize>,
+        name: Option<String>,
         pattern: Box<Pattern>,
     },
     Repeat {
@@ -107,6 +148,8 @@ pub(crate) enum PatternErrorKind {
     QuantifierTooLarge,
     CaptureLimit,
     UnsupportedDecimalEscape,
+    UnsupportedGroupName,
+    UnsupportedDuplicateGroupName,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,6 +164,7 @@ pub(crate) fn parse(source: &str) -> Result<Pattern, PatternError> {
         source,
         offset: 0,
         next_capture_index: 1,
+        group_names: Vec::new(),
     };
 
     let pattern = parser.disjunction(false, 0)?;
@@ -161,6 +205,7 @@ struct Parser<'a> {
     source: &'a str,
     offset: usize,
     next_capture_index: usize,
+    group_names: Vec<String>,
 }
 
 impl Parser<'_> {
@@ -335,7 +380,7 @@ impl Parser<'_> {
         const MAX_GROUP_DEPTH: usize = 128;
 
         enum GroupKind {
-            Capturing,
+            Capturing { name: Option<String> },
             NonCapturing,
             Lookahead { negated: bool },
         }
@@ -356,6 +401,28 @@ impl Parser<'_> {
                 Some('=') => GroupKind::Lookahead { negated: false },
                 Some('!') => GroupKind::Lookahead { negated: true },
 
+                Some('<') if matches!(self.peek(), Some('=') | Some('!')) => {
+                    return Err(PatternError {
+                        offset: question_offset,
+                        kind: PatternErrorKind::Unsupported('?'),
+                    });
+                }
+
+                Some('<') => {
+                    let name = self.group_name(group_start)?;
+
+                    if self.group_names.contains(&name) {
+                        return Err(PatternError {
+                            offset: group_start,
+                            kind: PatternErrorKind::UnsupportedDuplicateGroupName,
+                        });
+                    }
+
+                    self.group_names.push(name.clone());
+
+                    GroupKind::Capturing { name: Some(name) }
+                }
+
                 _ => {
                     return Err(PatternError {
                         offset: question_offset,
@@ -364,13 +431,13 @@ impl Parser<'_> {
                 }
             }
         } else {
-            GroupKind::Capturing
+            GroupKind::Capturing { name: None }
         };
 
         // ECMAScript numbers capturing groups by the position of their opening
         // parenthesis, including groups nested inside assertions.
-        // https://tc39.es/ecma262/multipage/text-processing.html#sec-static-semantics-capturinggroupnumber
-        let capture_index = if let GroupKind::Capturing = &kind {
+        // https://tc39.es/ecma262/#sec-static-semantics-capturinggroupnumber
+        let capture_index = if let GroupKind::Capturing { .. } = &kind {
             let index = self.next_capture_index;
 
             if index >= u32::MAX as usize {
@@ -398,13 +465,15 @@ impl Parser<'_> {
         self.advance();
 
         match kind {
-            GroupKind::Capturing => Ok(Term::Group {
+            GroupKind::Capturing { name } => Ok(Term::Group {
                 capture_index,
+                name,
                 pattern: Box::new(pattern),
             }),
 
             GroupKind::NonCapturing => Ok(Term::Group {
                 capture_index: None,
+                name: None,
                 pattern: Box::new(pattern),
             }),
 
@@ -413,6 +482,43 @@ impl Parser<'_> {
                 pattern: Box::new(pattern),
             }),
         }
+    }
+
+    // This is the ASCII subset of RegExpIdentifierName.
+    // https://tc39.es/ecma262/#prod-RegExpIdentifierName
+    fn group_name(&mut self, start: usize) -> Result<String, PatternError> {
+        let name_start = self.offset;
+
+        let valid_start = self.peek().is_some_and(|character| {
+            character.is_ascii_alphabetic() || character == '_' || character == '$'
+        });
+
+        if !valid_start {
+            return Err(PatternError {
+                offset: start,
+                kind: PatternErrorKind::UnsupportedGroupName,
+            });
+        }
+
+        self.advance();
+
+        while self.peek().is_some_and(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '$'
+        }) {
+            self.advance();
+        }
+
+        if self.peek() != Some('>') {
+            return Err(PatternError {
+                offset: start,
+                kind: PatternErrorKind::UnsupportedGroupName,
+            });
+        }
+
+        let name = self.source[name_start..self.offset].to_owned();
+        self.advance();
+
+        Ok(name)
     }
 
     fn escape(&mut self, escape_start: usize) -> Result<Term, PatternError> {
@@ -705,11 +811,13 @@ mod tests {
                     Term::Start,
                     Term::Group {
                         capture_index: Some(1),
+                        name: None,
                         pattern: Box::new(Pattern {
                             alternatives: vec![
                                 vec![Term::Literal('a')],
                                 vec![Term::Group {
                                     capture_index: None,
+                                    name: None,
                                     pattern: Box::new(Pattern {
                                         alternatives: vec![vec![
                                             Term::Literal('b'),
@@ -940,6 +1048,7 @@ mod tests {
                     Term::Group {
                         capture_index,
                         pattern,
+                        ..
                     } => {
                         if let Some(index) = capture_index {
                             indices.push(*index);
@@ -998,5 +1107,44 @@ mod tests {
                 "pattern: {source:?}"
             );
         }
+    }
+
+    #[test]
+    fn parses_and_numbers_ascii_named_groups() {
+        let pattern = parse(r"(?<outer>a(?<inner>b))|(?=(?<look>c))(?<$last_1>d)+").unwrap();
+
+        assert_eq!(pattern.capture_count(), 4);
+
+        assert_eq!(
+            pattern.named_captures(),
+            vec![("outer", 1), ("inner", 2), ("look", 3), ("$last_1", 4),]
+        );
+
+        assert!(parse(r"(?<letter>a)\1").is_ok());
+    }
+
+    #[test]
+    fn reports_unsupported_group_names_and_duplicates() {
+        for source in [r"(?<>a)", r"(?<1a>a)", r"(?<é>a)", r"(?<a-b>a)", r"(?<name"] {
+            assert_eq!(
+                parse(source).unwrap_err().kind,
+                PatternErrorKind::UnsupportedGroupName,
+                "{source:?}"
+            );
+        }
+
+        for source in [r"(?<x>a)(?<x>b)", r"(?<x>a)|(?<x>b)"] {
+            assert_eq!(
+                parse(source).unwrap_err().kind,
+                PatternErrorKind::UnsupportedDuplicateGroupName,
+                "{source:?}"
+            );
+        }
+
+        // Lookbehind is not supported yet.
+        assert_eq!(
+            parse(r"(?<=a)b").unwrap_err().kind,
+            PatternErrorKind::Unsupported('?'),
+        );
     }
 }

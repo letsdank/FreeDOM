@@ -213,6 +213,7 @@ fn match_pattern(
                     Term::Group {
                         capture_index,
                         pattern,
+                        ..
                     } => {
                         let results = match_pattern(pattern, input, state, flags, budget)?;
 
@@ -388,6 +389,7 @@ fn clear_captures(term: &Term, groups: &mut [Option<Match>]) {
         Term::Group {
             capture_index,
             pattern,
+            ..
         } => {
             if let Some(index) = capture_index {
                 groups[*index] = None;
@@ -1026,5 +1028,13 @@ mod tests {
 
             assert_eq!(result, expected, "pattern: {pattern:?}");
         }
+    }
+
+    #[test]
+    fn named_groups_remain_usable_as_numbered_groups() {
+        assert_eq!(
+            search(r"(?<letter>a)(b)\1", "aba", 0, ""),
+            Ok(Some(Match { start: 0, end: 3 }))
+        );
     }
 }
