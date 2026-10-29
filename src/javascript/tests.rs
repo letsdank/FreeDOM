@@ -1178,28 +1178,38 @@ fn regexp_stateless_test_preserves_original_last_index() {
 }
 
 #[test]
-fn regexp_last_index_keeps_strings_but_does_not_coerce_them_yet() {
+fn regexp_last_index_coerces_strings_at_match_time() {
     evaluate(
         r#"
             const re = new RegExp("a", "g");
+
             re.lastIndex = "2";
             assert_equals(re.lastIndex, "2");
+
+            assert_true(re.test("aba"));
+            assert_equals(re.lastIndex, 3);
         "#,
     )
     .unwrap();
+}
 
-    let error = evaluate(
+#[test]
+fn indexed_regexp_properties_share_state() {
+    evaluate(
         r#"
             const re = new RegExp("a", "g");
-            re.lastIndex = "2";
-            re.test("aba");
+            const key = "lastIndex";
+
+            re[key] = "0x2";
+            assert_equals(re.lastIndex, "0x2");
+
+            assert_true(re["test"]("aba"));
+            assert_equals(re[key], 3);
+
+            re.lastIndex = "not-a-number";
+            assert_true(re.test("aba"));
+            assert_equals(re[key], 1);
         "#,
     )
-    .unwrap_err();
-
-    assert!(
-        error
-            .message
-            .contains("lastIndex conversion is not implemented")
-    );
+    .unwrap();
 }

@@ -726,6 +726,18 @@ impl Interpreter {
                 .unwrap_or(Value::Undefined));
         }
 
+        if let Value::RegExp(regexp) = object {
+            return match index.to_js_string().as_str() {
+                "lastIndex" => Ok(regexp.inner.borrow().last_index.clone()),
+
+                "test" => Ok(Value::RegExpTest(regexp)),
+
+                property => Err(JsError::runtime(format!(
+                    "cannot read property {property:?} from this value"
+                ))),
+            };
+        }
+
         let Some(index) = self.to_number(&index) else {
             return Err(JsError::runtime(
                 "TypeError: collection index must be numeric",
@@ -1131,6 +1143,11 @@ impl Interpreter {
 
                         values[index] = value;
 
+                        Ok(())
+                    }
+
+                    Value::RegExp(regexp) if index.to_js_string() == "lastIndex" => {
+                        regexp.inner.borrow_mut().last_index = value;
                         Ok(())
                     }
 
@@ -1663,8 +1680,7 @@ impl Interpreter {
         }))
     }
 
-    // ToLength currently supports Number, Boolean, null, and undefined only.
-    // String conversion and object ToPrimitive are not implemented here.
+    // Object ToPrimitive is not implemented here yet.
     // https://tc39.es/ecma262/#sec-tolength
     fn regexp_last_index(value: &Value) -> Result<usize, JsError> {
         let number = match value {
@@ -1682,6 +1698,10 @@ impl Interpreter {
 
             Value::Undefined => f64::NAN,
 
+            Value::String(value) => {
+                return Ok(super::regexp::last_index::from_string(value));
+            }
+
             _ => {
                 return Err(JsError::runtime(
                     "RegExp lastIndex conversion is not implemented for this value",
@@ -1689,12 +1709,6 @@ impl Interpreter {
             }
         };
 
-        if number.is_nan() || number <= 0.0 {
-            return Ok(0);
-        }
-
-        const MAX_LENGTH: f64 = 9_007_199_254_740_991.0;
-
-        Ok(number.floor().min(MAX_LENGTH) as usize)
+        Ok(super::regexp::last_index::from_number(number))
     }
 }

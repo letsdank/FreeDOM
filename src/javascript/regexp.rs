@@ -21,6 +21,9 @@ pub(crate) mod matcher;
 #[path = "regexp/object.rs"]
 pub(crate) mod object;
 
+#[path = "regexp/last_index.rs"]
+pub(super) mod last_index;
+
 pub(crate) use flags::{RegExpFlagError, RegExpFlags};
 
 use super::lexer::LexError;
