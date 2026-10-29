@@ -340,6 +340,19 @@ impl Parser<'_> {
             'B' => return Ok(Term::WordBoundary { negated: true }),
             'x' => return self.hex_escape(escape_start, character, 2),
             'u' => return self.hex_escape(escape_start, character, 4),
+            'c' => return self.control_escape(escape_start),
+
+            '0' => {
+                if self.peek().is_some_and(|next| next.is_ascii_digit()) {
+                    return Err(PatternError {
+                        offset: escape_start,
+                        kind: PatternErrorKind::Unsupported('0'),
+                    });
+                }
+
+                return Ok(Term::CodeUnit(0));
+            }
+
             _ => {}
         }
 
@@ -400,6 +413,19 @@ impl Parser<'_> {
         self.offset += count;
 
         Ok(Term::CodeUnit(value))
+    }
+
+    fn control_escape(&mut self, start: usize) -> Result<Term, PatternError> {
+        let Some(letter) = self.peek().filter(char::is_ascii_alphabetic) else {
+            return Err(PatternError {
+                offset: start,
+                kind: PatternErrorKind::Unsupported('c'),
+            });
+        };
+
+        self.advance();
+
+        Ok(Term::CodeUnit((letter as u16) % 32))
     }
 
     fn bracket_class(&mut self, class_start: usize) -> Result<Term, PatternError> {
@@ -756,6 +782,35 @@ mod tests {
                 parse(input).unwrap_err().kind,
                 PatternErrorKind::Unsupported(kind),
                 "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_null_and_control_escapes() {
+        let pattern = parse(r"\0\cA\ca\cZ").unwrap();
+
+        assert_eq!(
+            pattern.alternatives,
+            vec![vec![
+                Term::CodeUnit(0),
+                Term::CodeUnit(1),
+                Term::CodeUnit(1),
+                Term::CodeUnit(26),
+            ]]
+        );
+
+        for (input, kind) in [
+            (r"\01", '0'),
+            (r"\09", '0'),
+            (r"\c", 'c'),
+            (r"\c7", 'c'),
+            (r"\cÉ", 'c'),
+        ] {
+            assert_eq!(
+                parse(input).unwrap_err().kind,
+                PatternErrorKind::Unsupported(kind),
+                "input: {input:?}"
             );
         }
     }

@@ -789,4 +789,57 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn matches_null_and_control_escapes() {
+        for (pattern, input, expected) in [
+            (r"\0", "a\0b", Some((1, 2))),
+            (r"\cA", "\u{0001}", Some((0, 1))),
+            (r"\ca", "\u{0001}", Some((0, 1))),
+            (r"[\0\cZ]", "\u{001A}", Some((0, 1))),
+            (r"[\cA-\cC]", "\u{0002}", Some((0, 1))),
+            (r"\cA", "A", None),
+        ] {
+            let result = search(pattern, input, 0, "")
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn matches_control_letters_from_test262_fixtures() {
+        use crate::javascript::regexp::{RegExpFlags, matcher::find_utf16};
+
+        for (file, first, last) in [
+            ("S15.10.2.10_A2.1_T1.js", b'A', b'Z'),
+            ("S15.10.2.10_A2.1_T2.js", b'a', b'z'),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata/test262/test/built-ins/RegExp")
+                .join(file);
+
+            let fixture_source = std::fs::read_to_string(path).expect("Test262 fixture must exist");
+
+            assert!(
+                fixture_source.contains("String.fromCharCode(alpha % 32)"),
+                "fixture: {file}"
+            );
+
+            for byte in first..=last {
+                let pattern_source = format!(r"\c{}", byte as char);
+                let pattern = pattern::parse(&pattern_source).unwrap();
+                let input = [u16::from(byte % 32)];
+
+                let result = find_utf16(&pattern, &input, 0, RegExpFlags::default()).unwrap();
+
+                assert_eq!(
+                    result,
+                    Some(Match { start: 0, end: 1 }),
+                    "fixture: {file}, pattern: {pattern_source}"
+                );
+            }
+        }
+    }
 }
