@@ -268,6 +268,30 @@ fn match_pattern(
                             next.push(result);
                         }
                     }
+
+                    Term::Backreference { index, .. } => {
+                        if let Some(capture) = state.groups[*index] {
+                            let captured = &input[capture.start..capture.end];
+
+                            let candidate = input
+                                .get(position..)
+                                .and_then(|rest| rest.get(..captured.len()));
+
+                            if let Some(candidate) = candidate {
+                                let equal =
+                                    captured.iter().zip(candidate).all(|(&left, &right)| {
+                                        code_units_equal(left, right, flags.ignore_case)
+                                    });
+
+                                if equal {
+                                    push_position(position + captured.len());
+                                }
+                            }
+                        } else {
+                            // A valid backreference to an unmatched group matches an empty string.
+                            push_position(position);
+                        }
+                    }
                 }
             }
 
@@ -974,6 +998,33 @@ mod tests {
                 .collect();
 
             assert_eq!(&actual, expected, "pattern: {pattern:?}");
+        }
+    }
+
+    #[test]
+    fn matches_decimal_backreferences() {
+        let cases = [
+            (r"(ab)\1", "abab", "", Some((0, 4))),
+            (r"(a|ab)\1c", "ababc", "", Some((0, 5))),
+            (r"(a)?b\1", "b", "", Some((0, 1))),
+            (r"\1(a)", "a", "", Some((0, 1))),
+            (r"(a)\1", "aA", "i", Some((0, 2))),
+            (r"(a)\1", "aA", "", None),
+            (
+                r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\10",
+                "abcdefghijj",
+                "",
+                Some((0, 11)),
+            ),
+            (r"(😀)\1", "😀😀", "", Some((0, 4))),
+        ];
+
+        for (pattern, input, flags, expected) in cases {
+            let result = search(pattern, input, 0, flags)
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(result, expected, "pattern: {pattern:?}");
         }
     }
 }

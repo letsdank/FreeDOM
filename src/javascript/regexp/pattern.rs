@@ -2,8 +2,8 @@
 //!
 //! <https://tc39.es/ecma262/#sec-patterns>
 //!
-//! Quantifiers, backreferences, and Unicode modes are not implemented here yet.
-//! Bracket classes currently supports BMP literals, ranges, and predefined classes.
+//! Named backreferences, legacy decimal escapes, and Unicode modes are not
+//! implemented here yet.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Pattern {
@@ -67,6 +67,12 @@ pub(crate) enum Term {
         negated: bool,
         pattern: Box<Pattern>,
     },
+    Backreference {
+        index: usize,
+
+        /// Byte offset of the escape in the pattern source.
+        offset: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,6 +106,7 @@ pub(crate) enum PatternErrorKind {
     InvalidQuantifierRange,
     QuantifierTooLarge,
     CaptureLimit,
+    UnsupportedDecimalEscape,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,7 +123,38 @@ pub(crate) fn parse(source: &str) -> Result<Pattern, PatternError> {
         next_capture_index: 1,
     };
 
-    parser.disjunction(false, 0)
+    let pattern = parser.disjunction(false, 0)?;
+
+    validate_backreferences(&pattern, parser.next_capture_index - 1)?;
+
+    Ok(pattern)
+}
+
+// Decimal escapes that do not refer to a capturing group may use legacy
+// syntax. That syntax is not supported yet; do not treat it as a backreference.
+fn validate_backreferences(pattern: &Pattern, count: usize) -> Result<(), PatternError> {
+    fn validate_term(term: &Term, count: usize) -> Result<(), PatternError> {
+        match term {
+            Term::Backreference { index, offset } if *index > count => Err(PatternError {
+                offset: *offset,
+                kind: PatternErrorKind::UnsupportedDecimalEscape,
+            }),
+
+            Term::Group { pattern, .. } | Term::Lookahead { pattern, .. } => {
+                validate_backreferences(pattern, count)
+            }
+
+            Term::Repeat { term, .. } => validate_term(term, count),
+
+            _ => Ok(()),
+        }
+    }
+
+    for term in pattern.alternatives.iter().flatten() {
+        validate_term(term, count)?;
+    }
+
+    Ok(())
 }
 
 struct Parser<'a> {
@@ -403,6 +441,27 @@ impl Parser<'_> {
                 return Ok(Term::CodeUnit(0));
             }
 
+            '1'..='9' => {
+                let mut index = (character as u8 - b'0') as usize;
+
+                while let Some(digit) = self.peek().filter(char::is_ascii_digit) {
+                    self.advance();
+
+                    index = index
+                        .checked_mul(10)
+                        .and_then(|value| value.checked_add((digit as u8 - b'0') as usize))
+                        .ok_or(PatternError {
+                            offset: escape_start,
+                            kind: PatternErrorKind::UnsupportedDecimalEscape,
+                        })?;
+                }
+
+                return Ok(Term::Backreference {
+                    index,
+                    offset: escape_start,
+                });
+            }
+
             _ => {}
         }
 
@@ -566,6 +625,14 @@ impl Parser<'_> {
             } else if self.peek() == Some('-') {
                 self.advance();
                 Term::Literal('-')
+            } else if self
+                .peek()
+                .is_some_and(|character| matches!(character, '1'..='9'))
+            {
+                return Err(PatternError {
+                    offset,
+                    kind: PatternErrorKind::UnsupportedDecimalEscape,
+                });
             } else {
                 self.escape(offset)?
             }
@@ -907,5 +974,29 @@ mod tests {
         assert_eq!(pattern.capture_count(), 6);
         assert_eq!(parse("(?:a)(b)+").unwrap().capture_count(), 1);
         assert_eq!(parse("(?:a)").unwrap().capture_count(), 0);
+    }
+
+    #[test]
+    fn validates_decimal_backreferences_after_parsing_all_groups() {
+        assert!(parse(r"\1(a)").is_ok());
+        assert!(parse(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\10").is_ok());
+        assert!(parse(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)\9").is_ok());
+
+        for source in [
+            r"\1",
+            r"(a)\2",
+            r"(a)\12",
+            r"[\1]",
+            r"\9",
+            r"\9999999999999999999999999999999(a)",
+        ] {
+            let error = parse(source).unwrap_err();
+
+            assert_eq!(
+                error.kind,
+                PatternErrorKind::UnsupportedDecimalEscape,
+                "pattern: {source:?}"
+            );
+        }
     }
 }
