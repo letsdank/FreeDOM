@@ -35,6 +35,10 @@ pub(crate) enum Statement {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Expression {
     Literal(Value),
+    RegExpLiteral {
+        pattern: String,
+        flags: String,
+    },
     Array(Vec<Expression>),
     Object(Vec<(String, Expression)>),
     Identifier(String),

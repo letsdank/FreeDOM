@@ -15,6 +15,8 @@ impl Interpreter {
         match expression {
             Expression::Literal(value) => Ok(value.clone()),
 
+            Expression::RegExpLiteral { pattern, flags } => Self::create_regexp(pattern, flags),
+
             Expression::Array(expressions) => {
                 let mut values = Vec::with_capacity(expressions.len());
 

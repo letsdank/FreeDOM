@@ -1,7 +1,6 @@
 //! Fallible token cursor for the JavaScript parser.
 //!
-//! This cursor currently selects division mode for every token. RegExp
-//! lexical-goal selection is connected in a later step.
+//! Division mode is the default. Primary expressions can request RegExp mode.
 
 use super::{JsError, Token, TokenKind};
 use crate::javascript::token_stream::TokenStream;
@@ -34,6 +33,10 @@ impl<'source> ParserCursor<'source> {
 
     pub(super) fn advance(&mut self) -> Result<Token, JsError> {
         self.stream.advance(false).map_err(Self::lex_error)
+    }
+
+    pub(super) fn advance_primary(&mut self) -> Result<Token, JsError> {
+        self.stream.advance(true).map_err(Self::lex_error)
     }
 
     pub(super) fn check(&mut self, expected: &TokenKind) -> Result<bool, JsError> {

@@ -8,10 +8,20 @@ use super::{Expression, JsError, Parser, TokenKind, UserFunction, Value};
 
 impl Parser<'_> {
     pub(super) fn parse_primary(&mut self) -> Result<Expression, JsError> {
-        let token = self.cursor.advance()?;
+        let token = self.cursor.advance_primary()?;
 
         match token.kind {
             TokenKind::String(value) => Ok(Expression::Literal(Value::String(value))),
+            TokenKind::RegExpLiteral { pattern, flags } => {
+                crate::javascript::regexp::RegExpFlags::parse(&flags).map_err(|error| {
+                    JsError::syntax(
+                        token.offset,
+                        format!("invalid RegExp flags: {:?}", error.kind),
+                    )
+                })?;
+
+                Ok(Expression::RegExpLiteral { pattern, flags })
+            }
             TokenKind::Number(value) => Ok(Expression::Literal(Value::Number(value))),
             TokenKind::True => Ok(Expression::Literal(Value::Boolean(true))),
             TokenKind::False => Ok(Expression::Literal(Value::Boolean(false))),

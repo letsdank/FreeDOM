@@ -31,7 +31,11 @@ impl Interpreter {
             Some(value) => value.to_js_string(),
         };
 
-        let regexp = crate::javascript::regexp::object::RegExp::compile(&pattern, &flags)
+        Self::create_regexp(&pattern, &flags)
+    }
+
+    pub(super) fn create_regexp(pattern: &str, flags: &str) -> Result<Value, JsError> {
+        let regexp = crate::javascript::regexp::object::RegExp::compile(pattern, flags)
             .map_err(|error| JsError::runtime(format!("RegExp compilation failed: {error:?}")))?;
 
         Ok(Value::RegExp(RegExpValue {

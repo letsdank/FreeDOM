@@ -239,3 +239,57 @@ fn regexp_indices_named_group_reuses_the_same_array() {
     )
     .unwrap();
 }
+
+#[test]
+fn evaluates_regexp_literals_and_division_in_the_same_program() {
+    let result = crate::javascript::evaluate(
+        "let value = 8 / 2; \
+        let matches = /b/i.test('ABC'); \
+        matches && value === 4;",
+    )
+    .unwrap();
+
+    assert_eq!(result, crate::javascript::Value::Boolean(true));
+}
+
+#[test]
+fn regexp_literal_creates_fresh_object_each_time() {
+    let result = crate::javascript::evaluate(
+        "const make = function() { return /a/g; }; \
+        let a = make(); \
+        let b = make(); \
+        a.test('a'); \
+        b.lastIndex;",
+    )
+    .unwrap();
+
+    assert_eq!(result, crate::javascript::Value::Number(0.0));
+}
+
+#[test]
+fn regexp_literal_invalid_flags_are_checked_before_execution() {
+    let error = crate::javascript::evaluate("if (false) { /a/gg; }").unwrap_err();
+
+    assert!(error.message.contains("invalid RegExp flags"));
+}
+
+#[test]
+fn parses_first_regexp_literal_from_wpt_harness() {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/wpt/resources/testharness.js"
+    ));
+
+    let fragment = r"/^\(\)\s*=>\s*(?:{(.*)}\s*|(.*))$/";
+
+    assert!(source.contains(fragment));
+
+    let program = crate::javascript::parser::parse_program(&format!("{fragment};")).unwrap();
+
+    assert!(matches!(
+        program.as_slice(),
+        [crate::javascript::Statement::Expression(
+            crate::javascript::Expression::RegExpLiteral { .. }
+        )]
+    ));
+}
