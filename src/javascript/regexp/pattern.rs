@@ -10,6 +10,31 @@ pub(crate) struct Pattern {
     pub(crate) alternatives: Vec<Vec<Term>>,
 }
 
+impl Pattern {
+    pub(crate) fn capture_count(&self) -> usize {
+        self.alternatives
+            .iter()
+            .flatten()
+            .map(captures_in_term)
+            .sum()
+    }
+}
+
+fn captures_in_term(term: &Term) -> usize {
+    match term {
+        Term::Group {
+            capture_index,
+            pattern,
+        } => usize::from(capture_index.is_some()) + pattern.capture_count(),
+
+        Term::Lookahead { pattern, .. } => pattern.capture_count(),
+
+        Term::Repeat { term, .. } => captures_in_term(term),
+
+        _ => 0,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Term {
     Literal(char),
@@ -29,7 +54,7 @@ pub(crate) enum Term {
         items: Vec<ClassItem>,
     },
     Group {
-        capturing: bool,
+        capture_index: Option<usize>,
         pattern: Box<Pattern>,
     },
     Repeat {
@@ -74,6 +99,7 @@ pub(crate) enum PatternErrorKind {
     InvalidCharacterClassRange,
     InvalidQuantifierRange,
     QuantifierTooLarge,
+    CaptureLimit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,7 +110,11 @@ pub(crate) struct PatternError {
 }
 
 pub(crate) fn parse(source: &str) -> Result<Pattern, PatternError> {
-    let mut parser = Parser { source, offset: 0 };
+    let mut parser = Parser {
+        source,
+        offset: 0,
+        next_capture_index: 1,
+    };
 
     parser.disjunction(false, 0)
 }
@@ -92,6 +122,7 @@ pub(crate) fn parse(source: &str) -> Result<Pattern, PatternError> {
 struct Parser<'a> {
     source: &'a str,
     offset: usize,
+    next_capture_index: usize,
 }
 
 impl Parser<'_> {
@@ -298,6 +329,25 @@ impl Parser<'_> {
             GroupKind::Capturing
         };
 
+        // ECMAScript numbers capturing groups by the position of their opening
+        // parenthesis, including groups nested inside assertions.
+        // https://tc39.es/ecma262/multipage/text-processing.html#sec-static-semantics-capturinggroupnumber
+        let capture_index = if let GroupKind::Capturing = &kind {
+            let index = self.next_capture_index;
+
+            if index >= u32::MAX as usize {
+                return Err(PatternError {
+                    offset: group_start,
+                    kind: PatternErrorKind::CaptureLimit,
+                });
+            }
+
+            self.next_capture_index += 1;
+            Some(index)
+        } else {
+            None
+        };
+
         let pattern = self.disjunction(true, depth + 1)?;
 
         if self.peek() != Some(')') {
@@ -311,12 +361,12 @@ impl Parser<'_> {
 
         match kind {
             GroupKind::Capturing => Ok(Term::Group {
-                capturing: true,
+                capture_index,
                 pattern: Box::new(pattern),
             }),
 
             GroupKind::NonCapturing => Ok(Term::Group {
-                capturing: false,
+                capture_index: None,
                 pattern: Box::new(pattern),
             }),
 
@@ -587,12 +637,12 @@ mod tests {
                 alternatives: vec![vec![
                     Term::Start,
                     Term::Group {
-                        capturing: true,
+                        capture_index: Some(1),
                         pattern: Box::new(Pattern {
                             alternatives: vec![
                                 vec![Term::Literal('a')],
                                 vec![Term::Group {
-                                    capturing: false,
+                                    capture_index: None,
                                     pattern: Box::new(Pattern {
                                         alternatives: vec![vec![
                                             Term::Literal('b'),
@@ -813,5 +863,49 @@ mod tests {
                 "input: {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn numbers_captures_by_opening_parenthesis() {
+        fn collect(pattern: &Pattern, indices: &mut Vec<usize>) {
+            fn visit(term: &Term, indices: &mut Vec<usize>) {
+                match term {
+                    Term::Group {
+                        capture_index,
+                        pattern,
+                    } => {
+                        if let Some(index) = capture_index {
+                            indices.push(*index);
+                        }
+
+                        collect(pattern, indices);
+                    }
+
+                    Term::Lookahead { pattern, .. } => {
+                        collect(pattern, indices);
+                    }
+
+                    Term::Repeat { term, .. } => {
+                        visit(term, indices);
+                    }
+
+                    _ => {}
+                }
+            }
+
+            for term in pattern.alternatives.iter().flatten() {
+                visit(term, indices);
+            }
+        }
+
+        let pattern = parse("((a)|(?:b)(?=(c))(?!((d))))|(e)").unwrap();
+        let mut indices = Vec::new();
+
+        collect(&pattern, &mut indices);
+
+        assert_eq!(indices, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(pattern.capture_count(), 6);
+        assert_eq!(parse("(?:a)(b)+").unwrap().capture_count(), 1);
+        assert_eq!(parse("(?:a)").unwrap().capture_count(), 0);
     }
 }

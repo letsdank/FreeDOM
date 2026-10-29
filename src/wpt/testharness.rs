@@ -241,6 +241,9 @@ mod tests {
         let start = source.find(fragment).expect("WPT fragment must exist");
         let literal = scan_literal(&source, start).unwrap();
         let pattern = literal.parse_pattern().unwrap();
+
+        assert_eq!(pattern.capture_count(), 3);
+
         let flags = literal.parse_flags().unwrap();
 
         for input in ["abc", "a😀z", "😀😀"] {
