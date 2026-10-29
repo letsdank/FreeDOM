@@ -9,6 +9,7 @@ use super::{
     RegExpFlags,
     pattern::{ClassItem, Pattern, PredefinedClass, Term},
 };
+use std::ascii::AsciiExt;
 
 const MAX_STEPS: usize = 200_000;
 
@@ -41,14 +42,14 @@ pub(crate) fn find_utf16(
     from: usize,
     flags: RegExpFlags,
 ) -> Result<Option<Match>, MatchError> {
-    for (enabled, flag) in [
-        (flags.ignore_case, 'i'),
-        (flags.unicode, 'u'),
-        (flags.unicode_sets, 'v'),
-    ] {
+    for (enabled, flag) in [(flags.unicode, 'u'), (flags.unicode_sets, 'v')] {
         if enabled {
             return Err(MatchError::UnsupportedFlag(flag));
         }
+    }
+
+    if flags.ignore_case && (units.iter().any(|&unit| unit > 0x7F) || !pattern_is_ascii(pattern)) {
+        return Err(MatchError::UnsupportedFlag('i'));
     }
 
     if from > units.len() {
@@ -95,16 +96,21 @@ fn match_pattern(
                         let mut buffer = [0; 2];
                         let encoded = character.encode_utf16(&mut buffer);
 
-                        if input
-                            .get(position..)
-                            .is_some_and(|rest| rest.starts_with(encoded))
-                        {
+                        if input.get(position..).is_some_and(|rest| {
+                            rest.get(..encoded.len()).is_some_and(|candidate| {
+                                candidate.iter().zip(encoded.iter()).all(|(&left, &right)| {
+                                    code_units_equal(left, right, flags.ignore_case)
+                                })
+                            })
+                        }) {
                             next.push(position + encoded.len());
                         }
                     }
 
                     Term::CodeUnit(unit) => {
-                        if input.get(position) == Some(unit) {
+                        if input.get(position).is_some_and(|&actual| {
+                            code_units_equal(actual, *unit, flags.ignore_case)
+                        }) {
                             next.push(position + 1);
                         }
                     }
@@ -129,7 +135,9 @@ fn match_pattern(
                     Term::BracketClass { negated, items } => {
                         if let Some(&unit) = input.get(position) {
                             let included = items.iter().any(|item| match item {
-                                ClassItem::Range { start, end } => (*start..=*end).contains(&unit),
+                                ClassItem::Range { start, end } => {
+                                    range_contains(*start, *end, unit, flags.ignore_case)
+                                }
 
                                 ClassItem::Predefined { class, negated } => {
                                     class_matches(*class, unit) != *negated
@@ -295,6 +303,64 @@ fn is_line_terminator(unit: u16) -> bool {
     matches!(unit, 0x000A | 0x000D | 0x2028 | 0x2029)
 }
 
+fn code_units_equal(left: u16, right: u16, ignore_case: bool) -> bool {
+    left == right
+        || (ignore_case
+            && left <= 0x7F
+            && right <= 0x7F
+            && (left as u8).eq_ignore_ascii_case(&(right as u8)))
+}
+
+fn range_contains(start: u16, end: u16, unit: u16, ignore_case: bool) -> bool {
+    if (start..=end).contains(&unit) {
+        return true;
+    }
+
+    if !ignore_case || unit > 0x7F {
+        return false;
+    }
+
+    let byte = unit as u8;
+
+    let other = if byte.is_ascii_lowercase() {
+        byte.to_ascii_uppercase()
+    } else if byte.is_ascii_uppercase() {
+        byte.to_ascii_lowercase()
+    } else {
+        return false;
+    };
+
+    (start..=end).contains(&(other as u16))
+}
+
+fn pattern_is_ascii(pattern: &Pattern) -> bool {
+    pattern.alternatives.iter().flatten().all(term_is_ascii)
+}
+
+fn term_is_ascii(term: &Term) -> bool {
+    match term {
+        Term::Literal(character) => character.is_ascii(),
+
+        Term::CodeUnit(unit) => *unit <= 0x7F,
+
+        Term::BracketClass { items, .. } => items.iter().all(|item| match item {
+            ClassItem::Range { start, end } => *start <= 0x7F && *end <= 0x7F,
+
+            ClassItem::Predefined { .. } => true,
+        }),
+
+        Term::Group { pattern, .. } | Term::Lookahead { pattern, .. } => pattern_is_ascii(pattern),
+
+        Term::Repeat { term, .. } => term_is_ascii(term),
+
+        Term::Any
+        | Term::Start
+        | Term::End
+        | Term::WordBoundary { .. }
+        | Term::CharacterClass { .. } => true,
+    }
+}
+
 // https://tc39.es/ecma262/#sec-runtime-semantics-compilecharacterclassescape
 fn class_matches(class: PredefinedClass, unit: u16) -> bool {
     match class {
@@ -416,7 +482,7 @@ mod tests {
     #[test]
     fn rejects_modes_not_implemented_yet() {
         assert_eq!(
-            search("a", "A", 0, "i"),
+            search("é", "É", 0, "i"),
             Err(MatchError::UnsupportedFlag('i')),
         );
 
@@ -715,5 +781,61 @@ mod tests {
 
             assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
         }
+    }
+
+    #[test]
+    fn matches_ascii_ignore_case_literals_and_ranges() {
+        for (pattern, input, expected) in [
+            ("abc", "xABc", Some((1, 4))),
+            (r"\x61", "A", Some((0, 1))),
+            ("[a-z]+", "ABC", Some((0, 3))),
+            ("[^a-z]", "A", None),
+            ("[A-Z]", "q", Some((0, 1))),
+            ("[A-z]", "_", Some((0, 1))),
+            (r"\babc\b", "ABC!", Some((0, 3))),
+            ("(?=ab)ab", "AB", Some((0, 2))),
+        ] {
+            let result = search(pattern, input, 0, "i")
+                .unwrap()
+                .map(|matched| (matched.start, matched.end));
+
+            assert_eq!(result, expected, "pattern: {pattern:?}, input: {input:?}");
+        }
+
+        assert_eq!(
+            search("a", "aé", 0, "i"),
+            Err(MatchError::UnsupportedFlag('i'))
+        );
+
+        assert_eq!(
+            search("é", "e", 0, "i"),
+            Err(MatchError::UnsupportedFlag('i'))
+        );
+
+        assert_eq!(search("a", "A", 0, ""), Ok(None));
+    }
+
+    #[test]
+    fn matches_ascii_ignore_case_from_test262_fixture() {
+        use crate::javascript::regexp::scan_literal;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/test262/test/built-ins/RegExp/prototype/exec/",
+            "S15.10.6.2_A1_T15.js"
+        );
+
+        let source = std::fs::read_to_string(path).expect("Test262 fixture must exist");
+
+        assert!(source.contains(r#"var __expected = ["ls"];"#));
+
+        let start = source.find("/LS/i").expect("Test262 regexp must exist");
+        let literal = scan_literal(&source, start).unwrap();
+        let pattern = literal.parse_pattern().unwrap();
+        let flags = literal.parse_flags().unwrap();
+
+        let result = find(&pattern, "false", 0, flags).unwrap();
+
+        assert_eq!(result, Some(Match { start: 2, end: 4 }));
     }
 }
