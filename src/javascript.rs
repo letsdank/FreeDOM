@@ -15,7 +15,11 @@ pub(crate) mod regexp;
 mod parser;
 
 #[cfg(test)]
-pub use parser::parse_json;
+#[path = "javascript/json.rs"]
+mod json;
+
+#[cfg(test)]
+pub use json::parse_json;
 
 use parser::parse_program;
 
