@@ -1,4 +1,4 @@
-//! Internal RegExp state and span-only execution.
+//! Internal RegExp state and capture-aware execution.
 //!
 //! <https://tc39.es/ecma262/#sec-regexpbuiltinexec>
 //!
@@ -6,7 +6,7 @@
 
 use super::{
     RegExpFlagError, RegExpFlags,
-    matcher::{self, Match, MatchError},
+    matcher::{self, CaptureMatch, Match, MatchError},
     pattern::{self, Pattern, PatternError},
 };
 
@@ -52,14 +52,19 @@ impl RegExp {
     }
 
     pub(crate) fn exec(&mut self, input: &[u16]) -> Result<Option<Match>, MatchError> {
+        Ok(self.exec_captures(input)?.map(|result| result.span))
+    }
+
+    pub(crate) fn exec_captures(
+        &mut self,
+        input: &[u16],
+    ) -> Result<Option<CaptureMatch>, MatchError> {
         let stateful = self.flags.global || self.flags.sticky;
-
         let start = if stateful { self.last_index } else { 0 };
-
-        let result = matcher::find_utf16(&self.pattern, input, start, self.flags)?;
+        let result = matcher::find_captures_utf16(&self.pattern, input, start, self.flags)?;
 
         if stateful {
-            self.last_index = result.map_or(0, |matched| matched.end);
+            self.last_index = result.as_ref().map_or(0, |matched| matched.span.end);
         }
 
         Ok(result)
@@ -211,5 +216,78 @@ mod tests {
 
         assert_eq!(sticky.exec(&units("abc")).unwrap(), None);
         assert_eq!(sticky.last_index(), 0);
+    }
+
+    #[test]
+    fn capture_exec_updates_and_resets_global_last_index() {
+        let mut re = RegExp::compile("(a)(b)?", "g").unwrap();
+        let input = units("a ab");
+
+        let first = re.exec_captures(&input).unwrap().unwrap();
+
+        assert_eq!(
+            first.groups,
+            vec![
+                Some(Match { start: 0, end: 1 }),
+                Some(Match { start: 0, end: 1 }),
+                None,
+            ]
+        );
+        assert_eq!(re.last_index(), 1);
+
+        let second = re.exec_captures(&input).unwrap().unwrap();
+
+        assert_eq!(
+            second.groups,
+            vec![
+                Some(Match { start: 2, end: 4 }),
+                Some(Match { start: 2, end: 3 }),
+                Some(Match { start: 3, end: 4 }),
+            ]
+        );
+        assert_eq!(re.last_index(), 4);
+
+        assert_eq!(re.exec_captures(&input).unwrap(), None);
+        assert_eq!(re.last_index(), 0);
+    }
+
+    #[test]
+    fn capture_exec_preserves_unpaired_utf16_code_units() {
+        let mut re = RegExp::compile(r"(\ud800)(.)?", "").unwrap();
+
+        re.set_last_index(42);
+
+        let input = [0x0061, 0xd800, 0x0062];
+        let result = re.exec_captures(&input).unwrap().unwrap();
+
+        assert_eq!(result.span, Match { start: 1, end: 3 });
+
+        assert_eq!(
+            result.groups,
+            vec![
+                Some(Match { start: 1, end: 3 }),
+                Some(Match { start: 1, end: 2 }),
+                Some(Match { start: 2, end: 3 }),
+            ]
+        );
+
+        let captured = result.groups[1].unwrap();
+
+        assert_eq!(&input[captured.start..captured.end], &[0xd800],);
+
+        // Without g or y, execution preserves lastIndex.
+        assert_eq!(re.last_index(), 42);
+    }
+
+    #[test]
+    fn capture_exec_keeps_last_index_on_match_error() {
+        let mut re = RegExp::compile(&"(a|a)".repeat(18), "g").unwrap();
+
+        let input = units(&format!("x{}", "a".repeat(18)));
+
+        re.set_last_index(1);
+
+        assert_eq!(re.exec_captures(&input), Err(MatchError::StepLimit));
+        assert_eq!(re.last_index(), 1);
     }
 }
