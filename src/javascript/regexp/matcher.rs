@@ -2,8 +2,8 @@
 //!
 //! <https://tc39.es/ecma262/#sec-runtime-semantics-compilepattern>
 //!
-//! Offsets are UTF-16 code units. Captures, lastIndex, and flags u/v are not
-//! implemented here. The caller is responsible for global iteration.
+//! Offsets are UTF-16 code units. Flags u/v are not implemented here.
+//! The caller is responsible for global iteration.
 
 use super::case::{code_units_equal, range_contains};
 use super::{
@@ -17,6 +17,20 @@ const MAX_STEPS: usize = 200_000;
 pub(crate) struct Match {
     pub(crate) start: usize,
     pub(crate) end: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CaptureMatch {
+    pub(crate) span: Match,
+
+    /// Index 0 is the whole match; groups start at index 1.
+    pub(crate) groups: Vec<Option<Match>>,
+}
+
+#[derive(Clone)]
+struct State {
+    position: usize,
+    groups: Vec<Option<Match>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +56,15 @@ pub(crate) fn find_utf16(
     from: usize,
     flags: RegExpFlags,
 ) -> Result<Option<Match>, MatchError> {
+    Ok(find_captures_utf16(pattern, units, from, flags)?.map(|result| result.span))
+}
+
+pub(crate) fn find_captures_utf16(
+    pattern: &Pattern,
+    units: &[u16],
+    from: usize,
+    flags: RegExpFlags,
+) -> Result<Option<CaptureMatch>, MatchError> {
     for (enabled, flag) in [(flags.unicode, 'u'), (flags.unicode_sets, 'v')] {
         if enabled {
             return Err(MatchError::UnsupportedFlag(flag));
@@ -53,14 +76,28 @@ pub(crate) fn find_utf16(
     }
 
     let mut budget = MAX_STEPS;
-
     let last_start = if flags.sticky { from } else { units.len() };
 
     for start in from..=last_start {
-        let ends = match_pattern(pattern, &units, start, flags, &mut budget)?;
+        let state = State {
+            position: start,
+            groups: vec![None; pattern.capture_count() + 1],
+        };
 
-        if let Some(end) = ends.first() {
-            return Ok(Some(Match { start, end: *end }));
+        let matches = match_pattern(pattern, units, state, flags, &mut budget)?;
+
+        if let Some(mut state) = matches.into_iter().next() {
+            let span = Match {
+                start,
+                end: state.position,
+            };
+
+            state.groups[0] = Some(span);
+
+            return Ok(Some(CaptureMatch {
+                span,
+                groups: state.groups,
+            }));
         }
     }
 
@@ -70,22 +107,30 @@ pub(crate) fn find_utf16(
 fn match_pattern(
     pattern: &Pattern,
     input: &[u16],
-    start: usize,
+    start: State,
     flags: RegExpFlags,
     budget: &mut usize,
-) -> Result<Vec<usize>, MatchError> {
+) -> Result<Vec<State>, MatchError> {
     let mut matches = Vec::new();
 
     for alternative in &pattern.alternatives {
         step(budget)?;
 
-        let mut positions = vec![start];
+        let mut positions = vec![start.clone()];
 
         for term in alternative {
             let mut next = Vec::new();
 
-            for position in positions {
+            for state in positions {
                 step(budget)?;
+
+                let position = state.position;
+
+                let mut push_position = |new_position| {
+                    let mut next_state = state.clone();
+                    next_state.position = new_position;
+                    next.push(next_state);
+                };
 
                 match term {
                     Term::Literal(character) => {
@@ -99,7 +144,7 @@ fn match_pattern(
                                 })
                             })
                         }) {
-                            next.push(position + encoded.len());
+                            push_position(position + encoded.len());
                         }
                     }
 
@@ -107,7 +152,7 @@ fn match_pattern(
                         if input.get(position).is_some_and(|&actual| {
                             code_units_equal(actual, *unit, flags.ignore_case)
                         }) {
-                            next.push(position + 1);
+                            push_position(position + 1);
                         }
                     }
 
@@ -116,14 +161,14 @@ fn match_pattern(
                             .get(position)
                             .is_some_and(|unit| flags.dot_all || !is_line_terminator(*unit))
                         {
-                            next.push(position + 1);
+                            push_position(position + 1);
                         }
                     }
 
                     Term::CharacterClass { class, negated } => {
                         if let Some(&unit) = input.get(position) {
                             if class_matches(*class, unit) != *negated {
-                                next.push(position + 1);
+                                push_position(position + 1);
                             }
                         }
                     }
@@ -141,7 +186,7 @@ fn match_pattern(
                             });
 
                             if included != *negated {
-                                next.push(position + 1);
+                                push_position(position + 1);
                             }
                         }
                     }
@@ -150,7 +195,7 @@ fn match_pattern(
                         if position == 0
                             || (flags.multiline && is_line_terminator(input[position - 1]))
                         {
-                            next.push(position);
+                            push_position(position);
                         }
                     }
 
@@ -161,12 +206,26 @@ fn match_pattern(
                                     .get(position)
                                     .is_some_and(|unit| is_line_terminator(*unit)))
                         {
-                            next.push(position);
+                            push_position(position);
                         }
                     }
 
-                    Term::Group { pattern, .. } => {
-                        next.extend(match_pattern(pattern, input, position, flags, budget)?);
+                    Term::Group {
+                        capture_index,
+                        pattern,
+                    } => {
+                        let results = match_pattern(pattern, input, state, flags, budget)?;
+
+                        for mut result in results {
+                            if let Some(index) = capture_index {
+                                result.groups[*index] = Some(Match {
+                                    start: position,
+                                    end: result.position,
+                                });
+                            }
+
+                            next.push(result);
+                        }
                     }
 
                     Term::Repeat {
@@ -176,7 +235,7 @@ fn match_pattern(
                         greedy,
                     } => {
                         next.extend(match_repeat(
-                            term, *min, *max, *greedy, input, position, flags, budget,
+                            term, *min, *max, *greedy, input, state, flags, budget,
                         )?);
                     }
 
@@ -193,16 +252,20 @@ fn match_pattern(
                         let boundary = left_word != right_word;
 
                         if boundary != *negated {
-                            next.push(position);
+                            push_position(position);
                         }
                     }
 
                     Term::Lookahead { negated, pattern } => {
-                        let found =
-                            !match_pattern(pattern, input, position, flags, budget)?.is_empty();
+                        let found = match_pattern(pattern, input, state.clone(), flags, budget)?;
 
-                        if found != *negated {
-                            next.push(position);
+                        if *negated {
+                            if found.is_empty() {
+                                next.push(state);
+                            }
+                        } else if let Some(mut result) = found.into_iter().next() {
+                            result.position = position;
+                            next.push(result);
                         }
                     }
                 }
@@ -227,13 +290,13 @@ fn match_repeat(
     max: Option<usize>,
     greedy: bool,
     input: &[u16],
-    start: usize,
+    start: State,
     flags: RegExpFlags,
     budget: &mut usize,
-) -> Result<Vec<usize>, MatchError> {
+) -> Result<Vec<State>, MatchError> {
     enum Frame {
-        Visit { position: usize, count: usize },
-        Emit(usize),
+        Visit { state: State, count: usize },
+        Emit(State),
     }
 
     let atom = Pattern {
@@ -241,7 +304,7 @@ fn match_repeat(
     };
 
     let mut stack = vec![Frame::Visit {
-        position: start,
+        state: start,
         count: 0,
     }];
 
@@ -250,20 +313,20 @@ fn match_repeat(
     while let Some(frame) = stack.pop() {
         step(budget)?;
 
-        let (position, count) = match frame {
-            Frame::Emit(position) => {
-                matches.push(position);
+        let (state, count) = match frame {
+            Frame::Emit(state) => {
+                matches.push(state);
                 continue;
             }
 
-            Frame::Visit { position, count } => (position, count),
+            Frame::Visit { state, count } => (state, count),
         };
 
         if count >= min {
             if greedy {
-                stack.push(Frame::Emit(position));
+                stack.push(Frame::Emit(state.clone()));
             } else {
-                matches.push(position);
+                matches.push(state.clone());
             }
         }
 
@@ -271,22 +334,58 @@ fn match_repeat(
             continue;
         }
 
-        let ends = match_pattern(&atom, input, position, flags, budget)?;
+        let position = state.position;
+        let mut next_state = state;
+
+        clear_captures(term, &mut next_state.groups);
+
+        let ends = match_pattern(&atom, input, next_state, flags, budget)?;
 
         for end in ends.into_iter().rev() {
             // An empty match must not repeat indefinitely.
-            if end == position && count >= min {
+            if end.position == position && count >= min {
                 continue;
             }
 
             stack.push(Frame::Visit {
-                position: end,
+                state: end,
                 count: count + 1,
             });
         }
     }
 
     Ok(matches)
+}
+
+// RepeatMatcher clears the atom's captures before each repetition.
+// https://tc39.es/ecma262/#sec-repeatmatcher
+fn clear_captures(term: &Term, groups: &mut [Option<Match>]) {
+    match term {
+        Term::Group {
+            capture_index,
+            pattern,
+        } => {
+            if let Some(index) = capture_index {
+                groups[*index] = None;
+            }
+
+            for inner in pattern.alternatives.iter().flatten() {
+                clear_captures(inner, groups);
+            }
+        }
+
+        Term::Lookahead { pattern, .. } => {
+            for inner in pattern.alternatives.iter().flatten() {
+                clear_captures(inner, groups);
+            }
+        }
+
+        Term::Repeat { term, .. } => {
+            clear_captures(term, groups);
+        }
+
+        _ => {}
+    }
 }
 
 fn step(budget: &mut usize) -> Result<(), MatchError> {
@@ -334,7 +433,7 @@ fn class_matches(class: PredefinedClass, unit: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Match, MatchError, find};
+    use super::{Match, MatchError, find, find_captures_utf16};
     use crate::javascript::regexp::{RegExpFlags, pattern};
 
     fn search(
@@ -840,6 +939,41 @@ mod tests {
                     "fixture: {file}, pattern: {pattern_source}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn records_captures_and_restores_them_during_backtracking() {
+        let cases: &[(&str, &str, &[Option<(usize, usize)>])] = &[
+            (
+                "(a|(ab))c",
+                "abc",
+                &[Some((0, 3)), Some((0, 2)), Some((0, 2))],
+            ),
+            ("(a)?b", "b", &[Some((0, 1)), None]),
+            ("(a*)b", "b", &[Some((0, 1)), Some((0, 0))]),
+            ("(a(b)?)+", "aba", &[Some((0, 3)), Some((2, 3)), None]),
+            ("(?=(a+))a", "aaa", &[Some((0, 1)), Some((0, 3))]),
+            ("(?!(a))b", "b", &[Some((0, 1)), None]),
+            ("(😀)", "a😀", &[Some((1, 3)), Some((1, 3))]),
+        ];
+
+        for &(pattern, input, expected) in cases {
+            let parsed = pattern::parse(&pattern).unwrap();
+            let units: Vec<u16> = input.encode_utf16().collect();
+            let flags = RegExpFlags::parse("").unwrap();
+
+            let result = find_captures_utf16(&parsed, &units, 0, flags)
+                .unwrap()
+                .unwrap();
+
+            let actual: Vec<_> = result
+                .groups
+                .iter()
+                .map(|capture| capture.map(|capture| (capture.start, capture.end)))
+                .collect();
+
+            assert_eq!(&actual, expected, "pattern: {pattern:?}");
         }
     }
 }
