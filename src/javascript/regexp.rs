@@ -9,6 +9,9 @@
 #[path = "regexp/flags.rs"]
 mod flags;
 
+#[path = "regexp/case.rs"]
+mod case;
+
 #[path = "regexp/pattern.rs"]
 pub(crate) mod pattern;
 

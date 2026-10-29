@@ -2,14 +2,14 @@
 //!
 //! <https://tc39.es/ecma262/#sec-runtime-semantics-compilepattern>
 //!
-//! Offsets are UTF-16 code units. Captures, lastIndex, and flags i/u/v are not
+//! Offsets are UTF-16 code units. Captures, lastIndex, and flags u/v are not
 //! implemented here. The caller is responsible for global iteration.
 
+use super::case::{code_units_equal, range_contains};
 use super::{
     RegExpFlags,
     pattern::{ClassItem, Pattern, PredefinedClass, Term},
 };
-use std::ascii::AsciiExt;
 
 const MAX_STEPS: usize = 200_000;
 
@@ -46,10 +46,6 @@ pub(crate) fn find_utf16(
         if enabled {
             return Err(MatchError::UnsupportedFlag(flag));
         }
-    }
-
-    if flags.ignore_case && (units.iter().any(|&unit| unit > 0x7F) || !pattern_is_ascii(pattern)) {
-        return Err(MatchError::UnsupportedFlag('i'));
     }
 
     if from > units.len() {
@@ -303,64 +299,6 @@ fn is_line_terminator(unit: u16) -> bool {
     matches!(unit, 0x000A | 0x000D | 0x2028 | 0x2029)
 }
 
-fn code_units_equal(left: u16, right: u16, ignore_case: bool) -> bool {
-    left == right
-        || (ignore_case
-            && left <= 0x7F
-            && right <= 0x7F
-            && (left as u8).eq_ignore_ascii_case(&(right as u8)))
-}
-
-fn range_contains(start: u16, end: u16, unit: u16, ignore_case: bool) -> bool {
-    if (start..=end).contains(&unit) {
-        return true;
-    }
-
-    if !ignore_case || unit > 0x7F {
-        return false;
-    }
-
-    let byte = unit as u8;
-
-    let other = if byte.is_ascii_lowercase() {
-        byte.to_ascii_uppercase()
-    } else if byte.is_ascii_uppercase() {
-        byte.to_ascii_lowercase()
-    } else {
-        return false;
-    };
-
-    (start..=end).contains(&(other as u16))
-}
-
-fn pattern_is_ascii(pattern: &Pattern) -> bool {
-    pattern.alternatives.iter().flatten().all(term_is_ascii)
-}
-
-fn term_is_ascii(term: &Term) -> bool {
-    match term {
-        Term::Literal(character) => character.is_ascii(),
-
-        Term::CodeUnit(unit) => *unit <= 0x7F,
-
-        Term::BracketClass { items, .. } => items.iter().all(|item| match item {
-            ClassItem::Range { start, end } => *start <= 0x7F && *end <= 0x7F,
-
-            ClassItem::Predefined { .. } => true,
-        }),
-
-        Term::Group { pattern, .. } | Term::Lookahead { pattern, .. } => pattern_is_ascii(pattern),
-
-        Term::Repeat { term, .. } => term_is_ascii(term),
-
-        Term::Any
-        | Term::Start
-        | Term::End
-        | Term::WordBoundary { .. }
-        | Term::CharacterClass { .. } => true,
-    }
-}
-
 // https://tc39.es/ecma262/#sec-runtime-semantics-compilecharacterclassescape
 fn class_matches(class: PredefinedClass, unit: u16) -> bool {
     match class {
@@ -481,11 +419,6 @@ mod tests {
 
     #[test]
     fn rejects_modes_not_implemented_yet() {
-        assert_eq!(
-            search("é", "É", 0, "i"),
-            Err(MatchError::UnsupportedFlag('i')),
-        );
-
         assert_eq!(
             search(".", "😀", 0, "u"),
             Err(MatchError::UnsupportedFlag('u')),
@@ -804,14 +737,10 @@ mod tests {
 
         assert_eq!(
             search("a", "aé", 0, "i"),
-            Err(MatchError::UnsupportedFlag('i'))
+            Ok(Some(Match { start: 0, end: 1 }))
         );
 
-        assert_eq!(
-            search("é", "e", 0, "i"),
-            Err(MatchError::UnsupportedFlag('i'))
-        );
-
+        assert_eq!(search("é", "e", 0, "i"), Ok(None),);
         assert_eq!(search("a", "A", 0, ""), Ok(None));
     }
 
@@ -837,5 +766,27 @@ mod tests {
         let result = find(&pattern, "false", 0, flags).unwrap();
 
         assert_eq!(result, Some(Match { start: 2, end: 4 }));
+    }
+
+    #[test]
+    fn matches_legacy_ignore_case_in_unicode_ranges() {
+        for (pattern, input, expected) in [
+            ("é", "É", true),
+            ("σ", "ς", true),
+            ("[à-ö]", "Ä", true),
+            ("[^à-ö]", "Ä", false),
+            ("ſ", "S", false),
+            ("K", "K", false),
+            ("ß", "SS", false),
+            (r"^\w$", "ſ", false),
+        ] {
+            let result = search(pattern, input, 0, "i").unwrap();
+
+            assert_eq!(
+                result.is_some(),
+                expected,
+                "pattern: {pattern:?}, input: {input:?}"
+            );
+        }
     }
 }
