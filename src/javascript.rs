@@ -3,6 +3,9 @@ use std::{error::Error, fmt};
 #[path = "javascript/lexer.rs"]
 mod lexer;
 
+#[path = "javascript/token_cursor.rs"]
+mod token_cursor;
+
 pub use lexer::{Token, TokenKind, tokenize};
 
 // The scanner will be connected to the lexer once lexical goals are available.

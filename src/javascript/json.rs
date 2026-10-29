@@ -5,6 +5,7 @@
 //! This reader currently reuses the JavaScript tokenizer. Its accepted syntax
 //! is not yet equivalent to JSON, so it must not be treated as a JSON validator.
 
+use super::token_cursor::TokenCursor;
 use std::collections::HashMap;
 
 use super::{JsError, Token, TokenKind, Value, tokenize};
@@ -19,24 +20,22 @@ pub fn parse_json(source: &str) -> Result<Value, JsError> {
 }
 
 struct JsonParser {
-    tokens: Vec<Token>,
-    position: usize,
+    cursor: TokenCursor,
 }
 
 impl JsonParser {
     fn new(tokens: Vec<Token>) -> Self {
         Self {
-            tokens,
-            position: 0,
+            cursor: TokenCursor::new(tokens),
         }
     }
 
     fn parse(&mut self) -> Result<Value, JsError> {
         let value = self.parse_value()?;
 
-        if !self.check(&TokenKind::EndOfFile) {
+        if !self.cursor.check(&TokenKind::EndOfFile) {
             return Err(JsError::syntax(
-                self.peek().offset,
+                self.cursor.peek().offset,
                 "unexpected token after JSON value",
             ));
         }
@@ -45,7 +44,7 @@ impl JsonParser {
     }
 
     fn parse_value(&mut self) -> Result<Value, JsError> {
-        let token = self.advance();
+        let token = self.cursor.advance();
 
         match token.kind {
             TokenKind::String(value) => Ok(Value::String(value)),
@@ -69,17 +68,17 @@ impl JsonParser {
     fn parse_array(&mut self) -> Result<Value, JsError> {
         let mut values = Vec::new();
 
-        if self.consume_optional(&TokenKind::RightBracket) {
+        if self.cursor.consume_optional(&TokenKind::RightBracket) {
             return Ok(Value::array(values));
         }
 
         loop {
             values.push(self.parse_value()?);
 
-            if self.consume_optional(&TokenKind::Comma) {
-                if self.check(&TokenKind::RightBracket) {
+            if self.cursor.consume_optional(&TokenKind::Comma) {
+                if self.cursor.check(&TokenKind::RightBracket) {
                     return Err(JsError::syntax(
-                        self.peek().offset,
+                        self.cursor.peek().offset,
                         "trailing comma is not valid JSON",
                     ));
                 }
@@ -87,7 +86,7 @@ impl JsonParser {
                 continue;
             }
 
-            self.consume(
+            self.cursor.consume(
                 &TokenKind::RightBracket,
                 "expected ',' or ']' after JSON array item",
             )?;
@@ -99,12 +98,12 @@ impl JsonParser {
     fn parse_object(&mut self) -> Result<Value, JsError> {
         let mut values = HashMap::new();
 
-        if self.consume_optional(&TokenKind::RightBrace) {
+        if self.cursor.consume_optional(&TokenKind::RightBrace) {
             return Ok(Value::object(values));
         }
 
         loop {
-            let token = self.advance();
+            let token = self.cursor.advance();
 
             let TokenKind::String(key) = token.kind else {
                 return Err(JsError::syntax(
@@ -113,15 +112,16 @@ impl JsonParser {
                 ));
             };
 
-            self.consume(&TokenKind::Colon, "expected ':' after JSON object key")?;
+            self.cursor
+                .consume(&TokenKind::Colon, "expected ':' after JSON object key")?;
 
             let value = self.parse_value()?;
             values.insert(key, value);
 
-            if self.consume_optional(&TokenKind::Comma) {
-                if self.check(&TokenKind::RightBrace) {
+            if self.cursor.consume_optional(&TokenKind::Comma) {
+                if self.cursor.check(&TokenKind::RightBrace) {
                     return Err(JsError::syntax(
-                        self.peek().offset,
+                        self.cursor.peek().offset,
                         "trailing comma is not valid JSON",
                     ));
                 }
@@ -129,49 +129,13 @@ impl JsonParser {
                 continue;
             }
 
-            self.consume(
+            self.cursor.consume(
                 &TokenKind::RightBrace,
                 "expected ',' or '}' after JSON object property",
             )?;
 
             return Ok(Value::object(values));
         }
-    }
-
-    fn consume(&mut self, expected: &TokenKind, message: &str) -> Result<(), JsError> {
-        if self.check(expected) {
-            self.advance();
-            Ok(())
-        } else {
-            Err(JsError::syntax(self.peek().offset, message))
-        }
-    }
-
-    fn consume_optional(&mut self, expected: &TokenKind) -> bool {
-        if self.check(expected) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn check(&self, expected: &TokenKind) -> bool {
-        self.peek().kind == *expected
-    }
-
-    fn peek(&self) -> &Token {
-        &self.tokens[self.position]
-    }
-
-    fn advance(&mut self) -> Token {
-        let token = self.tokens[self.position].clone();
-
-        if !matches!(token.kind, TokenKind::EndOfFile) {
-            self.position += 1;
-        }
-
-        token
     }
 }
 

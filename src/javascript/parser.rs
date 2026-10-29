@@ -2,6 +2,8 @@ use super::{
     BinaryOperator, Expression, JsError, Statement, Token, TokenKind, UserFunction, Value, tokenize,
 };
 
+use super::token_cursor::TokenCursor;
+
 pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
     let tokens = tokenize(source).map_err(|error| JsError {
         offset: Some(error.offset),
@@ -12,22 +14,20 @@ pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
 }
 
 struct Parser {
-    tokens: Vec<Token>,
-    position: usize,
+    cursor: TokenCursor,
 }
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
         Self {
-            tokens,
-            position: 0,
+            cursor: TokenCursor::new(tokens),
         }
     }
 
     fn parse_program(&mut self) -> Result<Vec<Statement>, JsError> {
         let mut statements = Vec::new();
 
-        while !self.check(&TokenKind::EndOfFile) {
+        while !self.cursor.check(&TokenKind::EndOfFile) {
             statements.push(self.parse_statement()?);
         }
 
@@ -35,57 +35,58 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, JsError> {
-        if self.consume_optional(&TokenKind::For) {
+        if self.cursor.consume_optional(&TokenKind::For) {
             return self.parse_for_statement();
         }
 
-        if self.consume_optional(&TokenKind::Break) {
-            self.consume_optional(&TokenKind::Semicolon);
+        if self.cursor.consume_optional(&TokenKind::Break) {
+            self.cursor.consume_optional(&TokenKind::Semicolon);
             return Ok(Statement::Break);
         }
 
-        if self.consume_optional(&TokenKind::Continue) {
-            self.consume_optional(&TokenKind::Semicolon);
+        if self.cursor.consume_optional(&TokenKind::Continue) {
+            self.cursor.consume_optional(&TokenKind::Semicolon);
             return Ok(Statement::Continue);
         }
 
-        if self.consume_optional(&TokenKind::If) {
+        if self.cursor.consume_optional(&TokenKind::If) {
             return self.parse_if_statement();
         }
 
-        if self.consume_optional(&TokenKind::While) {
+        if self.cursor.consume_optional(&TokenKind::While) {
             return self.parse_while_statement();
         }
 
-        if self.consume_optional(&TokenKind::Return) {
+        if self.cursor.consume_optional(&TokenKind::Return) {
             let value = self.parse_expression()?;
-            self.consume_optional(&TokenKind::Semicolon);
+            self.cursor.consume_optional(&TokenKind::Semicolon);
 
             return Ok(Statement::Return(value));
         }
 
         if matches!(
-            self.peek().kind,
+            self.cursor.peek().kind,
             TokenKind::Let | TokenKind::Const | TokenKind::Var
         ) {
-            self.advance();
+            self.cursor.advance();
             return self.parse_declaration();
         }
 
         let expression = self.parse_expression()?;
-        self.consume_optional(&TokenKind::Semicolon);
+        self.cursor.consume_optional(&TokenKind::Semicolon);
 
         Ok(Statement::Expression(expression))
     }
 
     fn parse_for_statement(&mut self) -> Result<Statement, JsError> {
-        self.consume(&TokenKind::LeftParen, "expected '(' after for")?;
+        self.cursor
+            .consume(&TokenKind::LeftParen, "expected '(' after for")?;
 
         if matches!(
-            self.peek().kind,
+            self.cursor.peek().kind,
             TokenKind::Let | TokenKind::Const | TokenKind::Var
         ) {
-            self.advance();
+            self.cursor.advance();
 
             let (name, offset) = self.consume_identifier("expected a variable name")?;
 
@@ -96,7 +97,8 @@ impl Parser {
 
                 let iterable = self.parse_expression()?;
 
-                self.consume(&TokenKind::RightParen, "expected ')' after for-of iterable")?;
+                self.cursor
+                    .consume(&TokenKind::RightParen, "expected ')' after for-of iterable")?;
 
                 let body = self.parse_statement_body()?;
 
@@ -107,33 +109,36 @@ impl Parser {
                 });
             }
 
-            let value = if self.consume_optional(&TokenKind::Assign) {
+            let value = if self.cursor.consume_optional(&TokenKind::Assign) {
                 self.parse_expression()?
             } else {
                 Expression::Literal(Value::Undefined)
             };
 
-            self.consume(&TokenKind::Semicolon, "expected ';' after for declaration")?;
+            self.cursor
+                .consume(&TokenKind::Semicolon, "expected ';' after for declaration")?;
 
             let initializer = Some(Box::new(Statement::Declaration { name, value }));
 
-            let condition = if self.consume_optional(&TokenKind::Semicolon) {
+            let condition = if self.cursor.consume_optional(&TokenKind::Semicolon) {
                 None
             } else {
                 let condition = self.parse_expression()?;
 
-                self.consume(&TokenKind::Semicolon, "expected ';' after for condition")?;
+                self.cursor
+                    .consume(&TokenKind::Semicolon, "expected ';' after for condition")?;
 
                 Some(condition)
             };
 
-            let update = if self.check(&TokenKind::RightParen) {
+            let update = if self.cursor.check(&TokenKind::RightParen) {
                 None
             } else {
                 Some(self.parse_expression()?)
             };
 
-            self.consume(&TokenKind::RightParen, "expected ')' after for clauses")?;
+            self.cursor
+                .consume(&TokenKind::RightParen, "expected ')' after for clauses")?;
 
             let body = self.parse_statement_body()?;
 
@@ -145,33 +150,36 @@ impl Parser {
             });
         }
 
-        let initializer = if self.consume_optional(&TokenKind::Semicolon) {
+        let initializer = if self.cursor.consume_optional(&TokenKind::Semicolon) {
             None
         } else {
             let expression = self.parse_expression()?;
 
-            self.consume(&TokenKind::Semicolon, "expected ';' after for initializer")?;
+            self.cursor
+                .consume(&TokenKind::Semicolon, "expected ';' after for initializer")?;
 
             Some(Box::new(Statement::Expression(expression)))
         };
 
-        let condition = if self.consume_optional(&TokenKind::Semicolon) {
+        let condition = if self.cursor.consume_optional(&TokenKind::Semicolon) {
             None
         } else {
             let condition = self.parse_expression()?;
 
-            self.consume(&TokenKind::Semicolon, "expected ';' after for condition")?;
+            self.cursor
+                .consume(&TokenKind::Semicolon, "expected ';' after for condition")?;
 
             Some(condition)
         };
 
-        let update = if self.check(&TokenKind::RightParen) {
+        let update = if self.cursor.check(&TokenKind::RightParen) {
             None
         } else {
             Some(self.parse_expression()?)
         };
 
-        self.consume(&TokenKind::RightParen, "expected ')' after for clauses")?;
+        self.cursor
+            .consume(&TokenKind::RightParen, "expected ')' after for clauses")?;
 
         let body = self.parse_statement_body()?;
 
@@ -184,11 +192,13 @@ impl Parser {
     }
 
     fn parse_while_statement(&mut self) -> Result<Statement, JsError> {
-        self.consume(&TokenKind::LeftParen, "expected '(' after while")?;
+        self.cursor
+            .consume(&TokenKind::LeftParen, "expected '(' after while")?;
 
         let condition = self.parse_expression()?;
 
-        self.consume(&TokenKind::RightParen, "expected ')' after while condition")?;
+        self.cursor
+            .consume(&TokenKind::RightParen, "expected ')' after while condition")?;
 
         let body = self.parse_statement_body()?;
 
@@ -196,15 +206,17 @@ impl Parser {
     }
 
     fn parse_if_statement(&mut self) -> Result<Statement, JsError> {
-        self.consume(&TokenKind::LeftParen, "expected '(' after if")?;
+        self.cursor
+            .consume(&TokenKind::LeftParen, "expected '(' after if")?;
 
         let condition = self.parse_expression()?;
 
-        self.consume(&TokenKind::RightParen, "expected ')' after if condition")?;
+        self.cursor
+            .consume(&TokenKind::RightParen, "expected ')' after if condition")?;
 
         let then_body = self.parse_statement_body()?;
 
-        let else_body = if self.consume_optional(&TokenKind::Else) {
+        let else_body = if self.cursor.consume_optional(&TokenKind::Else) {
             self.parse_statement_body()?
         } else {
             Vec::new()
@@ -218,16 +230,16 @@ impl Parser {
     }
 
     fn parse_statement_body(&mut self) -> Result<Vec<Statement>, JsError> {
-        if !self.consume_optional(&TokenKind::LeftBrace) {
+        if !self.cursor.consume_optional(&TokenKind::LeftBrace) {
             return Ok(vec![self.parse_statement()?]);
         }
 
         let mut body = Vec::new();
 
-        while !self.check(&TokenKind::RightBrace) {
-            if self.check(&TokenKind::EndOfFile) {
+        while !self.cursor.check(&TokenKind::RightBrace) {
+            if self.cursor.check(&TokenKind::EndOfFile) {
                 return Err(JsError::syntax(
-                    self.peek().offset,
+                    self.cursor.peek().offset,
                     "unterminated statement block",
                 ));
             }
@@ -235,7 +247,7 @@ impl Parser {
             body.push(self.parse_statement()?);
         }
 
-        self.advance();
+        self.cursor.advance();
 
         Ok(body)
     }
@@ -243,13 +255,13 @@ impl Parser {
     fn parse_declaration(&mut self) -> Result<Statement, JsError> {
         let (name, offset) = self.consume_identifier("expected a variable name")?;
 
-        let value = if self.consume_optional(&TokenKind::Assign) {
+        let value = if self.cursor.consume_optional(&TokenKind::Assign) {
             self.parse_expression()?
         } else {
             Expression::Literal(Value::Undefined)
         };
 
-        self.consume_optional(&TokenKind::Semicolon);
+        self.cursor.consume_optional(&TokenKind::Semicolon);
 
         if name.is_empty() {
             return Err(JsError::syntax(offset, "variable name cannot be empty"));
@@ -265,13 +277,13 @@ impl Parser {
     fn parse_conditional_expression(&mut self) -> Result<Expression, JsError> {
         let condition = self.parse_logical_or_expression()?;
 
-        if !self.consume_optional(&TokenKind::Question) {
+        if !self.cursor.consume_optional(&TokenKind::Question) {
             return Ok(condition);
         }
 
         let consequent = self.parse_assignment_expression()?;
 
-        self.consume(
+        self.cursor.consume(
             &TokenKind::Colon,
             "expected ':' after conditional expression",
         )?;
@@ -286,15 +298,15 @@ impl Parser {
     }
 
     fn parse_assignment_expression(&mut self) -> Result<Expression, JsError> {
-        if let TokenKind::Identifier(parameter) = self.peek().kind.clone() {
+        if let TokenKind::Identifier(parameter) = self.cursor.peek().kind.clone() {
             let is_arrow = self
-                .tokens
-                .get(self.position + 1)
+                .cursor
+                .peek_n(1)
                 .is_some_and(|token| matches!(token.kind, TokenKind::Arrow));
 
             if is_arrow {
-                self.advance();
-                self.advance();
+                self.cursor.advance();
+                self.cursor.advance();
 
                 return Ok(Expression::Function(UserFunction {
                     parameters: vec![parameter],
@@ -305,7 +317,7 @@ impl Parser {
 
         let expression = self.parse_conditional_expression()?;
 
-        if self.consume_optional(&TokenKind::Assign) {
+        if self.cursor.consume_optional(&TokenKind::Assign) {
             let value = self.parse_assignment_expression()?;
 
             return Ok(Expression::Assignment {
@@ -320,7 +332,7 @@ impl Parser {
     fn parse_logical_or_expression(&mut self) -> Result<Expression, JsError> {
         let mut expression = self.parse_logical_and_expression()?;
 
-        while self.consume_optional(&TokenKind::Or) {
+        while self.cursor.consume_optional(&TokenKind::Or) {
             let right = self.parse_logical_and_expression()?;
 
             expression = Expression::Binary {
@@ -336,7 +348,7 @@ impl Parser {
     fn parse_logical_and_expression(&mut self) -> Result<Expression, JsError> {
         let mut expression = self.parse_equality_expression()?;
 
-        while self.consume_optional(&TokenKind::And) {
+        while self.cursor.consume_optional(&TokenKind::And) {
             let right = self.parse_equality_expression()?;
 
             expression = Expression::Binary {
@@ -353,13 +365,13 @@ impl Parser {
         let mut expression = self.parse_comparison_expression()?;
 
         loop {
-            let operator = if self.consume_optional(&TokenKind::StrictEqual) {
+            let operator = if self.cursor.consume_optional(&TokenKind::StrictEqual) {
                 BinaryOperator::StrictEqual
-            } else if self.consume_optional(&TokenKind::StrictNotEqual) {
+            } else if self.cursor.consume_optional(&TokenKind::StrictNotEqual) {
                 BinaryOperator::StrictNotEqual
-            } else if self.consume_optional(&TokenKind::Equal) {
+            } else if self.cursor.consume_optional(&TokenKind::Equal) {
                 BinaryOperator::Equal
-            } else if self.consume_optional(&TokenKind::NotEqual) {
+            } else if self.cursor.consume_optional(&TokenKind::NotEqual) {
                 BinaryOperator::NotEqual
             } else {
                 break;
@@ -381,15 +393,15 @@ impl Parser {
         let mut expression = self.parse_term_expression()?;
 
         loop {
-            let operator = if self.consume_optional(&TokenKind::LessEqual) {
+            let operator = if self.cursor.consume_optional(&TokenKind::LessEqual) {
                 BinaryOperator::LessEqual
-            } else if self.consume_optional(&TokenKind::GreaterEqual) {
+            } else if self.cursor.consume_optional(&TokenKind::GreaterEqual) {
                 BinaryOperator::GreaterEqual
-            } else if self.consume_optional(&TokenKind::Instanceof) {
+            } else if self.cursor.consume_optional(&TokenKind::Instanceof) {
                 BinaryOperator::Instanceof
-            } else if self.consume_optional(&TokenKind::Less) {
+            } else if self.cursor.consume_optional(&TokenKind::Less) {
                 BinaryOperator::Less
-            } else if self.consume_optional(&TokenKind::Greater) {
+            } else if self.cursor.consume_optional(&TokenKind::Greater) {
                 BinaryOperator::Greater
             } else {
                 break;
@@ -411,9 +423,9 @@ impl Parser {
         let mut expression = self.parse_factor_expression()?;
 
         loop {
-            let operator = if self.consume_optional(&TokenKind::Plus) {
+            let operator = if self.cursor.consume_optional(&TokenKind::Plus) {
                 BinaryOperator::Add
-            } else if self.consume_optional(&TokenKind::Minus) {
+            } else if self.cursor.consume_optional(&TokenKind::Minus) {
                 BinaryOperator::Subtract
             } else {
                 break;
@@ -435,9 +447,9 @@ impl Parser {
         let mut expression = self.parse_unary_expression()?;
 
         loop {
-            let operator = if self.consume_optional(&TokenKind::Star) {
+            let operator = if self.cursor.consume_optional(&TokenKind::Star) {
                 BinaryOperator::Multiply
-            } else if self.consume_optional(&TokenKind::Slash) {
+            } else if self.cursor.consume_optional(&TokenKind::Slash) {
                 BinaryOperator::Divide
             } else {
                 break;
@@ -456,7 +468,7 @@ impl Parser {
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, JsError> {
-        if self.consume_optional(&TokenKind::PlusPlus) {
+        if self.cursor.consume_optional(&TokenKind::PlusPlus) {
             return Ok(Expression::Update {
                 target: Box::new(self.parse_unary_expression()?),
                 delta: 1.0,
@@ -464,7 +476,7 @@ impl Parser {
             });
         }
 
-        if self.consume_optional(&TokenKind::MinusMinus) {
+        if self.cursor.consume_optional(&TokenKind::MinusMinus) {
             return Ok(Expression::Update {
                 target: Box::new(self.parse_unary_expression()?),
                 delta: -1.0,
@@ -472,11 +484,11 @@ impl Parser {
             });
         }
 
-        if self.consume_optional(&TokenKind::Typeof) {
+        if self.cursor.consume_optional(&TokenKind::Typeof) {
             return Ok(Expression::TypeOf(Box::new(self.parse_unary_expression()?)));
         }
 
-        if self.consume_optional(&TokenKind::Not) {
+        if self.cursor.consume_optional(&TokenKind::Not) {
             return Ok(Expression::Not(Box::new(self.parse_unary_expression()?)));
         }
 
@@ -487,7 +499,7 @@ impl Parser {
         let mut expression = self.parse_primary()?;
 
         loop {
-            if self.consume_optional(&TokenKind::Dot) {
+            if self.cursor.consume_optional(&TokenKind::Dot) {
                 let (property, _) =
                     self.consume_identifier("expected a property name after '.'")?;
 
@@ -499,10 +511,10 @@ impl Parser {
                 continue;
             }
 
-            if self.consume_optional(&TokenKind::LeftBracket) {
+            if self.cursor.consume_optional(&TokenKind::LeftBracket) {
                 let index = self.parse_expression()?;
 
-                self.consume(
+                self.cursor.consume(
                     &TokenKind::RightBracket,
                     "expected ']' after index expression",
                 )?;
@@ -515,7 +527,7 @@ impl Parser {
                 continue;
             }
 
-            if self.consume_optional(&TokenKind::LeftParen) {
+            if self.cursor.consume_optional(&TokenKind::LeftParen) {
                 let arguments = self.parse_arguments()?;
 
                 expression = Expression::Call {
@@ -526,7 +538,7 @@ impl Parser {
                 continue;
             }
 
-            if self.consume_optional(&TokenKind::PlusPlus) {
+            if self.cursor.consume_optional(&TokenKind::PlusPlus) {
                 expression = Expression::Update {
                     target: Box::new(expression),
                     delta: 1.0,
@@ -536,7 +548,7 @@ impl Parser {
                 continue;
             }
 
-            if self.consume_optional(&TokenKind::MinusMinus) {
+            if self.cursor.consume_optional(&TokenKind::MinusMinus) {
                 expression = Expression::Update {
                     target: Box::new(expression),
                     delta: -1.0,
@@ -553,7 +565,7 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Result<Expression, JsError> {
-        let token = self.advance();
+        let token = self.cursor.advance();
 
         match token.kind {
             TokenKind::String(value) => Ok(Expression::Literal(Value::String(value))),
@@ -574,8 +586,8 @@ impl Parser {
             TokenKind::Function => self.parse_function_expression(),
 
             TokenKind::LeftParen => {
-                if self.consume_optional(&TokenKind::RightParen) {
-                    if self.consume_optional(&TokenKind::Arrow) {
+                if self.cursor.consume_optional(&TokenKind::RightParen) {
+                    if self.cursor.consume_optional(&TokenKind::Arrow) {
                         return Ok(Expression::Function(UserFunction {
                             parameters: Vec::new(),
                             body: self.parse_function_body()?,
@@ -588,21 +600,21 @@ impl Parser {
                     ));
                 }
 
-                if let TokenKind::Identifier(parameter) = self.peek().kind.clone() {
+                if let TokenKind::Identifier(parameter) = self.cursor.peek().kind.clone() {
                     let has_closing_parenthesis = self
-                        .tokens
-                        .get(self.position + 1)
+                        .cursor
+                        .peek_n(1)
                         .is_some_and(|token| matches!(token.kind, TokenKind::RightParen));
 
                     let has_arrow = self
-                        .tokens
-                        .get(self.position + 2)
+                        .cursor
+                        .peek_n(2)
                         .is_some_and(|token| matches!(token.kind, TokenKind::Arrow));
 
                     if has_closing_parenthesis && has_arrow {
-                        self.advance();
-                        self.advance();
-                        self.advance();
+                        self.cursor.advance();
+                        self.cursor.advance();
+                        self.cursor.advance();
 
                         return Ok(Expression::Function(UserFunction {
                             parameters: vec![parameter],
@@ -612,7 +624,8 @@ impl Parser {
                 }
 
                 let expression = self.parse_expression()?;
-                self.consume(&TokenKind::RightParen, "expected ')' after expression")?;
+                self.cursor
+                    .consume(&TokenKind::RightParen, "expected ')' after expression")?;
 
                 Ok(expression)
             }
@@ -628,22 +641,22 @@ impl Parser {
     fn parse_array_literal(&mut self) -> Result<Expression, JsError> {
         let mut values = Vec::new();
 
-        if self.consume_optional(&TokenKind::RightBracket) {
+        if self.cursor.consume_optional(&TokenKind::RightBracket) {
             return Ok(Expression::Array(values));
         }
 
         loop {
             values.push(self.parse_expression()?);
 
-            if self.consume_optional(&TokenKind::Comma) {
-                if self.consume_optional(&TokenKind::RightBracket) {
+            if self.cursor.consume_optional(&TokenKind::Comma) {
+                if self.cursor.consume_optional(&TokenKind::RightBracket) {
                     return Ok(Expression::Array(values));
                 }
 
                 continue;
             }
 
-            self.consume(
+            self.cursor.consume(
                 &TokenKind::RightBracket,
                 "expected ',' or ']' after array element",
             )?;
@@ -655,12 +668,12 @@ impl Parser {
     fn parse_object_literal(&mut self) -> Result<Expression, JsError> {
         let mut properties = Vec::new();
 
-        if self.consume_optional(&TokenKind::RightBrace) {
+        if self.cursor.consume_optional(&TokenKind::RightBrace) {
             return Ok(Expression::Object(properties));
         }
 
         loop {
-            let token = self.advance();
+            let token = self.cursor.advance();
 
             let name = match token.kind {
                 TokenKind::Identifier(name) | TokenKind::String(name) => name,
@@ -672,20 +685,21 @@ impl Parser {
                 }
             };
 
-            self.consume(&TokenKind::Colon, "expected ':' after object property name")?;
+            self.cursor
+                .consume(&TokenKind::Colon, "expected ':' after object property name")?;
 
             let value = self.parse_expression()?;
             properties.push((name, value));
 
-            if self.consume_optional(&TokenKind::Comma) {
-                if self.consume_optional(&TokenKind::RightBrace) {
+            if self.cursor.consume_optional(&TokenKind::Comma) {
+                if self.cursor.consume_optional(&TokenKind::RightBrace) {
                     return Ok(Expression::Object(properties));
                 }
 
                 continue;
             }
 
-            self.consume(
+            self.cursor.consume(
                 &TokenKind::RightBrace,
                 "expected ',' or '}' after object property",
             )?;
@@ -695,7 +709,8 @@ impl Parser {
     }
 
     fn parse_function_expression(&mut self) -> Result<Expression, JsError> {
-        self.consume(&TokenKind::LeftParen, "expected '(' after function keyword")?;
+        self.cursor
+            .consume(&TokenKind::LeftParen, "expected '(' after function keyword")?;
 
         let parameters = self.parse_function_parameters()?;
         let body = self.parse_function_body()?;
@@ -706,7 +721,7 @@ impl Parser {
     fn parse_function_parameters(&mut self) -> Result<Vec<String>, JsError> {
         let mut parameters = Vec::new();
 
-        if self.consume_optional(&TokenKind::RightParen) {
+        if self.cursor.consume_optional(&TokenKind::RightParen) {
             return Ok(parameters);
         }
 
@@ -715,11 +730,11 @@ impl Parser {
 
             parameters.push(parameter);
 
-            if self.consume_optional(&TokenKind::Comma) {
+            if self.cursor.consume_optional(&TokenKind::Comma) {
                 continue;
             }
 
-            self.consume(
+            self.cursor.consume(
                 &TokenKind::RightParen,
                 "expected ',' or ')' after function parameter",
             )?;
@@ -729,14 +744,15 @@ impl Parser {
     }
 
     fn parse_function_body(&mut self) -> Result<Vec<Statement>, JsError> {
-        self.consume(&TokenKind::LeftBrace, "expected '{' before function body")?;
+        self.cursor
+            .consume(&TokenKind::LeftBrace, "expected '{' before function body")?;
 
         let mut body = Vec::new();
 
-        while !self.check(&TokenKind::RightBrace) {
-            if self.check(&TokenKind::EndOfFile) {
+        while !self.cursor.check(&TokenKind::RightBrace) {
+            if self.cursor.check(&TokenKind::EndOfFile) {
                 return Err(JsError::syntax(
-                    self.peek().offset,
+                    self.cursor.peek().offset,
                     "unterminated function body",
                 ));
             }
@@ -744,7 +760,7 @@ impl Parser {
             body.push(self.parse_statement()?);
         }
 
-        self.advance();
+        self.cursor.advance();
 
         Ok(body)
     }
@@ -752,7 +768,8 @@ impl Parser {
     fn parse_new_expression(&mut self, offset: usize) -> Result<Expression, JsError> {
         let (constructor, _) = self.consume_identifier("expected a constructor after 'new'")?;
 
-        self.consume(&TokenKind::LeftParen, "expected '(' after constructor name")?;
+        self.cursor
+            .consume(&TokenKind::LeftParen, "expected '(' after constructor name")?;
 
         let arguments = self.parse_arguments()?;
 
@@ -769,29 +786,30 @@ impl Parser {
     fn parse_arguments(&mut self) -> Result<Vec<Expression>, JsError> {
         let mut arguments = Vec::new();
 
-        if self.consume_optional(&TokenKind::RightParen) {
+        if self.cursor.consume_optional(&TokenKind::RightParen) {
             return Ok(arguments);
         }
 
         loop {
             arguments.push(self.parse_expression()?);
 
-            if self.consume_optional(&TokenKind::Comma) {
-                if self.consume_optional(&TokenKind::RightParen) {
+            if self.cursor.consume_optional(&TokenKind::Comma) {
+                if self.cursor.consume_optional(&TokenKind::RightParen) {
                     return Ok(arguments);
                 }
 
                 continue;
             }
 
-            self.consume(&TokenKind::RightParen, "expected ',' or ')' after argument")?;
+            self.cursor
+                .consume(&TokenKind::RightParen, "expected ',' or ')' after argument")?;
 
             return Ok(arguments);
         }
     }
 
     fn consume_identifier(&mut self, message: &str) -> Result<(String, usize), JsError> {
-        let token = self.advance();
+        let token = self.cursor.advance();
 
         match token.kind {
             TokenKind::Identifier(name) => Ok((name, token.offset)),
@@ -800,48 +818,12 @@ impl Parser {
     }
 
     fn consume_contextual_keyword(&mut self, keyword: &str) -> bool {
-        match &self.peek().kind {
+        match &self.cursor.peek().kind {
             TokenKind::Identifier(identifier) if identifier == keyword => {
-                self.advance();
+                self.cursor.advance();
                 true
             }
             _ => false,
         }
-    }
-
-    fn consume(&mut self, expected: &TokenKind, message: &str) -> Result<(), JsError> {
-        if self.check(expected) {
-            self.advance();
-            Ok(())
-        } else {
-            Err(JsError::syntax(self.peek().offset, message))
-        }
-    }
-
-    fn consume_optional(&mut self, expected: &TokenKind) -> bool {
-        if self.check(expected) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn check(&self, expected: &TokenKind) -> bool {
-        self.peek().kind == *expected
-    }
-
-    fn peek(&self) -> &Token {
-        &self.tokens[self.position]
-    }
-
-    fn advance(&mut self) -> Token {
-        let token = self.tokens[self.position].clone();
-
-        if !matches!(token.kind, TokenKind::EndOfFile) {
-            self.position += 1;
-        }
-
-        token
     }
 }
