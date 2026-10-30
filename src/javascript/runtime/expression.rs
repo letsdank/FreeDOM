@@ -270,4 +270,35 @@ mod tests {
             "ReferenceError: missing is not defined"
         );
     }
+
+    #[test]
+    fn executes_concise_arrow_bodies() {
+        assert_eq!(
+            evaluate("const f = x => x * 2; f(4);").unwrap(),
+            Value::Number(8.0)
+        );
+
+        assert_eq!(
+            evaluate("const f = (x) => x + 1; f(4);").unwrap(),
+            Value::Number(5.0)
+        );
+
+        assert_eq!(
+            evaluate("const f = () => 42; f();").unwrap(),
+            Value::Number(42.0)
+        );
+    }
+
+    #[test]
+    fn arrow_object_expression_and_block_body_are_distinct() {
+        assert_eq!(
+            evaluate("const f = () => ({ value: 5 }); f().value;").unwrap(),
+            Value::Number(5.0)
+        );
+
+        assert_eq!(
+            evaluate("const f = x => { return x + 1; }; f(2);").unwrap(),
+            Value::Number(3.0)
+        );
+    }
 }

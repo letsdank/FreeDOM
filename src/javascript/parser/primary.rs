@@ -43,7 +43,7 @@ impl Parser<'_> {
                     if self.cursor.consume_optional(&TokenKind::Arrow)? {
                         return Ok(Expression::Function(UserFunction {
                             parameters: Vec::new(),
-                            body: self.parse_function_body()?,
+                            body: self.parse_arrow_body()?,
                         }));
                     }
 
@@ -71,7 +71,7 @@ impl Parser<'_> {
 
                         return Ok(Expression::Function(UserFunction {
                             parameters: vec![parameter],
-                            body: self.parse_function_body()?,
+                            body: self.parse_arrow_body()?,
                         }));
                     }
                 }

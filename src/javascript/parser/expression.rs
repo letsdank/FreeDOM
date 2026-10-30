@@ -4,9 +4,19 @@
 //!
 //! This module preserves the interpreter's existing grammar subset.
 
-use super::{BinaryOperator, Expression, JsError, Parser, TokenKind, UserFunction};
+use super::{BinaryOperator, Expression, JsError, Parser, Statement, TokenKind, UserFunction};
 
 impl Parser<'_> {
+    // A concise arrow body evaluates an assignment expression and returns it.
+    // https://tc39.es/ecma262/#sec-arrow-function-definitions
+    pub(super) fn parse_arrow_body(&mut self) -> Result<Vec<Statement>, JsError> {
+        if self.cursor.check(&TokenKind::LeftBrace)? {
+            self.parse_function_body()
+        } else {
+            Ok(vec![Statement::Return(self.parse_assignment_expression()?)])
+        }
+    }
+
     pub(super) fn parse_expression(&mut self) -> Result<Expression, JsError> {
         self.parse_assignment_expression()
     }
@@ -47,7 +57,7 @@ impl Parser<'_> {
 
                 return Ok(Expression::Function(UserFunction {
                     parameters: vec![parameter],
-                    body: self.parse_function_body()?,
+                    body: self.parse_arrow_body()?,
                 }));
             }
         }
@@ -390,5 +400,35 @@ mod tests {
                         Expression::Member{ property, .. } if property == "method"
                     )
         ));
+    }
+
+    #[test]
+    fn parses_concise_arrow_body_from_wpt_harness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "assert => assert.structured_clone()";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(&format!("{fragment};")).unwrap();
+
+        assert!(matches!(
+            &program[0],
+            Statement::Expression(Expression::Function(function))
+                if matches!(
+                    function.body.as_slice(),
+                    [Statement::Return(Expression::Call { .. })]
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_arrow_without_body() {
+        let error = parse_program("x =>").unwrap_err();
+
+        assert_eq!(error.message, "unexpected end of JavaScript source");
     }
 }
