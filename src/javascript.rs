@@ -62,10 +62,22 @@ pub(crate) use ast::{BinaryOperator, Expression, Statement, UserFunction};
 
 use runtime::{Completion, Interpreter};
 
+/// Classification of parser and interpreter failures.
+///
+/// Runtime failures remain unclassified until JavaScript exceptions are
+/// represented separately from unsupported engine features.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsErrorKind {
+    Syntax,
+    UnclassifiedRuntime,
+    UnsupportedFeature,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JsError {
     pub offset: Option<usize>,
     pub message: String,
+    pub kind: JsErrorKind,
 }
 
 impl JsError {
@@ -73,6 +85,7 @@ impl JsError {
         Self {
             offset: Some(offset),
             message: message.into(),
+            kind: JsErrorKind::Syntax,
         }
     }
 
@@ -80,6 +93,15 @@ impl JsError {
         Self {
             offset: None,
             message: message.into(),
+            kind: JsErrorKind::UnclassifiedRuntime,
+        }
+    }
+
+    fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            offset: None,
+            message: message.into(),
+            kind: JsErrorKind::UnsupportedFeature,
         }
     }
 }

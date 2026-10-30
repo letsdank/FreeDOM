@@ -187,7 +187,7 @@ impl Interpreter {
                 }
 
                 Statement::Try { .. } => {
-                    return Err(JsError::runtime(
+                    return Err(JsError::unsupported(
                         "try/catch/finally execution is not implemented yet",
                     ));
                 }

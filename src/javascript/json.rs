@@ -11,10 +11,7 @@ use std::collections::HashMap;
 use super::{JsError, Token, TokenKind, Value, tokenize};
 
 pub fn parse_json(source: &str) -> Result<Value, JsError> {
-    let tokens = tokenize(source).map_err(|error| JsError {
-        offset: Some(error.offset),
-        message: error.message,
-    })?;
+    let tokens = tokenize(source).map_err(|error| JsError::syntax(error.offset, error.message))?;
 
     JsonParser::new(tokens).parse()
 }

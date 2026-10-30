@@ -3,6 +3,9 @@ use super::{DocumentState, TokenKind, Value, evaluate, evaluate_with_document, t
 #[path = "tests/regexp.rs"]
 mod regexp;
 
+#[path = "tests/errors.rs"]
+mod errors;
+
 #[test]
 fn tokenizes_url_constructor_syntax() {
     let tokens = tokenize("const url = new URL(test.input, test.base);").unwrap();
