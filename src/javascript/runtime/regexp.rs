@@ -18,7 +18,7 @@ impl Interpreter {
             None | Some(Value::Undefined) => String::new(),
 
             Some(Value::RegExp(_)) => {
-                return Err(JsError::runtime(
+                return Err(JsError::unsupported(
                     "RegExp construction from another RegExp is not implemented yet",
                 ));
             }

@@ -71,8 +71,25 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
+            Statement::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                let blocks = std::iter::once(body)
+                    .chain(catch.iter().map(|clause| &clause.body))
+                    .chain(finally.iter());
+
+                for block in blocks {
+                    for name in function_local_names(block) {
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                }
+            }
+
             Statement::Expression(_)
-            | Statement::Try { .. }
             | Statement::Return(_)
             | Statement::Throw(_)
             | Statement::Break

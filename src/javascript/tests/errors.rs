@@ -23,13 +23,13 @@ fn classifies_legacy_runtime_failures_as_unclassified() {
 }
 
 #[test]
-fn classifies_unsupported_try_as_engine_limitation() {
-    let error = evaluate("try {} finally {}").unwrap_err();
+fn classifies_unsupported_regexp_copy_as_engine_limitation() {
+    let error = evaluate("new RegExp(/a/);").unwrap_err();
 
     assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     assert_eq!(
         error.message,
-        "try/catch/finally execution is not implemented yet"
+        "RegExp construction from another RegExp is not implemented yet"
     );
 }
 

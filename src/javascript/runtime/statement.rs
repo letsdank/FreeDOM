@@ -191,11 +191,14 @@ impl Interpreter {
                     }
                 }
 
-                Statement::Try { .. } => {
-                    return Err(JsError::unsupported(
-                        "try/catch/finally execution is not implemented yet",
-                    ));
-                }
+                Statement::Try {
+                    body,
+                    catch,
+                    finally,
+                } => match self.execute_try(body, catch.as_ref(), finally.as_deref())? {
+                    Completion::Normal(value) => value,
+                    abrupt => return Ok(abrupt),
+                },
             };
         }
 
@@ -277,21 +280,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_try_execution_without_running_its_body() {
+    fn executes_try_and_finally_in_order() {
         let mut document = crate::javascript::DocumentState::default();
         document.title = "before".to_owned();
 
-        let error = crate::javascript::evaluate_with_document(
-            "try { document.title = 'changed'; } finally {}",
+        crate::javascript::evaluate_with_document(
+            "try { \
+                document.title = 'changed'; \
+            } finally { \
+                document.title = document.title + '!'; \
+            }",
             &mut document,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(
-            error.message,
-            "try/catch/finally execution is not implemented yet"
-        );
-        assert_eq!(document.title, "before");
+        assert_eq!(document.title, "changed!");
     }
 
     #[test]

@@ -40,6 +40,9 @@ mod property;
 #[path = "runtime/expression.rs"]
 mod expression;
 
+#[path = "runtime/try_statement.rs"]
+mod try_statement;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: UserFunction,
