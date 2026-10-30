@@ -11,6 +11,10 @@ use crate::javascript::DocumentMethod;
 impl Interpreter {
     pub(super) fn member_value(&self, object: Value, property: &str) -> Result<Value, JsError> {
         match (object, property) {
+            (Value::Null | Value::Undefined, _) => Err(JsError::type_error(
+                "cannot read property of null or undefined",
+            )),
+
             (Value::TestContext, "add_cleanup") => {
                 Ok(Value::TestContextMethod(TestContextMethod::AddCleanup))
             }
@@ -238,6 +242,12 @@ impl Interpreter {
     }
 
     pub(super) fn index_value(&self, object: Value, index: Value) -> Result<Value, JsError> {
+        if matches!(object, Value::Null | Value::Undefined) {
+            return Err(JsError::type_error(
+                "cannot read property of null or undefined",
+            ));
+        }
+
         if let Value::Array(values) = object {
             return Ok(Self::array_get(values, &index.to_js_string()));
         }
@@ -364,5 +374,93 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::String("Hello".to_owned()));
+    }
+
+    #[test]
+    fn null_and_undefined_property_reads_throw_catchable_type_error() {
+        for expression in [
+            "null.foo",
+            "undefined.foo",
+            "null['x']",
+            "undefined[undefined]",
+        ] {
+            let script = format!(
+                "let name = ''; \
+                try {{ {expression}; }} \
+                catch (e) {{ name = e.name; }} \
+                name;"
+            );
+
+            assert_eq!(
+                evaluate(&script).unwrap(),
+                Value::String("TypeError".to_owned()),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn computed_index_is_evaluated_before_null_property_failure() {
+        let result = evaluate(
+            "let count = 0; \
+            try { null[count = count + 1]; } \
+            catch (e) {} \
+            count;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(1.0));
+    }
+
+    #[test]
+    fn index_expression_error_precedes_null_property_failure() {
+        let result = evaluate(
+            "let name = ''; \
+            try { null[missing]; } \
+            catch (e) { name = e.name; } \
+            name;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("ReferenceError".to_owned()));
+    }
+
+    #[test]
+    fn typeof_does_not_suppress_null_property_error() {
+        let result = evaluate(
+            "let name = ''; \
+            try { typeof null.foo; } \
+            catch (e) { name = e.name; } \
+            name;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("TypeError".to_owned()));
+    }
+
+    #[test]
+    fn finally_runs_after_uncaught_null_property_error() {
+        let mut document = DocumentState::default();
+
+        let error = evaluate_with_document(
+            "try { null.foo; } \
+            finally { document.title = 'clean'; }",
+            &mut document,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            crate::javascript::JsErrorKind::NativeException(Value::NativeError(_))
+        ));
+        assert_eq!(document.title, "clean");
+    }
+
+    #[test]
+    fn missing_property_on_object_still_returns_undefined() {
+        assert_eq!(
+            evaluate("let object = {}; object.missing;").unwrap(),
+            Value::Undefined,
+        );
     }
 }
