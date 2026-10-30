@@ -36,6 +36,11 @@ impl Interpreter {
                     return Ok(Completion::Return(self.evaluate_expression(expression)?));
                 }
 
+                Statement::Throw(expression) => {
+                    let value = self.evaluate_expression(expression)?;
+                    return Err(JsError::thrown(value));
+                }
+
                 Statement::If {
                     condition,
                     then_body,

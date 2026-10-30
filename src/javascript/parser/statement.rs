@@ -9,6 +9,14 @@ use crate::javascript::ast::CatchClause;
 
 impl Parser<'_> {
     pub(super) fn parse_statement(&mut self) -> Result<Statement, JsError> {
+        if matches!(
+            &self.cursor.peek()?.kind,
+            TokenKind::Identifier(name) if name == "throw"
+        ) {
+            let keyword = self.cursor.advance()?;
+            return self.parse_throw_statement(keyword.offset);
+        }
+
         if self.consume_contextual_keyword("try")? {
             return self.parse_try_statement();
         }
@@ -301,6 +309,25 @@ impl Parser<'_> {
 
         self.parse_statement_body()
     }
+
+    // Line terminators are forbidden between throw and its expression.
+    // https://tc39.es/ecma262/#sec-throw-statement
+    fn parse_throw_statement(&mut self, keyword_offset: usize) -> Result<Statement, JsError> {
+        let next = self.cursor.peek()?;
+        let trivia = &self.source[keyword_offset + "throw".len()..next.offset];
+
+        if trivia
+            .chars()
+            .any(|ch| matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
+        {
+            return Err(JsError::syntax(next.offset, "line terminator after throw"));
+        }
+
+        let value = self.parse_expression()?;
+        self.cursor.consume_optional(&TokenKind::Semicolon)?;
+
+        Ok(Statement::Throw(value))
+    }
 }
 
 #[cfg(test)]
@@ -419,5 +446,49 @@ mod tests {
                 ..
             } if catch.binding.as_deref() == Some("e")
         ));
+    }
+
+    #[test]
+    fn parses_throw_statement_from_wpt_harness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "throw value;";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(fragment).unwrap();
+
+        assert!(matches!(
+            &program[0],
+            Statement::Throw(super::Expression::Identifier(name)) if name == "value"
+        ));
+    }
+
+    #[test]
+    fn rejects_line_terminators_between_throw_and_expression() {
+        for source in [
+            "throw\n1;",
+            "throw\r\n1;",
+            "throw /*\n*/ 1;",
+            "throw // comment\n1;",
+            "throw /*\u{2028}*/ 1;",
+        ] {
+            let error = parse_program(source).unwrap_err();
+
+            assert_eq!(
+                error.message, "line terminator after throw",
+                "source: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_comment_without_line_terminator_after_throw() {
+        let program = parse_program("throw /* comment */ 1;").unwrap();
+
+        assert!(matches!(&program[0], Statement::Throw(_)));
     }
 }

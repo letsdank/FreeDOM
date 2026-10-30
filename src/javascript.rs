@@ -64,16 +64,17 @@ use runtime::{Completion, Interpreter};
 
 /// Classification of parser and interpreter failures.
 ///
-/// Runtime failures remain unclassified until JavaScript exceptions are
-/// represented separately from unsupported engine features.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Explicitly thrown JavaScript values are distinct from engine failures.
+/// Other runtime failures are still unclassified.
+#[derive(Clone, Debug, PartialEq)]
 pub enum JsErrorKind {
     Syntax,
     UnclassifiedRuntime,
     UnsupportedFeature,
+    Thrown(Value),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JsError {
     pub offset: Option<usize>,
     pub message: String,
@@ -102,6 +103,14 @@ impl JsError {
             offset: None,
             message: message.into(),
             kind: JsErrorKind::UnsupportedFeature,
+        }
+    }
+
+    fn thrown(value: Value) -> Self {
+        Self {
+            offset: None,
+            message: "Uncaught JavaScript exception".to_owned(),
+            kind: JsErrorKind::Thrown(value),
         }
     }
 }

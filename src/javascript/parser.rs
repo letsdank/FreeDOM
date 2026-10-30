@@ -25,12 +25,14 @@ pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
 
 struct Parser<'source> {
     cursor: ParserCursor<'source>,
+    source: &'source str,
 }
 
 impl<'source> Parser<'source> {
     fn new(source: &'source str) -> Self {
         Self {
             cursor: ParserCursor::new(source),
+            source,
         }
     }
 

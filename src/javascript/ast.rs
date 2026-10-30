@@ -18,6 +18,7 @@ pub(crate) enum Statement {
     },
     Expression(Expression),
     Return(Expression),
+    Throw(Expression),
     If {
         condition: Expression,
         then_body: Vec<Statement>,

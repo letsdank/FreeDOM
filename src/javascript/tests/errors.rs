@@ -40,3 +40,57 @@ fn json_lexing_errors_are_classified_as_syntax() {
     assert_eq!(error.kind, JsErrorKind::Syntax);
     assert_eq!(error.offset, Some(0));
 }
+
+#[test]
+fn preserves_thrown_primitive_values() {
+    let error = evaluate("throw false;").unwrap_err();
+
+    assert!(matches!(
+        error.kind,
+        JsErrorKind::Thrown(crate::javascript::Value::Boolean(false))
+    ));
+    assert_eq!(error.message, "Uncaught JavaScript exception");
+}
+
+#[test]
+fn preserves_thrown_object_value() {
+    let error = evaluate("throw { code: 7 };").unwrap_err();
+
+    let JsErrorKind::Thrown(crate::javascript::Value::Object(object)) = error.kind else {
+        panic!("expected a thrown object");
+    };
+
+    assert_eq!(
+        object.borrow().get("code"),
+        Some(&crate::javascript::Value::Number(7.0))
+    );
+}
+
+#[test]
+fn thrown_value_propagates_through_function_calls() {
+    let mut document = crate::javascript::DocumentState::default();
+
+    let error = crate::javascript::evaluate_with_document(
+        "function f() { \
+            document.title = 'before throw'; \
+            throw 42; \
+        } \
+        f(); \
+        document.title = 'after';",
+        &mut document,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error.kind,
+        JsErrorKind::Thrown(crate::javascript::Value::Number(42.0))
+    ));
+    assert_eq!(document.title, "before throw");
+}
+
+#[test]
+fn throw_expression_failures_are_not_mistaken_for_explicit_throw() {
+    let error = evaluate("throw missing;").unwrap_err();
+
+    assert_eq!(error.kind, JsErrorKind::UnclassifiedRuntime);
+}
