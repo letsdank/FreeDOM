@@ -37,11 +37,11 @@ impl Interpreter {
                 Ok(Value::object(values))
             }
 
-            Expression::Identifier(name) => {
-                self.variables.get(name).cloned().ok_or_else(|| {
-                    JsError::runtime(format!("ReferenceError: {name} is not defined"))
-                })
-            }
+            Expression::Identifier(name) => self
+                .variables
+                .get(name)
+                .cloned()
+                .ok_or_else(|| JsError::reference_error(name)),
 
             Expression::New {
                 constructor,

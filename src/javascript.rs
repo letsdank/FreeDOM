@@ -72,6 +72,7 @@ pub enum JsErrorKind {
     UnclassifiedRuntime,
     UnsupportedFeature,
     Thrown(Value),
+    NativeException(Value),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,6 +112,16 @@ impl JsError {
             offset: None,
             message: "Uncaught JavaScript exception".to_owned(),
             kind: JsErrorKind::Thrown(value),
+        }
+    }
+
+    fn reference_error(name: &str) -> Self {
+        let message = format!("{name} is not defined");
+
+        Self {
+            offset: None,
+            message: format!("ReferenceError: {message}"),
+            kind: JsErrorKind::NativeException(Value::native_error("ReferenceError", &message)),
         }
     }
 }

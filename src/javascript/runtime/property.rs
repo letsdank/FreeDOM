@@ -229,6 +229,8 @@ impl Interpreter {
 
             (Value::RegExp(regexp), "exec") => Ok(Value::RegExpExec(regexp)),
 
+            (Value::NativeError(error), property) => Ok(error.get(property)),
+
             (_, property) => Err(JsError::runtime(format!(
                 "cannot read property {property:?} from this value"
             ))),
@@ -246,6 +248,10 @@ impl Interpreter {
                 .get(&index.to_js_string())
                 .cloned()
                 .unwrap_or(Value::Undefined));
+        }
+
+        if let Value::NativeError(error) = object {
+            return Ok(error.get(&index.to_js_string()));
         }
 
         if let Value::RegExp(regexp) = object {

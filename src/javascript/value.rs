@@ -106,6 +106,48 @@ pub(crate) struct ArrayState {
 pub(crate) type ArrayStorage = Rc<RefCell<ArrayState>>;
 pub(crate) type ObjectStorage = Rc<RefCell<ObjectState>>;
 
+/// A partial native Error object; prototypes and property descriptors are not implemented.
+#[derive(Clone, Debug)]
+pub struct NativeErrorValue {
+    default_name: String,
+    properties: ObjectStorage,
+}
+
+impl NativeErrorValue {
+    fn new(name: &str, message: &str) -> Self {
+        let mut properties = ObjectState::default();
+
+        properties.set("message".to_owned(), Value::String(message.to_owned()));
+
+        Self {
+            default_name: name.to_owned(),
+            properties: Rc::new(RefCell::new(properties)),
+        }
+    }
+
+    pub(super) fn get(&self, name: &str) -> Value {
+        if let Some(value) = self.properties.borrow().get(name) {
+            return value.clone();
+        }
+
+        if name == "name" {
+            Value::String(self.default_name.clone())
+        } else {
+            Value::Undefined
+        }
+    }
+
+    pub(super) fn set(&self, name: String, value: Value) {
+        self.properties.borrow_mut().set(name, value);
+    }
+}
+
+impl PartialEq for NativeErrorValue {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.properties, &other.properties)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RegExpValue {
     pub(super) inner: Rc<RefCell<RegExpState>>,
@@ -143,6 +185,7 @@ pub enum Value {
         method: ArrayMethodKind,
     },
     Object(ObjectStorage),
+    NativeError(NativeErrorValue),
     Url(Url),
     NativeFunction(NativeFunction),
     Document(DocumentState),
@@ -169,6 +212,10 @@ pub enum Value {
 }
 
 impl Value {
+    pub(super) fn native_error(name: &str, message: &str) -> Self {
+        Self::NativeError(NativeErrorValue::new(name, message))
+    }
+
     pub(super) fn to_js_string(&self) -> String {
         match self {
             Self::Undefined => "undefined".to_owned(),
@@ -188,6 +235,27 @@ impl Value {
             Self::ArrayMethod { .. } => "function".to_owned(),
 
             Self::Object(_) => "[object Object]".to_owned(),
+
+            Self::NativeError(error) => {
+                let name = match error.get("name") {
+                    Value::Undefined => "Error".to_owned(),
+                    value => value.to_js_string(),
+                };
+
+                let message = match error.get("message") {
+                    Value::Undefined => String::new(),
+                    value => value.to_js_string(),
+                };
+
+                if name.is_empty() {
+                    message
+                } else if message.is_empty() {
+                    name
+                } else {
+                    format!("{name}: {message}")
+                }
+            }
+
             Self::Url(url) => url.to_string(),
             Self::NativeFunction(_) => "function".to_owned(),
             Self::Document(_) => "[object Document]".to_owned(),

@@ -2,8 +2,9 @@
 //!
 //! <https://tc39.es/ecma262/#sec-try-statement>
 //!
-//! Only explicit thrown values are catchable. Unclassified runtime failures
-//! and unsupported engine features propagate without executing handlers.
+//! Explicit throws and classified native exceptions are catchable.
+//! Unclassified runtime failures and unsupported engine features propagate
+//! without executing handlers.
 
 use super::{Completion, Interpreter, JsError, Statement, Value};
 use crate::javascript::{JsErrorKind, ast::CatchClause};
@@ -22,6 +23,10 @@ impl Interpreter {
                 Err(JsError {
                     kind: JsErrorKind::Thrown(value),
                     ..
+                })
+                | Err(JsError {
+                    kind: JsErrorKind::NativeException(value),
+                    ..
                 }) => self.execute_catch(clause, value),
 
                 other => other,
@@ -32,7 +37,10 @@ impl Interpreter {
 
         // Engine failures are not JavaScript throws and must not be swallowed.
         if let Err(error) = &result {
-            if !matches!(&error.kind, JsErrorKind::Thrown(_)) {
+            if !matches!(
+                &error.kind,
+                JsErrorKind::Thrown(_) | JsErrorKind::NativeException(_)
+            ) {
                 return result;
             }
         }
@@ -195,7 +203,7 @@ mod tests {
         document.title = "before".to_owned();
 
         let error = evaluate_with_document(
-            "try { missing; } \
+            "let n = 1; try { n(); } \
             catch (e) { document.title = 'catch'; } \
             finally { document.title = 'finally'; }",
             &mut document,
@@ -219,5 +227,120 @@ mod tests {
         .unwrap();
 
         assert_eq!(value, Value::Number(7.0));
+    }
+
+    #[test]
+    fn catches_reference_error_and_reads_name_and_message() {
+        let result = evaluate(
+            "let description = ''; \
+            try { missing; } \
+            catch (error) { \
+                description = error.name + ': ' + error['message']; \
+            } \
+            description;",
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            Value::String("ReferenceError: missing is not defined".to_owned())
+        );
+    }
+
+    #[test]
+    fn stringifies_native_error_using_name_and_message() {
+        let result = evaluate(
+            "let text = ''; \
+            try { missing; } \
+            catch (e) { text = '' + e; } \
+            text;",
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            Value::String("ReferenceError: missing is not defined".to_owned())
+        );
+    }
+
+    #[test]
+    fn reads_error_message_with_wpt_harness_statement() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "var message = e.message;";
+
+        assert!(source.contains(fragment));
+
+        let script = format!(
+            "let message = ''; \
+            try {{ missing; }} \
+            catch (e) {{ {fragment} }} \
+            message;"
+        );
+
+        assert_eq!(
+            evaluate(&script).unwrap(),
+            Value::String("missing is not defined".to_owned())
+        );
+    }
+
+    #[test]
+    fn native_error_retains_identity_and_mutable_properties() {
+        let result = evaluate(
+            "let saved = null; \
+            let same = false; \
+            try { \
+                try { missing; } \
+                catch (e) { \
+                    saved = e; \
+                    e.message = 'changed'; \
+                    throw e; \
+                } \
+            } catch (e) { \
+                same = e === saved && e.message === 'changed'; \
+            } \
+            same;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn finally_runs_on_uncaught_reference_error() {
+        let mut document = DocumentState::default();
+
+        let error = evaluate_with_document(
+            "try { missing; } \
+            finally { document.title = 'clean'; }",
+            &mut document,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            JsErrorKind::NativeException(Value::NativeError(_))
+        ));
+        assert_eq!(error.message, "ReferenceError: missing is not defined");
+        assert_eq!(document.title, "clean");
+    }
+
+    #[test]
+    fn native_error_has_object_type_and_accepts_indexed_properties() {
+        let result = evaluate(
+            "let result = false; \
+            try { missing; } \
+            catch (e) { \
+                e['extra'] = 3; \
+                result = typeof e === 'object' && e.extra === 3; \
+            } \
+            result;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }

@@ -82,6 +82,7 @@ impl Interpreter {
             Value::Null
             | Value::Array(_)
             | Value::Object(_)
+            | Value::NativeError(_)
             | Value::Url(_)
             | Value::Document(_)
             | Value::Element(_)
@@ -125,6 +126,7 @@ impl Interpreter {
 
             Value::Array(_)
             | Value::Object(_)
+            | Value::NativeError(_)
             | Value::Url(_)
             | Value::NativeFunction(_)
             | Value::Document(_)

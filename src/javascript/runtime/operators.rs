@@ -145,6 +145,11 @@ impl Interpreter {
                         Ok(())
                     }
 
+                    Value::NativeError(error) => {
+                        error.set(property.clone(), value);
+                        Ok(())
+                    }
+
                     Value::Element(node_id) if property == "textContent" => {
                         self.set_document_element_text_content(node_id, value.to_js_string())
                     }
@@ -217,6 +222,11 @@ impl Interpreter {
                     Value::Object(values) => {
                         values.borrow_mut().set(index.to_js_string(), value);
 
+                        Ok(())
+                    }
+
+                    Value::NativeError(error) => {
+                        error.set(index.to_js_string(), value);
                         Ok(())
                     }
 
