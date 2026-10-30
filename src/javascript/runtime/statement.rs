@@ -185,6 +185,12 @@ impl Interpreter {
                         Completion::Continue => return Ok(Completion::Continue),
                     }
                 }
+
+                Statement::Try { .. } => {
+                    return Err(JsError::runtime(
+                        "try/catch/finally execution is not implemented yet",
+                    ));
+                }
             };
         }
 
@@ -263,5 +269,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Number(4.0));
+    }
+
+    #[test]
+    fn rejects_try_execution_without_running_its_body() {
+        let mut document = crate::javascript::DocumentState::default();
+        document.title = "before".to_owned();
+
+        let error = crate::javascript::evaluate_with_document(
+            "try { document.title = 'changed'; } finally {}",
+            &mut document,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "try/catch/finally execution is not implemented yet"
+        );
+        assert_eq!(document.title, "before");
+    }
+
+    #[test]
+    fn keeps_contextual_keyword_property_names_working() {
+        let value = evaluate("let object = { catch: 3 }; object.catch;").unwrap();
+
+        assert_eq!(value, Value::Number(3.0));
     }
 }

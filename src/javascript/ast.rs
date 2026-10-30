@@ -1,6 +1,12 @@
 use super::Value;
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CatchClause {
+    pub(crate) binding: Option<String>,
+    pub(crate) body: Vec<Statement>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Statement {
     Declaration {
         name: String,
@@ -34,6 +40,11 @@ pub(crate) enum Statement {
     },
     Break,
     Continue,
+    Try {
+        body: Vec<Statement>,
+        catch: Option<CatchClause>,
+        finally: Option<Vec<Statement>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

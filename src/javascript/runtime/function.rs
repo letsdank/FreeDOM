@@ -72,6 +72,7 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
             }
 
             Statement::Expression(_)
+            | Statement::Try { .. }
             | Statement::Return(_)
             | Statement::Break
             | Statement::Continue => {}
