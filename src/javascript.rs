@@ -115,14 +115,22 @@ impl JsError {
         }
     }
 
-    fn reference_error(name: &str) -> Self {
-        let message = format!("{name} is not defined");
+    fn native_exception(name: &str, message: impl Into<String>) -> Self {
+        let message = message.into();
 
         Self {
             offset: None,
-            message: format!("ReferenceError: {message}"),
-            kind: JsErrorKind::NativeException(Value::native_error("ReferenceError", &message)),
+            message: format!("{name}: {message}"),
+            kind: JsErrorKind::NativeException(Value::native_error(name, &message)),
         }
+    }
+
+    fn reference_error(name: &str) -> Self {
+        Self::native_exception("ReferenceError", format!("{name} is not defined"))
+    }
+
+    fn type_error(message: impl Into<String>) -> Self {
+        Self::native_exception("TypeError", message)
     }
 }
 

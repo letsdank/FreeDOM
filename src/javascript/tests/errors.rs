@@ -15,10 +15,13 @@ fn classifies_syntax_errors_and_preserves_offsets() {
 
 #[test]
 fn classifies_legacy_runtime_failures_as_unclassified() {
-    let error = evaluate("let n = 1; n();").unwrap_err();
+    let error = evaluate("let a = []; a.length = 1;").unwrap_err();
 
     assert_eq!(error.kind, JsErrorKind::UnclassifiedRuntime);
-    assert_eq!(error.message, "TypeError: this value is not callable");
+    assert_eq!(
+        error.message,
+        "Array.length assignment is not implemented yet"
+    );
     assert_eq!(error.offset, None);
 }
 
@@ -103,6 +106,17 @@ fn classifies_unhandled_reference_error_as_native_exception() {
     let error = evaluate("missing;").unwrap_err();
 
     assert_eq!(error.message, "ReferenceError: missing is not defined");
+    assert!(matches!(
+        error.kind,
+        JsErrorKind::NativeException(crate::javascript::Value::NativeError(_))
+    ));
+}
+
+#[test]
+fn classifies_uncaught_non_callable_type_error() {
+    let error = evaluate("let n = 1; n();").unwrap_err();
+
+    assert_eq!(error.message, "TypeError: this value is not callable");
     assert!(matches!(
         error.kind,
         JsErrorKind::NativeException(crate::javascript::Value::NativeError(_))

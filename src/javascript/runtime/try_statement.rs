@@ -203,7 +203,7 @@ mod tests {
         document.title = "before".to_owned();
 
         let error = evaluate_with_document(
-            "let n = 1; try { n(); } \
+            "let a = []; try { a.length = 1; } \
             catch (e) { document.title = 'catch'; } \
             finally { document.title = 'finally'; }",
             &mut document,
@@ -342,5 +342,93 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn catches_non_callable_type_error() {
+        let result = evaluate(
+            "let description = ''; \
+            try { let n = 1; n(); } \
+            catch (e) { description = e.name + ': ' + e.message; } \
+            description;",
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            Value::String("TypeError: this value is not callable".to_owned())
+        );
+    }
+
+    #[test]
+    fn evaluates_arguments_before_non_callable_error() {
+        let result = evaluate(
+            "let count = 0; \
+            try { let n = 1; n(count = count + 1); } \
+            catch (e) {} \
+            count;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(1.0));
+    }
+
+    #[test]
+    fn argument_exception_precedes_non_callable_error() {
+        let result = evaluate(
+            "let name = ''; \
+            try { let n = 1; n(missing); } \
+            catch (e) { name = e.name; } \
+            name;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("ReferenceError".to_owned()));
+    }
+
+    #[test]
+    fn finally_runs_on_uncaught_non_callable_type_error() {
+        let mut document = DocumentState::default();
+
+        let error = evaluate_with_document(
+            "try { let n = 1; n(); } \
+            finally { document.title = 'clean'; }",
+            &mut document,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            JsErrorKind::NativeException(Value::NativeError(_))
+        ));
+        assert_eq!(error.message, "TypeError: this value is not callable");
+        assert_eq!(document.title, "clean");
+    }
+
+    #[test]
+    fn rethrows_type_error_using_wpt_harness_statement() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "throw e;";
+
+        assert!(source.lines().any(|line| line.trim() == fragment));
+
+        let script = format!(
+            "let name = ''; \
+            try {{ \
+                try {{ let n = 1; n(); }} \
+                catch (e) {{ {fragment} }} \
+            }} \
+            catch (e) {{ name = e.name; }} \
+            name;"
+        );
+
+        assert_eq!(
+            evaluate(&script).unwrap(),
+            Value::String("TypeError".to_owned())
+        );
     }
 }

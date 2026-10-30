@@ -171,7 +171,7 @@ impl Interpreter {
                 }
             }
 
-            _ => Err(JsError::runtime("TypeError: this value is not callable")),
+            _ => Err(JsError::type_error("this value is not callable")),
         }
     }
 }
