@@ -8,6 +8,10 @@ use super::{Expression, JsError, Parser, Statement, TokenKind, Value};
 
 impl Parser<'_> {
     pub(super) fn parse_statement(&mut self) -> Result<Statement, JsError> {
+        if self.cursor.consume_optional(&TokenKind::Function)? {
+            return self.parse_function_declaration();
+        }
+
         if self.cursor.consume_optional(&TokenKind::For)? {
             return self.parse_for_statement();
         }

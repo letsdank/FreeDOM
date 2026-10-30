@@ -12,7 +12,7 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
 
     for statement in statements {
         match statement {
-            Statement::Declaration { name, .. } => {
+            Statement::Declaration { name, .. } | Statement::FunctionDeclaration { name, .. } => {
                 if !names.contains(name) {
                     names.push(name.clone());
                 }

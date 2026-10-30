@@ -10,10 +10,20 @@ impl Interpreter {
         &mut self,
         program: &[Statement],
     ) -> Result<Completion, JsError> {
+        // This is limited hoisting for the current flat environment model.
+        for statement in program {
+            if let Statement::FunctionDeclaration { name, function } = statement {
+                self.variables
+                    .insert(name.clone(), Value::Function(function.clone()));
+            }
+        }
+
         let mut result = Value::Undefined;
 
         for statement in program {
             result = match statement {
+                Statement::FunctionDeclaration { .. } => Value::Undefined,
+
                 Statement::Declaration { name, value } => {
                     let value = self.evaluate_expression(value)?;
                     self.variables.insert(name.clone(), value);
@@ -211,5 +221,47 @@ mod tests {
         let result = evaluate("let x = 7; for (let x of [1, 2]) { break; } x;").unwrap();
 
         assert_eq!(result, Value::Number(7.0));
+    }
+
+    #[test]
+    fn function_declaration_is_available_before_its_position() {
+        let result = evaluate(
+            "let result = add(2, 3); \
+            function add(a, b) { return a + b; } \
+            result;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(5.0));
+    }
+
+    #[test]
+    fn function_declaration_does_not_overwrite_outer_binding_after_call() {
+        let result = evaluate(
+            "let x = 7; \
+            const f = function() { \
+                function x() { return 3; } \
+                return x(); \
+            }; \
+            f(); \
+            x;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(7.0));
+    }
+
+    #[test]
+    fn function_body_hoists_nested_function_declarations() {
+        let result = evaluate(
+            "function outer() { \
+                return inner(); \
+                function inner() { return 4; } \
+            } \
+            outer();",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(4.0));
     }
 }

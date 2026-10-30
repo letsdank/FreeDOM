@@ -87,6 +87,21 @@ impl Parser<'_> {
             return Ok(arguments);
         }
     }
+
+    pub(super) fn parse_function_declaration(&mut self) -> Result<Statement, JsError> {
+        let (name, _) = self.consume_identifier("expected a function name")?;
+
+        self.cursor
+            .consume(&TokenKind::LeftParen, "expected '(' after function name")?;
+
+        let parameters = self.parse_function_parameters()?;
+        let body = self.parse_function_body()?;
+
+        Ok(Statement::FunctionDeclaration {
+            name,
+            function: UserFunction { parameters, body },
+        })
+    }
 }
 
 #[cfg(test)]
@@ -146,5 +161,32 @@ mod tests {
             Statement::Expression(Expression::Call { arguments, .. })
                 if arguments.len() == 2
         ));
+    }
+
+    #[test]
+    fn parses_function_declaration_header_from_wpt_harness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let header = "function WindowTestEnvironment()";
+
+        assert!(source.contains(header));
+
+        let program = parse_program(&format!("{header} {{}}")).unwrap();
+
+        assert!(matches!(
+            &program[0],
+            Statement::FunctionDeclaration { name, function }
+                if name == "WindowTestEnvironment" && function.parameters.is_empty()
+        ));
+    }
+
+    #[test]
+    fn rejects_function_declaration_without_name() {
+        let error = parse_program("function() {}").unwrap_err();
+
+        assert_eq!(error.message, "expected a function name");
     }
 }

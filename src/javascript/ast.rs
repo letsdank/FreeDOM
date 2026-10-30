@@ -6,6 +6,10 @@ pub(crate) enum Statement {
         name: String,
         value: Expression,
     },
+    FunctionDeclaration {
+        name: String,
+        function: UserFunction,
+    },
     Expression(Expression),
     Return(Expression),
     If {
