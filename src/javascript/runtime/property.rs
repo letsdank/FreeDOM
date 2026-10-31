@@ -219,6 +219,10 @@ impl Interpreter {
                 Ok(Value::NativeFunction(NativeFunction::ObjectKeys))
             }
 
+            (Value::ObjectConstructor, "create") => {
+                Ok(Value::NativeFunction(NativeFunction::ObjectCreate))
+            }
+
             (Value::Url(_), property) => Err(JsError::runtime(format!(
                 "URL.{property} is not implemented yet"
             ))),

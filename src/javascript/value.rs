@@ -18,6 +18,7 @@ pub enum NativeFunction {
     AssertFalse,
     AssertNotEquals,
     ObjectKeys,
+    ObjectCreate,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +54,7 @@ pub(crate) enum TestContextMethod {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ObjectState {
     properties: Vec<(String, Value)>,
+    null_prototype: bool,
 }
 
 impl ObjectState {
@@ -94,6 +96,10 @@ impl ObjectState {
 
     fn as_hash_map(&self) -> HashMap<String, Value> {
         self.properties.iter().cloned().collect()
+    }
+
+    pub(crate) fn has_null_prototype(&self) -> bool {
+        self.null_prototype
     }
 }
 
@@ -291,6 +297,15 @@ impl Value {
 
     pub(crate) fn object(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
         Self::Object(Rc::new(RefCell::new(ObjectState::from_entries(entries))))
+    }
+
+    pub(super) fn object_with_null_prototype() -> Self {
+        let state = ObjectState {
+            properties: Vec::new(),
+            null_prototype: true,
+        };
+
+        Self::Object(Rc::new(RefCell::new(state)))
     }
 
     pub fn as_array(&self) -> Option<Vec<Value>> {

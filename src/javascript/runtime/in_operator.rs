@@ -24,8 +24,12 @@ impl Interpreter {
                     ));
                 };
 
-                if object.borrow().get(&key).is_some() {
+                let object = object.borrow();
+
+                if object.get(&key).is_some() {
                     Ok(Value::Boolean(true))
+                } else if object.has_null_prototype() {
+                    Ok(Value::Boolean(false))
                 } else {
                     Err(JsError::unsupported(
                         "'in' prototype lookup is not implemented",

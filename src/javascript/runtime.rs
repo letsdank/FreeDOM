@@ -49,6 +49,9 @@ mod try_statement;
 #[path = "runtime/assignment.rs"]
 mod assignment;
 
+#[path = "runtime/object.rs"]
+mod object;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: UserFunction,

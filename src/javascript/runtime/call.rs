@@ -77,6 +77,8 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ObjectKeys) => self.object_keys(values),
 
+            Value::NativeFunction(NativeFunction::ObjectCreate) => Self::object_create(values),
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }
