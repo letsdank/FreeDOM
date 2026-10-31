@@ -91,6 +91,8 @@ impl Interpreter {
 
                 Ok(Value::Boolean(matches))
             }
+
+            BinaryOperator::In => Self::evaluate_in(left, right),
         }
     }
 

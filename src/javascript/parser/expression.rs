@@ -146,6 +146,8 @@ impl Parser<'_> {
                 BinaryOperator::GreaterEqual
             } else if self.cursor.consume_optional(&TokenKind::Instanceof)? {
                 BinaryOperator::Instanceof
+            } else if self.consume_contextual_keyword("in")? {
+                BinaryOperator::In
             } else if self.cursor.consume_optional(&TokenKind::Less)? {
                 BinaryOperator::Less
             } else if self.cursor.consume_optional(&TokenKind::Greater)? {

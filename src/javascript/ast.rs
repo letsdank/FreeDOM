@@ -119,6 +119,7 @@ pub(crate) enum BinaryOperator {
     Greater,
     GreaterEqual,
     Instanceof,
+    In,
     And,
     Or,
 }

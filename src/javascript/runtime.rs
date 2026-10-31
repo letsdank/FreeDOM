@@ -28,6 +28,9 @@ mod statement;
 #[path = "runtime/operators.rs"]
 mod operators;
 
+#[path = "runtime/in_operator.rs"]
+mod in_operator;
+
 #[path = "runtime/function.rs"]
 mod function;
 
