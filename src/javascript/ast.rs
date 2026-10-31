@@ -106,8 +106,23 @@ pub(crate) enum Expression {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FunctionParameter {
+    pub(crate) name: String,
+    pub(crate) default: Option<Expression>,
+}
+
+impl FunctionParameter {
+    pub(crate) fn simple(name: String) -> Self {
+        Self {
+            name,
+            default: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct UserFunction {
-    pub(crate) parameters: Vec<String>,
+    pub(crate) parameters: Vec<FunctionParameter>,
     pub(crate) body: Vec<Statement>,
 }
 

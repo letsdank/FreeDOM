@@ -1,5 +1,6 @@
 use super::{
-    BinaryOperator, Expression, JsError, Statement, Token, TokenKind, UserFunction, Value,
+    BinaryOperator, Expression, FunctionParameter, JsError, Statement, Token, TokenKind,
+    UserFunction, Value,
 };
 
 use cursor::ParserCursor;

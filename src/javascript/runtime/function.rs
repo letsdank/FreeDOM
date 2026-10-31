@@ -114,38 +114,54 @@ impl Interpreter {
         function: &UserFunction,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
-        if function.parameters.len() != arguments.len() {
-            return Err(JsError::runtime(format!(
-                "TypeError: function expects {} arguments, got {}",
-                function.parameters.len(),
-                arguments.len(),
-            )));
-        }
-
         let mut replaced_bindings = Vec::new();
         let mut local_names = Vec::new();
 
-        for (parameter, argument) in function.parameters.iter().zip(arguments) {
-            let previous = self.variables.insert(parameter.clone(), argument);
-            replaced_bindings.push((parameter.clone(), previous));
-            local_names.push(parameter.clone());
-        }
-
-        for name in function_local_names(&function.body) {
-            if local_names.iter().any(|local_name| local_name == &name) {
+        for parameter in &function.parameters {
+            if local_names.contains(&parameter.name) {
                 continue;
             }
 
-            let previous = self.variables.insert(name.clone(), Value::Undefined);
-            replaced_bindings.push((name.clone(), previous));
-            local_names.push(name.clone());
+            let previous = self
+                .variables
+                .insert(parameter.name.clone(), Value::Undefined);
+
+            replaced_bindings.push((parameter.name.clone(), previous));
+            local_names.push(parameter.name.clone());
         }
 
-        self.function_locals.push(local_names);
+        let result = (|| -> Result<Completion, JsError> {
+            for (index, parameter) in function.parameters.iter().enumerate() {
+                let argument = arguments.get(index).cloned().unwrap_or(Value::Undefined);
 
-        let result = self.execute(&function.body);
+                let value = match (argument, &parameter.default) {
+                    (Value::Undefined, Some(default)) => self.evaluate_expression(default)?,
 
-        self.function_locals.pop();
+                    (value, _) => value,
+                };
+
+                self.variables.insert(parameter.name.clone(), value);
+            }
+
+            for name in function_local_names(&function.body) {
+                if local_names.contains(&name) {
+                    continue;
+                }
+
+                let previous = self.variables.insert(name.clone(), Value::Undefined);
+
+                replaced_bindings.push((name.clone(), previous));
+                local_names.push(name);
+            }
+
+            self.function_locals.push(local_names);
+
+            let result = self.execute(&function.body);
+
+            self.function_locals.pop();
+
+            result
+        })();
 
         for (name, previous) in replaced_bindings.into_iter().rev() {
             if let Some(value) = previous {
@@ -238,6 +254,60 @@ mod tests {
     #[test]
     fn return_supports_regexp_literal() {
         let result = evaluate("function f() { return /x/; } f().test('x');").unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn evaluates_default_parameters_in_order() {
+        let result = evaluate(
+            "function f(a = 4, b = a + 1) { return b; } \
+            f() === 5 && f(10) === 11 && f(undefined, 8) === 8;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn defaults_apply_only_to_undefined_and_arguments_are_flexible() {
+        let result = evaluate(
+            "function f(x = 9) { return x; } \
+            f(null) === null && \
+            f(0) === 0 && \
+            f(undefined) === 9 && \
+            f(3, 4) === 3;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn evaluates_default_each_call_and_skips_when_argument_is_supplied() {
+        let result = evaluate(
+            "let count = 0; \
+            function f(x = (count += 1)) { return x; } \
+            f(10); \
+            f(); \
+            f(); \
+            count;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(2.0));
+    }
+
+    #[test]
+    fn restores_parameter_binding_if_default_throws() {
+        let result = evaluate(
+            "let x = 7; \
+            let caught = ''; \
+            function f(x = missing) {} \
+            try { f(); } catch (e) { caught = e.name; } \
+            x === 7 && caught === 'ReferenceError';",
+        )
+        .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
     }

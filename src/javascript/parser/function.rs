@@ -3,7 +3,7 @@
 //! Implements a subset of ECMAScript function syntax:
 //! <https://tc39.es/ecma262/#sec-function-definitions>
 
-use super::{Expression, JsError, Parser, Statement, TokenKind, UserFunction};
+use super::{Expression, FunctionParameter, JsError, Parser, Statement, TokenKind, UserFunction};
 
 impl Parser<'_> {
     pub(super) fn parse_function_expression(&mut self) -> Result<Expression, JsError> {
@@ -16,7 +16,7 @@ impl Parser<'_> {
         Ok(Expression::Function(UserFunction { parameters, body }))
     }
 
-    fn parse_function_parameters(&mut self) -> Result<Vec<String>, JsError> {
+    fn parse_function_parameters(&mut self) -> Result<Vec<FunctionParameter>, JsError> {
         let mut parameters = Vec::new();
 
         if self.cursor.consume_optional(&TokenKind::RightParen)? {
@@ -24,9 +24,15 @@ impl Parser<'_> {
         }
 
         loop {
-            let (parameter, _) = self.consume_identifier("expected a function identifier")?;
+            let (name, _) = self.consume_identifier("expected a function identifier")?;
 
-            parameters.push(parameter);
+            let default = if self.cursor.consume_optional(&TokenKind::Assign)? {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+
+            parameters.push(FunctionParameter { name, default });
 
             if self.cursor.consume_optional(&TokenKind::Comma)? {
                 continue;
@@ -121,7 +127,13 @@ mod tests {
             panic!("expected function declaration");
         };
 
-        assert_eq!(function.parameters, ["a", "b"]);
+        let names: Vec<_> = function
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect();
+
+        assert_eq!(names, ["a", "b"]);
         assert!(matches!(
             function.body.as_slice(),
             [Statement::Return(Expression::Identifier(name))] if name == "a"
@@ -188,5 +200,31 @@ mod tests {
         let error = parse_program("function() {}").unwrap_err();
 
         assert_eq!(error.message, "expected a function name");
+    }
+
+    #[test]
+    fn parses_default_parameter_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let header = "function promise_setup(func, properties={})";
+
+        assert!(source.contains(header));
+
+        let program = parse_program(&format!("{header} {{}}")).unwrap();
+
+        let [Statement::FunctionDeclaration { function, .. }] = program.as_slice() else {
+            panic!("expected function");
+        };
+
+        assert_eq!(function.parameters.len(), 2);
+        assert_eq!(function.parameters[1].name, "properties");
+
+        assert!(matches!(
+            function.parameters[1].default,
+            Some(Expression::Object(ref entries)) if entries.is_empty()
+        ));
     }
 }

@@ -4,7 +4,10 @@
 //!
 //! This module preserves the interpreter's existing grammar subset.
 
-use super::{BinaryOperator, Expression, JsError, Parser, Statement, TokenKind, UserFunction};
+use super::{
+    BinaryOperator, Expression, FunctionParameter, JsError, Parser, Statement, TokenKind,
+    UserFunction,
+};
 
 impl Parser<'_> {
     // A concise arrow body evaluates an assignment expression and returns it.
@@ -56,7 +59,7 @@ impl Parser<'_> {
                 self.cursor.advance()?;
 
                 return Ok(Expression::Function(UserFunction {
-                    parameters: vec![parameter],
+                    parameters: vec![FunctionParameter::simple(parameter)],
                     body: self.parse_arrow_body()?,
                 }));
             }
