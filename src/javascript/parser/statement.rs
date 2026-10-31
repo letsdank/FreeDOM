@@ -47,11 +47,10 @@ impl Parser<'_> {
             return self.parse_while_statement();
         }
 
-        if self.cursor.consume_optional(&TokenKind::Return)? {
-            let value = self.parse_expression()?;
-            self.cursor.consume_optional(&TokenKind::Semicolon)?;
+        if self.cursor.check(&TokenKind::Return)? {
+            let keyword = self.cursor.advance()?;
 
-            return Ok(Statement::Return(value));
+            return self.parse_return_statement(keyword.offset);
         }
 
         if matches!(
@@ -310,6 +309,34 @@ impl Parser<'_> {
         self.parse_statement_body()
     }
 
+    // https://tc39.es/ecma262/#sec-return-statement
+    fn parse_return_statement(&mut self, keyword_offset: usize) -> Result<Statement, JsError> {
+        let next = self.cursor.peek()?;
+
+        let trivia = &self.source[keyword_offset + "return".len()..next.offset];
+
+        let line_break = trivia
+            .chars()
+            .any(|ch| matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}'));
+
+        if line_break
+            || matches!(
+                next.kind,
+                TokenKind::Semicolon | TokenKind::RightBrace | TokenKind::EndOfFile
+            )
+        {
+            self.cursor.consume_optional(&TokenKind::Semicolon)?;
+
+            return Ok(Statement::Return(Expression::Literal(Value::Undefined)));
+        }
+
+        let value = self.parse_expression()?;
+
+        self.cursor.consume_optional(&TokenKind::Semicolon)?;
+
+        Ok(Statement::Return(value))
+    }
+
     // Line terminators are forbidden between throw and its expression.
     // https://tc39.es/ecma262/#sec-throw-statement
     fn parse_throw_statement(&mut self, keyword_offset: usize) -> Result<Statement, JsError> {
@@ -490,5 +517,28 @@ mod tests {
         let program = parse_program("throw /* comment */ 1;").unwrap();
 
         assert!(matches!(&program[0], Statement::Throw(_)));
+    }
+
+    #[test]
+    fn parses_bare_return_statement_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        assert!(source.contains("return;"));
+
+        let program = parse_program("function f() { return; }").unwrap();
+
+        assert!(matches!(
+            &program[0],
+            Statement::FunctionDeclaration { function, .. }
+                if matches!(
+                    function.body.as_slice(),
+                    [Statement::Return(
+                        super::Expression::Literal(super::Value::Undefined)
+                    )]
+                )
+        ));
     }
 }

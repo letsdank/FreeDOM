@@ -188,4 +188,49 @@ mod tests {
 
         assert_eq!(result, Value::Number(7.0));
     }
+
+    #[test]
+    fn bare_return_returns_undefined() {
+        for source in [
+            "function f() { return; } f();",
+            "function f() { return } f();",
+            "function f() { return\n; } f();",
+        ] {
+            assert_eq!(evaluate(source).unwrap(), Value::Undefined, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn return_line_terminator_prevents_returning_the_next_expression() {
+        for separator in [
+            "\n",
+            "\r",
+            "\r\n",
+            "\u{2028}",
+            "\u{2029}",
+            " /*\n*/ ",
+            " // comment\n",
+            " // comment\r",
+            " // comment\u{2028}",
+            " // comment\u{2029}",
+        ] {
+            let source = format!("function f() {{ return{separator}42; }} f();");
+
+            assert_eq!(evaluate(&source).unwrap(), Value::Undefined, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn return_with_expression_and_comment_returns_the_value() {
+        let result = evaluate("function f() { return /* comment */ 42; } f();").unwrap();
+
+        assert_eq!(result, Value::Number(42.0));
+    }
+
+    #[test]
+    fn return_supports_regexp_literal() {
+        let result = evaluate("function f() { return /x/; } f().test('x');").unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }

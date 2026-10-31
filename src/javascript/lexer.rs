@@ -158,7 +158,12 @@ impl<'source> Lexer<'source> {
             let offset = self.index - character.len_utf8();
 
             match character {
-                character if character.is_ascii_whitespace() => continue,
+                character
+                    if character.is_ascii_whitespace()
+                        || matches!(character, '\u{2028}' | '\u{2029}') =>
+                {
+                    continue;
+                }
 
                 '/' if self.consume_if('/') => {
                     self.skip_line_comment();
@@ -432,7 +437,10 @@ impl<'source> Lexer<'source> {
     }
 
     fn skip_line_comment(&mut self) {
-        while self.peek().is_some_and(|character| character != '\n') {
+        while self
+            .peek()
+            .is_some_and(|character| !matches!(character, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
+        {
             self.advance();
         }
     }
