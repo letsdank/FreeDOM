@@ -435,4 +435,58 @@ mod tests {
             assert!(evaluate(source).is_err(), "{source}");
         }
     }
+
+    #[test]
+    fn evaluates_shorthand_properties_and_preserves_object_identity() {
+        let result = evaluate(
+            "let n = 7; \
+            let obj = {}; \
+            let result = {n, obj, other: 2}; \
+            n = 8; \
+            result.n === 7 && \
+            result.obj === obj && \
+            result.other === 2;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn shorthand_evaluation_follows_property_order() {
+        let result = evaluate(
+            "let x = 0; \
+            let o = {first: (x = 1), x, last: (x = 2)}; \
+            o.x === 1 && x === 2;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let result = evaluate(
+            "let x = 2; \
+            let o = {x, x: 3, x}; \
+            o.x;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(2.0));
+    }
+
+    #[test]
+    fn missing_shorthand_binding_stops_following_properties() {
+        let result = evaluate(
+            "let count = 0; \
+            let name = ''; \
+            try { \
+                let o = {missing, later: (count = 1)}; \
+            } catch (e) { \
+                name = e.name; \
+            } \
+            count === 0 && name === 'ReferenceError';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }

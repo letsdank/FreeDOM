@@ -129,8 +129,11 @@ impl Parser<'_> {
         loop {
             let token = self.cursor.advance()?;
 
-            let name = match token.kind {
-                TokenKind::Identifier(name) | TokenKind::String(name) => name,
+            let (name, shorthand_allowed) = match token.kind {
+                TokenKind::Identifier(name) => (name, true),
+
+                TokenKind::String(name) => (name, false),
+
                 _ => {
                     return Err(JsError::syntax(
                         token.offset,
@@ -139,10 +142,17 @@ impl Parser<'_> {
                 }
             };
 
-            self.cursor
-                .consume(&TokenKind::Colon, "expected ':' after object property name")?;
+            let value = if self.cursor.consume_optional(&TokenKind::Colon)? {
+                self.parse_expression()?
+            } else if shorthand_allowed {
+                Expression::Identifier(name.clone())
+            } else {
+                return Err(JsError::syntax(
+                    self.cursor.peek()?.offset,
+                    "expected ':' after object property name",
+                ));
+            };
 
-            let value = self.parse_expression()?;
             properties.push((name, value));
 
             if self.cursor.consume_optional(&TokenKind::Comma)? {
@@ -276,5 +286,37 @@ mod tests {
                         if parts.len() == 1
                 )
         ));
+    }
+
+    #[test]
+    fn parses_shorthand_property_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        assert!(source.contains("{func}"));
+
+        let program = parse_program("let value = {func};").unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Declaration {
+                value:Expression::Object(properties),
+                ..
+            }]
+                if matches!(
+                    properties.as_slice(),
+                    [(name, Expression::Identifier(identifier))]
+                        if name == "func" && identifier == "func"
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_shorthand_forms() {
+        for source in ["let o = {'x'};", "let o = {x = 1};", "let o = {x y};"] {
+            assert!(parse_program(source).is_err(), "{source}");
+        }
     }
 }
