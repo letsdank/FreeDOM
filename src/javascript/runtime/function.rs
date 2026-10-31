@@ -142,12 +142,16 @@ impl Interpreter {
 
         let result = (|| -> Result<Completion, JsError> {
             for (index, parameter) in function.parameters.iter().enumerate() {
-                let argument = arguments.get(index).cloned().unwrap_or(Value::Undefined);
+                let value = if parameter.is_rest {
+                    Value::array(arguments.iter().skip(index).cloned().collect())
+                } else {
+                    let argument = arguments.get(index).cloned().unwrap_or(Value::Undefined);
 
-                let value = match (argument, &parameter.default) {
-                    (Value::Undefined, Some(default)) => self.evaluate_expression(default)?,
+                    match (argument, &parameter.default) {
+                        (Value::Undefined, Some(default)) => self.evaluate_expression(default)?,
 
-                    (value, _) => value,
+                        (value, _) => value,
+                    }
                 };
 
                 self.variables.insert(parameter.name.clone(), value);
@@ -316,6 +320,65 @@ mod tests {
             function f(x = missing) {} \
             try { f(); } catch (e) { caught = e.name; } \
             x === 7 && caught === 'ReferenceError';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn collects_remaining_arguments_in_a_fresh_array() {
+        let result = evaluate(
+            "function f(a, ...rest) { return rest; } \
+            let x = f(1, 2, 3); \
+            let y = f(1, 2, 3); \
+            x[0] = 9; \
+            x.length === 2 && \
+            x[0] === 9 && \
+            x[1] === 3 && \
+            y[0] === 2 && \
+            x !== y;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn rest_parameter_handles_missing_arguments_and_defaults() {
+        let result = evaluate(
+            "function f(a = 2, ...rest) { \
+                return a + rest.length; \
+            } \
+            f() === 2 && \
+            f(undefined, 4, 5) === 4 && \
+            f(7) === 7;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn rest_elements_keep_object_identity() {
+        let result = evaluate(
+            "let object = {}; \
+            function f(...args) { return args[0]; } \
+            f(object) === object;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn restores_outer_rest_binding_on_default_failure() {
+        let result = evaluate(
+            "let rest = 42; \
+            let error = ''; \
+            function f(a = missing, ...rest) {} \
+            try { f(); } catch (e) { error = e.name; } \
+            rest === 42 && error === 'ReferenceError';",
         )
         .unwrap();
 

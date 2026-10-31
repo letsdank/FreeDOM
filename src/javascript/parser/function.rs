@@ -24,7 +24,37 @@ impl Parser<'_> {
         }
 
         loop {
+            let is_rest = self.cursor.consume_optional(&TokenKind::Ellipsis)?;
+
             let (name, _) = self.consume_identifier("expected a function identifier")?;
+
+            if is_rest {
+                let mut names = std::collections::HashSet::new();
+
+                let duplicate_existing = parameters
+                    .iter()
+                    .any(|parameter: &FunctionParameter| !names.insert(parameter.name.as_str()));
+
+                if duplicate_existing || !names.insert(name.as_str()) {
+                    return Err(JsError::syntax(
+                        self.cursor.peek()?.offset,
+                        "duplicate parameter in function with rest parameter",
+                    ));
+                }
+
+                parameters.push(FunctionParameter {
+                    name,
+                    default: None,
+                    is_rest: true,
+                });
+
+                self.cursor.consume(
+                    &TokenKind::RightParen,
+                    "rest parameter must be last and cannot have a default or trailing comma",
+                )?;
+
+                return Ok(parameters);
+            }
 
             let default = if self.cursor.consume_optional(&TokenKind::Assign)? {
                 Some(self.parse_expression()?)
@@ -32,7 +62,11 @@ impl Parser<'_> {
                 None
             };
 
-            parameters.push(FunctionParameter { name, default });
+            parameters.push(FunctionParameter {
+                name,
+                default,
+                is_rest: false,
+            });
 
             if self.cursor.consume_optional(&TokenKind::Comma)? {
                 continue;
@@ -226,5 +260,42 @@ mod tests {
             function.parameters[1].default,
             Some(Expression::Object(ref entries)) if entries.is_empty()
         ));
+    }
+
+    #[test]
+    fn parses_rest_parameter_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let header = "function assert_wrapper(...args)";
+
+        assert!(source.contains(header));
+
+        let program = parse_program(&format!("{header} {{}}")).unwrap();
+
+        let [Statement::FunctionDeclaration { function, .. }] = program.as_slice() else {
+            panic!("expected function declaration");
+        };
+
+        assert_eq!(function.parameters.len(), 1);
+        assert_eq!(function.parameters[0].name, "args");
+        assert!(function.parameters[0].is_rest);
+        assert!(function.parameters[0].default.is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_rest_parameters() {
+        for source in [
+            "function f(...x, y) {}",
+            "function f(...x,) {}",
+            "function f(...x = 1) {}",
+            "function f(...) {}",
+            "function f(x, ...x) {}",
+            "function f(x, x, ...z) {}",
+        ] {
+            assert!(parse_program(source).is_err(), "{source}");
+        }
     }
 }

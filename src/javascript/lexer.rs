@@ -30,6 +30,7 @@ pub enum TokenKind {
     RightBracket,
 
     Dot,
+    Ellipsis,
     Comma,
     Semicolon,
     Colon,
@@ -208,6 +209,14 @@ impl<'source> Lexer<'source> {
                 '}' => self.push(TokenKind::RightBrace, offset),
                 '[' => self.push(TokenKind::LeftBracket, offset),
                 ']' => self.push(TokenKind::RightBracket, offset),
+
+                '.' if self.source[self.index..].starts_with("..") => {
+                    self.advance();
+                    self.advance();
+
+                    self.push(TokenKind::Ellipsis, offset);
+                }
+
                 '.' => self.push(TokenKind::Dot, offset),
                 ',' => self.push(TokenKind::Comma, offset),
                 ';' => self.push(TokenKind::Semicolon, offset),
@@ -827,6 +836,26 @@ mod tests {
         assert_eq!(
             error.message,
             "batch tokenization of template substitutions is not implemented"
+        );
+    }
+
+    #[test]
+    fn scans_ellipsis_without_swallowing_single_or_double_dots() {
+        let tokens = tokenize("a...b .. c.d").unwrap();
+
+        assert_eq!(
+            tokens.iter().map(|token| &token.kind).collect::<Vec<_>>(),
+            vec![
+                &TokenKind::Identifier("a".to_owned()),
+                &TokenKind::Ellipsis,
+                &TokenKind::Identifier("b".to_owned()),
+                &TokenKind::Dot,
+                &TokenKind::Dot,
+                &TokenKind::Identifier("c".to_owned()),
+                &TokenKind::Dot,
+                &TokenKind::Identifier("d".to_owned()),
+                &TokenKind::EndOfFile,
+            ]
         );
     }
 }

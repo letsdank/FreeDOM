@@ -129,6 +129,7 @@ pub(crate) enum Expression {
 pub(crate) struct FunctionParameter {
     pub(crate) name: String,
     pub(crate) default: Option<Expression>,
+    pub(crate) is_rest: bool,
 }
 
 impl FunctionParameter {
@@ -136,6 +137,7 @@ impl FunctionParameter {
         Self {
             name,
             default: None,
+            is_rest: false,
         }
     }
 }
