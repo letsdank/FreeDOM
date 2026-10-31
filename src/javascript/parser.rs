@@ -23,6 +23,9 @@ mod expression;
 #[path = "parser/switch.rs"]
 mod switch;
 
+#[path = "parser/for_of_array.rs"]
+mod for_of_array;
+
 pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
     Parser::new(source).parse_program()
 }

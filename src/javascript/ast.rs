@@ -50,6 +50,11 @@ pub(crate) enum Statement {
         iterable: Expression,
         body: Vec<Statement>,
     },
+    ForOfArray {
+        bindings: Vec<String>,
+        iterable: Expression,
+        body: Vec<Statement>,
+    },
     ForIn {
         binding: String,
         object: Expression,

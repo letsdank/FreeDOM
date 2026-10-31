@@ -83,6 +83,16 @@ impl Parser<'_> {
 
             self.cursor.advance()?;
 
+            if self.cursor.check(&TokenKind::LeftBracket)? {
+                if is_var {
+                    return Err(JsError::unsupported(
+                        "var array binding in for-of is not implemented",
+                    ));
+                }
+
+                return self.parse_for_of_array();
+            }
+
             let (name, offset) = self.consume_identifier("expected a variable name")?;
 
             if self.consume_contextual_keyword("in")? {
@@ -269,7 +279,7 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_statement_body(&mut self) -> Result<Vec<Statement>, JsError> {
+    pub(super) fn parse_statement_body(&mut self) -> Result<Vec<Statement>, JsError> {
         if !self.cursor.consume_optional(&TokenKind::LeftBrace)? {
             return Ok(vec![self.parse_statement()?]);
         }

@@ -58,6 +58,9 @@ mod for_in;
 #[path = "runtime/switch.rs"]
 mod switch;
 
+#[path = "runtime/for_of_array.rs"]
+mod for_of_array;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: UserFunction,

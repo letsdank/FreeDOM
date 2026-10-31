@@ -79,6 +79,14 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
+            Statement::ForOfArray { bindings, body, .. } => {
+                for name in bindings.iter().cloned().chain(function_local_names(body)) {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
             Statement::ForInExisting { body, .. } => {
                 for name in function_local_names(body) {
                     if !names.contains(&name) {

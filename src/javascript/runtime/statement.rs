@@ -202,6 +202,15 @@ impl Interpreter {
                     }
                 }
 
+                Statement::ForOfArray {
+                    bindings,
+                    iterable,
+                    body,
+                } => match self.execute_for_of_array(bindings, iterable, body)? {
+                    Completion::Normal(value) => value,
+                    abrupt => return Ok(abrupt),
+                },
+
                 Statement::ForIn {
                     binding,
                     object,
