@@ -4,6 +4,22 @@
 //!
 //! The caller is responsible for converting non-string JavaScript values.
 
+// Partial Number::toString for numeric property names.
+// https://tc39.es/ecma262/#sec-numeric-types-number-tostring
+pub(super) fn integer_property_key(number: f64) -> Option<String> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+    if number.is_finite() && number >= 0.0 && number <= MAX_SAFE_INTEGER && number.fract() == 0.0 {
+        if number == 0.0 {
+            Some("0".to_owned())
+        } else {
+            Some(number.to_string())
+        }
+    } else {
+        None
+    }
+}
+
 pub(super) fn string_to_number(input: &str) -> f64 {
     let input = input.trim_matches(is_ecmascript_whitespace);
 
@@ -234,5 +250,21 @@ mod tests {
         );
 
         assert!(string_to_number(&format!("0x{}z", "f".repeat(256))).is_nan());
+    }
+
+    #[test]
+    fn formats_supported_integer_property_keys() {
+        use super::integer_property_key;
+
+        assert_eq!(integer_property_key(-0.0).as_deref(), Some("0"));
+
+        assert_eq!(
+            integer_property_key(9_007_199_254_740_991.0).as_deref(),
+            Some("9007199254740991")
+        );
+
+        for number in [-1.0, 1.5, 9_007_199_254_740_992.0, f64::INFINITY, f64::NAN] {
+            assert!(integer_property_key(number).is_none(), "{number}");
+        }
     }
 }

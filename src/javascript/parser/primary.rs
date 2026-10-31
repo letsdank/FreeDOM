@@ -134,6 +134,18 @@ impl Parser<'_> {
 
                 TokenKind::String(name) => (name, false),
 
+                TokenKind::Number(number) => {
+                    let name = crate::javascript::number::integer_property_key(number).ok_or_else(
+                        || {
+                            JsError::unsupported(
+                                "numeric property key formatting is not implemented for this number",
+                            )
+                        },
+                    )?;
+
+                    (name, false)
+                }
+
                 _ => {
                     return Err(JsError::syntax(
                         token.offset,
@@ -318,5 +330,56 @@ mod tests {
         for source in ["let o = {'x'};", "let o = {x = 1};", "let o = {x y};"] {
             assert!(parse_program(source).is_err(), "{source}");
         }
+    }
+
+    #[test]
+    fn parses_numeric_object_keys_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let marker = "Test.prototype.status_formats = {";
+
+        let start = source
+            .find(marker)
+            .expect("WPT fixture must contain the object");
+
+        let rest = &source[start..];
+
+        let end = rest.find("};").expect("object must be terminated") + 2;
+
+        let program = parse_program(&rest[..end]).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::Assignment {
+                value,
+                ..
+            })]
+                if matches!(
+                    value.as_ref(),
+                    Expression::Object(properties)
+                        if properties
+                            .iter()
+                            .map(|(name, _)| name.as_str())
+                            .eq(["0", "1", "2", "3", "4"])
+            )
+        ));
+    }
+
+    #[test]
+    fn rejects_unsupported_numeric_key_formatting() {
+        for source in ["let x = {1.5: 1};", "let x = {1e21: 1};"] {
+            let error = parse_program(source).unwrap_err();
+
+            assert_eq!(
+                error.kind,
+                crate::javascript::JsErrorKind::UnsupportedFeature,
+                "{source}"
+            );
+        }
+
+        assert!(parse_program("let x = {1};").is_err());
     }
 }

@@ -493,4 +493,23 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn evaluates_numeric_keys_and_normalizes_equivalent_literals() {
+        let result = evaluate(
+            "let obj = { \
+                0: 'zero', \
+                1.0: 'first', \
+                1: 'last', \
+                1e2: 'hundred' \
+            }; \
+            obj[0] === 'zero' && \
+            obj['1'] === 'last' && \
+            obj[100] === 'hundred' && \
+            Object.keys(obj).join(',') === '0,1,100';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }
