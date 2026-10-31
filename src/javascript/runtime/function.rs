@@ -79,6 +79,14 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
+            Statement::ForInExisting { body, .. } => {
+                for name in function_local_names(body) {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+
             Statement::Try {
                 body,
                 catch,

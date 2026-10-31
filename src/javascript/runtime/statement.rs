@@ -3,6 +3,7 @@
 //! ECMAScript statement evaluation:
 //! <https://tc39.es/ecma262/#sec-ecmascript-language-statements-and-declarations>
 
+use super::for_in::ForInBindingMode;
 use super::{Completion, Interpreter, JsError, Statement, Value};
 
 impl Interpreter {
@@ -206,10 +207,29 @@ impl Interpreter {
                     object,
                     body,
                     is_var,
-                } => match self.execute_for_in(binding, object, body, *is_var)? {
-                    Completion::Normal(value) => value,
-                    abrupt => return Ok(abrupt),
-                },
+                } => {
+                    let mode = if *is_var {
+                        ForInBindingMode::Var
+                    } else {
+                        ForInBindingMode::Lexical
+                    };
+
+                    match self.execute_for_in(binding, object, body, mode)? {
+                        Completion::Normal(value) => value,
+                        abrupt => return Ok(abrupt),
+                    }
+                }
+
+                Statement::ForInExisting {
+                    binding,
+                    object,
+                    body,
+                } => {
+                    match self.execute_for_in(binding, object, body, ForInBindingMode::Existing)? {
+                        Completion::Normal(value) => value,
+                        abrupt => return Ok(abrupt),
+                    }
+                }
 
                 Statement::Try {
                     body,

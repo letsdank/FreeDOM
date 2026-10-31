@@ -163,6 +163,33 @@ impl Parser<'_> {
             });
         }
 
+        if let TokenKind::Identifier(binding) = self.cursor.peek()?.kind.clone() {
+            let is_for_in = self.cursor.peek_n(1)?.is_some_and(|token| {
+                matches!(
+                    &token.kind,
+                    TokenKind::Identifier(name) if name == "in"
+                )
+            });
+
+            if is_for_in {
+                self.cursor.advance()?;
+                self.cursor.advance()?;
+
+                let object = self.parse_expression()?;
+
+                self.cursor
+                    .consume(&TokenKind::RightParen, "expected ')' after for-in object")?;
+
+                let body = self.parse_statement_body()?;
+
+                return Ok(Statement::ForInExisting {
+                    binding,
+                    object,
+                    body,
+                });
+            }
+        }
+
         let initializer = if self.cursor.consume_optional(&TokenKind::Semicolon)? {
             None
         } else {
@@ -648,5 +675,31 @@ mod tests {
                 ..
             }] if binding == "p"
         ));
+    }
+
+    #[test]
+    fn parses_existing_binding_for_in_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let header = "for (p in actual)";
+
+        assert!(source.contains(header));
+
+        let program = parse_program(&format!("{header} {{}}")).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::ForInExisting {binding,..}] if binding == "p"
+        ));
+    }
+
+    #[test]
+    fn keeps_ordinary_for_with_expression_initializer() {
+        let program = parse_program("for (i = 0; i < 3; i++) {}").unwrap();
+
+        assert!(matches!(program.as_slice(), [Statement::For { .. }]));
     }
 }

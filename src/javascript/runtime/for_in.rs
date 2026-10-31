@@ -8,15 +8,22 @@
 use super::{Completion, Expression, Interpreter, JsError, Statement, Value};
 use crate::javascript::value::ObjectState;
 
+#[derive(Clone, Copy)]
+pub(super) enum ForInBindingMode {
+    Lexical,
+    Var,
+    Existing,
+}
+
 impl Interpreter {
     pub(super) fn execute_for_in(
         &mut self,
         binding: &str,
         object: &Expression,
         body: &[Statement],
-        is_var: bool,
+        mode: ForInBindingMode,
     ) -> Result<Completion, JsError> {
-        if is_var {
+        if matches!(mode, ForInBindingMode::Var) {
             self.variables
                 .entry(binding.to_owned())
                 .or_insert(Value::Undefined);
@@ -38,10 +45,10 @@ impl Interpreter {
             }
         };
 
-        let previous = if is_var {
-            None
-        } else {
+        let previous = if matches!(mode, ForInBindingMode::Lexical) {
             Some(self.variables.insert(binding.to_owned(), Value::Undefined))
+        } else {
+            None
         };
 
         let result = (|| -> Result<Completion, JsError> {
@@ -187,5 +194,72 @@ mod tests {
             evaluate("for (var k in null) {} k;").unwrap(),
             Value::Undefined
         );
+    }
+
+    #[test]
+    fn existing_binding_retains_last_key_and_is_not_localized() {
+        let result = evaluate(
+            "let o = Object.create(null); \
+            o.a = 1; \
+            o.b = 2; \
+            let key = 'initial'; \
+            function f() { \
+                for (key in o) { let inside = 1; } \
+            } \
+            f(); \
+            key;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("b".to_owned()));
+    }
+
+    #[test]
+    fn zero_iterations_do_not_create_or_change_existing_binding() {
+        let result = evaluate(
+            "let key = 'unchanged'; \
+            for (key in Object.create(null)) {} \
+            key;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("unchanged".to_owned()));
+
+        let result = evaluate(
+            "for (not_declared in null) {} \
+            typeof not_declared;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("undefined".to_owned()));
+    }
+
+    #[test]
+    fn rhs_error_does_not_write_the_binding() {
+        let result = evaluate(
+            "let key = 'unchanged'; \
+            try { for (key in missing) {} } catch (e) {} \
+            key;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("unchanged".to_owned()));
+    }
+
+    #[test]
+    fn evaluates_rhs_once_and_preserves_key_after_break() {
+        let result = evaluate(
+            "let o = Object.create(null); \
+            o.a = 1; \
+            o.b = 2; \
+            let count = 0; \
+            function get() { count++; return o; } \
+            let key = ''; \
+            for (key in get()) { break; } \
+            count === 1 && key === 'a';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }

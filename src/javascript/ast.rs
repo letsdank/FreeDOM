@@ -56,6 +56,11 @@ pub(crate) enum Statement {
         body: Vec<Statement>,
         is_var: bool,
     },
+    ForInExisting {
+        binding: String,
+        object: Expression,
+        body: Vec<Statement>,
+    },
     Break,
     Continue,
     Try {
