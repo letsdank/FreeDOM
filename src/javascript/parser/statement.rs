@@ -75,9 +75,27 @@ impl Parser<'_> {
             self.cursor.peek()?.kind,
             TokenKind::Let | TokenKind::Const | TokenKind::Var
         ) {
+            let is_var = self.cursor.check(&TokenKind::Var)?;
+
             self.cursor.advance()?;
 
             let (name, offset) = self.consume_identifier("expected a variable name")?;
+
+            if self.consume_contextual_keyword("in")? {
+                let object = self.parse_expression()?;
+
+                self.cursor
+                    .consume(&TokenKind::RightParen, "expected ')' after for-in object")?;
+
+                let body = self.parse_statement_body()?;
+
+                return Ok(Statement::ForIn {
+                    binding: name,
+                    object,
+                    body,
+                    is_var,
+                });
+            }
 
             if self.consume_contextual_keyword("of")? {
                 if name.is_empty() {
@@ -603,5 +621,28 @@ mod tests {
         for source in ["let a,;", "let a,, b;", "for (let a,; true; ) {}"] {
             assert!(parse_program(source).is_err(), "{source}");
         }
+    }
+
+    #[test]
+    fn parses_for_in_header_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let header = "for (const p in replacements)";
+
+        assert!(source.contains(header));
+
+        let program = parse_program(&format!("{header} {{}}")).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::ForIn {
+                binding,
+                is_var: false,
+                ..
+            }] if binding == "p"
+        ));
     }
 }

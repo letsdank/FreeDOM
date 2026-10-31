@@ -40,6 +40,12 @@ pub(crate) enum Statement {
         iterable: Expression,
         body: Vec<Statement>,
     },
+    ForIn {
+        binding: String,
+        object: Expression,
+        body: Vec<Statement>,
+        is_var: bool,
+    },
     Break,
     Continue,
     Try {

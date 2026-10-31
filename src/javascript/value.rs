@@ -133,6 +133,51 @@ impl ObjectState {
             }
         }
     }
+
+    pub(crate) fn for_in_keys(object: &ObjectStorage) -> Option<Vec<String>> {
+        let mut current = object.clone();
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        loop {
+            let (keys, prototype) = {
+                let state = current.borrow();
+
+                (state.keys(), state.prototype.clone())
+            };
+
+            let mut indices = Vec::new();
+            let mut strings = Vec::new();
+
+            for key in keys {
+                match key.parse::<u32>() {
+                    Ok(index) if index != u32::MAX && index.to_string() == key => {
+                        indices.push((index, key));
+                    }
+
+                    _ => strings.push(key),
+                }
+            }
+
+            indices.sort_unstable_by_key(|(index, _)| *index);
+
+            for key in indices.into_iter().map(|(_, key)| key).chain(strings) {
+                if seen.insert(key.clone()) {
+                    result.push(key);
+                }
+            }
+
+            match prototype {
+                ObjectPrototype::Null => return Some(result),
+
+                ObjectPrototype::Unknown => return None,
+
+                ObjectPrototype::Object(prototype) => {
+                    current = prototype;
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

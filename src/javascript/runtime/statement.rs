@@ -201,6 +201,16 @@ impl Interpreter {
                     }
                 }
 
+                Statement::ForIn {
+                    binding,
+                    object,
+                    body,
+                    is_var,
+                } => match self.execute_for_in(binding, object, body, *is_var)? {
+                    Completion::Normal(value) => value,
+                    abrupt => return Ok(abrupt),
+                },
+
                 Statement::Try {
                     body,
                     catch,

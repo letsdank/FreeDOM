@@ -67,7 +67,7 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
-            Statement::ForOf { binding, body, .. } => {
+            Statement::ForOf { binding, body, .. } | Statement::ForIn { binding, body, .. } => {
                 if !names.contains(binding) {
                     names.push(binding.clone());
                 }

@@ -52,6 +52,9 @@ mod assignment;
 #[path = "runtime/object.rs"]
 mod object;
 
+#[path = "runtime/for_in.rs"]
+mod for_in;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: UserFunction,
