@@ -18,6 +18,14 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
+            Statement::Declarations(declarations) => {
+                for (name, _) in declarations {
+                    if !names.contains(name) {
+                        names.push(name.clone());
+                    }
+                }
+            }
+
             Statement::If {
                 then_body,
                 else_body,

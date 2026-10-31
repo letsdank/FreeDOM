@@ -12,6 +12,7 @@ pub(crate) enum Statement {
         name: String,
         value: Expression,
     },
+    Declarations(Vec<(String, Expression)>),
     FunctionDeclaration {
         name: String,
         function: UserFunction,

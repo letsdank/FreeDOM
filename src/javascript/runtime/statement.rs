@@ -30,6 +30,16 @@ impl Interpreter {
                     Value::Undefined
                 }
 
+                Statement::Declarations(declarations) => {
+                    for (name, value) in declarations {
+                        let value = self.evaluate_expression(value)?;
+
+                        self.variables.insert(name.clone(), value);
+                    }
+
+                    Value::Undefined
+                }
+
                 Statement::Expression(expression) => self.evaluate_expression(expression)?,
 
                 Statement::Return(expression) => {
@@ -302,5 +312,71 @@ mod tests {
         let value = evaluate("let object = { catch: 3 }; object.catch;").unwrap();
 
         assert_eq!(value, Value::Number(3.0));
+    }
+
+    #[test]
+    fn evaluates_multiple_declarators_in_order() {
+        let result = evaluate(
+            "let a = 2, b = a + 1, c; \
+            a === 2 && b === 3 && c === undefined;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let result = evaluate(
+            "let order = ''; \
+            let a = (order += 'a'), b = (order += 'b'); \
+            order;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("ab".to_owned()));
+    }
+
+    #[test]
+    fn handles_multiple_declarations_in_for_initializer() {
+        let result = evaluate(
+            "let total = 0; \
+            for (let i = 0, limit = 3; i < limit; i++) { \
+                total += 1; \
+            } \
+            total;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(3.0));
+    }
+
+    #[test]
+    fn multiple_function_locals_do_not_overwrite_outer_bindings() {
+        let result = evaluate(
+            "let a = 8, b = 9; \
+            function f() { \
+                let a = 2, b = a + 1; \
+                return b; \
+            } \
+            let result = f(); \
+            result === 3 && a === 8 && b === 9;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn initializer_error_stops_following_declarators() {
+        let result = evaluate(
+            "let order = ''; \
+            try { \
+                let a = (order += 'a'), \
+                    b = missing, \
+                    c = (order += 'c'); \
+            } catch (e) {} \
+            order;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("a".to_owned()));
     }
 }

@@ -104,10 +104,12 @@ impl Parser<'_> {
                 Expression::Literal(Value::Undefined)
             };
 
+            let declaration = self.parse_declaration_tail(name, value)?;
+
             self.cursor
                 .consume(&TokenKind::Semicolon, "expected ';' after for declaration")?;
 
-            let initializer = Some(Box::new(Statement::Declaration { name, value }));
+            let initializer = Some(Box::new(declaration));
 
             let condition = if self.cursor.consume_optional(&TokenKind::Semicolon)? {
                 None
@@ -250,13 +252,45 @@ impl Parser<'_> {
             Expression::Literal(Value::Undefined)
         };
 
-        self.cursor.consume_optional(&TokenKind::Semicolon)?;
-
         if name.is_empty() {
             return Err(JsError::syntax(offset, "variable name cannot be empty"));
         }
 
-        Ok(Statement::Declaration { name, value })
+        let declaration = self.parse_declaration_tail(name, value)?;
+
+        self.cursor.consume_optional(&TokenKind::Semicolon)?;
+
+        Ok(declaration)
+    }
+
+    fn parse_declaration_tail(
+        &mut self,
+        name: String,
+        value: Expression,
+    ) -> Result<Statement, JsError> {
+        if !self.cursor.consume_optional(&TokenKind::Comma)? {
+            return Ok(Statement::Declaration { name, value });
+        }
+
+        let mut declarations = vec![(name, value)];
+
+        loop {
+            let (name, _) = self.consume_identifier("expected a variable name after ','")?;
+
+            let value = if self.cursor.consume_optional(&TokenKind::Assign)? {
+                self.parse_expression()?
+            } else {
+                Expression::Literal(Value::Undefined)
+            };
+
+            declarations.push((name, value));
+
+            if !self.cursor.consume_optional(&TokenKind::Comma)? {
+                break;
+            }
+        }
+
+        Ok(Statement::Declarations(declarations))
     }
 
     fn parse_try_statement(&mut self) -> Result<Statement, JsError> {
@@ -540,5 +574,34 @@ mod tests {
                     )]
                 )
         ));
+    }
+
+    #[test]
+    fn parses_multiple_declarators_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "let constructor, promise, description;";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(fragment).unwrap();
+
+        let [Statement::Declarations(declarations)] = program.as_slice() else {
+            panic!("expected declarations");
+        };
+
+        let names: Vec<_> = declarations.iter().map(|(name, _)| name.as_str()).collect();
+
+        assert_eq!(names, ["constructor", "promise", "description"]);
+    }
+
+    #[test]
+    fn rejects_incomplete_declarator_lists() {
+        for source in ["let a,;", "let a,, b;", "for (let a,; true; ) {}"] {
+            assert!(parse_program(source).is_err(), "{source}");
+        }
     }
 }
