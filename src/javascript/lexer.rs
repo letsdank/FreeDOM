@@ -32,6 +32,7 @@ pub enum TokenKind {
     Question,
 
     Plus,
+    PlusAssign,
     Minus,
     Star,
     Slash,
@@ -194,6 +195,7 @@ impl<'source> Lexer<'source> {
                 '?' => self.push(TokenKind::Question, offset),
 
                 '+' if self.consume_if('+') => self.push(TokenKind::PlusPlus, offset),
+                '+' if self.consume_if('=') => self.push(TokenKind::PlusAssign, offset),
                 '-' if self.consume_if('-') => self.push(TokenKind::MinusMinus, offset),
                 '+' => self.push(TokenKind::Plus, offset),
                 '-' => self.push(TokenKind::Minus, offset),

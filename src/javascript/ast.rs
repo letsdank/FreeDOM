@@ -74,6 +74,10 @@ pub(crate) enum Expression {
         target: Box<Expression>,
         value: Box<Expression>,
     },
+    AddAssignment {
+        target: Box<Expression>,
+        value: Box<Expression>,
+    },
     Binary {
         left: Box<Expression>,
         operator: BinaryOperator,

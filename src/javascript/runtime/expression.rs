@@ -79,6 +79,19 @@ impl Interpreter {
                 Ok(value)
             }
 
+            Expression::AddAssignment { target, value } => {
+                let reference = self.prepare_assignment(target)?;
+
+                let left = self.read_assignment(&reference)?;
+                let right = self.evaluate_expression(value)?;
+
+                let result = self.evaluate_binary(left, BinaryOperator::Add, right)?;
+
+                self.write_assignment(reference, result.clone())?;
+
+                Ok(result)
+            }
+
             Expression::Call { callee, arguments } => self.evaluate_call(callee, arguments),
 
             Expression::Binary {

@@ -329,4 +329,60 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn addition_assignment_returns_updated_value_and_is_right_associative() {
+        let result = evaluate(
+            "let a = 1; \
+            let b = 2; \
+            let result = a += b += 3; \
+            a === 6 && b === 5 && result === 6;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        assert_eq!(
+            evaluate("let s = 'hello'; s += ' world'; s;").unwrap(),
+            Value::String("hello world".to_owned())
+        );
+    }
+
+    #[test]
+    fn addition_assignment_reads_before_rhs_and_evaluates_reference_once() {
+        let result = evaluate(
+            "let count = 0; \
+            let object = { x: 1 }; \
+            function get() { count++; return object; } \
+            get().x += (object.x = 10); \
+            count === 1 && object.x === 11;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let result = evaluate(
+            "let index = 0; \
+            let values = [2]; \
+            values[index++] += 3; \
+            index === 1 && values[0] === 5;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn addition_assignment_read_error_prevents_rhs_evaluation() {
+        let result = evaluate(
+            "let count = 0; \
+            let name = ''; \
+            try { null.x += (count = 1); } \
+            catch (e) { name = e.name; } \
+            count === 0 && name === 'TypeError';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }

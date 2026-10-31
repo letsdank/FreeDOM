@@ -73,6 +73,15 @@ impl Parser<'_> {
             });
         }
 
+        if self.cursor.consume_optional(&TokenKind::PlusAssign)? {
+            let value = self.parse_assignment_expression()?;
+
+            return Ok(Expression::AddAssignment {
+                target: Box::new(expression),
+                value: Box::new(value),
+            });
+        }
+
         Ok(expression)
     }
 
@@ -481,6 +490,38 @@ mod tests {
                     operand.as_ref(),
                     Expression::Literal(crate::javascript::Value::Number(number))
                         if *number == 1.0
+                )
+        ));
+    }
+
+    #[test]
+    fn parses_plus_assignment_in_real_testharness_statement() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "name += \" \" + seen_func_name[trimmed];";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(fragment).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::AddAssignment {
+                target,value
+            })]
+                if matches!(
+                    target.as_ref(),
+                    Expression::Identifier(name) if name == "name"
+                )
+                && matches!(
+                    value.as_ref(),
+                    Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        ..
+                    }
                 )
         ));
     }
