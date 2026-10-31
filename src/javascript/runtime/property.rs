@@ -220,6 +220,10 @@ impl Interpreter {
                 Ok(Value::NativeFunction(NativeFunction::ObjectKeys))
             }
 
+            (Value::ObjectConstructor, "entries") => {
+                Ok(Value::NativeFunction(NativeFunction::ObjectEntries))
+            }
+
             (Value::ObjectConstructor, "create") => {
                 Ok(Value::NativeFunction(NativeFunction::ObjectCreate))
             }

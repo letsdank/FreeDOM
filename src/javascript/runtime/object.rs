@@ -35,6 +35,39 @@ impl Interpreter {
             None => Value::object_with_null_prototype(),
         })
     }
+
+    // https://tc39.es/ecma262/#sec-object.entries
+    pub(super) fn object_entries(arguments: Vec<Value>) -> Result<Value, JsError> {
+        let object = match arguments.first().unwrap_or(&Value::Undefined) {
+            Value::Null | Value::Undefined => {
+                return Err(JsError::type_error(
+                    "Object.entries requires a non-null value",
+                ));
+            }
+
+            Value::Object(object) => object,
+
+            _ => {
+                return Err(JsError::unsupported(
+                    "Object.entries is only implemented for ordinary objects",
+                ));
+            }
+        };
+
+        let object = object.borrow();
+
+        let entries = object
+            .keys()
+            .into_iter()
+            .map(|key| {
+                let value = object.get(&key).expect("own key must exist").clone();
+
+                Value::array(vec![Value::String(key), value])
+            })
+            .collect();
+
+        Ok(Value::array(entries))
+    }
 }
 
 #[cfg(test)]
@@ -140,5 +173,99 @@ mod tests {
         let error = evaluate("'toString' in Object.create({});").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+    }
+
+    #[test]
+    fn entries_returns_own_keys_and_values_in_property_order() {
+        let result = evaluate(
+            "let p = Object.create(null); \
+            p.inherited = 99; \
+            let o = Object.create(p); \
+            o['10'] = 'ten'; \
+            o['2'] = 'two'; \
+            o['01'] = 'zero-one'; \
+            o.x = undefined; \
+            let e = Object.entries(o); \
+            e.length === 4 && \
+            e[0][0] === '2' && \
+            e[0][1] === 'two' && \
+            e[1][0] === '10' && \
+            e[2][0] === '01' && \
+            e[3][0] === 'x' && \
+            e[3][1] === undefined && \
+            Object.keys(o).join(',') === '2,10,01,x';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn entries_preserves_object_identity_and_creates_fresh_arrays() {
+        let result = evaluate(
+            "let v = {}; \
+            let o = {v}; \
+            let a = Object.entries(o); \
+            let b = Object.entries(o); \
+            a !== b && a[0] !== b[0] && a[0][1] === v;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn entries_validates_target_and_evaluates_extra_arguments() {
+        for target in ["null", "undefined"] {
+            let script = format!(
+                "let name = ''; \
+                try {{ Object.entries({target}); }} \
+                catch (e) {{ name = e.name; }} \
+                name;"
+            );
+
+            assert_eq!(
+                evaluate(&script).unwrap(),
+                Value::String("TypeError".to_owned())
+            );
+        }
+
+        let error = evaluate("Object.entries([]);").unwrap_err();
+
+        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+
+        let result = evaluate(
+            "let n = 0; \
+            let e = Object.entries({}, n = 1); \
+            n === 1 && e.length === 0;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn runs_object_entries_expression_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        assert!(source.contains("Object.entries(required_props)"));
+
+        let result = evaluate(
+            "const required_props = { \
+                code: 22, \
+                name: 'QuotaExceededError' \
+            }; \
+            let entries = Object.entries(required_props); \
+            entries[0][0] === 'code' && \
+            entries[0][1] === 22 && \
+            entries[1][0] === 'name' && \
+            entries[1][1] === 'QuotaExceededError';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }

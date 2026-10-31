@@ -19,6 +19,7 @@ pub enum NativeFunction {
     AssertNotEquals,
     ObjectKeys,
     ObjectCreate,
+    ObjectEntries,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -102,9 +103,25 @@ impl ObjectState {
     }
 
     pub(crate) fn keys(&self) -> Vec<String> {
-        self.properties
-            .iter()
-            .map(|(name, _)| name.clone())
+        let mut indices = Vec::new();
+        let mut strings = Vec::new();
+
+        for (key, _) in &self.properties {
+            match key.parse::<u32>() {
+                Ok(index) if index != u32::MAX && index.to_string() == *key => {
+                    indices.push((index, key.clone()));
+                }
+
+                _ => strings.push(key.clone()),
+            }
+        }
+
+        indices.sort_unstable_by_key(|(index, _)| *index);
+
+        indices
+            .into_iter()
+            .map(|(_, key)| key)
+            .chain(strings)
             .collect()
     }
 
@@ -146,22 +163,7 @@ impl ObjectState {
                 (state.keys(), state.prototype.clone())
             };
 
-            let mut indices = Vec::new();
-            let mut strings = Vec::new();
-
             for key in keys {
-                match key.parse::<u32>() {
-                    Ok(index) if index != u32::MAX && index.to_string() == key => {
-                        indices.push((index, key));
-                    }
-
-                    _ => strings.push(key),
-                }
-            }
-
-            indices.sort_unstable_by_key(|(index, _)| *index);
-
-            for key in indices.into_iter().map(|(_, key)| key).chain(strings) {
                 if seen.insert(key.clone()) {
                     result.push(key);
                 }
@@ -453,6 +455,20 @@ mod tests {
         assert_eq!(
             original.as_array(),
             Some(vec![Value::Number(1.0), Value::Number(2.0)])
+        );
+    }
+
+    #[test]
+    fn own_keys_sort_only_canonical_array_indices() {
+        let mut object = ObjectState::default();
+
+        for key in ["4294967295", "01", "4294967294", "10", "2", "0", "-0"] {
+            object.set(key.to_owned(), Value::Undefined);
+        }
+
+        assert_eq!(
+            object.keys(),
+            ["0", "2", "10", "4294967294", "4294967295", "01", "-0",]
         );
     }
 }
