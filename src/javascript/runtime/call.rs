@@ -149,7 +149,7 @@ impl Interpreter {
 
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
-            Value::Function(function) => self.call_function(&function, values),
+            Value::Function(function) => self.call_function(function.definition(), values),
 
             Value::RegExpTest(regexp) => {
                 let input = values.first().unwrap_or(&Value::Undefined).to_js_string();

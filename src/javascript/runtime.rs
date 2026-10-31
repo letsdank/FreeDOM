@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::url::Url;
 
+use super::value::FunctionValue;
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
     JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
@@ -63,7 +64,7 @@ mod for_of_array;
 
 #[derive(Clone, Debug)]
 struct Cleanup {
-    callback: UserFunction,
+    callback: FunctionValue,
     captured: HashMap<String, Value>,
 }
 

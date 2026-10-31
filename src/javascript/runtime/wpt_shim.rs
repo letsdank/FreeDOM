@@ -22,13 +22,13 @@ impl Interpreter {
             ));
         };
 
-        if callback.parameters.len() > 1 {
+        if callback.definition().parameters.len() > 1 {
             return Err(JsError::runtime(
                 "TypeError: test callbacks may accept at most one parameter",
             ));
         }
 
-        let callback_arguments = if callback.parameters.is_empty() {
+        let callback_arguments = if callback.definition().parameters.is_empty() {
             Vec::new()
         } else {
             vec![Value::TestContext]
@@ -38,7 +38,7 @@ impl Interpreter {
 
         let previous_this = self.variables.insert("this".to_owned(), Value::TestContext);
 
-        let test_result = self.call_function(callback, callback_arguments);
+        let test_result = self.call_function(callback.definition(), callback_arguments);
 
         if let Some(previous_this) = previous_this {
             self.variables.insert("this".to_owned(), previous_this);
@@ -67,7 +67,7 @@ impl Interpreter {
             ));
         };
 
-        if !callback.parameters.is_empty() {
+        if !callback.definition().parameters.is_empty() {
             return Err(JsError::runtime(
                 "TypeError: cleanup callbacks cannot accept parameters",
             ));
@@ -100,7 +100,7 @@ impl Interpreter {
                 replaced_bindings.push((name, previous));
             }
 
-            let result = self.call_function(&cleanup.callback, Vec::new());
+            let result = self.call_function(&cleanup.callback.definition(), Vec::new());
 
             for (name, previous) in replaced_bindings.into_iter().rev() {
                 if let Some(value) = previous {

@@ -108,7 +108,7 @@ impl Interpreter {
                 self.index_value(object, index)
             }
 
-            Expression::Function(function) => Ok(Value::Function(function.clone())),
+            Expression::Function(function) => Ok(Value::function(function.clone())),
 
             Expression::Not(expression) => {
                 let value = self.evaluate_expression(expression)?;

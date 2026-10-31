@@ -15,7 +15,7 @@ impl Interpreter {
         for statement in program {
             if let Statement::FunctionDeclaration { name, function } = statement {
                 self.variables
-                    .insert(name.clone(), Value::Function(function.clone()));
+                    .insert(name.clone(), Value::function(function.clone()));
             }
         }
 

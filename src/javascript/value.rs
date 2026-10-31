@@ -257,6 +257,25 @@ pub(crate) enum ArrayMethodKind {
     Join,
 }
 
+/// A user function with reference identity.
+/// Function properties are not implemented yet.
+#[derive(Clone, Debug)]
+pub struct FunctionValue {
+    definition: Rc<UserFunction>,
+}
+
+impl FunctionValue {
+    pub(super) fn definition(&self) -> &UserFunction {
+        &self.definition
+    }
+}
+
+impl PartialEq for FunctionValue {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.definition, &other.definition)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Undefined,
@@ -284,7 +303,7 @@ pub enum Value {
     },
     ElementMethod(ElementMethod),
     DocumentMethod(DocumentMethod),
-    Function(UserFunction),
+    Function(FunctionValue),
     TestContext,
     ElementConstructor(String),
     TestContextMethod(TestContextMethod),
@@ -394,6 +413,12 @@ impl Value {
         };
 
         Self::Object(Rc::new(RefCell::new(state)))
+    }
+
+    pub(super) fn function(definition: UserFunction) -> Self {
+        Self::Function(FunctionValue {
+            definition: Rc::new(definition),
+        })
     }
 
     pub fn as_array(&self) -> Option<Vec<Value>> {

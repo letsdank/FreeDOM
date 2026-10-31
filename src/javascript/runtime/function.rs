@@ -400,4 +400,50 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn function_identity_is_shared_by_aliases_but_not_identical_definitions() {
+        let result = evaluate(
+            "let f = function() { return 1; }; \
+            let alias = f; \
+            let other = function() { return 1; }; \
+            let obj = { f }; \
+            f === alias && obj.f === f && f !== other;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn evaluating_the_same_function_expression_twice_creates_distinct_functions() {
+        let result = evaluate(
+            "function make() { \
+                return function() { return 1; }; \
+            } \
+            let first = make(); \
+            let second = make(); \
+            first !== second && \
+            first() === 1 && \
+            second() === 1;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn same_value_assertions_use_function_identity() {
+        let result = evaluate(
+            "let f = function() {}; \
+            let alias = f; \
+            let other = function() {}; \
+            assert_equals(f, alias); \
+            assert_not_equals(f, other); \
+            true;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }
