@@ -53,8 +53,15 @@ pub(crate) enum TestContextMethod {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ObjectState {
-    properties: Vec<(String, Value)>,
+    properties: Vec<ObjectProperty>,
     prototype: ObjectPrototype,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ObjectProperty {
+    name: String,
+    value: Value,
+    enumerable: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -85,47 +92,82 @@ impl ObjectState {
     pub(crate) fn get(&self, name: &str) -> Option<&Value> {
         self.properties
             .iter()
-            .find(|(property, _)| property == name)
-            .map(|(_, value)| value)
+            .find(|property| property.name == name)
+            .map(|property| &property.value)
     }
 
     pub(crate) fn set(&mut self, name: String, value: Value) {
-        if let Some((_, existing_value)) = self
+        if let Some(property) = self
             .properties
             .iter_mut()
-            .find(|(property, _)| property == &name)
+            .find(|property| property.name == name)
         {
-            *existing_value = value;
+            property.value = value;
         } else {
-            self.properties.push((name, value));
+            self.properties.push(ObjectProperty {
+                name,
+                value,
+                enumerable: true,
+            });
+        }
+    }
+
+    fn define_own_data_property(&mut self, name: String, value: Value, enumerable: bool) {
+        if let Some(property) = self
+            .properties
+            .iter_mut()
+            .find(|property| property.name == name)
+        {
+            property.value = value;
+            property.enumerable = enumerable;
+        } else {
+            self.properties.push(ObjectProperty {
+                name,
+                value,
+                enumerable,
+            });
         }
     }
 
     pub(crate) fn keys(&self) -> Vec<String> {
+        self.own_keys_with_enumerability()
+            .into_iter()
+            .filter_map(|(name, enumerable)| enumerable.then_some(name))
+            .collect()
+    }
+
+    fn own_keys_with_enumerability(&self) -> Vec<(String, bool)> {
         let mut indices = Vec::new();
         let mut strings = Vec::new();
 
-        for (key, _) in &self.properties {
+        for property in &self.properties {
+            let key = &property.name;
+
             match key.parse::<u32>() {
                 Ok(index) if index != u32::MAX && index.to_string() == *key => {
-                    indices.push((index, key.clone()));
+                    indices.push((index, key.clone(), property.enumerable));
                 }
 
-                _ => strings.push(key.clone()),
+                _ => {
+                    strings.push((key.clone(), property.enumerable));
+                }
             }
         }
 
-        indices.sort_unstable_by_key(|(index, _)| *index);
+        indices.sort_unstable_by_key(|(index, _, _)| *index);
 
         indices
             .into_iter()
-            .map(|(_, key)| key)
+            .map(|(_, key, enumerable)| (key, enumerable))
             .chain(strings)
             .collect()
     }
 
     fn as_hash_map(&self) -> HashMap<String, Value> {
-        self.properties.iter().cloned().collect()
+        self.properties
+            .iter()
+            .map(|property| (property.name.clone(), property.value.clone()))
+            .collect()
     }
 
     pub(crate) fn lookup(object: &ObjectStorage, name: &str) -> PropertyLookup {
@@ -159,11 +201,11 @@ impl ObjectState {
             let (keys, prototype) = {
                 let state = current.borrow();
 
-                (state.keys(), state.prototype.clone())
+                (state.own_keys_with_enumerability(), state.prototype.clone())
             };
 
-            for key in keys {
-                if seen.insert(key.clone()) {
+            for (key, enumerable) in keys {
+                if seen.insert(key.clone()) && enumerable {
                     result.push(key);
                 }
             }
@@ -439,7 +481,11 @@ impl Value {
         let mut properties = ObjectState::default();
 
         if definition.kind == FunctionKind::Ordinary {
-            properties.set("prototype".to_owned(), Value::object(std::iter::empty()));
+            properties.define_own_data_property(
+                "prototype".to_owned(),
+                Value::object(std::iter::empty()),
+                false,
+            );
         }
 
         Self::Function(FunctionValue {
@@ -479,7 +525,7 @@ impl Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{ObjectState, Value};
+    use super::{ObjectState, PropertyLookup, Value};
 
     #[test]
     fn object_updates_existing_properties_without_reordering() {
@@ -522,5 +568,79 @@ mod tests {
             object.keys(),
             ["0", "2", "10", "4294967294", "4294967295", "01", "-0",]
         );
+    }
+
+    #[test]
+    fn non_enumerable_properties_remain_readable_and_stay_hidden_after_assignment() {
+        let mut object = ObjectState::default();
+
+        object.define_own_data_property("hidden".into(), Value::Number(1.0), false);
+
+        object.set("visible".into(), Value::Number(2.0));
+        object.set("hidden".into(), Value::Number(3.0));
+
+        assert_eq!(object.get("hidden"), Some(&Value::Number(3.0)));
+        assert_eq!(object.keys(), ["visible"]);
+
+        assert_eq!(
+            object.as_hash_map().get("hidden"),
+            Some(&Value::Number(3.0))
+        );
+    }
+
+    #[test]
+    fn non_enumerable_own_property_shadows_enumerable_prototype_property() {
+        let Value::Object(parent) = Value::object_with_null_prototype() else {
+            panic!("expected object");
+        };
+
+        parent.borrow_mut().set("hidden".into(), Value::Number(1.0));
+        parent
+            .borrow_mut()
+            .set("inherited".into(), Value::Number(2.0));
+
+        let Value::Object(child) = Value::object_with_prototype(parent) else {
+            panic!("expected object");
+        };
+
+        child
+            .borrow_mut()
+            .define_own_data_property("hidden".into(), Value::Number(3.0), false);
+
+        child.borrow_mut().set("visible".into(), Value::Number(4.0));
+
+        assert!(matches!(
+            ObjectState::lookup(&child, "hidden"),
+            PropertyLookup::Found(Value::Number(3.0))
+        ));
+
+        assert_eq!(
+            ObjectState::for_in_keys(&child),
+            Some(vec!["visible".to_owned(), "inherited".to_owned()])
+        );
+    }
+
+    #[test]
+    fn function_prototype_stays_non_enumerable_after_assignment() {
+        let value = crate::javascript::evaluate(
+            "function F() {} \
+            F.prototype = {}; \
+            F.visible = 1; \
+            F;",
+        )
+        .unwrap();
+
+        let Value::Function(function) = value else {
+            panic!("expected function");
+        };
+
+        let properties = function.properties.borrow();
+
+        assert!(matches!(
+            properties.get("prototype"),
+            Some(Value::Object(_))
+        ));
+
+        assert_eq!(properties.keys(), ["visible"]);
     }
 }
