@@ -459,6 +459,17 @@ impl Value {
         Self::Object(Rc::new(RefCell::new(ObjectState::from_entries(entries))))
     }
 
+    pub(super) fn object_with_entries_and_prototype(
+        entries: impl IntoIterator<Item = (String, Value)>,
+        prototype: ObjectStorage,
+    ) -> Self {
+        let mut state = ObjectState::from_entries(entries);
+
+        state.prototype = ObjectPrototype::Object(prototype);
+
+        Self::Object(Rc::new(RefCell::new(state)))
+    }
+
     pub(super) fn object_with_null_prototype() -> Self {
         let state = ObjectState {
             properties: Vec::new(),
@@ -477,13 +488,13 @@ impl Value {
         Self::Object(Rc::new(RefCell::new(state)))
     }
 
-    pub(super) fn function(definition: UserFunction) -> Self {
+    pub(super) fn function(definition: UserFunction, object_prototype: ObjectStorage) -> Self {
         let mut properties = ObjectState::default();
 
         if definition.kind == FunctionKind::Ordinary {
             properties.define_own_data_property(
                 "prototype".to_owned(),
-                Value::object(std::iter::empty()),
+                Value::object_with_prototype(object_prototype),
                 false,
             );
         }

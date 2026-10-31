@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::url::Url;
 
-use super::value::FunctionValue;
+use super::value::{FunctionValue, ObjectStorage};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
     JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
@@ -88,11 +88,17 @@ pub(super) struct Interpreter {
     variables: HashMap<String, Value>,
     cleanups: Vec<Cleanup>,
     function_locals: Vec<Vec<String>>,
+    object_prototype: ObjectStorage,
 }
 
 impl Interpreter {
     pub(super) fn new() -> Self {
         let mut variables = HashMap::new();
+
+        // The intrinsic's own built-in properties are not implemented yet.
+        let Value::Object(object_prototype) = Value::object(std::iter::empty()) else {
+            unreachable!("object constructor returns an object");
+        };
 
         variables.insert("undefined".to_owned(), Value::Undefined);
 
@@ -132,6 +138,7 @@ impl Interpreter {
             variables,
             cleanups: Vec::new(),
             function_locals: Vec::new(),
+            object_prototype,
         }
     }
 

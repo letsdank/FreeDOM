@@ -268,4 +268,79 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn ordinary_literals_share_a_mutable_object_prototype() {
+        let result = evaluate(
+            "let o = {}; \
+            let prototype = Object.prototype; \
+            prototype.marker = 7; \
+            o.marker === 7 && \
+            ('marker' in o) && \
+            Object['prototype'] === prototype && \
+            Object.keys(o).length === 0;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn function_prototype_objects_inherit_shared_object_prototype() {
+        let result = evaluate(
+            "function F() {} \
+            let p = F.prototype; \
+            Object.prototype.marker = 7; \
+            let before = p.marker; \
+            p.marker = 9; \
+            before === 7 && \
+            Object.prototype.marker === 7 && \
+            p.marker === 9;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn null_prototype_objects_remain_unaffected() {
+        let result = evaluate(
+            "let bare = Object.create(null); \
+            Object.prototype.marker = 7; \
+            ('marker' in bare) === false && \
+            bare.marker === undefined;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn prototype_is_per_interpreter() {
+        let first = super::Interpreter::new();
+        let second = super::Interpreter::new();
+
+        assert!(!std::rc::Rc::ptr_eq(
+            &first.object_prototype,
+            &second.object_prototype
+        ));
+    }
+
+    #[test]
+    fn testharness_probe_remains_unsupported_until_intrinsics_exist() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        assert!(source.contains("'document' in global_scope"));
+
+        let error = evaluate(
+            "let global_scope = {}; \
+            'document' in global_scope;",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+    }
 }

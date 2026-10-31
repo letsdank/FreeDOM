@@ -82,7 +82,10 @@ impl Interpreter {
                     values.push((name.clone(), self.evaluate_expression(expression)?));
                 }
 
-                Ok(Value::object(values))
+                Ok(Value::object_with_entries_and_prototype(
+                    values,
+                    self.object_prototype.clone(),
+                ))
             }
 
             Expression::Identifier(name) => self
@@ -108,7 +111,10 @@ impl Interpreter {
                 self.index_value(object, index)
             }
 
-            Expression::Function(function) => Ok(Value::function(function.clone())),
+            Expression::Function(function) => Ok(Value::function(
+                function.clone(),
+                self.object_prototype.clone(),
+            )),
 
             Expression::Not(expression) => {
                 let value = self.evaluate_expression(expression)?;

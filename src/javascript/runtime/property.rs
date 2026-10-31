@@ -230,6 +230,10 @@ impl Interpreter {
                 Ok(Value::NativeFunction(NativeFunction::ObjectCreate))
             }
 
+            (Value::ObjectConstructor, "prototype") => {
+                Ok(Value::Object(self.object_prototype.clone()))
+            }
+
             (Value::Url(_), property) => Err(JsError::runtime(format!(
                 "URL.{property} is not implemented yet"
             ))),
@@ -257,6 +261,10 @@ impl Interpreter {
             return Err(JsError::type_error(
                 "cannot read property of null or undefined",
             ));
+        }
+
+        if matches!(object, Value::ObjectConstructor) {
+            return self.member_value(Value::ObjectConstructor, &index.to_js_string());
         }
 
         if let Value::Array(values) = object {
