@@ -7,6 +7,7 @@
 
 use super::{ElementMethod, Interpreter, JsError, NativeFunction, TestContextMethod, Value};
 use crate::javascript::DocumentMethod;
+use crate::javascript::value::{ObjectState, PropertyLookup};
 
 impl Interpreter {
     pub(super) fn member_value(&self, object: Value, property: &str) -> Result<Value, JsError> {
@@ -21,11 +22,11 @@ impl Interpreter {
 
             (Value::Array(values), property) => Ok(Self::array_get(values, property)),
 
-            (Value::Object(values), property) => Ok(values
-                .borrow()
-                .get(property)
-                .cloned()
-                .unwrap_or(Value::Undefined)),
+            (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
+                PropertyLookup::Found(value) => value,
+
+                PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
+            }),
 
             (Value::Url(url), "href") => Ok(Value::String(url.to_string())),
 
@@ -257,11 +258,11 @@ impl Interpreter {
         }
 
         if let Value::Object(values) = object {
-            return Ok(values
-                .borrow()
-                .get(&index.to_js_string())
-                .cloned()
-                .unwrap_or(Value::Undefined));
+            return Ok(match ObjectState::lookup(&values, &index.to_js_string()) {
+                PropertyLookup::Found(value) => value,
+
+                PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
+            });
         }
 
         if let Value::NativeError(error) = object {

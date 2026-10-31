@@ -2,9 +2,10 @@
 //!
 //! <https://tc39.es/ecma262/#sec-relational-operators>
 //!
-//! Prototype lookup and general ToPropertyKey conversion are not implemented.
+//! Built-in prototypes and general ToPropertyKey conversion are not implemented.
 
 use super::{Interpreter, JsError, Value};
+use crate::javascript::value::{ObjectState, PropertyLookup};
 
 impl Interpreter {
     pub(super) fn evaluate_in(key: Value, target: Value) -> Result<Value, JsError> {
@@ -24,16 +25,14 @@ impl Interpreter {
                     ));
                 };
 
-                let object = object.borrow();
+                match ObjectState::lookup(&object, &key) {
+                    PropertyLookup::Found(_) => Ok(Value::Boolean(true)),
 
-                if object.get(&key).is_some() {
-                    Ok(Value::Boolean(true))
-                } else if object.has_null_prototype() {
-                    Ok(Value::Boolean(false))
-                } else {
-                    Err(JsError::unsupported(
-                        "'in' prototype lookup is not implemented",
-                    ))
+                    PropertyLookup::Absent => Ok(Value::Boolean(false)),
+
+                    PropertyLookup::Unknown => Err(JsError::unsupported(
+                        "'in' lookup reached an unimplemented prototype",
+                    )),
                 }
             }
 

@@ -6,8 +6,10 @@ use super::{Interpreter, JsError, Value};
 
 impl Interpreter {
     pub(super) fn object_create(arguments: Vec<Value>) -> Result<Value, JsError> {
-        match arguments.first().unwrap_or(&Value::Undefined) {
-            Value::Null => {}
+        let prototype = match arguments.first().unwrap_or(&Value::Undefined) {
+            Value::Null => None,
+
+            Value::Object(object) => Some(object.clone()),
 
             Value::Undefined | Value::Boolean(_) | Value::Number(_) | Value::String(_) => {
                 return Err(JsError::type_error(
@@ -20,7 +22,7 @@ impl Interpreter {
                     "Object.create with an object prototype is not implemented",
                 ));
             }
-        }
+        };
 
         if !matches!(arguments.get(1), None | Some(Value::Undefined)) {
             return Err(JsError::unsupported(
@@ -28,7 +30,10 @@ impl Interpreter {
             ));
         }
 
-        Ok(Value::object_with_null_prototype())
+        Ok(match prototype {
+            Some(object) => Value::object_with_prototype(object),
+            None => Value::object_with_null_prototype(),
+        })
     }
 }
 
@@ -74,8 +79,8 @@ mod tests {
     }
 
     #[test]
-    fn object_prototypes_and_descriptors_are_not_silently_ignored() {
-        for source in ["Object.create({});", "Object.create(null, {});"] {
+    fn unsupported_prototypes_and_descriptors_are_not_silently_ignored() {
+        for source in ["Object.create([]);", "Object.create(null, {});"] {
             let error = evaluate(source).unwrap_err();
 
             assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
@@ -96,5 +101,44 @@ mod tests {
         let script = format!("{fragment} 'x' in seen_func_name;");
 
         assert_eq!(evaluate(&script).unwrap(), Value::Boolean(false));
+    }
+
+    #[test]
+    fn inherits_properties_and_observes_prototype_changes() {
+        let result = evaluate(
+            "let root = Object.create(null); \
+            root.x = 1; \
+            let middle = Object.create(root); \
+            let leaf = Object.create(middle); \
+            let before = leaf.x; \
+            root.x = 2; \
+            let after = leaf['x']; \
+            leaf.x = 3; \
+            before === 1 && \
+            after === 2 && \
+            root.x === 2 && \
+            leaf.x === 3 && \
+            ('x' in leaf) && \
+            ('missing' in leaf) === false;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn unknown_built_in_prototype_remains_explicit_for_in() {
+        let result = evaluate(
+            "let p = { x: undefined }; \
+            let o = Object.create(p); \
+            'x' in o;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let error = evaluate("'toString' in Object.create({});").unwrap_err();
+
+        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }
 }

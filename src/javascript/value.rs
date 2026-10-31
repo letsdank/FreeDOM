@@ -54,7 +54,21 @@ pub(crate) enum TestContextMethod {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ObjectState {
     properties: Vec<(String, Value)>,
-    null_prototype: bool,
+    prototype: ObjectPrototype,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+enum ObjectPrototype {
+    #[default]
+    Unknown,
+    Null,
+    Object(ObjectStorage),
+}
+
+pub(crate) enum PropertyLookup {
+    Found(Value),
+    Absent,
+    Unknown,
 }
 
 impl ObjectState {
@@ -98,8 +112,26 @@ impl ObjectState {
         self.properties.iter().cloned().collect()
     }
 
-    pub(crate) fn has_null_prototype(&self) -> bool {
-        self.null_prototype
+    pub(crate) fn lookup(object: &ObjectStorage, name: &str) -> PropertyLookup {
+        let mut current = object.clone();
+
+        loop {
+            let next = {
+                let state = current.borrow();
+
+                if let Some(value) = state.get(name) {
+                    return PropertyLookup::Found(value.clone());
+                }
+
+                state.prototype.clone()
+            };
+
+            match next {
+                ObjectPrototype::Null => return PropertyLookup::Absent,
+                ObjectPrototype::Unknown => return PropertyLookup::Unknown,
+                ObjectPrototype::Object(prototype) => current = prototype,
+            }
+        }
     }
 }
 
@@ -302,7 +334,16 @@ impl Value {
     pub(super) fn object_with_null_prototype() -> Self {
         let state = ObjectState {
             properties: Vec::new(),
-            null_prototype: true,
+            prototype: ObjectPrototype::Null,
+        };
+
+        Self::Object(Rc::new(RefCell::new(state)))
+    }
+
+    pub(super) fn object_with_prototype(prototype: ObjectStorage) -> Self {
+        let state = ObjectState {
+            properties: Vec::new(),
+            prototype: ObjectPrototype::Object(prototype),
         };
 
         Self::Object(Rc::new(RefCell::new(state)))
