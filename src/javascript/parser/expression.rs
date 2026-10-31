@@ -76,11 +76,24 @@ impl Parser<'_> {
             });
         }
 
-        if self.cursor.consume_optional(&TokenKind::PlusAssign)? {
+        let compound_operator = if self.cursor.consume_optional(&TokenKind::PlusAssign)? {
+            Some(BinaryOperator::Add)
+        } else if self.cursor.consume_optional(&TokenKind::MinusAssign)? {
+            Some(BinaryOperator::Subtract)
+        } else if self.cursor.consume_optional(&TokenKind::StarAssign)? {
+            Some(BinaryOperator::Multiply)
+        } else if self.cursor.consume_optional(&TokenKind::SlashAssign)? {
+            Some(BinaryOperator::Divide)
+        } else {
+            None
+        };
+
+        if let Some(operator) = compound_operator {
             let value = self.parse_assignment_expression()?;
 
-            return Ok(Expression::AddAssignment {
+            return Ok(Expression::CompoundAssignment {
                 target: Box::new(expression),
+                operator,
                 value: Box::new(value),
             });
         }
@@ -512,8 +525,10 @@ mod tests {
 
         assert!(matches!(
             program.as_slice(),
-            [Statement::Expression(Expression::AddAssignment {
-                target,value
+            [Statement::Expression(Expression::CompoundAssignment {
+                target,
+                operator:BinaryOperator::Add,
+                value,
             })]
                 if matches!(
                     target.as_ref(),
@@ -526,6 +541,28 @@ mod tests {
                         ..
                     }
                 )
+        ));
+    }
+
+    #[test]
+    fn parses_multiply_assignment_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "this.timeout_length *= tests.timeout_multiplier;";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(fragment).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::CompoundAssignment {
+                operator: BinaryOperator::Multiply,
+                ..
+            })]
         ));
     }
 }

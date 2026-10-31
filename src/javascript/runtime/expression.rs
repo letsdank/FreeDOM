@@ -127,13 +127,17 @@ impl Interpreter {
                 Ok(value)
             }
 
-            Expression::AddAssignment { target, value } => {
+            Expression::CompoundAssignment {
+                target,
+                operator,
+                value,
+            } => {
                 let reference = self.prepare_assignment(target)?;
 
                 let left = self.read_assignment(&reference)?;
                 let right = self.evaluate_expression(value)?;
 
-                let result = self.evaluate_binary(left, BinaryOperator::Add, right)?;
+                let result = self.evaluate_binary(left, *operator, right)?;
 
                 self.write_assignment(reference, result.clone())?;
 

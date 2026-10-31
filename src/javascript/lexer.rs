@@ -38,6 +38,9 @@ pub enum TokenKind {
 
     Plus,
     PlusAssign,
+    MinusAssign,
+    StarAssign,
+    SlashAssign,
     Minus,
     Star,
     Slash,
@@ -225,9 +228,14 @@ impl<'source> Lexer<'source> {
 
                 '+' if self.consume_if('+') => self.push(TokenKind::PlusPlus, offset),
                 '+' if self.consume_if('=') => self.push(TokenKind::PlusAssign, offset),
+
                 '-' if self.consume_if('-') => self.push(TokenKind::MinusMinus, offset),
+                '-' if self.consume_if('=') => self.push(TokenKind::MinusAssign, offset),
+
                 '+' => self.push(TokenKind::Plus, offset),
                 '-' => self.push(TokenKind::Minus, offset),
+
+                '*' if self.consume_if('=') => self.push(TokenKind::StarAssign, offset),
                 '*' => self.push(TokenKind::Star, offset),
 
                 '/' if allow_regexp => {
@@ -238,6 +246,10 @@ impl<'source> Lexer<'source> {
 
                     self.index = literal.end;
                     self.push(TokenKind::RegExpLiteral { pattern, flags }, offset);
+                }
+
+                '/' if self.consume_if('=') => {
+                    self.push(TokenKind::SlashAssign, offset);
                 }
 
                 '/' => self.push(TokenKind::Slash, offset),

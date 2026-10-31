@@ -385,4 +385,80 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn supports_compound_arithmetic_assignments() {
+        let result = evaluate(
+            "let x = 20; \
+            x -= 2; \
+            x *= 3; \
+            x /= 6; \
+            x += 1; \
+            x;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(10.0));
+
+        let result = evaluate(
+            "let a = 24; \
+            let b = 3; \
+            let r = a /= b += 1; \
+            a === 6 && b === 4 && r === 6;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn compound_assignment_evaluates_target_once_and_reads_before_rhs() {
+        let result = evaluate(
+            "let calls = 0; \
+            let o = {x: 2}; \
+            function get() { calls++; return o; } \
+            get().x *= (o.x = 10); \
+            calls === 1 && o.x === 20;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let result = evaluate(
+            "let a = [12]; \
+            let i = 0; \
+            a[i++] /= 3; \
+            i === 1 && a[0] === 4;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn compound_read_failure_precedes_rhs() {
+        let result = evaluate(
+            "let count = 0; \
+            let name = ''; \
+            try { null.x *= (count = 1); } \
+            catch (e) { name = e.name; } \
+            count === 0 && name === 'TypeError';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn divide_assignment_and_equals_regexp_are_distinct() {
+        let result = evaluate(
+            "let n = 8; \
+            n /= 2; \
+            let re = /=/; \
+            n === 4 && re.test('=');",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }

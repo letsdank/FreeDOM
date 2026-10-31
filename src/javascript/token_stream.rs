@@ -41,7 +41,7 @@ impl<'source> TokenStream<'source> {
                 item.allow_regexp != allow_regexp
                     && matches!(
                         item.token.kind,
-                        TokenKind::Slash | TokenKind::RegExpLiteral { .. }
+                        TokenKind::Slash | TokenKind::SlashAssign | TokenKind::RegExpLiteral { .. }
                     )
             });
 
@@ -233,5 +233,29 @@ mod tests {
         );
 
         assert_eq!(stream.advance(false).unwrap().kind, TokenKind::Semicolon);
+    }
+
+    #[test]
+    fn rescans_slash_equals_as_regexp_and_back() {
+        let mut stream = TokenStream::new("/=/");
+
+        assert_eq!(stream.peek(false).unwrap().kind, TokenKind::SlashAssign);
+
+        assert_eq!(
+            stream.advance(true).unwrap().kind,
+            TokenKind::RegExpLiteral {
+                pattern: "=".to_owned(),
+                flags: String::new()
+            }
+        );
+
+        let mut stream = TokenStream::new("/=/");
+
+        assert!(matches!(
+            stream.peek(true).unwrap().kind,
+            TokenKind::RegExpLiteral { .. }
+        ));
+
+        assert_eq!(stream.advance(false).unwrap().kind, TokenKind::SlashAssign);
     }
 }
