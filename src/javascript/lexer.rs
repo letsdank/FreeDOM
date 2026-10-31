@@ -44,6 +44,8 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
+    Percent,
+    PercentAssign,
 
     Assign,
     Equal,
@@ -237,6 +239,12 @@ impl<'source> Lexer<'source> {
 
                 '*' if self.consume_if('=') => self.push(TokenKind::StarAssign, offset),
                 '*' => self.push(TokenKind::Star, offset),
+
+                '%' if self.consume_if('=') => {
+                    self.push(TokenKind::PercentAssign, offset);
+                }
+
+                '%' => self.push(TokenKind::Percent, offset),
 
                 '/' if allow_regexp => {
                     let literal = super::regexp::scan_literal(self.source, offset)?;

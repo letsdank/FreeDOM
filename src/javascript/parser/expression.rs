@@ -84,6 +84,8 @@ impl Parser<'_> {
             Some(BinaryOperator::Multiply)
         } else if self.cursor.consume_optional(&TokenKind::SlashAssign)? {
             Some(BinaryOperator::Divide)
+        } else if self.cursor.consume_optional(&TokenKind::PercentAssign)? {
+            Some(BinaryOperator::Remainder)
         } else {
             None
         };
@@ -225,6 +227,8 @@ impl Parser<'_> {
                 BinaryOperator::Multiply
             } else if self.cursor.consume_optional(&TokenKind::Slash)? {
                 BinaryOperator::Divide
+            } else if self.cursor.consume_optional(&TokenKind::Percent)? {
+                BinaryOperator::Remainder
             } else {
                 break;
             };
@@ -563,6 +567,36 @@ mod tests {
                 operator: BinaryOperator::Multiply,
                 ..
             })]
+        ));
+    }
+
+    #[test]
+    fn parses_remainder_expression_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "done_count % 100 === 0";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(&format!("{fragment};")).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::Binary {
+                left,
+                operator: BinaryOperator::StrictEqual,
+                ..
+            })]
+                if matches!(
+                    left.as_ref(),
+                    Expression::Binary {
+                        operator: BinaryOperator::Remainder,
+                        ..
+                    }
+                )
         ));
     }
 }

@@ -55,6 +55,12 @@ impl Interpreter {
                 Ok(Value::Number(left / right))
             }
 
+            BinaryOperator::Remainder => {
+                let (left, right) = self.numeric_operands(&left, &right)?;
+
+                Ok(Value::Number(left % right))
+            }
+
             BinaryOperator::Less => Ok(Value::Boolean(self.compare_values(
                 &left,
                 &right,
@@ -234,5 +240,40 @@ mod tests {
             error.kind,
             crate::javascript::JsErrorKind::UnsupportedFeature
         );
+    }
+
+    #[test]
+    fn remainder_obeys_multiplicative_precedence_and_dividend_sign() {
+        for (source, expected) in [
+            ("8 + 5 % 3 * 2;", 12.0),
+            ("-5 % 2;", -1.0),
+            ("5 % -2;", 1.0),
+            ("'7' % 4;", 3.0),
+            ("5 % (1 / 0);", 5.0),
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap(),
+                Value::Number(expected),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn remainder_handles_nan_infinity_and_negative_zero() {
+        for source in ["0 % 0;", "1 % 0;", "(1 / 0) % 2;"] {
+            let Value::Number(number) = evaluate(source).unwrap() else {
+                panic!("expected number");
+            };
+
+            assert!(number.is_nan(), "{source}");
+        }
+
+        let Value::Number(number) = evaluate("-4 % 2;").unwrap() else {
+            panic!("expected number");
+        };
+
+        assert_eq!(number, 0.0);
+        assert!(number.is_sign_negative());
     }
 }

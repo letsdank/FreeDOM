@@ -461,4 +461,18 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn remainder_assignment_reads_target_once_before_rhs() {
+        let result = evaluate(
+            "let o = {x: 10}; \
+            let calls = 0; \
+            function get() { calls++; return o; } \
+            get().x %= (o.x = 3); \
+            calls === 1 && o.x === 1;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }
