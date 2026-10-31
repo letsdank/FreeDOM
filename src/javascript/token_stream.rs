@@ -87,6 +87,18 @@ impl<'source> TokenStream<'source> {
             .expect("buffered token must exist")
             .token)
     }
+
+    pub(super) fn advance_template_chunk(&mut self) -> Result<Token, LexError> {
+        let checkpoint = self
+            .buffered
+            .front()
+            .map_or_else(|| self.lexer.checkpoint(), |token| token.checkpoint);
+
+        self.buffered.clear();
+        self.lexer.restore(checkpoint);
+
+        self.lexer.read_template_chunk(checkpoint)
+    }
 }
 
 #[cfg(test)]
@@ -199,5 +211,27 @@ mod tests {
             TokenKind::Identifier("a".to_owned())
         );
         assert_eq!(stream.advance(false).unwrap().kind, TokenKind::Slash);
+    }
+
+    #[test]
+    fn template_continuation_rewinds_buffered_lookahead_including_whitespace() {
+        let mut stream = TokenStream::new("}  text`;");
+
+        assert!(matches!(
+            stream.peek_n(&[false, false]).unwrap().unwrap().kind,
+            TokenKind::Identifier(_)
+        ));
+
+        assert_eq!(stream.advance(false).unwrap().kind, TokenKind::RightBrace);
+
+        assert_eq!(
+            stream.advance_template_chunk().unwrap().kind,
+            TokenKind::TemplateChunk {
+                value: "  text".to_owned(),
+                tail: true,
+            }
+        );
+
+        assert_eq!(stream.advance(false).unwrap().kind, TokenKind::Semicolon);
     }
 }

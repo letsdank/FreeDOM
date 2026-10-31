@@ -1,3 +1,6 @@
+#[path = "lexer/template.rs"]
+mod template;
+
 use super::token_stream::TokenStream;
 use std::{error::Error, fmt};
 
@@ -8,6 +11,7 @@ pub enum TokenKind {
     Number(f64),
 
     RegExpLiteral { pattern: String, flags: String },
+    TemplateChunk { value: String, tail: bool },
 
     Let,
     Const,
@@ -95,6 +99,15 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
 
     loop {
         let token = stream.advance(false)?;
+
+        if matches!(&token.kind, TokenKind::TemplateChunk { tail: false, .. }) {
+            return Err(LexError {
+                offset: token.offset,
+                message: "batch tokenization of template substitutions is not implemented"
+                    .to_owned(),
+            });
+        }
+
         let at_end = token.kind == TokenKind::EndOfFile;
 
         tokens.push(token);
@@ -184,6 +197,13 @@ impl<'source> Lexer<'source> {
 
                 '(' => self.push(TokenKind::LeftParen, offset),
                 ')' => self.push(TokenKind::RightParen, offset),
+
+                '`' => {
+                    let token = self.read_template_chunk(offset)?;
+
+                    self.tokens.push(token);
+                }
+
                 '{' => self.push(TokenKind::LeftBrace, offset),
                 '}' => self.push(TokenKind::RightBrace, offset),
                 '[' => self.push(TokenKind::LeftBracket, offset),
@@ -798,5 +818,15 @@ mod tests {
         );
 
         assert_eq!(stream.advance(false).unwrap().kind, TokenKind::RightParen);
+    }
+
+    #[test]
+    fn batch_tokenizer_rejects_substitutions_instead_of_misreading_them() {
+        let error = tokenize("`x${1}y`").unwrap_err();
+
+        assert_eq!(
+            error.message,
+            "batch tokenization of template substitutions is not implemented"
+        );
     }
 }

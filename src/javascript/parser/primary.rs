@@ -12,6 +12,7 @@ impl Parser<'_> {
 
         match token.kind {
             TokenKind::String(value) => Ok(Expression::Literal(Value::String(value))),
+            TokenKind::TemplateChunk { value, tail } => self.parse_template(value, tail),
             TokenKind::RegExpLiteral { pattern, flags } => {
                 crate::javascript::regexp::RegExpFlags::parse(&flags).map_err(|error| {
                     JsError::syntax(
@@ -160,6 +161,34 @@ impl Parser<'_> {
             return Ok(Expression::Object(properties));
         }
     }
+
+    fn parse_template(&mut self, head: String, mut tail: bool) -> Result<Expression, JsError> {
+        let mut parts = Vec::new();
+
+        while !tail {
+            let expression = self.parse_expression()?;
+
+            self.cursor.consume(
+                &TokenKind::RightBrace,
+                "expected '}' after template expression",
+            )?;
+
+            let token = self.cursor.advance_template_chunk()?;
+
+            let TokenKind::TemplateChunk {
+                value,
+                tail: is_tail,
+            } = token.kind
+            else {
+                unreachable!("template scanner returns a chunk");
+            };
+
+            parts.push((expression, value));
+            tail = is_tail;
+        }
+
+        Ok(Expression::Template { head, parts })
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +246,35 @@ mod tests {
             function.body.as_slice(),
             [Statement::Return(Expression::Identifier(name))]
             if name == "x"
+        ));
+    }
+
+    #[test]
+    fn parses_template_statement_from_real_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let line = source
+            .lines()
+            .find(|line| line.contains("const formatEscapePattern = new RegExp(`"))
+            .expect("WPT template must exist")
+            .trim();
+
+        let program = parse_program(line).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Declaration {
+                value: Expression::New { arguments, .. },
+                ..
+            }]
+                if matches!(
+                    arguments.first(),
+                    Some(Expression::Template { parts, .. })
+                        if parts.len() == 1
+                )
         ));
     }
 }

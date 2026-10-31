@@ -60,6 +60,12 @@ impl<'source> ParserCursor<'source> {
         }
     }
 
+    pub(super) fn advance_template_chunk(&mut self) -> Result<Token, JsError> {
+        self.stream
+            .advance_template_chunk()
+            .map_err(Self::lex_error)
+    }
+
     fn lex_error(error: crate::javascript::lexer::LexError) -> JsError {
         JsError::syntax(error.offset, error.message)
     }

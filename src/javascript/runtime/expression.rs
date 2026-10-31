@@ -15,6 +15,54 @@ impl Interpreter {
         match expression {
             Expression::Literal(value) => Ok(value.clone()),
 
+            Expression::Template { head, parts } => {
+                let mut result = head.clone();
+
+                for (expression, text) in parts {
+                    let value = self.evaluate_expression(expression)?;
+
+                    let converted = match value {
+                        Value::String(value) => value,
+                        Value::Undefined => "undefined".to_owned(),
+                        Value::Null => "null".to_owned(),
+                        Value::Boolean(value) => value.to_string(),
+
+                        Value::Number(number) if number == 0.0 => "0".to_owned(),
+
+                        Value::Number(number) if number.is_nan() => "NaN".to_owned(),
+
+                        Value::Number(number) if number == f64::INFINITY => "Infinity".to_owned(),
+
+                        Value::Number(number) if number == f64::NEG_INFINITY => {
+                            "-Infinity".to_owned()
+                        }
+
+                        Value::Number(number)
+                            if number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0 =>
+                        {
+                            number.to_string()
+                        }
+
+                        Value::Number(_) => {
+                            return Err(JsError::unsupported(
+                                "template conversion of this number is not implemented",
+                            ));
+                        }
+
+                        _ => {
+                            return Err(JsError::unsupported(
+                                "template conversion of objects is not implemented",
+                            ));
+                        }
+                    };
+
+                    result.push_str(&converted);
+                    result.push_str(text);
+                }
+
+                Ok(Value::String(result))
+            }
+
             Expression::RegExpLiteral { pattern, flags } => Self::create_regexp(pattern, flags),
 
             Expression::Array(expressions) => {
@@ -319,5 +367,72 @@ mod tests {
             evaluate("const f = x => { return x + 1; }; f(2);").unwrap(),
             Value::Number(3.0)
         );
+    }
+
+    #[test]
+    fn evaluates_template_literals_and_nested_expressions() {
+        assert_eq!(
+            evaluate("`a${1 + 2}b${'x'}c`;").unwrap(),
+            Value::String("a3bxc".to_owned())
+        );
+
+        assert_eq!(
+            evaluate("`${ {x: '}'} .x }-${`nested ${2}`}`;").unwrap(),
+            Value::String("}-nested 2".to_owned())
+        );
+
+        assert_eq!(
+            evaluate("`${/[}]/.test('}')}`;").unwrap(),
+            Value::String("true".to_owned())
+        );
+    }
+
+    #[test]
+    fn template_chunks_preserve_escape_and_line_rules() {
+        assert_eq!(
+            evaluate("`a\\`b\\${c}\\n`;").unwrap(),
+            Value::String("a`b${c}\n".to_owned())
+        );
+
+        assert_eq!(
+            evaluate("`a\r\nb`;").unwrap(),
+            Value::String("a\nb".to_owned())
+        );
+
+        assert_eq!(
+            evaluate("`a\\\nb`;").unwrap(),
+            Value::String("ab".to_owned())
+        );
+    }
+
+    #[test]
+    fn template_evaluates_interpolates_once_in_order() {
+        let result = evaluate(
+            "let x = 0; \
+            let s = `${x++}-${x++}`; \
+            s === '0-1' && x === 2;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn template_unsupported_conversions_are_explicit() {
+        for source in ["`${{}}`;", "`${0.5}`;"] {
+            assert_eq!(
+                evaluate(source).unwrap_err().kind,
+                crate::javascript::JsErrorKind::UnsupportedFeature,
+            );
+        }
+
+        assert_eq!(evaluate("`${-0}`;").unwrap(), Value::String("0".to_owned()));
+    }
+
+    #[test]
+    fn rejects_unterminated_or_invalid_template() {
+        for source in ["`unclosed", "`${1`", "`${}`", "`\\1`"] {
+            assert!(evaluate(source).is_err(), "{source}");
+        }
     }
 }
