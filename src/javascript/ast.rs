@@ -85,6 +85,8 @@ pub(crate) enum Expression {
         index: Box<Expression>,
     },
     Not(Box<Expression>),
+    UnaryPlus(Box<Expression>),
+    UnaryMinus(Box<Expression>),
     Update {
         target: Box<Expression>,
         delta: f64,

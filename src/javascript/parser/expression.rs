@@ -233,6 +233,18 @@ impl Parser<'_> {
             });
         }
 
+        if self.cursor.consume_optional(&TokenKind::Plus)? {
+            return Ok(Expression::UnaryPlus(Box::new(
+                self.parse_unary_expression()?,
+            )));
+        }
+
+        if self.cursor.consume_optional(&TokenKind::Minus)? {
+            return Ok(Expression::UnaryMinus(Box::new(
+                self.parse_unary_expression()?,
+            )));
+        }
+
         if self.cursor.consume_optional(&TokenKind::Typeof)? {
             return Ok(Expression::TypeOf(Box::new(self.parse_unary_expression()?)));
         }
@@ -432,5 +444,44 @@ mod tests {
         let error = parse_program("x =>").unwrap_err();
 
         assert_eq!(error.message, "unexpected end of JavaScript source");
+    }
+
+    #[test]
+    fn parses_negative_number_in_real_testharness_statement() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "var current_dispatch = this_obj.message_events.indexOf(x) !== -1;";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(fragment).unwrap();
+
+        let [
+            Statement::Declaration {
+                value:
+                    Expression::Binary {
+                        operator: BinaryOperator::StrictNotEqual,
+                        right,
+                        ..
+                    },
+                ..
+            },
+        ] = program.as_slice()
+        else {
+            panic!("expected strict inequality in declaration");
+        };
+
+        assert!(matches!(
+            right.as_ref(),
+            Expression::UnaryMinus(operand)
+                if matches!(
+                    operand.as_ref(),
+                    Expression::Literal(crate::javascript::Value::Number(number))
+                        if *number == 1.0
+                )
+        ));
     }
 }

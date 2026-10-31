@@ -67,6 +67,10 @@ impl Interpreter {
                 Ok(Value::Boolean(!self.is_truthy(&value)))
             }
 
+            Expression::UnaryPlus(operand) => self.evaluate_unary_number(operand, false),
+
+            Expression::UnaryMinus(operand) => self.evaluate_unary_number(operand, true),
+
             Expression::Assignment { target, value } => {
                 let reference = self.prepare_assignment(target)?;
                 let value = self.evaluate_expression(value)?;

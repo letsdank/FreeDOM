@@ -121,6 +121,22 @@ impl Interpreter {
             Ok(Value::Number(number))
         }
     }
+
+    pub(super) fn evaluate_unary_number(
+        &mut self,
+        operand: &Expression,
+        negate: bool,
+    ) -> Result<Value, JsError> {
+        let value = self.evaluate_expression(operand)?;
+
+        let Some(number) = self.to_number(&value) else {
+            return Err(JsError::unsupported(
+                "unary numeric conversion of objects is not implemented",
+            ));
+        };
+
+        Ok(Value::Number(if negate { -number } else { number }))
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +172,67 @@ mod tests {
         let result = evaluate("let x = 0; false && (x = 1); true || (x = 2); x;").unwrap();
 
         assert_eq!(result, Value::Number(0.0));
+    }
+
+    #[test]
+    fn evaluates_unary_numeric_operators() {
+        for (source, expected) in [
+            ("-1;", -1.0),
+            ("+'12';", 12.0),
+            ("-true;", -1.0),
+            ("- -2 * 3;", 6.0),
+            ("1 + -2;", -1.0),
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap(),
+                Value::Number(expected),
+                "{source}"
+            );
+        }
+
+        let Value::Number(nan) = evaluate("+undefined;").unwrap() else {
+            panic!("expected number");
+        };
+
+        assert!(nan.is_nan());
+    }
+
+    #[test]
+    fn unary_minus_preserves_signed_zero() {
+        let Value::Number(negative_zero) = evaluate("-0;").unwrap() else {
+            panic!("expected number");
+        };
+
+        assert_eq!(negative_zero, 0.0);
+        assert!(negative_zero.is_sign_negative());
+
+        let Value::Number(positive_zero) = evaluate("- -0;").unwrap() else {
+            panic!("expected number");
+        };
+
+        assert!(positive_zero.is_sign_positive());
+    }
+
+    #[test]
+    fn unary_operand_is_evaluated_once() {
+        let result = evaluate(
+            "let count = 0; \
+            function get() { count++; return 2; } \
+            let value = -get(); \
+            count === 1 && value === -2;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn unary_object_conversion_is_explicitly_unsupported() {
+        let error = evaluate("+{};").unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            crate::javascript::JsErrorKind::UnsupportedFeature
+        );
     }
 }
