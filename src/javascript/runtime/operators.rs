@@ -100,7 +100,8 @@ impl Interpreter {
         delta: f64,
         prefix: bool,
     ) -> Result<Value, JsError> {
-        let previous = self.evaluate_expression(target)?;
+        let reference = self.prepare_assignment(target)?;
+        let previous = self.read_assignment(&reference)?;
 
         let Some(number) = self.to_number(&previous) else {
             return Err(JsError::runtime(
@@ -110,142 +111,12 @@ impl Interpreter {
 
         let updated = Value::Number(number + delta);
 
-        self.assign(target, updated.clone())?;
+        self.write_assignment(reference, updated.clone())?;
 
-        if prefix { Ok(updated) } else { Ok(previous) }
-    }
-
-    pub(super) fn assign(&mut self, target: &Expression, value: Value) -> Result<(), JsError> {
-        match target {
-            Expression::Identifier(name) => {
-                self.variables.insert(name.clone(), value);
-                Ok(())
-            }
-
-            Expression::Member { object, property } => {
-                if let Expression::Identifier(name) = object.as_ref() {
-                    if name == "document" && property == "title" {
-                        let Some(Value::Document(document)) = self.variables.get_mut("document")
-                        else {
-                            return Err(JsError::runtime(
-                                "TypeError: document binding is unavailable",
-                            ));
-                        };
-
-                        document.title = value.to_js_string();
-                        return Ok(());
-                    }
-                }
-
-                let object = self.evaluate_expression(object)?;
-
-                match object {
-                    Value::Object(values) => {
-                        values.borrow_mut().set(property.clone(), value);
-                        Ok(())
-                    }
-
-                    Value::NativeError(error) => {
-                        error.set(property.clone(), value);
-                        Ok(())
-                    }
-
-                    Value::Element(node_id) if property == "textContent" => {
-                        self.set_document_element_text_content(node_id, value.to_js_string())
-                    }
-
-                    Value::Element(node_id) if property == "innerHTML" => {
-                        self.set_document_element_inner_html(node_id, value.to_js_string())
-                    }
-
-                    Value::Element(node_id) if property == "outerHTML" => {
-                        self.set_document_element_outer_html(node_id, value.to_js_string())
-                    }
-
-                    Value::Element(node_id) if property == "id" => {
-                        self.set_document_element_id(node_id, value.to_js_string())
-                    }
-
-                    Value::Element(node_id) if property == "className" => {
-                        let class_name = value.to_js_string();
-
-                        if self
-                            .current_document_mut()?
-                            .set_node_attribute(node_id, "class", class_name)
-                        {
-                            Ok(())
-                        } else {
-                            Err(JsError::runtime(
-                                "TypeError: element is no longer available",
-                            ))
-                        }
-                    }
-
-                    Value::Attribute { node_id, name } if property == "value" => {
-                        let serialized_value = value.to_js_string();
-
-                        if self.current_document_mut()?.set_node_attribute(
-                            node_id,
-                            &name,
-                            serialized_value,
-                        ) {
-                            Ok(())
-                        } else {
-                            Err(JsError::runtime(
-                                "TypeError: attribute owner is no longer available",
-                            ))
-                        }
-                    }
-
-                    Value::RegExp(regexp) if property == "lastIndex" => {
-                        regexp.inner.borrow_mut().last_index = value;
-                        Ok(())
-                    }
-
-                    Value::Array(values) => Self::array_set(values, property, value),
-
-                    Value::Element(_) => Err(JsError::runtime(format!(
-                        "Element.{property} is not implemented yet"
-                    ))),
-
-                    _ => Err(JsError::runtime(
-                        "TypeError: assignment target is not supported",
-                    )),
-                }
-            }
-
-            Expression::Index { object, index } => {
-                let object = self.evaluate_expression(object)?;
-                let index = self.evaluate_expression(index)?;
-
-                match object {
-                    Value::Object(values) => {
-                        values.borrow_mut().set(index.to_js_string(), value);
-
-                        Ok(())
-                    }
-
-                    Value::NativeError(error) => {
-                        error.set(index.to_js_string(), value);
-                        Ok(())
-                    }
-
-                    Value::Array(values) => Self::array_set(values, &index.to_js_string(), value),
-
-                    Value::RegExp(regexp) if index.to_js_string() == "lastIndex" => {
-                        regexp.inner.borrow_mut().last_index = value;
-                        Ok(())
-                    }
-
-                    _ => Err(JsError::runtime(
-                        "TypeError: indexed assignment target is not supported",
-                    )),
-                }
-            }
-
-            _ => Err(JsError::runtime(
-                "TypeError: assignment target is not supported",
-            )),
+        if prefix {
+            Ok(updated)
+        } else {
+            Ok(Value::Number(number))
         }
     }
 }

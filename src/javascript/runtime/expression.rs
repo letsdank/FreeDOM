@@ -68,8 +68,10 @@ impl Interpreter {
             }
 
             Expression::Assignment { target, value } => {
+                let reference = self.prepare_assignment(target)?;
                 let value = self.evaluate_expression(value)?;
-                self.assign(target, value.clone())?;
+
+                self.write_assignment(reference, value.clone())?;
                 Ok(value)
             }
 
