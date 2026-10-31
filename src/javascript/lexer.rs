@@ -35,6 +35,7 @@ pub enum TokenKind {
     Semicolon,
     Colon,
     Question,
+    Nullish,
 
     Plus,
     PlusAssign,
@@ -226,6 +227,11 @@ impl<'source> Lexer<'source> {
                 ',' => self.push(TokenKind::Comma, offset),
                 ';' => self.push(TokenKind::Semicolon, offset),
                 ':' => self.push(TokenKind::Colon, offset),
+
+                '?' if self.consume_if('?') => {
+                    self.push(TokenKind::Nullish, offset);
+                }
+
                 '?' => self.push(TokenKind::Question, offset),
 
                 '+' if self.consume_if('+') => self.push(TokenKind::PlusPlus, offset),

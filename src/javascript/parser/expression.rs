@@ -25,7 +25,7 @@ impl Parser<'_> {
     }
 
     fn parse_conditional_expression(&mut self) -> Result<Expression, JsError> {
-        let condition = self.parse_logical_or_expression()?;
+        let condition = self.parse_short_circuit_expression()?;
 
         if !self.cursor.consume_optional(&TokenKind::Question)? {
             return Ok(condition);
@@ -103,8 +103,48 @@ impl Parser<'_> {
         Ok(expression)
     }
 
-    fn parse_logical_or_expression(&mut self) -> Result<Expression, JsError> {
-        let mut expression = self.parse_logical_and_expression()?;
+    fn parse_short_circuit_expression(&mut self) -> Result<Expression, JsError> {
+        let first = self.parse_equality_expression()?;
+
+        if self.cursor.consume_optional(&TokenKind::Nullish)? {
+            let mut expression = Expression::Binary {
+                left: Box::new(first),
+                operator: BinaryOperator::Nullish,
+                right: Box::new(self.parse_equality_expression()?),
+            };
+
+            while self.cursor.consume_optional(&TokenKind::Nullish)? {
+                expression = Expression::Binary {
+                    left: Box::new(expression),
+                    operator: BinaryOperator::Nullish,
+                    right: Box::new(self.parse_equality_expression()?),
+                };
+            }
+
+            if matches!(self.cursor.peek()?.kind, TokenKind::And | TokenKind::Or) {
+                return Err(JsError::syntax(
+                    self.cursor.peek()?.offset,
+                    "cannot mix '??' with '&&' or '||' without parentheses",
+                ));
+            }
+
+            Ok(expression)
+        } else {
+            let expression = self.parse_logical_or_tail(first)?;
+
+            if self.cursor.check(&TokenKind::Nullish)? {
+                return Err(JsError::syntax(
+                    self.cursor.peek()?.offset,
+                    "cannot mix '??' with '&&' or '||' without parentheses",
+                ));
+            }
+
+            Ok(expression)
+        }
+    }
+
+    fn parse_logical_or_tail(&mut self, first: Expression) -> Result<Expression, JsError> {
+        let mut expression = self.parse_logical_and_tail(first)?;
 
         while self.cursor.consume_optional(&TokenKind::Or)? {
             let right = self.parse_logical_and_expression()?;
@@ -120,8 +160,15 @@ impl Parser<'_> {
     }
 
     fn parse_logical_and_expression(&mut self) -> Result<Expression, JsError> {
-        let mut expression = self.parse_equality_expression()?;
+        let first = self.parse_equality_expression()?;
 
+        self.parse_logical_and_tail(first)
+    }
+
+    fn parse_logical_and_tail(
+        &mut self,
+        mut expression: Expression,
+    ) -> Result<Expression, JsError> {
         while self.cursor.consume_optional(&TokenKind::And)? {
             let right = self.parse_equality_expression()?;
 
@@ -597,6 +644,49 @@ mod tests {
                         ..
                     }
                 )
+        ));
+    }
+
+    #[test]
+    fn rejects_unparenthesized_nullish_logical_mixing() {
+        for source in [
+            "a ?? b || c;",
+            "a || b ?? c;",
+            "a ?? b && c;",
+            "a && b ?? c;",
+        ] {
+            assert!(parse_program(source).is_err(), "{source}");
+        }
+
+        for source in [
+            "a ?? (b || c);",
+            "(a || b) ?? c;",
+            "(a ?? b) && c;",
+            "a ?? (b && c);",
+        ] {
+            assert!(parse_program(source).is_ok(), "{source}");
+        }
+    }
+
+    #[test]
+    fn parses_nullish_expression_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "test.message ?? \"\"";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(&format!("{fragment};")).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::Binary {
+                operator: BinaryOperator::Nullish,
+                ..
+            })]
         ));
     }
 }

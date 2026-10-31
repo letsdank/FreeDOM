@@ -23,7 +23,7 @@ impl Interpreter {
             BinaryOperator::Equal => Ok(Value::Boolean(self.loosely_equals(&left, &right))),
             BinaryOperator::NotEqual => Ok(Value::Boolean(!self.loosely_equals(&left, &right))),
 
-            BinaryOperator::And | BinaryOperator::Or => {
+            BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Nullish => {
                 unreachable!("logical operators are evaluated with short-circuiting")
             }
 

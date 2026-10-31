@@ -178,4 +178,5 @@ pub(crate) enum BinaryOperator {
     In,
     And,
     Or,
+    Nullish,
 }

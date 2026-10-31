@@ -148,6 +148,20 @@ impl Interpreter {
 
             Expression::Binary {
                 left,
+                operator: BinaryOperator::Nullish,
+                right,
+            } => {
+                let left = self.evaluate_expression(left)?;
+
+                if matches!(left, Value::Null | Value::Undefined) {
+                    self.evaluate_expression(right)
+                } else {
+                    Ok(left)
+                }
+            }
+
+            Expression::Binary {
+                left,
                 operator: BinaryOperator::And,
                 right,
             } => {
@@ -507,6 +521,50 @@ mod tests {
             obj['1'] === 'last' && \
             obj[100] === 'hundred' && \
             Object.keys(obj).join(',') === '0,1,100';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn nullish_only_falls_back_for_null_and_undefined() {
+        let result = evaluate(
+            "(null ?? 7) === 7 && \
+            (undefined ?? 8) === 8 && \
+            (false ?? 9) === false && \
+            (0 ?? 9) === 0 && \
+            ('' ?? 'x') === '';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn nullish_short_circuits_and_preserves_identity() {
+        let result = evaluate(
+            "let count = 0; \
+            let o = {}; \
+            let x = o ?? (count = 1); \
+            let y = null ?? (count += 2); \
+            x === o && y === 2 && count === 2;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        assert_eq!(evaluate("0 ?? missing;").unwrap(), Value::Number(0.0));
+    }
+
+    #[test]
+    fn nullish_precedence_and_parenthesized_logical_operators() {
+        let result = evaluate(
+            "(null ?? 2 + 3) === 5 && \
+            (null ?? false ? 1 : 2) === 2 && \
+            (null ?? (false || 8)) === 8 && \
+            ((0 || 9) ?? 4) === 9 && \
+            ((null ?? 0) || 7) === 7;",
         )
         .unwrap();
 
