@@ -28,13 +28,16 @@ impl Interpreter {
             Expression::Identifier(name) => Ok(AssignmentReference::Binding(name.clone())),
 
             Expression::Member { object, property } => {
-                let document_title = matches!(
+                let is_document_title_syntax = matches!(
                     object.as_ref(),
                     Expression::Identifier(name)
                         if name == "document" && property == "title"
                 );
 
                 let object = self.evaluate_expression(object)?;
+
+                let document_title =
+                    is_document_title_syntax && matches!(&object, Value::Document(_));
 
                 Ok(AssignmentReference::Member {
                     object,
@@ -312,5 +315,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Number(0.0));
+    }
+
+    #[test]
+    fn assigns_and_updates_title_of_an_object_named_document() {
+        let result = evaluate(
+            "let document = { title: 1 }; \
+            document.title = 5; \
+            let previous = document.title++; \
+            previous === 5 && document.title === 6;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }
