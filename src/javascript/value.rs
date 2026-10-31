@@ -112,7 +112,12 @@ impl ObjectState {
         }
     }
 
-    fn define_own_data_property(&mut self, name: String, value: Value, enumerable: bool) {
+    pub(super) fn define_own_data_property(
+        &mut self,
+        name: String,
+        value: Value,
+        enumerable: bool,
+    ) {
         if let Some(property) = self
             .properties
             .iter_mut()

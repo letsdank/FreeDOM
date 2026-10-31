@@ -95,10 +95,16 @@ impl Interpreter {
     pub(super) fn new() -> Self {
         let mut variables = HashMap::new();
 
-        // The intrinsic's own built-in properties are not implemented yet.
+        // Most intrinsic properties are not implemented yet.
         let Value::Object(object_prototype) = Value::object(std::iter::empty()) else {
             unreachable!("object constructor returns an object");
         };
+
+        object_prototype.borrow_mut().define_own_data_property(
+            "constructor".to_owned(),
+            Value::ObjectConstructor,
+            false,
+        );
 
         variables.insert("undefined".to_owned(), Value::Undefined);
 

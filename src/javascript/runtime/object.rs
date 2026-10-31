@@ -343,4 +343,75 @@ mod tests {
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }
+
+    #[test]
+    fn object_prototype_constructor_is_inherited_but_not_enumerated() {
+        let result = evaluate(
+            "let o = {}; \
+            Object.prototype.constructor === Object && \
+            o.constructor === Object && \
+            ('constructor' in o) && \
+            Object.keys(Object.prototype).length === 0 && \
+            Object.entries(Object.prototype).length === 0;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn replacing_constructor_preserves_enumerability_and_allows_shadowing() {
+        let result = evaluate(
+            "let o = {}; \
+            Object.prototype.constructor = 7; \
+            let inherited = o.constructor; \
+            o.constructor = 8; \
+            inherited === 7 && \
+            o.constructor === 8 && \
+            Object.prototype.constructor === 7 && \
+            Object.keys(Object.prototype).length === 0 && \
+            Object.keys(o).join(',') === 'constructor';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn null_prototype_has_no_constructor_and_realms_are_isolated() {
+        let result = evaluate(
+            "let bare = Object.create(null); \
+            bare.constructor === undefined && \
+            ('constructor' in bare) === false;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        evaluate("Object.prototype.constructor = 1").unwrap();
+
+        assert_eq!(
+            evaluate("Object.prototype.constructor === Object;").unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn runs_constructor_comparison_derived_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        assert!(source.contains("e.constructor === constructor"));
+
+        let result = evaluate(
+            "let e = {}; \
+            let constructor = Object; \
+            e.constructor === constructor;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }
