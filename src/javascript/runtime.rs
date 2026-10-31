@@ -55,6 +55,9 @@ mod object;
 #[path = "runtime/for_in.rs"]
 mod for_in;
 
+#[path = "runtime/switch.rs"]
+mod switch;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: UserFunction,

@@ -7,6 +7,12 @@ pub(crate) struct CatchClause {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SwitchCase {
+    pub(crate) test: Option<Expression>,
+    pub(crate) body: Vec<Statement>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Statement {
     Declaration {
         name: String,
@@ -24,6 +30,10 @@ pub(crate) enum Statement {
         condition: Expression,
         then_body: Vec<Statement>,
         else_body: Vec<Statement>,
+    },
+    Switch {
+        discriminant: Expression,
+        cases: Vec<SwitchCase>,
     },
     While {
         condition: Expression,

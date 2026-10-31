@@ -20,6 +20,9 @@ mod function;
 #[path = "parser/expression.rs"]
 mod expression;
 
+#[path = "parser/switch.rs"]
+mod switch;
+
 pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
     Parser::new(source).parse_program()
 }

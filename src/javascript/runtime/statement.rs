@@ -219,6 +219,14 @@ impl Interpreter {
                     Completion::Normal(value) => value,
                     abrupt => return Ok(abrupt),
                 },
+
+                Statement::Switch {
+                    discriminant,
+                    cases,
+                } => match self.execute_switch(discriminant, cases)? {
+                    Completion::Normal(value) => value,
+                    abrupt => return Ok(abrupt),
+                },
             };
         }
 

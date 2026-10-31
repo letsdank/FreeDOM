@@ -21,6 +21,10 @@ impl Parser<'_> {
             return self.parse_try_statement();
         }
 
+        if self.consume_contextual_keyword("switch")? {
+            return self.parse_switch_statement();
+        }
+
         if self.cursor.consume_optional(&TokenKind::Function)? {
             return self.parse_function_declaration();
         }

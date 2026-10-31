@@ -97,6 +97,16 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
                 }
             }
 
+            Statement::Switch { cases, .. } => {
+                for case in cases {
+                    for name in function_local_names(&case.body) {
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                }
+            }
+
             Statement::Expression(_)
             | Statement::Return(_)
             | Statement::Throw(_)
