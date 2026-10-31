@@ -4,7 +4,9 @@
 //!
 //! This module implements only the interpreter's existing grammar subset.
 
-use super::{Expression, FunctionParameter, JsError, Parser, TokenKind, UserFunction, Value};
+use super::{
+    Expression, FunctionKind, FunctionParameter, JsError, Parser, TokenKind, UserFunction, Value,
+};
 
 impl Parser<'_> {
     pub(super) fn parse_primary(&mut self) -> Result<Expression, JsError> {
@@ -43,6 +45,7 @@ impl Parser<'_> {
                 if self.cursor.consume_optional(&TokenKind::RightParen)? {
                     if self.cursor.consume_optional(&TokenKind::Arrow)? {
                         return Ok(Expression::Function(UserFunction {
+                            kind: FunctionKind::Arrow,
                             parameters: Vec::new(),
                             body: self.parse_arrow_body()?,
                         }));
@@ -71,6 +74,7 @@ impl Parser<'_> {
                         self.cursor.advance()?;
 
                         return Ok(Expression::Function(UserFunction {
+                            kind: FunctionKind::Arrow,
                             parameters: vec![FunctionParameter::simple(parameter)],
                             body: self.parse_arrow_body()?,
                         }));

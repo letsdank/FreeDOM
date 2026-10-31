@@ -117,6 +117,11 @@ impl Interpreter {
                         Ok(())
                     }
 
+                    Value::Function(function) => {
+                        function.set(property, value);
+                        Ok(())
+                    }
+
                     Value::NativeError(error) => {
                         error.set(property, value);
                         Ok(())
@@ -191,6 +196,11 @@ impl Interpreter {
 
                 Value::Object(values) => {
                     values.borrow_mut().set(index.to_js_string(), value);
+                    Ok(())
+                }
+
+                Value::Function(function) => {
+                    function.set(index.to_js_string(), value);
                     Ok(())
                 }
 

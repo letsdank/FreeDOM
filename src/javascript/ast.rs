@@ -153,8 +153,15 @@ impl FunctionParameter {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FunctionKind {
+    Ordinary,
+    Arrow,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct UserFunction {
+    pub(crate) kind: FunctionKind,
     pub(crate) parameters: Vec<FunctionParameter>,
     pub(crate) body: Vec<Statement>,
 }

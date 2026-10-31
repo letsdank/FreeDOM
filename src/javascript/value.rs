@@ -4,11 +4,10 @@
 //!
 //! Object, string, and function semantics are not yet fully implemented.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
-
 use crate::url::Url;
+use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
-use super::{DocumentState, UserFunction, regexp};
+use super::{DocumentState, FunctionKind, UserFunction, regexp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeFunction {
@@ -257,16 +256,37 @@ pub(crate) enum ArrayMethodKind {
     Join,
 }
 
-/// A user function with reference identity.
-/// Function properties are not implemented yet.
-#[derive(Clone, Debug)]
+/// A user function with reference identity and partial own properties.
+#[derive(Clone)]
 pub struct FunctionValue {
     definition: Rc<UserFunction>,
+    properties: ObjectStorage,
 }
 
 impl FunctionValue {
     pub(super) fn definition(&self) -> &UserFunction {
         &self.definition
+    }
+
+    pub(super) fn get(&self, name: &str) -> Value {
+        self.properties
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or(Value::Undefined)
+    }
+
+    pub(super) fn set(&self, name: String, value: Value) {
+        self.properties.borrow_mut().set(name, value);
+    }
+}
+
+impl fmt::Debug for FunctionValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FunctionValue")
+            .field("identity", &Rc::as_ptr(&self.definition))
+            .finish()
     }
 }
 
@@ -416,8 +436,15 @@ impl Value {
     }
 
     pub(super) fn function(definition: UserFunction) -> Self {
+        let mut properties = ObjectState::default();
+
+        if definition.kind == FunctionKind::Ordinary {
+            properties.set("prototype".to_owned(), Value::object(std::iter::empty()));
+        }
+
         Self::Function(FunctionValue {
             definition: Rc::new(definition),
+            properties: Rc::new(RefCell::new(properties)),
         })
     }
 

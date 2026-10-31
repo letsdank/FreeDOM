@@ -3,7 +3,10 @@
 //! Implements a subset of ECMAScript function syntax:
 //! <https://tc39.es/ecma262/#sec-function-definitions>
 
-use super::{Expression, FunctionParameter, JsError, Parser, Statement, TokenKind, UserFunction};
+use super::{
+    Expression, FunctionKind, FunctionParameter, JsError, Parser, Statement, TokenKind,
+    UserFunction,
+};
 
 impl Parser<'_> {
     pub(super) fn parse_function_expression(&mut self) -> Result<Expression, JsError> {
@@ -13,7 +16,11 @@ impl Parser<'_> {
         let parameters = self.parse_function_parameters()?;
         let body = self.parse_function_body()?;
 
-        Ok(Expression::Function(UserFunction { parameters, body }))
+        Ok(Expression::Function(UserFunction {
+            kind: FunctionKind::Ordinary,
+            parameters,
+            body,
+        }))
     }
 
     fn parse_function_parameters(&mut self) -> Result<Vec<FunctionParameter>, JsError> {
@@ -139,7 +146,11 @@ impl Parser<'_> {
 
         Ok(Statement::FunctionDeclaration {
             name,
-            function: UserFunction { parameters, body },
+            function: UserFunction {
+                kind: FunctionKind::Ordinary,
+                parameters,
+                body,
+            },
         })
     }
 }

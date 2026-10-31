@@ -446,4 +446,91 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn ordinary_function_prototype_is_shared_and_replaceable() {
+        let result = evaluate(
+            "function F() {} \
+            let alias = F; \
+            let original = F.prototype; \
+            original.x = 3; \
+            let before = alias['prototype'].x; \
+            let replacement = Object.create(null); \
+            F['prototype'] = replacement; \
+            before === 3 && \
+            alias.prototype === replacement && \
+            original !== replacement;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn ordinary_function_get_distinct_prototypes_and_arrows_start_without_one() {
+        let result = evaluate(
+            "let f = function() {}; \
+            let g = function() {}; \
+            let a = () => 1; \
+            let b = x => x; \
+            let empty = \
+                a.prototype === undefined && \
+                b.prototype === undefined; \
+            a.prototype = 7; \
+            empty && \
+            a.prototype === 7 && \
+            f.prototype !== g.prototype;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn assigning_function_properties_through_aliases_is_observable() {
+        let result = evaluate(
+            "function f() {} \
+            let alias = f; \
+            alias['count'] = 1; \
+            f.count += 2; \
+            alias.count === 3;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn executes_prototype_assignment_statement_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "DedicatedWorkerTestEnvironment.prototype = Object.create(WorkerTestEnvironment.prototype);";
+
+        assert!(source.contains(fragment));
+
+        let script = format!(
+            "function WorkerTestEnvironment() {{}} \
+            function DedicatedWorkerTestEnvironment() {{}} \
+            WorkerTestEnvironment.prototype.marker = 42; \
+            {fragment} \
+            DedicatedWorkerTestEnvironment.prototype.marker === 42;"
+        );
+
+        assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn debug_format_of_self_referencing_function_is_finite() {
+        let error = evaluate(
+            "function f() {} \
+            f.self = f; \
+            assert_not_equals(f, f);",
+        )
+        .unwrap_err();
+
+        assert!(error.message.contains("FunctionValue"));
+    }
 }

@@ -22,6 +22,8 @@ impl Interpreter {
 
             (Value::Array(values), property) => Ok(Self::array_get(values, property)),
 
+            (Value::Function(function), property) => Ok(function.get(property)),
+
             (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
                 PropertyLookup::Found(value) => value,
 
@@ -267,6 +269,10 @@ impl Interpreter {
 
                 PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
             });
+        }
+
+        if let Value::Function(function) = object {
+            return Ok(function.get(&index.to_js_string()));
         }
 
         if let Value::NativeError(error) = object {
