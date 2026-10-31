@@ -356,6 +356,12 @@ impl<'source> Lexer<'source> {
             };
 
             match escape {
+                '\n' | '\u{2028}' | '\u{2029}' => {}
+
+                '\r' => {
+                    self.consume_if('\n');
+                }
+
                 '"' => value.push('"'),
                 '\'' => value.push('\''),
                 '\\' => value.push('\\'),
@@ -883,5 +889,73 @@ mod tests {
                 &TokenKind::EndOfFile,
             ]
         );
+    }
+
+    #[test]
+    fn string_line_continuations_are_removed_for_both_quotes() {
+        for quote in ['\'', '"'] {
+            for ending in ["\n", "\r", "\r\n", "\u{2028}", "\u{2029}"] {
+                let source = format!("{quote}a\\{ending} b{quote}");
+
+                let tokens = tokenize(&source).unwrap();
+
+                assert_eq!(
+                    tokens[0].kind,
+                    TokenKind::String("a b".to_owned()),
+                    "{source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_lf_and_cr_in_strings_are_rejected_but_unicode_separators_are_preserved() {
+        for ending in ["\n", "\r", "\r\n"] {
+            let source = format!("'a{ending}b'");
+
+            assert_eq!(
+                tokenize(&source).unwrap_err().message,
+                "newline in string literal"
+            );
+        }
+
+        for ending in ["\u{2028}", "\u{2029}"] {
+            let source = format!("'a{ending}b'");
+
+            assert_eq!(
+                tokenize(&source).unwrap()[0].kind,
+                TokenKind::String(format!("a{ending}b"))
+            );
+        }
+
+        assert_eq!(
+            tokenize("'a\\nb'").unwrap()[0].kind,
+            TokenKind::String("a\nb".to_owned())
+        );
+    }
+
+    #[test]
+    fn scans_real_multiline_stylesheet_string_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let marker = "var stylesheetContent = ";
+
+        let start = source.find(marker).expect("WPT stylesheet must exist") + marker.len();
+
+        let mut lexer = Lexer::new(&source[start..]);
+
+        let token = lexer.next_token(false).unwrap();
+
+        let TokenKind::String(value) = token.kind else {
+            panic!("expected string");
+        };
+
+        assert!(value.starts_with("html {"));
+        assert!(value.contains("font-family:DejaVu Sans"));
+        assert!(value.contains("table#results span.actual"));
+        assert!(!value.contains('\n'));
     }
 }

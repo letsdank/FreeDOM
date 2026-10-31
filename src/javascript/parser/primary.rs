@@ -382,4 +382,32 @@ mod tests {
 
         assert!(parse_program("let x = {1};").is_err());
     }
+
+    #[test]
+    fn parses_outer_iife_of_local_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let program = parse_program(source).unwrap();
+
+        let [Statement::Expression(Expression::Call { callee, arguments })] = program.as_slice()
+        else {
+            panic!("expected one top-level call");
+        };
+
+        let Expression::Function(function) = callee.as_ref() else {
+            panic!("expected function expression");
+        };
+
+        assert_eq!(function.parameters.len(), 1);
+        assert_eq!(function.parameters[0].name, "global_scope");
+        assert!(function.body.len() > 1);
+
+        assert!(matches!(
+            arguments.as_slice(),
+            [Expression::Identifier(name)] if name == "self"
+        ));
+    }
 }

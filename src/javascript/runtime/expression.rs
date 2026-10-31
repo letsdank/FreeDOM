@@ -570,4 +570,11 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn evaluates_strings_with_line_continuation() {
+        let result = evaluate("let value = 'a\\\r\nb'; value;").unwrap();
+
+        assert_eq!(result, Value::String("ab".to_owned()));
+    }
 }
