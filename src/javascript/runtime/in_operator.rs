@@ -106,4 +106,30 @@ mod tests {
 
         assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));
     }
+
+    #[test]
+    fn known_absent_keys_and_mutated_intrinsic_properties() {
+        let result = evaluate(
+            "let o = {}; \
+            let before = 'document' in o; \
+            Object.prototype.document = undefined; \
+            before === false && ('document' in o);",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn unimplemented_intrinsic_names_remain_unknown() {
+        for name in ["valueOf", "isPrototypeOf", "__proto__", "__defineGetter__"] {
+            let source = format!("'{name}' in {{}};");
+
+            assert_eq!(
+                evaluate(&source).unwrap_err().kind,
+                JsErrorKind::UnsupportedFeature,
+                "{name}"
+            );
+        }
+    }
 }

@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn testharness_probe_remains_unsupported_until_intrinsics_exist() {
+    fn testharness_global_scope_probe_detects_absent_document() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/wpt/resources/testharness.js"
@@ -376,13 +376,13 @@ mod tests {
 
         assert!(source.contains("'document' in global_scope"));
 
-        let error = evaluate(
+        let result = evaluate(
             "let global_scope = {}; \
             'document' in global_scope;",
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+        assert_eq!(result, Value::Boolean(false));
     }
 
     #[test]

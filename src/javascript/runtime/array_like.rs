@@ -191,9 +191,8 @@ mod tests {
     }
 
     #[test]
-    fn reports_unknown_prototypes_unsupported_lengths_and_excessive_sizes() {
+    fn reports_unsupported_lengths_and_excessive_sizes() {
         for source in [
-            "function f() {} f.apply({}, {length: 1});",
             "function f() {} f.apply({}, {length: {}});",
             "function f() {} f.apply({}, {length: 65537});",
             "function f() {} f.apply({}, {length: 'Infinity'});",
@@ -202,5 +201,16 @@ mod tests {
 
             assert_eq!(error.kind, JsErrorKind::UnsupportedFeature, "{source}");
         }
+    }
+
+    #[test]
+    fn reports_a_genuinely_unknown_prototype() {
+        let object = Value::object([("length".to_owned(), Value::Number(1.0))]);
+
+        let error = super::Interpreter::new()
+            .create_list_from_array_like(&object)
+            .unwrap_err();
+
+        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }
 }

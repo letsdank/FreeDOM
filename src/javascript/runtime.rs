@@ -111,7 +111,7 @@ impl Interpreter {
         let mut variables = HashMap::new();
 
         // Most intrinsic properties are not implemented yet.
-        let Value::Object(object_prototype) = Value::object(std::iter::empty()) else {
+        let Value::Object(object_prototype) = Value::intrinsic_object_prototype() else {
             unreachable!("object constructor returns an object");
         };
 

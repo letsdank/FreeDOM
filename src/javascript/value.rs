@@ -73,6 +73,7 @@ struct ObjectProperty {
 enum ObjectPrototype {
     #[default]
     Unknown,
+    IntrinsicObjectRoot,
     Null,
     Object(ObjectStorage),
 }
@@ -81,6 +82,27 @@ pub(crate) enum PropertyLookup {
     Found(Value),
     Absent,
     Unknown,
+}
+
+// These names exist on the initial Object.prototype, but some values and
+// descriptors are not implemented. Other missing string keys are absent.
+// https://tc39.es/ecma262/#sec-properties-of-the-object-prototype-object
+fn is_object_prototype_intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "constructor"
+            | "hasOwnProperty"
+            | "isPrototypeOf"
+            | "propertyIsEnumerable"
+            | "toLocaleString"
+            | "toString"
+            | "valueOf"
+            | "__proto__"
+            | "__defineGetter__"
+            | "__defineSetter__"
+            | "__lookupGetter__"
+            | "__lookupSetter__"
+    )
 }
 
 impl ObjectState {
@@ -196,7 +218,17 @@ impl ObjectState {
 
             match next {
                 ObjectPrototype::Null => return PropertyLookup::Absent,
+
                 ObjectPrototype::Unknown => return PropertyLookup::Unknown,
+
+                ObjectPrototype::IntrinsicObjectRoot => {
+                    return if is_object_prototype_intrinsic(name) {
+                        PropertyLookup::Unknown
+                    } else {
+                        PropertyLookup::Absent
+                    };
+                }
+
                 ObjectPrototype::Object(prototype) => current = prototype,
             }
         }
@@ -223,7 +255,7 @@ impl ObjectState {
             match prototype {
                 ObjectPrototype::Null => return Some(result),
 
-                ObjectPrototype::Unknown => return None,
+                ObjectPrototype::Unknown | ObjectPrototype::IntrinsicObjectRoot => return None,
 
                 ObjectPrototype::Object(prototype) => {
                     current = prototype;
@@ -519,6 +551,15 @@ impl Value {
         let state = ObjectState {
             properties: Vec::new(),
             prototype: ObjectPrototype::Object(prototype),
+        };
+
+        Self::Object(Rc::new(RefCell::new(state)))
+    }
+
+    pub(super) fn intrinsic_object_prototype() -> Self {
+        let state = ObjectState {
+            properties: Vec::new(),
+            prototype: ObjectPrototype::IntrinsicObjectRoot,
         };
 
         Self::Object(Rc::new(RefCell::new(state)))

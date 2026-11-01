@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn reports_unimplemented_argument_lists() {
-        let error = evaluate("let f = function() {}; f.apply({}, {length: 1});").unwrap_err();
+        let error = evaluate("let f = function() {}; f.apply({}, {length: {}});").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }

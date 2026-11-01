@@ -200,7 +200,6 @@ mod tests {
     #[test]
     fn unknown_prototypes_and_unimplemented_boxing_are_explicit() {
         for source in [
-            "let method = [].toString; method.call({});",
             "let method = [].toString; method.call(1);",
             "let a = []; a.join = () => 'x'; a.toString();",
         ] {
@@ -208,5 +207,12 @@ mod tests {
 
             assert_eq!(error.kind, JsErrorKind::UnsupportedFeature, "{source}");
         }
+    }
+
+    #[test]
+    fn ordinary_object_without_join_uses_object_tag() {
+        let result = evaluate("let method = [].toString; method.call({});").unwrap();
+
+        assert_eq!(result, Value::String("[object Object]".to_owned()));
     }
 }
