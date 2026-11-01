@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::url::Url;
 
@@ -94,6 +94,9 @@ mod switch;
 #[path = "runtime/for_of_array.rs"]
 mod for_of_array;
 
+#[path = "runtime/microtasks.rs"]
+mod microtasks;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: FunctionValue,
@@ -123,6 +126,8 @@ pub(super) struct Interpreter {
     object_prototype: ObjectStorage,
     capture_frames: Vec<CapturedBindings>,
     catch_bindings: Vec<(usize, String)>,
+    microtasks: VecDeque<Value>,
+    performing_microtask_checkpoint: bool,
 }
 
 impl Interpreter {
@@ -153,6 +158,11 @@ impl Interpreter {
         );
 
         variables.insert("undefined".to_owned(), Value::Undefined);
+
+        variables.insert(
+            "queueMicrotask".to_owned(),
+            Value::NativeFunction(NativeFunction::QueueMicrotask),
+        );
 
         variables.insert(
             "assert_equals".to_owned(),
@@ -193,6 +203,8 @@ impl Interpreter {
             object_prototype,
             capture_frames: Vec::new(),
             catch_bindings: Vec::new(),
+            microtasks: VecDeque::new(),
+            performing_microtask_checkpoint: false,
         }
     }
 
@@ -207,5 +219,26 @@ impl Interpreter {
 
     pub(super) fn execute(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
         self.execute_statements(program)
+    }
+
+    pub(super) fn execute_script(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
+        let result = self.execute(program);
+
+        if let Err(error) = &result {
+            if !matches!(
+                error.kind,
+                super::JsErrorKind::Thrown(_) | super::JsErrorKind::NativeException(_)
+            ) {
+                self.microtasks.clear();
+                return result;
+            }
+        }
+
+        if let Err(error) = self.perform_microtask_checkpoint() {
+            self.microtasks.clear();
+            return Err(error);
+        }
+
+        result
     }
 }

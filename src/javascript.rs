@@ -160,7 +160,7 @@ impl Error for JsError {}
 pub fn evaluate(source: &str) -> Result<Value, JsError> {
     let program = parse_program(source)?;
     Interpreter::new()
-        .execute(&program)
+        .execute_script(&program)
         .map(Completion::into_value)
 }
 

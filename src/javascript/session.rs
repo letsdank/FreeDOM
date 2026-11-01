@@ -29,7 +29,7 @@ impl DocumentScriptSession {
         document: &mut DocumentState,
     ) -> Result<Value, JsError> {
         let program = parse_program(source)?;
-        let result = self.interpreter.execute(&program);
+        let result = self.interpreter.execute_script(&program);
 
         let Some(updated) = self.interpreter.snapshot_document() else {
             return Err(JsError::runtime(

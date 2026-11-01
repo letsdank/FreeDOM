@@ -129,6 +129,8 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ArrayToString) => self.array_to_string(receiver),
 
+            Value::NativeFunction(NativeFunction::QueueMicrotask) => self.queue_microtask(values),
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }

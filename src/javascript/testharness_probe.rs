@@ -13,7 +13,7 @@ pub(crate) fn probe_testharness(source: &str) -> Result<(), JsError> {
     interpreter.execute(&parse_program("let self = {};")?)?;
 
     let program = parse_program(source)?;
-    interpreter.execute(&program)?;
+    interpreter.execute_script(&program)?;
 
     for name in ["test", "assert_equals", "add_completion_callback"] {
         let check = parse_program(&format!("self.{name};"))?;

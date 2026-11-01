@@ -26,6 +26,7 @@ pub enum NativeFunction {
     ObjectToString,
     ArrayToString,
     FunctionBind,
+    QueueMicrotask,
 }
 
 #[derive(Clone, Debug, PartialEq)]
