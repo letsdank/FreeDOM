@@ -92,6 +92,12 @@ impl Interpreter {
                         .map(|element| element.tag_name == *tag)
                         .unwrap_or(false),
 
+                    (_, Value::Function(_)) => {
+                        return Err(JsError::unsupported(
+                            "instanceof with user functions is not implemented",
+                        ));
+                    }
+
                     _ => false,
                 };
 

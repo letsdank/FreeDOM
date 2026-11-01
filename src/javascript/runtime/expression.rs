@@ -244,14 +244,16 @@ impl Interpreter {
     }
 
     fn construct(&mut self, constructor: &str, arguments: &[Expression]) -> Result<Value, JsError> {
+        if self.variables.contains_key(constructor) {
+            return self.construct_user(constructor, arguments);
+        }
+
         if constructor == "RegExp" {
             return self.construct_regexp(arguments);
         }
 
         if constructor != "URL" {
-            return Err(JsError::runtime(format!(
-                "ReferenceError: constructor {constructor} is not defined"
-            )));
+            return self.construct_user(constructor, arguments);
         }
 
         if !(1..=2).contains(&arguments.len()) {

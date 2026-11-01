@@ -35,6 +35,9 @@ mod in_operator;
 #[path = "runtime/function.rs"]
 mod function;
 
+#[path = "runtime/construct.rs"]
+mod construct;
+
 #[path = "runtime/function_call.rs"]
 mod function_call;
 
