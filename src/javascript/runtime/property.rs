@@ -32,6 +32,10 @@ impl Interpreter {
                 Ok(Value::NativeFunction(NativeFunction::FunctionApply))
             }
 
+            (Value::NativeFunction(_), "bind") => {
+                Ok(Value::NativeFunction(NativeFunction::FunctionBind))
+            }
+
             (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
                 PropertyLookup::Found(value) => value,
 

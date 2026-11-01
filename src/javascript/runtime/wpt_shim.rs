@@ -22,6 +22,12 @@ impl Interpreter {
             ));
         };
 
+        if callback.is_bound() {
+            return Err(JsError::unsupported(
+                "bound test callbacks are not implemented",
+            ));
+        }
+
         if callback.definition().parameters.len() > 1 {
             return Err(JsError::runtime(
                 "TypeError: test callbacks may accept at most one parameter",
@@ -66,6 +72,12 @@ impl Interpreter {
                 "TypeError: add_cleanup expects a function callback",
             ));
         };
+
+        if callback.is_bound() {
+            return Err(JsError::unsupported(
+                "bound cleanup callbacks are not implemented",
+            ));
+        }
 
         if !callback.definition().parameters.is_empty() {
             return Err(JsError::runtime(

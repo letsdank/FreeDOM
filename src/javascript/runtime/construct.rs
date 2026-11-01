@@ -26,6 +26,12 @@ impl Interpreter {
         }
 
         let function = match constructor {
+            Value::Function(function) if function.is_bound() => {
+                return Err(JsError::unsupported(
+                    "bound function construction is not implemented",
+                ));
+            }
+
             Value::Function(function) if function.definition().kind == FunctionKind::Ordinary => {
                 function
             }

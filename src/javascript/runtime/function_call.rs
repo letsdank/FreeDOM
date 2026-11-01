@@ -20,6 +20,10 @@ impl Interpreter {
 
         match target.unwrap_or(Value::Undefined) {
             Value::Function(function) => {
+                if function.is_bound() {
+                    return self.dispatch_call(Value::Function(function), None, arguments);
+                }
+
                 if function.definition().kind != FunctionKind::Ordinary {
                     return Err(JsError::unsupported(
                         "Function.call on arrow function is not implemented",

@@ -24,6 +24,7 @@ pub enum NativeFunction {
     FunctionApply,
     ObjectToString,
     ArrayToString,
+    FunctionBind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -370,6 +371,13 @@ pub(crate) enum ArrayMethodKind {
 pub struct FunctionValue {
     definition: Rc<UserFunction>,
     properties: ObjectStorage,
+    binding: Option<Rc<BoundFunction>>,
+}
+
+pub(super) struct BoundFunction {
+    pub(super) target: FunctionValue,
+    pub(super) this_arg: Value,
+    pub(super) arguments: Vec<Value>,
 }
 
 impl FunctionValue {
@@ -387,6 +395,8 @@ impl FunctionValue {
 
             None if name == "apply" => Value::NativeFunction(NativeFunction::FunctionApply),
 
+            None if name == "bind" => Value::NativeFunction(NativeFunction::FunctionBind),
+
             None => Value::Undefined,
         }
     }
@@ -394,20 +404,40 @@ impl FunctionValue {
     pub(super) fn set(&self, name: String, value: Value) {
         self.properties.borrow_mut().set(name, value);
     }
+
+    pub(super) fn bind(target: Self, this_arg: Value, arguments: Vec<Value>) -> Self {
+        Self {
+            definition: target.definition.clone(),
+            properties: Rc::new(RefCell::new(ObjectState::default())),
+            binding: Some(Rc::new(BoundFunction {
+                target,
+                this_arg,
+                arguments,
+            })),
+        }
+    }
+
+    pub(super) fn binding(&self) -> Option<&BoundFunction> {
+        self.binding.as_deref()
+    }
+
+    pub(super) fn is_bound(&self) -> bool {
+        self.binding.is_some()
+    }
 }
 
 impl fmt::Debug for FunctionValue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("FunctionValue")
-            .field("identity", &Rc::as_ptr(&self.definition))
+            .field("identity", &Rc::as_ptr(&self.properties))
             .finish()
     }
 }
 
 impl PartialEq for FunctionValue {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.definition, &other.definition)
+        Rc::ptr_eq(&self.properties, &other.properties)
     }
 }
 
@@ -603,6 +633,7 @@ impl Value {
         Self::Function(FunctionValue {
             definition: Rc::new(definition),
             properties: Rc::new(RefCell::new(properties)),
+            binding: None,
         })
     }
 

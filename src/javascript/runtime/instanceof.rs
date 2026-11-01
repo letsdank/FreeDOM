@@ -20,6 +20,12 @@ impl Interpreter {
                 _ => false,
             },
 
+            Value::Function(function) if function.is_bound() => {
+                return Err(JsError::unsupported(
+                    "instanceof with bound functions is not implemented",
+                ));
+            }
+
             Value::Function(function) => {
                 Self::ordinary_has_instance(&left, function.get("prototype"))?
             }

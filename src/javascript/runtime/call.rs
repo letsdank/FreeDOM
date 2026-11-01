@@ -97,6 +97,10 @@ impl Interpreter {
                 self.function_apply(receiver, values)
             }
 
+            Value::NativeFunction(NativeFunction::FunctionBind) => {
+                self.function_bind(receiver, values)
+            }
+
             Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
 
             Value::NativeFunction(NativeFunction::Test) => self.run_test(values),
@@ -194,7 +198,11 @@ impl Interpreter {
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {
-                self.call_function_with_receiver(function.definition(), values, receiver)
+                if function.is_bound() {
+                    self.call_bound_function(&function, values)
+                } else {
+                    self.call_function_with_receiver(function.definition(), values, receiver)
+                }
             }
 
             Value::RegExpTest(regexp) => {
