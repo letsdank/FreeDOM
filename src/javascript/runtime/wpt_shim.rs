@@ -44,7 +44,8 @@ impl Interpreter {
 
         let previous_this = self.variables.shadow("this".to_owned(), Value::TestContext);
 
-        let test_result = self.call_function(callback.definition(), callback_arguments);
+        let test_result =
+            self.call_function_value_with_receiver(callback, callback_arguments, None);
 
         self.variables.restore(previous_this);
 
@@ -108,7 +109,8 @@ impl Interpreter {
                 replaced_bindings.push(previous);
             }
 
-            let result = self.call_function(&cleanup.callback.definition(), Vec::new());
+            let result =
+                self.call_function_value_with_receiver(&cleanup.callback, Vec::new(), None);
 
             for previous in replaced_bindings.into_iter().rev() {
                 self.variables.restore(previous);

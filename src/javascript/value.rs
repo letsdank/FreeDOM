@@ -428,7 +428,6 @@ impl FunctionValue {
         self.binding.is_some()
     }
 
-    #[cfg(test)]
     pub(super) fn captures(&self) -> &CapturedBindings {
         &self.captures
     }

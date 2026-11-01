@@ -116,6 +116,20 @@ impl Bindings {
             })
             .collect()
     }
+
+    pub(super) fn install_captures(&mut self, captures: &CapturedBindings) -> Vec<BindingSnapshot> {
+        captures
+            .iter()
+            .map(|(name, binding)| {
+                let previous = self.values.insert(name.clone(), Rc::clone(binding));
+
+                BindingSnapshot {
+                    name: name.clone(),
+                    previous,
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@
 //!
 //! Binding and argument handling remain incomplete.
 
-use super::{Completion, Interpreter, JsError, Statement, UserFunction, Value};
+use super::{Completion, FunctionValue, Interpreter, JsError, Statement, UserFunction, Value};
 use crate::javascript::FunctionKind;
 
 fn function_local_names(statements: &[Statement]) -> Vec<String> {
@@ -224,17 +224,38 @@ impl Interpreter {
     }
 
     pub(super) fn create_function(&self, function: &UserFunction) -> Value {
-        let captures = match self.function_locals.last() {
-            Some(names) => {
-                let referenced = super::references::referenced_names(function);
+        let referenced = super::references::referenced_names(function);
 
-                self.variables.capture_names(names, &referenced)
-            }
+        let mut captures = self.capture_frames.last().cloned().unwrap_or_default();
 
-            None => Default::default(),
-        };
+        captures.retain(|name, _| referenced.contains(name));
+
+        if let Some(names) = self.function_locals.last() {
+            captures.extend(self.variables.capture_names(names, &referenced));
+        }
 
         Value::function(function.clone(), self.object_prototype.clone(), captures)
+    }
+
+    pub(super) fn call_function_value_with_receiver(
+        &mut self,
+        function: &FunctionValue,
+        arguments: Vec<Value>,
+        receiver: Option<Value>,
+    ) -> Result<Value, JsError> {
+        let previous = self.variables.install_captures(function.captures());
+
+        self.capture_frames.push(function.captures().clone());
+
+        let result = self.call_function_with_receiver(function.definition(), arguments, receiver);
+
+        self.capture_frames.pop();
+
+        for binding in previous.into_iter().rev() {
+            self.variables.restore(binding);
+        }
+
+        result
     }
 }
 
@@ -587,5 +608,131 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Number(9.0));
+    }
+
+    #[test]
+    fn returned_closures_share_cells_but_separate_calls_do_not() {
+        let result = evaluate(
+            r#"
+                function make() {
+                    let count = 0;
+
+                    return {
+                        inc: function() {
+                            count += 1;
+                            return count;
+                        },
+
+                        read: function() {
+                            return count;
+                        }
+                    };
+                }
+
+                let first = make();
+                let second = make();
+
+                first.inc() === 1 &&
+                    first.inc() === 2 &&
+                    first.read() === 2 &&
+                    second.read() === 0 &&
+                    second.inc() === 1 &&
+                    first.read() === 2;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn nested_closure_keeps_captures_of_its_creator() {
+        let result = evaluate(
+            r#"
+                function outer() {
+                    let count = 10;
+
+                    return function() {
+                        let step = 2;
+
+                        return function() {
+                            count += step;
+                            return count;
+                        };
+                    };
+                }
+
+                let middle = outer();
+                let inner = middle();
+
+                inner() === 12 && inner() === 14;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn restores_caller_bindings_when_closure_throws() {
+        let result = evaluate(
+            r#"
+                function make() {
+                    let x = 3;
+
+                    return function() {
+                        x += 1;
+                        throw x;
+                    };
+                }
+
+                let x = 99;
+                let f = make();
+                let caught = 0;
+
+                try {
+                    f();
+                } catch (e) {
+                    caught = e;
+                }
+
+                x === 99 && caught === 4;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn closures_work_with_call_bind_and_construction() {
+        let result = evaluate(
+            r#"
+                function make(base) {
+                    return function(n) {
+                        this.value = base + n;
+                        return this.value;
+                    };
+                }
+
+                let f = make(10);
+                let a = {};
+                let b = {};
+
+                let bound = f.bind(b, 2);
+                let called = f.call(a, 1);
+                let bound_result = bound();
+                let instance = new f(3);
+
+                called === 11 &&
+                    a.value === 11 &&
+                    bound_result === 12 &&
+                    b.value === 12 &&
+                    instance.value === 13;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }

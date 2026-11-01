@@ -39,7 +39,7 @@ impl Interpreter {
                     ));
                 }
 
-                self.call_function_with_receiver(function.definition(), arguments, Some(this_arg))
+                self.call_function_value_with_receiver(&function, arguments, Some(this_arg))
             }
 
             Value::NativeFunction(function) => {

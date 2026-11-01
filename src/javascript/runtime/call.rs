@@ -201,7 +201,7 @@ impl Interpreter {
                 if function.is_bound() {
                     self.call_bound_function(&function, values)
                 } else {
-                    self.call_function_with_receiver(function.definition(), values, receiver)
+                    self.call_function_value_with_receiver(&function, values, receiver)
                 }
             }
 

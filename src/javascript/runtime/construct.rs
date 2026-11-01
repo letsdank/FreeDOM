@@ -65,11 +65,8 @@ impl Interpreter {
 
         let instance = Value::object_with_prototype(prototype);
 
-        let result = self.call_function_with_receiver(
-            function.definition(),
-            values,
-            Some(instance.clone()),
-        )?;
+        let result =
+            self.call_function_value_with_receiver(&function, values, Some(instance.clone()))?;
 
         match result {
             Value::Undefined

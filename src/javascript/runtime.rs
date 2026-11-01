@@ -8,7 +8,7 @@ use super::{
     JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
 };
 
-use self::bindings::Bindings;
+use self::bindings::{Bindings, CapturedBindings};
 
 #[path = "runtime/bindings.rs"]
 pub(super) mod bindings;
@@ -121,6 +121,7 @@ pub(super) struct Interpreter {
     cleanups: Vec<Cleanup>,
     function_locals: Vec<Vec<String>>,
     object_prototype: ObjectStorage,
+    capture_frames: Vec<CapturedBindings>,
 }
 
 impl Interpreter {
@@ -189,6 +190,7 @@ impl Interpreter {
             cleanups: Vec::new(),
             function_locals: Vec::new(),
             object_prototype,
+            capture_frames: Vec::new(),
         }
     }
 
