@@ -243,11 +243,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_prototypes_and_instanceof_are_explicit() {
-        for source in [
-            "function F() {} F.prototype = []; new F();",
-            "function F() {} let x = new F(); x instanceof F;",
-        ] {
+    fn unsupported_constructor_prototypes_are_explicit() {
+        for source in ["function F() {} F.prototype = []; new F();"] {
             let error = evaluate(source).unwrap_err();
 
             assert_eq!(error.kind, JsErrorKind::UnsupportedFeature, "{source}");

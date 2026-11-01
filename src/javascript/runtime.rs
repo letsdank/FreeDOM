@@ -32,6 +32,9 @@ mod operators;
 #[path = "runtime/in_operator.rs"]
 mod in_operator;
 
+#[path = "runtime/instanceof.rs"]
+mod instanceof;
+
 #[path = "runtime/function.rs"]
 mod function;
 

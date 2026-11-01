@@ -85,24 +85,7 @@ impl Interpreter {
                 |a, b| a >= b,
             )?)),
 
-            BinaryOperator::Instanceof => {
-                let matches = match (&left, &right) {
-                    (Value::Element(node_id), Value::ElementConstructor(tag)) => self
-                        .current_document_element(*node_id)
-                        .map(|element| element.tag_name == *tag)
-                        .unwrap_or(false),
-
-                    (_, Value::Function(_)) => {
-                        return Err(JsError::unsupported(
-                            "instanceof with user functions is not implemented",
-                        ));
-                    }
-
-                    _ => false,
-                };
-
-                Ok(Value::Boolean(matches))
-            }
+            BinaryOperator::Instanceof => self.evaluate_instanceof(left, right),
 
             BinaryOperator::In => Self::evaluate_in(left, right),
         }

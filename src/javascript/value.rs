@@ -234,6 +234,30 @@ impl ObjectState {
         }
     }
 
+    pub(crate) fn has_prototype(object: &ObjectStorage, target: &ObjectStorage) -> Option<bool> {
+        let mut current = object.clone();
+
+        loop {
+            let prototype = current.borrow().prototype.clone();
+
+            match prototype {
+                ObjectPrototype::Object(next) => {
+                    if Rc::ptr_eq(&next, target) {
+                        return Some(true);
+                    }
+
+                    current = next;
+                }
+
+                ObjectPrototype::Null | ObjectPrototype::IntrinsicObjectRoot => {
+                    return Some(false);
+                }
+
+                ObjectPrototype::Unknown => return None,
+            }
+        }
+    }
+
     pub(crate) fn for_in_keys(object: &ObjectStorage) -> Option<Vec<String>> {
         let mut current = object.clone();
         let mut result = Vec::new();
