@@ -1,6 +1,6 @@
 use crate::{
     html::{Document, Element, Node},
-    javascript::{DocumentState, JsError, evaluate_with_document},
+    javascript::{DocumentScriptSession, DocumentState, JsError},
 };
 
 pub fn run_document_test(source: &str) -> Result<DocumentState, JsError> {
@@ -69,8 +69,10 @@ fn execute_inline_scripts(
     root: &Document,
     document_state: &mut DocumentState,
 ) -> Result<(), JsError> {
+    let mut session = DocumentScriptSession::new(document_state);
+
     for child in &root.children {
-        execute_inline_scripts_in_node(child, document_state)?;
+        execute_inline_scripts_in_node(child, document_state, &mut session)?;
     }
 
     Ok(())
@@ -79,6 +81,7 @@ fn execute_inline_scripts(
 fn execute_inline_scripts_in_node(
     node: &Node,
     document_state: &mut DocumentState,
+    session: &mut DocumentScriptSession,
 ) -> Result<(), JsError> {
     let Node::Element(element) = node else {
         return Ok(());
@@ -89,7 +92,7 @@ fn execute_inline_scripts_in_node(
             let source = text_content(node);
 
             if !source.trim().is_empty() {
-                evaluate_with_document(&source, document_state)?;
+                session.evaluate(&source, document_state)?;
             }
         }
 
@@ -97,7 +100,7 @@ fn execute_inline_scripts_in_node(
     }
 
     for child in &element.children {
-        execute_inline_scripts_in_node(child, document_state)?;
+        execute_inline_scripts_in_node(child, document_state, session)?;
     }
 
     Ok(())
@@ -783,5 +786,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(state.title, "Document.getElementById");
+    }
+
+    #[test]
+    fn shares_globals_across_inline_wpt_style_scripts() {
+        let state = run_document_test(
+            r#"
+                <script>
+                    let answer = 42;
+                </script>
+
+                <script>
+                    test(function() {
+                        assert_equals(answer, 42);
+                    }, 'shared global');
+
+                    document.title = 'ok';
+                </script>
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(state.title, "ok");
     }
 }

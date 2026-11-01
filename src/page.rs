@@ -11,7 +11,7 @@ use crate::{
         svg::{SvgDocument, parse_svg_at, parse_svg_element, parse_svg_element_at},
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
-    javascript::{DocumentState, evaluate_with_document},
+    javascript::{DocumentScriptSession, DocumentState},
     url::Url,
 };
 use anyhow::Result;
@@ -284,12 +284,18 @@ fn register_document_elements_in_node(
 }
 
 fn run_inline_scripts(root: &HtmlDocument, document: &mut DocumentState) {
+    let mut session = DocumentScriptSession::new(document);
+
     for child in &root.children {
-        run_inline_scripts_in_node(child, document);
+        run_inline_scripts_in_node(child, document, &mut session);
     }
 }
 
-fn run_inline_scripts_in_node(node: &HtmlNode, document: &mut DocumentState) {
+fn run_inline_scripts_in_node(
+    node: &HtmlNode,
+    document: &mut DocumentState,
+    session: &mut DocumentScriptSession,
+) {
     let HtmlNode::Element(element) = node else {
         return;
     };
@@ -301,7 +307,7 @@ fn run_inline_scripts_in_node(node: &HtmlNode, document: &mut DocumentState) {
             let source = text_content(node);
 
             if !source.trim().is_empty() {
-                if let Err(error) = evaluate_with_document(&source, document) {
+                if let Err(error) = session.evaluate(&source, document) {
                     eprintln!("FreeDOM: inline script error: {error}");
                 }
             }
@@ -311,7 +317,7 @@ fn run_inline_scripts_in_node(node: &HtmlNode, document: &mut DocumentState) {
     }
 
     for child in &element.children {
-        run_inline_scripts_in_node(child, document);
+        run_inline_scripts_in_node(child, document, session);
     }
 }
 
@@ -1607,5 +1613,24 @@ mod tests {
         );
 
         assert_eq!(page.blocks[0].style.color, 0x00_FF_00_00);
+    }
+
+    #[test]
+    fn inline_scripts_share_global_bindings_and_continue_after_errors() {
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <title>Before</title>
+                <script>
+                    let prefix = 'Hello';
+                    throw 'failure';
+                </script>
+                <script>
+                    document.title = prefix + ' world';
+                </script>
+            "#,
+        );
+
+        assert_eq!(page.title, "Hello world");
     }
 }

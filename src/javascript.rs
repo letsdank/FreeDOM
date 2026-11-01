@@ -64,6 +64,11 @@ pub(crate) use ast::{
 
 use runtime::{Completion, Interpreter};
 
+#[path = "javascript/session.rs"]
+mod session;
+
+pub(crate) use session::DocumentScriptSession;
+
 /// Classification of parser and interpreter failures.
 ///
 /// Explicitly thrown JavaScript values are distinct from engine failures.
@@ -158,22 +163,7 @@ pub fn evaluate_with_document(
     source: &str,
     document: &mut DocumentState,
 ) -> Result<Value, JsError> {
-    let program = parse_program(source)?;
-
-    let mut interpreter = Interpreter::new();
-    interpreter.set_document(document.clone());
-
-    let result = interpreter.execute(&program);
-
-    let Some(updated_document) = interpreter.take_document() else {
-        return Err(JsError::runtime(
-            "TypeError: global document binding must remain a Document",
-        ));
-    };
-
-    *document = updated_document;
-
-    result.map(Completion::into_value)
+    DocumentScriptSession::new(document).evaluate(source, document)
 }
 
 #[cfg(test)]

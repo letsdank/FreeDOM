@@ -194,12 +194,12 @@ impl Interpreter {
             .insert("document".to_owned(), Value::Document(document));
     }
 
-    pub(super) fn take_document(&mut self) -> Option<DocumentState> {
-        let Value::Document(document) = self.variables.remove("document")? else {
+    pub(super) fn snapshot_document(&mut self) -> Option<DocumentState> {
+        let Value::Document(document) = self.variables.get("document")? else {
             return None;
         };
 
-        Some(document)
+        Some(document.clone())
     }
 
     pub(super) fn execute(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
