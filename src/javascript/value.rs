@@ -22,6 +22,8 @@ pub enum NativeFunction {
     ObjectHasOwnProperty,
     FunctionCall,
     FunctionApply,
+    ObjectToString,
+    ArrayToString,
 }
 
 #[derive(Clone, Debug, PartialEq)]

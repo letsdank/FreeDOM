@@ -62,6 +62,9 @@ mod assignment;
 #[path = "runtime/object.rs"]
 mod object;
 
+#[path = "runtime/object_to_string.rs"]
+mod object_to_string;
+
 #[path = "runtime/for_in.rs"]
 mod for_in;
 
@@ -118,6 +121,12 @@ impl Interpreter {
         object_prototype.borrow_mut().define_own_data_property(
             "hasOwnProperty".to_owned(),
             Value::NativeFunction(NativeFunction::ObjectHasOwnProperty),
+            false,
+        );
+
+        object_prototype.borrow_mut().define_own_data_property(
+            "toString".to_owned(),
+            Value::NativeFunction(NativeFunction::ObjectToString),
             false,
         );
 

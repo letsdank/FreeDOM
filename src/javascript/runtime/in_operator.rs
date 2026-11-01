@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn does_not_guess_the_result_without_prototype_lookup() {
-        let error = evaluate("'toString' in {};").unwrap_err();
+        let error = evaluate("'valueOf' in {};").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }

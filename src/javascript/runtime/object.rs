@@ -211,7 +211,7 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
 
-        let error = evaluate("'toString' in Object.create({});").unwrap_err();
+        let error = evaluate("'valueOf' in Object.create({});").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }

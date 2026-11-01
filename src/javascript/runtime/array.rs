@@ -5,7 +5,7 @@
 //! Storage records holes created by array literals and indexed assignment.
 //! Length assignment and property descriptors are not implemented.
 
-use super::{Interpreter, JsError, Value};
+use super::{Interpreter, JsError, NativeFunction, Value};
 use crate::javascript::{ArrayMethodKind, ArrayStorage};
 
 impl Interpreter {
@@ -48,6 +48,10 @@ impl Interpreter {
 
         if let Some(value) = own {
             return Some(value);
+        }
+
+        if name == "toString" {
+            return Some(Value::NativeFunction(NativeFunction::ArrayToString));
         }
 
         let method = match name {

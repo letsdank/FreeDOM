@@ -119,6 +119,14 @@ impl Interpreter {
                 Self::object_has_own_property(receiver, values)
             }
 
+            Value::NativeFunction(NativeFunction::ObjectToString) => {
+                Self::object_to_string(receiver)
+            }
+
+            Value::NativeFunction(NativeFunction::ArrayToString) => Err(JsError::unsupported(
+                "Array.prototype.toString is not implemented",
+            )),
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }
