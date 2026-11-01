@@ -5,13 +5,17 @@
 //! This is not yet an ECMAScript Environment Record: scopes, lexical capture,
 //! binding attributes and temporal dead zones are not implemented here.
 
-use std::collections::HashMap;
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    collections::HashMap,
+    rc::Rc,
+};
 
 use crate::javascript::Value;
 
 #[derive(Default)]
 pub(super) struct Bindings {
-    values: HashMap<String, Binding>,
+    values: HashMap<String, Rc<RefCell<Binding>>>,
 }
 
 struct Binding {
@@ -20,7 +24,7 @@ struct Binding {
 
 pub(super) struct BindingSnapshot {
     name: String,
-    previous: Option<Binding>,
+    previous: Option<Rc<RefCell<Binding>>>,
 }
 
 impl Bindings {
@@ -28,24 +32,28 @@ impl Bindings {
         self.values.contains_key(name)
     }
 
-    pub(super) fn get(&self, name: &str) -> Option<&Value> {
-        self.values.get(name).map(|binding| &binding.value)
+    pub(super) fn get(&self, name: &str) -> Option<Ref<'_, Value>> {
+        self.values
+            .get(name)
+            .map(|binding| Ref::map(binding.borrow(), |binding| &binding.value))
     }
 
-    pub(super) fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
-        self.values.get_mut(name).map(|binding| &mut binding.value)
+    pub(super) fn get_mut(&mut self, name: &str) -> Option<RefMut<'_, Value>> {
+        self.values
+            .get_mut(name)
+            .map(|binding| RefMut::map(binding.borrow_mut(), |binding| &mut binding.value))
     }
 
     pub(super) fn insert(&mut self, name: String, value: Value) -> Option<Value> {
         self.values
-            .insert(name, Binding { value })
-            .map(|binding| binding.value)
+            .insert(name, Rc::new(RefCell::new(Binding { value })))
+            .map(|binding| binding.borrow().value.clone())
     }
 
     pub(super) fn assign_existing(&mut self, name: &str, value: Value) -> Result<(), Value> {
         match self.values.get_mut(name) {
             Some(binding) => {
-                binding.value = value;
+                binding.borrow_mut().value = value;
                 Ok(())
             }
 
@@ -56,15 +64,19 @@ impl Bindings {
     pub(super) fn insert_if_absent(&mut self, name: &str, value: Value) {
         self.values
             .entry(name.to_owned())
-            .or_insert(Binding { value });
+            .or_insert_with(|| Rc::new(RefCell::new(Binding { value })));
     }
 
     pub(super) fn remove(&mut self, name: &str) -> Option<Value> {
-        self.values.remove(name).map(|binding| binding.value)
+        self.values
+            .remove(name)
+            .map(|binding| binding.borrow().value.clone())
     }
 
     pub(super) fn shadow(&mut self, name: String, value: Value) -> BindingSnapshot {
-        let previous = self.values.insert(name.clone(), Binding { value });
+        let previous = self
+            .values
+            .insert(name.clone(), Rc::new(RefCell::new(Binding { value })));
 
         BindingSnapshot { name, previous }
     }
@@ -93,7 +105,7 @@ mod tests {
         assert!(!bindings.contains_key("x"));
 
         assert_eq!(bindings.insert("x".into(), Value::Number(1.0)), None);
-        assert_eq!(bindings.get("x"), Some(&Value::Number(1.0)));
+        assert_eq!(bindings.get("x").as_deref(), Some(&Value::Number(1.0)));
 
         assert_eq!(
             bindings.insert("x".into(), Value::Undefined),
@@ -112,7 +124,7 @@ mod tests {
         bindings.insert("x".into(), Value::Number(1.0));
         *bindings.get_mut("x").unwrap() = Value::Number(2.0);
 
-        assert_eq!(bindings.get("x"), Some(&Value::Number(2.0)));
+        assert_eq!(bindings.get("x").as_deref(), Some(&Value::Number(2.0)));
         assert!(bindings.get_mut("missing").is_none());
     }
 
@@ -123,7 +135,7 @@ mod tests {
         bindings.insert_if_absent("x", Value::Number(1.0));
         bindings.insert_if_absent("x", Value::Number(2.0));
 
-        assert_eq!(bindings.get("x"), Some(&Value::Number(1.0)));
+        assert_eq!(bindings.get("x").as_deref(), Some(&Value::Number(1.0)));
     }
 
     #[test]
@@ -137,7 +149,9 @@ mod tests {
             panic!("expected object");
         };
 
-        let Some(Value::Object(stored)) = bindings.get("object") else {
+        let stored = bindings.get("object").unwrap();
+
+        let Value::Object(stored) = &*stored else {
             panic!("expected object");
         };
 
@@ -164,7 +178,7 @@ mod tests {
         bindings.insert("x".to_owned(), Value::Undefined);
 
         assert!(bindings.assign_existing("x", Value::Number(3.0)).is_ok());
-        assert_eq!(bindings.get("x"), Some(&Value::Number(3.0)));
+        assert_eq!(bindings.get("x").as_deref(), Some(&Value::Number(3.0)));
     }
 
     #[test]
@@ -181,10 +195,10 @@ mod tests {
         assert!(!bindings.contains_key("temporary"));
 
         bindings.restore(second);
-        assert_eq!(bindings.get("x"), Some(&Value::Number(1.0)));
+        assert_eq!(bindings.get("x").as_deref(), Some(&Value::Number(1.0)));
 
         bindings.restore(first);
-        assert_eq!(bindings.get("x"), Some(&Value::Undefined));
+        assert_eq!(bindings.get("x").as_deref(), Some(&Value::Undefined));
         assert!(bindings.contains_key("x"));
     }
 
@@ -203,10 +217,40 @@ mod tests {
             panic!("expected object");
         };
 
-        let Some(Value::Object(restored)) = bindings.get("x") else {
+        let restored = bindings.get("x").unwrap();
+
+        let Value::Object(restored) = &*restored else {
             panic!("expected object");
         };
 
         assert!(std::rc::Rc::ptr_eq(&original, restored));
+    }
+
+    #[test]
+    fn assignment_updates_shared_cell_and_shadow_restores_its_identity() {
+        let mut bindings = Bindings::default();
+
+        bindings.insert("x".to_owned(), Value::Number(1.0));
+
+        let original = bindings.values.get("x").unwrap().clone();
+
+        bindings.assign_existing("x", Value::Number(2.0)).unwrap();
+
+        assert_eq!(original.borrow().value, Value::Number(2.0));
+
+        let snapshot = bindings.shadow("x".to_owned(), Value::Number(3.0));
+
+        let shadow = bindings.values.get("x").unwrap().clone();
+
+        assert!(!std::rc::Rc::ptr_eq(&original, &shadow));
+
+        bindings.restore(snapshot);
+
+        assert!(std::rc::Rc::ptr_eq(
+            &original,
+            bindings.values.get("x").unwrap()
+        ));
+
+        assert_eq!(bindings.get("x").as_deref(), Some(&Value::Number(2.0)));
     }
 }

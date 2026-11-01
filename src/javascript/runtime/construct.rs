@@ -16,7 +16,7 @@ impl Interpreter {
         let constructor = self
             .variables
             .get(name)
-            .cloned()
+            .map(|value| value.clone())
             .ok_or_else(|| JsError::reference_error(name))?;
 
         let mut values = Vec::with_capacity(arguments.len());

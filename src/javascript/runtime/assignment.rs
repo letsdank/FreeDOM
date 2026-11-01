@@ -67,7 +67,7 @@ impl Interpreter {
             AssignmentReference::Binding(name) => self
                 .variables
                 .get(name)
-                .cloned()
+                .map(|value| value.clone())
                 .ok_or_else(|| JsError::reference_error(name)),
 
             AssignmentReference::Member {
@@ -101,11 +101,7 @@ impl Interpreter {
                 document_title,
             } => {
                 if document_title {
-                    let Some(Value::Document(document)) = self.variables.get_mut("document") else {
-                        return Err(JsError::runtime(
-                            "TypeError: document binding is unavailable",
-                        ));
-                    };
+                    let mut document = self.current_document_mut()?;
 
                     document.title = value.to_js_string();
                     return Ok(());

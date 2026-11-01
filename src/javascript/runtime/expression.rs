@@ -94,7 +94,7 @@ impl Interpreter {
             Expression::Identifier(name) => self
                 .variables
                 .get(name)
-                .cloned()
+                .map(|value| value.clone())
                 .ok_or_else(|| JsError::reference_error(name)),
 
             Expression::New {

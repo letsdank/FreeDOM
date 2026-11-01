@@ -330,10 +330,14 @@ impl Interpreter {
         match object {
             Value::Attributes(node_id) => Ok(self
                 .current_document_element(node_id)
-                .and_then(|element| element.attributes.get(index as usize))
-                .map(|attribute| Value::Attribute {
-                    node_id,
-                    name: attribute.name.clone(),
+                .and_then(|element| {
+                    element
+                        .attributes
+                        .get(index as usize)
+                        .map(|attribute| Value::Attribute {
+                            node_id,
+                            name: attribute.name.clone(),
+                        })
                 })
                 .unwrap_or(Value::Undefined)),
 
@@ -350,8 +354,7 @@ impl Interpreter {
 
             Value::ElementChildren(node_id) => Ok(self
                 .current_document_element(node_id)
-                .and_then(|element| element.children.get(index as usize))
-                .copied()
+                .and_then(|element| element.children.get(index as usize).copied())
                 .map(Value::Element)
                 .unwrap_or(Value::Undefined)),
 

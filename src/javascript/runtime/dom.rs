@@ -2,30 +2,43 @@ use crate::javascript::{
     DocumentState, JsError, Value,
     dom::{ElementState, parse_simple_selector},
 };
+use std::cell::{Ref, RefMut};
 
 use super::Interpreter;
 
 impl Interpreter {
-    pub(super) fn current_document(&self) -> Option<&DocumentState> {
-        let Value::Document(document) = self.variables.get("document")? else {
-            return None;
-        };
-
-        Some(document)
+    pub(super) fn current_document(&self) -> Option<Ref<'_, DocumentState>> {
+        Ref::filter_map(self.variables.get("document")?, |value| {
+            if let Value::Document(document) = value {
+                Some(document)
+            } else {
+                None
+            }
+        })
+        .ok()
     }
 
-    pub(super) fn current_document_element(&self, node_id: u64) -> Option<&ElementState> {
-        self.current_document()?.element(node_id)
+    pub(super) fn current_document_element(&self, node_id: u64) -> Option<Ref<'_, ElementState>> {
+        Ref::filter_map(self.current_document()?, |document| {
+            document.element(node_id)
+        })
+        .ok()
     }
 
-    pub(super) fn current_document_mut(&mut self) -> Result<&mut DocumentState, JsError> {
-        let Some(Value::Document(document)) = self.variables.get_mut("document") else {
-            return Err(JsError::runtime(
-                "TypeError: document binding is unavailable",
-            ));
-        };
+    pub(super) fn current_document_mut(&mut self) -> Result<RefMut<'_, DocumentState>, JsError> {
+        let binding = self
+            .variables
+            .get_mut("document")
+            .ok_or_else(|| JsError::runtime("TypeError: document binding is unavailable"))?;
 
-        Ok(document)
+        RefMut::filter_map(binding, |value| {
+            if let Value::Document(document) = value {
+                Some(document)
+            } else {
+                None
+            }
+        })
+        .map_err(|_| JsError::runtime("TypeError: document binding is unavailable"))
     }
 
     pub(super) fn set_document_element_text_content(
