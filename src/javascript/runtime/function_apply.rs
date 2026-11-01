@@ -2,7 +2,7 @@
 //!
 //! <https://tc39.es/ecma262/#sec-function.prototype.apply>
 //!
-//! Only array argument lists are currently supported.
+//! Only arrays and a subset of ordinary array-like objects are supported.
 
 use super::{Interpreter, JsError, Value};
 
@@ -41,25 +41,7 @@ impl Interpreter {
         match arguments.get(1).unwrap_or(&Value::Undefined) {
             Value::Null | Value::Undefined => {}
 
-            Value::Array(array) => {
-                let length = array.borrow().values.len();
-
-                for index in 0..length {
-                    forwarded.push(self.array_property(array.clone(), &index.to_string()));
-                }
-            }
-
-            Value::Boolean(_) | Value::Number(_) | Value::String(_) => {
-                return Err(JsError::type_error(
-                    "Function.apply argument list must be an object",
-                ));
-            }
-
-            _ => {
-                return Err(JsError::unsupported(
-                    "Function.apply currently supports only array argument lists",
-                ));
-            }
+            value => forwarded.extend(self.create_list_from_array_like(value)?),
         }
 
         self.function_call(target, forwarded)
@@ -151,7 +133,7 @@ mod tests {
 
     #[test]
     fn reports_unimplemented_argument_lists() {
-        let error = evaluate("let f = function() {}; f.apply({}, {0: 1, length: 1});").unwrap_err();
+        let error = evaluate("let f = function() {}; f.apply({}, {length: 1});").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }

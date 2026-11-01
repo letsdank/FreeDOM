@@ -41,6 +41,9 @@ mod function_call;
 #[path = "runtime/function_apply.rs"]
 mod function_apply;
 
+#[path = "runtime/array_like.rs"]
+mod array_like;
+
 #[path = "runtime/call.rs"]
 mod call;
 
