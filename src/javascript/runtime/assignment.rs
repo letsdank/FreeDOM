@@ -87,10 +87,8 @@ impl Interpreter {
     ) -> Result<(), JsError> {
         match reference {
             AssignmentReference::Binding(name) => {
-                if let Err(value) = self.variables.assign_existing(&name, value) {
-                    // Preserve the current implicit-global behavior for unresolved names.
-                    self.variables.insert(name, value);
-                }
+                // Preserve the current implicit-global behavior for unresolved names.
+                self.variables.assign_or_insert(name, value);
 
                 Ok(())
             }

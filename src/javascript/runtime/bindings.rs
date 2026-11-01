@@ -67,6 +67,12 @@ impl Bindings {
             .or_insert_with(|| Rc::new(RefCell::new(Binding { value })));
     }
 
+    pub(super) fn assign_or_insert(&mut self, name: String, value: Value) {
+        if let Err(value) = self.assign_existing(&name, value) {
+            self.insert(name, value);
+        }
+    }
+
     pub(super) fn remove(&mut self, name: &str) -> Option<Value> {
         self.values
             .remove(name)
@@ -252,5 +258,81 @@ mod tests {
         ));
 
         assert_eq!(bindings.get("x").as_deref(), Some(&Value::Number(2.0)));
+    }
+
+    #[test]
+    fn loops_and_test_shim_restore_original_cells() {
+        let mut interpreter = super::super::Interpreter::new();
+
+        let program = crate::javascript::parse_program(
+            "let x = 'outer'; \
+            let o = Object.create(null); \
+            o.a = 1;",
+        )
+        .unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        interpreter
+            .variables
+            .insert("this".to_owned(), Value::Number(7.0));
+
+        let original_x = interpreter.variables.values.get("x").unwrap().clone();
+        let original_this = interpreter.variables.values.get("this").unwrap().clone();
+
+        let program = crate::javascript::parse_program(
+            "for (let x in o) {} \
+            for (let x of [1]) {} \
+            for (let [x] of [[1]]) {} \
+            test(function() {});",
+        )
+        .unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        assert!(std::rc::Rc::ptr_eq(
+            &original_x,
+            interpreter.variables.values.get("x").unwrap()
+        ));
+
+        assert!(std::rc::Rc::ptr_eq(
+            &original_this,
+            interpreter.variables.values.get("this").unwrap()
+        ));
+
+        assert_eq!(
+            interpreter.variables.get("x").as_deref(),
+            Some(&Value::String("outer".to_owned()))
+        );
+    }
+
+    #[test]
+    fn var_for_in_updates_existing_cell_instead_of_replacing_it() {
+        let mut interpreter = super::super::Interpreter::new();
+
+        let program = crate::javascript::parse_program(
+            "var x = 'start'; \
+            let o = Object.create(null); \
+            o.a = 1;",
+        )
+        .unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        let original = interpreter.variables.values.get("x").unwrap().clone();
+
+        let program = crate::javascript::parse_program("for (var x in o) {}").unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        assert!(std::rc::Rc::ptr_eq(
+            &original,
+            interpreter.variables.values.get("x").unwrap()
+        ));
+
+        assert_eq!(
+            interpreter.variables.get("x").as_deref(),
+            Some(&Value::String("a".to_owned()))
+        );
     }
 }

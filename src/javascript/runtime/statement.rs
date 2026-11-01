@@ -172,11 +172,11 @@ impl Interpreter {
                     };
                     let values = values.borrow().values.clone();
 
-                    let previous_binding = self.variables.insert(binding.clone(), Value::Undefined);
+                    let previous_binding = self.variables.shadow(binding.clone(), Value::Undefined);
 
                     let completion = (|| -> Result<Completion, JsError> {
                         for value in values {
-                            self.variables.insert(binding.clone(), value);
+                            self.variables.assign_or_insert(binding.clone(), value);
 
                             match self.execute(body)? {
                                 Completion::Normal(_) | Completion::Continue => {}
@@ -190,11 +190,7 @@ impl Interpreter {
                         Ok(Completion::Normal(Value::Undefined))
                     })();
 
-                    if let Some(value) = previous_binding {
-                        self.variables.insert(binding.clone(), value);
-                    } else {
-                        self.variables.remove(binding);
-                    }
+                    self.variables.restore(previous_binding);
 
                     match completion? {
                         Completion::Normal(value) => value,

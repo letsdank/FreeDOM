@@ -42,15 +42,11 @@ impl Interpreter {
 
         let cleanup_start = self.cleanups.len();
 
-        let previous_this = self.variables.insert("this".to_owned(), Value::TestContext);
+        let previous_this = self.variables.shadow("this".to_owned(), Value::TestContext);
 
         let test_result = self.call_function(callback.definition(), callback_arguments);
 
-        if let Some(previous_this) = previous_this {
-            self.variables.insert("this".to_owned(), previous_this);
-        } else {
-            self.variables.remove("this");
-        }
+        self.variables.restore(previous_this);
 
         let cleanup_result = self.run_cleanups_since(cleanup_start);
 
@@ -108,18 +104,14 @@ impl Interpreter {
             let mut replaced_bindings = Vec::new();
 
             for (name, value) in cleanup.captured {
-                let previous = self.variables.insert(name.clone(), value);
-                replaced_bindings.push((name, previous));
+                let previous = self.variables.shadow(name, value);
+                replaced_bindings.push(previous);
             }
 
             let result = self.call_function(&cleanup.callback.definition(), Vec::new());
 
-            for (name, previous) in replaced_bindings.into_iter().rev() {
-                if let Some(value) = previous {
-                    self.variables.insert(name, value);
-                } else {
-                    self.variables.remove(&name);
-                }
+            for previous in replaced_bindings.into_iter().rev() {
+                self.variables.restore(previous);
             }
 
             if let Err(error) = result {

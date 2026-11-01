@@ -33,10 +33,7 @@ impl Interpreter {
         let mut previous = Vec::new();
 
         for binding in bindings {
-            previous.push((
-                binding.clone(),
-                self.variables.insert(binding.clone(), Value::Undefined),
-            ));
+            previous.push(self.variables.shadow(binding.clone(), Value::Undefined));
         }
 
         let result = (|| -> Result<Completion, JsError> {
@@ -58,7 +55,7 @@ impl Interpreter {
                 for (index, binding) in bindings.iter().enumerate() {
                     let value = values.get(index).cloned().unwrap_or(Value::Undefined);
 
-                    self.variables.insert(binding.clone(), value);
+                    self.variables.assign_or_insert(binding.clone(), value);
                 }
 
                 match self.execute(body)? {
@@ -77,12 +74,8 @@ impl Interpreter {
             Ok(Completion::Normal(Value::Undefined))
         })();
 
-        for (binding, old) in previous.into_iter().rev() {
-            if let Some(value) = old {
-                self.variables.insert(binding, value);
-            } else {
-                self.variables.remove(&binding);
-            }
+        for previous in previous.into_iter().rev() {
+            self.variables.restore(previous);
         }
 
         result

@@ -44,7 +44,7 @@ impl Interpreter {
         };
 
         let previous = if matches!(mode, ForInBindingMode::Lexical) {
-            Some(self.variables.insert(binding.to_owned(), Value::Undefined))
+            Some(self.variables.shadow(binding.to_owned(), Value::Undefined))
         } else {
             None
         };
@@ -52,7 +52,7 @@ impl Interpreter {
         let result = (|| -> Result<Completion, JsError> {
             for key in keys {
                 self.variables
-                    .insert(binding.to_owned(), Value::String(key));
+                    .assign_or_insert(binding.to_owned(), Value::String(key));
 
                 match self.execute(body)? {
                     Completion::Normal(_) | Completion::Continue => {}
@@ -71,15 +71,7 @@ impl Interpreter {
         })();
 
         if let Some(previous) = previous {
-            match previous {
-                Some(value) => {
-                    self.variables.insert(binding.to_owned(), value);
-                }
-
-                None => {
-                    self.variables.remove(binding);
-                }
-            }
+            self.variables.restore(previous);
         }
 
         result
