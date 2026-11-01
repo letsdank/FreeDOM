@@ -80,6 +80,10 @@ impl Interpreter {
                 method: ArrayMethodKind::Join,
             } => Self::array_join(receiver, values),
 
+            Value::NativeFunction(NativeFunction::FunctionCall) => {
+                self.function_call(receiver, values)
+            }
+
             Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
 
             Value::NativeFunction(NativeFunction::Test) => self.run_test(values),

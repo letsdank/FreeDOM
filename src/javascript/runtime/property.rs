@@ -24,6 +24,10 @@ impl Interpreter {
 
             (Value::Function(function), property) => Ok(function.get(property)),
 
+            (Value::NativeFunction(_), "call") => {
+                Ok(Value::NativeFunction(NativeFunction::FunctionCall))
+            }
+
             (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
                 PropertyLookup::Found(value) => value,
 
@@ -281,6 +285,10 @@ impl Interpreter {
 
         if let Value::Function(function) = object {
             return Ok(function.get(&index.to_js_string()));
+        }
+
+        if let Value::NativeFunction(function) = object {
+            return self.member_value(Value::NativeFunction(function), &index.to_js_string());
         }
 
         if let Value::NativeError(error) = object {

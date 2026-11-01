@@ -20,6 +20,7 @@ pub enum NativeFunction {
     ObjectCreate,
     ObjectEntries,
     ObjectHasOwnProperty,
+    FunctionCall,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -318,11 +319,15 @@ impl FunctionValue {
     }
 
     pub(super) fn get(&self, name: &str) -> Value {
-        self.properties
-            .borrow()
-            .get(name)
-            .cloned()
-            .unwrap_or(Value::Undefined)
+        let own = self.properties.borrow().get(name).cloned();
+
+        match own {
+            Some(value) => value,
+
+            None if name == "call" => Value::NativeFunction(NativeFunction::FunctionCall),
+
+            None => Value::Undefined,
+        }
     }
 
     pub(super) fn set(&self, name: String, value: Value) {
