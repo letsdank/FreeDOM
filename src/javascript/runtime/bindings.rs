@@ -7,7 +7,7 @@
 
 use std::{
     cell::{Ref, RefCell, RefMut},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::Rc,
 };
 
@@ -18,9 +18,11 @@ pub(super) struct Bindings {
     values: HashMap<String, Rc<RefCell<Binding>>>,
 }
 
-struct Binding {
+pub(in crate::javascript) struct Binding {
     value: Value,
 }
+
+pub(in crate::javascript) type CapturedBindings = HashMap<String, Rc<RefCell<Binding>>>;
 
 pub(super) struct BindingSnapshot {
     name: String,
@@ -97,6 +99,22 @@ impl Bindings {
                 self.values.remove(&snapshot.name);
             }
         }
+    }
+
+    pub(super) fn capture_names(
+        &self,
+        names: &[String],
+        referenced: &HashSet<String>,
+    ) -> CapturedBindings {
+        names
+            .iter()
+            .filter(|name| referenced.contains(*name))
+            .filter_map(|name| {
+                self.values
+                    .get(name)
+                    .map(|binding| (name.clone(), Rc::clone(binding)))
+            })
+            .collect()
     }
 }
 
@@ -409,5 +427,89 @@ mod tests {
             interpreter.variables.get("x").as_deref(),
             Some(&Value::Number(1.0))
         );
+    }
+
+    #[test]
+    fn created_functions_keep_referenced_current_local_cells() {
+        let mut interpreter = super::super::Interpreter::new();
+
+        let program = crate::javascript::parse_program(
+            r#"
+                function make(x) {
+                    let unused = 99;
+
+                    let callback = function() {
+                        return x;
+                    };
+
+                    x = 2;
+                    return callback;
+                }
+
+                let f = make(1);
+            "#,
+        )
+        .unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        let value = interpreter.variables.get("f").unwrap();
+
+        let Value::Function(function) = &*value else {
+            panic!("expected function");
+        };
+
+        let captures = function.captures();
+
+        assert_eq!(
+            captures.get("x").unwrap().borrow().value,
+            Value::Number(2.0)
+        );
+
+        assert!(!captures.contains_key("unused"));
+        assert!(!captures.contains_key("callback"));
+        assert!(!interpreter.variables.contains_key("x"));
+    }
+
+    #[test]
+    fn functions_created_in_the_same_frame_share_the_captured_cell() {
+        let mut interpreter = super::super::Interpreter::new();
+
+        let program = crate::javascript::parse_program(
+            r#"
+                function make(x) {
+                    return [
+                        function() { return x; },
+                        function() { return x; }
+                    ];
+                }
+
+                let pair = make(4);
+            "#,
+        )
+        .unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        let pair = interpreter.variables.get("pair").unwrap();
+
+        let Value::Array(pair) = &*pair else {
+            panic!("expected array");
+        };
+
+        let pair = pair.borrow();
+
+        let Value::Function(first) = &pair.values[0] else {
+            panic!("expected function");
+        };
+
+        let Value::Function(second) = &pair.values[1] else {
+            panic!("expected function");
+        };
+
+        assert!(std::rc::Rc::ptr_eq(
+            first.captures().get("x").unwrap(),
+            second.captures().get("x").unwrap()
+        ));
     }
 }

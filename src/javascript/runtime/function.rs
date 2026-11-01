@@ -222,6 +222,20 @@ impl Interpreter {
 
         result.map(Completion::into_value)
     }
+
+    pub(super) fn create_function(&self, function: &UserFunction) -> Value {
+        let captures = match self.function_locals.last() {
+            Some(names) => {
+                let referenced = super::references::referenced_names(function);
+
+                self.variables.capture_names(names, &referenced)
+            }
+
+            None => Default::default(),
+        };
+
+        Value::function(function.clone(), self.object_prototype.clone(), captures)
+    }
 }
 
 #[cfg(test)]

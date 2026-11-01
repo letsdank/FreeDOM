@@ -14,10 +14,9 @@ impl Interpreter {
         // This is limited hoisting for the current flat environment model.
         for statement in program {
             if let Statement::FunctionDeclaration { name, function } = statement {
-                self.variables.assign_or_insert(
-                    name.clone(),
-                    Value::function(function.clone(), self.object_prototype.clone()),
-                );
+                let value = self.create_function(function);
+
+                self.variables.assign_or_insert(name.clone(), value);
             }
         }
 

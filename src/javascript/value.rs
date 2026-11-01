@@ -7,6 +7,7 @@
 use crate::url::Url;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
+use super::runtime::bindings::CapturedBindings;
 use super::{DocumentState, FunctionKind, UserFunction, regexp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,6 +373,7 @@ pub struct FunctionValue {
     definition: Rc<UserFunction>,
     properties: ObjectStorage,
     binding: Option<Rc<BoundFunction>>,
+    captures: CapturedBindings,
 }
 
 pub(super) struct BoundFunction {
@@ -409,6 +411,7 @@ impl FunctionValue {
         Self {
             definition: target.definition.clone(),
             properties: Rc::new(RefCell::new(ObjectState::default())),
+            captures: target.captures.clone(),
             binding: Some(Rc::new(BoundFunction {
                 target,
                 this_arg,
@@ -423,6 +426,11 @@ impl FunctionValue {
 
     pub(super) fn is_bound(&self) -> bool {
         self.binding.is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) fn captures(&self) -> &CapturedBindings {
+        &self.captures
     }
 }
 
@@ -619,7 +627,11 @@ impl Value {
         Self::Object(Rc::new(RefCell::new(state)))
     }
 
-    pub(super) fn function(definition: UserFunction, object_prototype: ObjectStorage) -> Self {
+    pub(super) fn function(
+        definition: UserFunction,
+        object_prototype: ObjectStorage,
+        captures: CapturedBindings,
+    ) -> Self {
         let mut properties = ObjectState::default();
 
         if definition.kind == FunctionKind::Ordinary {
@@ -634,6 +646,7 @@ impl Value {
             definition: Rc::new(definition),
             properties: Rc::new(RefCell::new(properties)),
             binding: None,
+            captures,
         })
     }
 

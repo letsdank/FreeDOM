@@ -11,7 +11,7 @@ use super::{
 use self::bindings::Bindings;
 
 #[path = "runtime/bindings.rs"]
-mod bindings;
+pub(super) mod bindings;
 
 #[path = "runtime/dom.rs"]
 mod dom_bindings;
@@ -42,6 +42,9 @@ mod instanceof;
 
 #[path = "runtime/function.rs"]
 mod function;
+
+#[path = "runtime/references.rs"]
+mod references;
 
 #[path = "runtime/construct.rs"]
 mod construct;
