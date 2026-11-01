@@ -6,6 +6,7 @@
 //! Binding and argument handling remain incomplete.
 
 use super::{Completion, Interpreter, JsError, Statement, UserFunction, Value};
+use crate::javascript::FunctionKind;
 
 fn function_local_names(statements: &[Statement]) -> Vec<String> {
     let mut names = Vec::new();
@@ -135,6 +136,28 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
 }
 
 impl Interpreter {
+    pub(super) fn call_function_with_receiver(
+        &mut self,
+        function: &UserFunction,
+        arguments: Vec<Value>,
+        receiver: Option<Value>,
+    ) -> Result<Value, JsError> {
+        let Some(receiver) = receiver.filter(|_| function.kind == FunctionKind::Ordinary) else {
+            return self.call_function(function, arguments);
+        };
+
+        let previous_this = self.variables.insert("this".to_owned(), receiver);
+        let result = self.call_function(function, arguments);
+
+        if let Some(previous_this) = previous_this {
+            self.variables.insert("this".to_owned(), previous_this);
+        } else {
+            self.variables.remove("this");
+        }
+
+        result
+    }
+
     pub(super) fn call_function(
         &mut self,
         function: &UserFunction,

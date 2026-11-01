@@ -39,7 +39,24 @@ impl Interpreter {
         callee: &Expression,
         arguments: &[Expression],
     ) -> Result<Value, JsError> {
-        let callee = self.evaluate_expression(callee)?;
+        let (callee, receiver) = match callee {
+            Expression::Member { object, property } => {
+                let receiver = self.evaluate_expression(object)?;
+                let callee = self.member_value(receiver.clone(), property)?;
+
+                (callee, Some(receiver))
+            }
+
+            Expression::Index { object, index } => {
+                let receiver = self.evaluate_expression(object)?;
+                let index = self.evaluate_expression(index)?;
+                let callee = self.index_value(receiver.clone(), index)?;
+
+                (callee, Some(receiver))
+            }
+
+            _ => (self.evaluate_expression(callee)?, None),
+        };
 
         let mut values = Vec::with_capacity(arguments.len());
 
@@ -149,7 +166,9 @@ impl Interpreter {
 
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
-            Value::Function(function) => self.call_function(function.definition(), values),
+            Value::Function(function) => {
+                self.call_function_with_receiver(function.definition(), values, receiver)
+            }
 
             Value::RegExpTest(regexp) => {
                 let input = values.first().unwrap_or(&Value::Undefined).to_js_string();
@@ -210,5 +229,131 @@ mod tests {
         let error = evaluate("let n = 1; n();").unwrap_err();
 
         assert_eq!(error.message, "TypeError: this value is not callable");
+    }
+
+    #[test]
+    fn passes_receiver_to_dot_and_index_method_calls() {
+        let result = evaluate(
+            r#"
+                let object = {
+                    value: 7,
+                    read: function() { return this.value; }
+                };
+
+                object.read() === 7 && object['read']() === 7;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn evaluates_receiver_and_key_once_before_arguments() {
+        let result = evaluate(
+            r#"
+                let calls = 0;
+                let object = {
+                    value: 3,
+                    read: function(n) { return this.value + n; }
+                };
+
+                function receiver() {
+                    calls = calls + 1;
+                    return object;
+                }
+
+                function key() {
+                    calls = calls + 10;
+                    return 'read';
+                }
+
+                function argument() {
+                    object = { value: 100 };
+                    return 4;
+                }
+
+                let result = receiver()[key()](argument());
+
+                result === 7 && calls === 11;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn keeps_callers_this_during_argument_evaluation_and_after_nested_call() {
+        let result = evaluate(
+            r#"
+                let outer = {
+                    value: 100,
+                    run: function() {
+                        let inner = {
+                            value: 1,
+                            add: function(n) { return this.value + n; }
+                        };
+
+                        let result = inner.add(this.value);
+
+                        return result === 101 && this.value === 100;
+                    }
+                };
+
+                outer.run();
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn restores_callers_this_after_thrown_error() {
+        let result = evaluate(
+            r#"
+                let outer = {
+                    value: 7,
+                    run: function() {
+                        let inner = {
+                            fail: function() { throw 'failure'; }
+                        };
+
+                        try {
+                            inner.fail();
+                        } catch (error) {}
+
+                        return this.value;
+                    }
+                };
+
+                outer.run();
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(7.0));
+    }
+
+    #[test]
+    fn passes_receiver_to_inherited_method() {
+        let result = evaluate(
+            r#"
+                function Test() {}
+
+                Test.prototype.read = function() {
+                    return this.value;
+                };
+
+                let instance = Object.create(Test.prototype);
+                instance.value = 42;
+
+                instance.read();
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(42.0));
     }
 }
