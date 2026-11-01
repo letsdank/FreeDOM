@@ -193,7 +193,11 @@ impl Interpreter {
                     }
                 };
 
-                self.variables.insert(parameter.name.clone(), value);
+                self.variables
+                    .assign_existing(&parameter.name, value)
+                    .map_err(|_| {
+                        JsError::runtime("internal error: parameter binding is missing")
+                    })?;
             }
 
             for name in function_local_names(&function.body) {

@@ -87,7 +87,11 @@ impl Interpreter {
     ) -> Result<(), JsError> {
         match reference {
             AssignmentReference::Binding(name) => {
-                self.variables.insert(name, value);
+                if let Err(value) = self.variables.assign_existing(&name, value) {
+                    // Preserve the current implicit-global behavior for unresolved names.
+                    self.variables.insert(name, value);
+                }
+
                 Ok(())
             }
 
@@ -480,6 +484,65 @@ mod tests {
             function get() { calls++; return o; } \
             get().x %= (o.x = 3); \
             calls === 1 && o.x === 1;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn assigns_existing_undefined_and_preserves_implicit_global_behavior() {
+        let result = evaluate(
+            r#"
+                let existing = undefined;
+                existing = 1;
+
+                created_by_assignment = 2;
+
+                existing === 1 && created_by_assignment === 2;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn compound_assignment_of_missing_name_fails_before_rhs() {
+        let result = evaluate(
+            r#"
+                let calls = 0;
+                let name = '';
+
+                try {
+                    missing += (calls = 1);
+                } catch (error) {
+                    name = error.name;
+                }
+
+                calls === 0 && name === 'ReferenceError';
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn parameter_updates_preserve_outer_binding() {
+        let result = evaluate(
+            r#"
+                let value = 9;
+
+                function f(value = 2) {
+                    value = value + 1;
+                    return value;
+                }
+
+                let inner = f(undefined);
+
+                inner === 3 && value === 9;
+            "#,
         )
         .unwrap();
 

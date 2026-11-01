@@ -2,7 +2,7 @@
 //!
 //! <https://tc39.es/ecma262/#sec-environment-records>
 //!
-//! This is not yet a ECMAScript Environment Record: scopes, lexical capture,
+//! This is not yet an ECMAScript Environment Record: scopes, lexical capture,
 //! binding attributes and temporal dead zones are not implemented here.
 
 use std::collections::HashMap;
@@ -29,6 +29,17 @@ impl Bindings {
 
     pub(super) fn insert(&mut self, name: String, value: Value) -> Option<Value> {
         self.values.insert(name, value)
+    }
+
+    pub(super) fn assign_existing(&mut self, name: &str, value: Value) -> Result<(), Value> {
+        match self.values.get_mut(name) {
+            Some(binding) => {
+                *binding = value;
+                Ok(())
+            }
+
+            None => Err(value),
+        }
     }
 
     pub(super) fn insert_if_absent(&mut self, name: &str, value: Value) {
@@ -100,5 +111,28 @@ mod tests {
         };
 
         assert!(std::rc::Rc::ptr_eq(&original, stored));
+    }
+
+    #[test]
+    fn assigns_only_existing_bindings_and_returns_unconsumed_values() {
+        let mut bindings = Bindings::default();
+        let value = Value::object_with_null_prototype();
+
+        let returned = bindings
+            .assign_existing("missing", value.clone())
+            .unwrap_err();
+
+        assert!(!bindings.contains_key("missing"));
+
+        let (Value::Object(original), Value::Object(returned)) = (value, returned) else {
+            panic!("expected object");
+        };
+
+        assert!(std::rc::Rc::ptr_eq(&original, &returned));
+
+        bindings.insert("x".to_owned(), Value::Undefined);
+
+        assert!(bindings.assign_existing("x", Value::Number(3.0)).is_ok());
+        assert_eq!(bindings.get("x"), Some(&Value::Number(3.0)));
     }
 }
