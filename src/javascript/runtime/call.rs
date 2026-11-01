@@ -93,6 +93,10 @@ impl Interpreter {
                 self.function_call(receiver, values)
             }
 
+            Value::NativeFunction(NativeFunction::FunctionApply) => {
+                self.function_apply(receiver, values)
+            }
+
             Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
 
             Value::NativeFunction(NativeFunction::Test) => self.run_test(values),

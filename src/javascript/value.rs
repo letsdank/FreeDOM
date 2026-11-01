@@ -21,6 +21,7 @@ pub enum NativeFunction {
     ObjectEntries,
     ObjectHasOwnProperty,
     FunctionCall,
+    FunctionApply,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -325,6 +326,8 @@ impl FunctionValue {
             Some(value) => value,
 
             None if name == "call" => Value::NativeFunction(NativeFunction::FunctionCall),
+
+            None if name == "apply" => Value::NativeFunction(NativeFunction::FunctionApply),
 
             None => Value::Undefined,
         }
