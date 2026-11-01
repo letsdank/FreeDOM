@@ -87,7 +87,7 @@ impl Interpreter {
             Value::ArrayMethod {
                 receiver,
                 method: ArrayMethodKind::Join,
-            } => Self::array_join(receiver, values),
+            } => self.array_join(receiver, values),
 
             Value::NativeFunction(NativeFunction::FunctionCall) => {
                 self.function_call(receiver, values)
@@ -123,9 +123,7 @@ impl Interpreter {
                 Self::object_to_string(receiver)
             }
 
-            Value::NativeFunction(NativeFunction::ArrayToString) => Err(JsError::unsupported(
-                "Array.prototype.toString is not implemented",
-            )),
+            Value::NativeFunction(NativeFunction::ArrayToString) => self.array_to_string(receiver),
 
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)

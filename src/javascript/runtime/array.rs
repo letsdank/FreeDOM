@@ -135,6 +135,7 @@ impl Interpreter {
     }
 
     pub(super) fn array_join(
+        &self,
         receiver: ArrayStorage,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
@@ -149,18 +150,19 @@ impl Interpreter {
             Some(value) => value.to_js_string(),
         };
 
-        let joined = receiver
-            .borrow()
-            .values
-            .iter()
-            .map(|value| match value {
+        let length = receiver.borrow().values.len();
+        let mut parts = Vec::with_capacity(length);
+
+        for index in 0..length {
+            let value = self.array_property(receiver.clone(), &index.to_string());
+
+            parts.push(match value {
                 Value::Undefined | Value::Null => String::new(),
                 value => value.to_js_string(),
-            })
-            .collect::<Vec<_>>()
-            .join(&separator);
+            });
+        }
 
-        Ok(Value::String(joined))
+        Ok(Value::String(parts.join(&separator)))
     }
 
     pub(super) fn array_property(&self, receiver: ArrayStorage, name: &str) -> Value {

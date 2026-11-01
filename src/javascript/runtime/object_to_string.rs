@@ -93,10 +93,10 @@ mod tests {
     }
 
     #[test]
-    fn preserves_array_to_string_as_distinct_unimplemented_method() {
-        let error = evaluate("[1, 2].toString();").unwrap_err();
+    fn preserves_array_to_string_as_distinct_method() {
+        let result = evaluate("[1, 2].toString();").unwrap();
 
-        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+        assert_eq!(result, Value::String("1,2".to_owned()));
 
         let result = evaluate(
             r#"

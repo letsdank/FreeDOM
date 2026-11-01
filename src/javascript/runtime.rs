@@ -65,6 +65,9 @@ mod object;
 #[path = "runtime/object_to_string.rs"]
 mod object_to_string;
 
+#[path = "runtime/array_to_string.rs"]
+mod array_to_string;
+
 #[path = "runtime/for_in.rs"]
 mod for_in;
 
