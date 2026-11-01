@@ -465,6 +465,22 @@ impl Value {
         })))
     }
 
+    pub(super) fn array_from_slots(slots: Vec<Option<Value>>) -> Self {
+        let mut values = Vec::with_capacity(slots.len());
+        let mut present = Vec::with_capacity(slots.len());
+
+        for slot in slots {
+            present.push(slot.is_some());
+            values.push(slot.unwrap_or(Value::Undefined));
+        }
+
+        Self::Array(Rc::new(RefCell::new(ArrayState {
+            values,
+            present,
+            properties: ObjectState::default(),
+        })))
+    }
+
     pub(crate) fn object(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
         Self::Object(Rc::new(RefCell::new(ObjectState::from_entries(entries))))
     }

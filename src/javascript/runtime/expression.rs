@@ -66,13 +66,16 @@ impl Interpreter {
             Expression::RegExpLiteral { pattern, flags } => Self::create_regexp(pattern, flags),
 
             Expression::Array(expressions) => {
-                let mut values = Vec::with_capacity(expressions.len());
+                let mut slots = Vec::with_capacity(expressions.len());
 
                 for expression in expressions {
-                    values.push(self.evaluate_expression(expression)?);
+                    slots.push(match expression {
+                        Some(expression) => Some(self.evaluate_expression(expression)?),
+                        None => None,
+                    });
                 }
 
-                Ok(Value::array(values))
+                Ok(Value::array_from_slots(slots))
             }
 
             Expression::Object(properties) => {
@@ -582,5 +585,78 @@ mod tests {
         let result = evaluate("let value = 'a\\\r\nb'; value;").unwrap();
 
         assert_eq!(result, Value::String("ab".to_owned()));
+    }
+
+    #[test]
+    fn evaluates_array_literal_holes_and_undefined_as_distinct_slots() {
+        let result = evaluate(
+            r#"
+                let empty = [];
+                let single = [,];
+                let multiple = [,,];
+                let trailing = [1,];
+                let mixed = [, undefined, , 5,,];
+
+                empty.length === 0 &&
+                    single.length === 1 &&
+                    !single.hasOwnProperty(0) &&
+                    multiple.length === 2 &&
+                    !multiple.hasOwnProperty(1) &&
+                    trailing.length === 1 &&
+                    trailing.hasOwnProperty(0) &&
+                    mixed.length === 5 &&
+                    !mixed.hasOwnProperty(0) &&
+                    mixed.hasOwnProperty(1) &&
+                    mixed[1] === undefined &&
+                    !mixed.hasOwnProperty(2) &&
+                    mixed[3] === 5 &&
+                    !mixed.hasOwnProperty(4);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn evaluates_array_elements_once_in_order_and_skips_elisions() {
+        let result = evaluate(
+            r#"
+                let order = '';
+
+                function next(value) {
+                    order = order + value;
+                    return value;
+                }
+
+                let items = [next('a'), , next('b'),];
+
+                order === 'ab' &&
+                    items.length === 3 &&
+                    items[0] === 'a' &&
+                    !items.hasOwnProperty(1) &&
+                    items[2] === 'b';
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn holes_can_resolve_inherited_properties() {
+        let result = evaluate(
+            r#"
+                Object.prototype['0'] = 42;
+
+                let items = [,];
+
+                items[0] === 42 &&
+                    !items.hasOwnProperty(0);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }

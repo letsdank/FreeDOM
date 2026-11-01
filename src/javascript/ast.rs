@@ -86,7 +86,8 @@ pub(crate) enum Expression {
         pattern: String,
         flags: String,
     },
-    Array(Vec<Expression>),
+    // None represents an elision, not an expression evaluating to undefined.
+    Array(Vec<Option<Expression>>),
     Object(Vec<(String, Expression)>),
     Identifier(String),
     New {

@@ -99,27 +99,24 @@ impl Parser<'_> {
     fn parse_array_literal(&mut self) -> Result<Expression, JsError> {
         let mut values = Vec::new();
 
-        if self.cursor.consume_optional(&TokenKind::RightBracket)? {
-            return Ok(Expression::Array(values));
-        }
-
         loop {
-            values.push(self.parse_expression()?);
+            if self.cursor.consume_optional(&TokenKind::RightBracket)? {
+                return Ok(Expression::Array(values));
+            }
 
             if self.cursor.consume_optional(&TokenKind::Comma)? {
-                if self.cursor.consume_optional(&TokenKind::RightBracket)? {
-                    return Ok(Expression::Array(values));
-                }
-
+                values.push(None);
                 continue;
             }
 
-            self.cursor.consume(
-                &TokenKind::RightBracket,
-                "expected ',' or ']' after array element",
-            )?;
+            values.push(Some(self.parse_expression()?));
 
-            return Ok(Expression::Array(values));
+            if self.cursor.consume_optional(&TokenKind::RightBracket)? {
+                return Ok(Expression::Array(values));
+            }
+
+            self.cursor
+                .consume(&TokenKind::Comma, "expected ',' or ']' after array element")?;
         }
     }
 
@@ -413,5 +410,27 @@ mod tests {
             arguments.as_slice(),
             [Expression::Identifier(name)] if name == "self"
         ));
+    }
+
+    #[test]
+    fn parses_elisions_and_trailing_commas() {
+        for (source, expected) in [
+            ("[];", vec![]),
+            ("[,];", vec![false]),
+            ("[,,];", vec![false, false]),
+            ("[1,];", vec![true]),
+            ("[1,,];", vec![true, false]),
+            ("[,1,,2,];", vec![false, true, false, true]),
+        ] {
+            let program = parse_program(source).unwrap();
+
+            let Statement::Expression(Expression::Array(slots)) = &program[0] else {
+                panic!("expected array literal: {source}");
+            };
+
+            let actual: Vec<bool> = slots.iter().map(Option::is_some).collect();
+
+            assert_eq!(actual, expected, "{source}");
+        }
     }
 }

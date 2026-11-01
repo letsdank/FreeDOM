@@ -2,8 +2,8 @@
 //!
 //! <https://tc39.es/ecma262/#sec-array-objects>
 //!
-//! Storage records holes created by indexed assignment, but array literal
-//! elisions, length assignment, and property descriptors are not implemented.
+//! Storage records holes created by array literals and indexed assignment.
+//! Length assignment and property descriptors are not implemented.
 
 use super::{Interpreter, JsError, Value};
 use crate::javascript::{ArrayMethodKind, ArrayStorage};
