@@ -122,6 +122,7 @@ pub(super) struct Interpreter {
     function_locals: Vec<Vec<String>>,
     object_prototype: ObjectStorage,
     capture_frames: Vec<CapturedBindings>,
+    catch_bindings: Vec<(usize, String)>,
 }
 
 impl Interpreter {
@@ -191,6 +192,7 @@ impl Interpreter {
             function_locals: Vec::new(),
             object_prototype,
             capture_frames: Vec::new(),
+            catch_bindings: Vec::new(),
         }
     }
 

@@ -58,8 +58,13 @@ impl Interpreter {
     fn execute_catch(&mut self, clause: &CatchClause, value: Value) -> Result<Completion, JsError> {
         if let Some(name) = &clause.binding {
             let previous = self.variables.shadow(name.clone(), value);
+
+            self.catch_bindings
+                .push((self.function_locals.len(), name.clone()));
+
             let result = self.execute(&clause.body);
 
+            self.catch_bindings.pop();
             self.variables.restore(previous);
 
             result
@@ -448,5 +453,178 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::String("outer".to_owned()));
+    }
+
+    #[test]
+    fn closure_keeps_top_level_catch_binding_after_exit() {
+        let result = evaluate(
+            r#"
+                let error = 42;
+                let reader;
+
+                try {
+                    throw 7;
+                } catch (error) {
+                    reader = function() {
+                        error += 1;
+                        return error;
+                    };
+                }
+
+                reader() === 8 &&
+                    reader() === 9 &&
+                    error === 42;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn catch_binding_shadows_function_local_and_remains_shared() {
+        let result = evaluate(
+            r#"
+                function create() {
+                    let error = 10;
+                    let reader;
+
+                    try {
+                        throw 3;
+                    } catch (error) {
+                        reader = function() {
+                            error += 2;
+                            return error;
+                        };
+
+                        error += 1;
+                    }
+
+                    return { reader: reader, outer: error };
+                }
+
+                let result = create();
+
+                result.outer === 10 &&
+                    result.reader() === 6 &&
+                    result.reader() === 8;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn nested_catches_capture_the_nearest_binding() {
+        let result = evaluate(
+            r#"
+                let inner;
+                let outer;
+
+                try {
+                    throw 1;
+                } catch (error) {
+                    try {
+                        throw 2;
+                    } catch (error) {
+                        inner = function() {
+                            return error;
+                        };
+                    }
+
+                    outer = function() {
+                        return error;
+                    };
+                }
+
+                inner() === 2 && outer() === 1;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn returned_closure_passes_catch_binding_to_nested_closure() {
+        let result = evaluate(
+            r#"
+                let make;
+
+                try {
+                    throw 5;
+                } catch (error) {
+                    make = function() {
+                        return function() {
+                            return error;
+                        };
+                    };
+                }
+
+                let reader = make();
+
+                reader() === 5;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn catch_scope_does_not_become_the_scope_of_a_called_function() {
+        let result = evaluate(
+            r#"
+                let error = 99;
+
+                function create() {
+                    return function() {
+                        return error;
+                    };
+                }
+
+                let reader;
+
+                try {
+                    throw 7;
+                } catch (error) {
+                    reader = create();
+                }
+
+                reader() === 99;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn catch_scope_does_not_leak_into_default_parameter_closures() {
+        let result = evaluate(
+            r#"
+                let error = 99;
+
+                function create(reader = function() {
+                    return error;
+                }) {
+                    return reader;
+                }
+
+                let reader;
+
+                try {
+                    throw 7;
+                } catch (error) {
+                    reader = create();
+                }
+
+                reader() === 99;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }

@@ -175,6 +175,8 @@ impl Interpreter {
             local_names.push(parameter.name.clone());
         }
 
+        self.function_locals.push(local_names.clone());
+
         let result = (|| -> Result<Completion, JsError> {
             for (index, parameter) in function.parameters.iter().enumerate() {
                 let value = if parameter.is_rest {
@@ -207,14 +209,15 @@ impl Interpreter {
                 local_names.push(name);
             }
 
-            self.function_locals.push(local_names);
+            *self
+                .function_locals
+                .last_mut()
+                .expect("function frame must exist") = local_names;
 
-            let result = self.execute(&function.body);
-
-            self.function_locals.pop();
-
-            result
+            self.execute(&function.body)
         })();
+
+        self.function_locals.pop();
 
         for previous in replaced_bindings.into_iter().rev() {
             self.variables.restore(previous);
@@ -233,6 +236,15 @@ impl Interpreter {
         if let Some(names) = self.function_locals.last() {
             captures.extend(self.variables.capture_names(names, &referenced));
         }
+
+        let catch_names: Vec<_> = self
+            .catch_bindings
+            .iter()
+            .filter(|(depth, _)| *depth == self.function_locals.len())
+            .map(|(_, name)| name.clone())
+            .collect();
+
+        captures.extend(self.variables.capture_names(&catch_names, &referenced));
 
         Value::function(function.clone(), self.object_prototype.clone(), captures)
     }
@@ -729,6 +741,27 @@ mod tests {
                     bound_result === 12 &&
                     b.value === 12 &&
                     instance.value === 13;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn closure_created_in_default_parameter_keeps_parameter_binding() {
+        let result = evaluate(
+            r#"
+                function make(value, reader = function() {
+                    return value;
+                }) {
+                    return reader;
+                }
+
+                let first = make(3);
+                let second = make(5);
+
+                first() === 3 && second() === 5;
             "#,
         )
         .unwrap();
