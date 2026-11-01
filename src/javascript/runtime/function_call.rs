@@ -4,7 +4,7 @@
 //!
 //! Function prototype objects and full this binding are not implemented yet.
 
-use super::{Interpreter, JsError, NativeFunction, Value};
+use super::{Interpreter, JsError, Value};
 use crate::javascript::FunctionKind;
 
 impl Interpreter {
@@ -38,12 +38,11 @@ impl Interpreter {
                 self.call_function_with_receiver(function.definition(), arguments, Some(this_arg))
             }
 
-            Value::NativeFunction(NativeFunction::ObjectHasOwnProperty) => {
-                Self::object_has_own_property(Some(this_arg), arguments)
+            Value::NativeFunction(function) => {
+                self.dispatch_call(Value::NativeFunction(function), Some(this_arg), arguments)
             }
 
-            Value::NativeFunction(_)
-            | Value::ArrayMethod { .. }
+            Value::ArrayMethod { .. }
             | Value::DocumentMethod(_)
             | Value::ElementMethod(_)
             | Value::TestContextMethod(_)
@@ -165,7 +164,6 @@ mod tests {
         for source in [
             "let f = function() {}; f.call(null);",
             "let f = () => 1; f.call({});",
-            "Object.keys.call(null, {});",
         ] {
             let error = evaluate(source).unwrap_err();
 
@@ -202,5 +200,65 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Number(8.0));
+    }
+
+    #[test]
+    fn calls_supported_native_functions_through_common_dispatch() {
+        let result = evaluate(
+            r#"
+                let object = { alpha: 1, beta: 2 };
+
+                let keys = Object.keys.call(null, object);
+                let entries = Object.entries['call'](undefined, object);
+                let derived = Object.create.call(null, object);
+
+                keys.length === 2 &&
+                    keys[0] === 'alpha' &&
+                    entries.length === 2 &&
+                    entries[1][1] === 2 &&
+                    derived.beta === 2;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn call_can_invoke_call_itself() {
+        let result = evaluate(
+            r#"
+                function add(n) {
+                    return this.value + n;
+                }
+
+                let object = { value: 7 };
+
+                add.call.call(add, object, 5);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(12.0));
+    }
+
+    #[test]
+    fn native_call_propagates_errors_from_target() {
+        let result = evaluate(
+            r#"
+                let name = '';
+
+                try {
+                    Object.create.call(null, 1);
+                } catch (error) {
+                    name = error.name;
+                }
+
+                name;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("TypeError".to_owned()));
     }
 }

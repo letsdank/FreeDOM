@@ -64,6 +64,15 @@ impl Interpreter {
             values.push(self.evaluate_expression(argument)?);
         }
 
+        self.dispatch_call(callee, receiver, values)
+    }
+
+    pub(super) fn dispatch_call(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        values: Vec<Value>,
+    ) -> Result<Value, JsError> {
         match callee {
             Value::ArrayMethod {
                 receiver,
