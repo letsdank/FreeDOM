@@ -14,6 +14,11 @@ pub(super) struct Bindings {
     values: HashMap<String, Value>,
 }
 
+pub(super) struct BindingSnapshot {
+    name: String,
+    previous: Option<Value>,
+}
+
 impl Bindings {
     pub(super) fn contains_key(&self, name: &str) -> bool {
         self.values.contains_key(name)
@@ -48,6 +53,24 @@ impl Bindings {
 
     pub(super) fn remove(&mut self, name: &str) -> Option<Value> {
         self.values.remove(name)
+    }
+
+    pub(super) fn shadow(&mut self, name: String, value: Value) -> BindingSnapshot {
+        let previous = self.values.insert(name.clone(), value);
+
+        BindingSnapshot { name, previous }
+    }
+
+    pub(super) fn restore(&mut self, snapshot: BindingSnapshot) {
+        match snapshot.previous {
+            Some(value) => {
+                self.values.insert(snapshot.name, value);
+            }
+
+            None => {
+                self.values.remove(&snapshot.name);
+            }
+        }
     }
 }
 
@@ -134,5 +157,26 @@ mod tests {
 
         assert!(bindings.assign_existing("x", Value::Number(3.0)).is_ok());
         assert_eq!(bindings.get("x"), Some(&Value::Number(3.0)));
+    }
+
+    #[test]
+    fn restores_nested_shadowed_and_absent_bindings() {
+        let mut bindings = Bindings::default();
+
+        bindings.insert("x".into(), Value::Undefined);
+
+        let first = bindings.shadow("x".into(), Value::Number(1.0));
+        let second = bindings.shadow("x".into(), Value::Number(2.0));
+        let missing = bindings.shadow("temporary".into(), Value::Undefined);
+
+        bindings.restore(missing);
+        assert!(!bindings.contains_key("temporary"));
+
+        bindings.restore(second);
+        assert_eq!(bindings.get("x"), Some(&Value::Number(1.0)));
+
+        bindings.restore(first);
+        assert_eq!(bindings.get("x"), Some(&Value::Undefined));
+        assert!(bindings.contains_key("x"));
     }
 }

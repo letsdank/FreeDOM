@@ -57,14 +57,10 @@ impl Interpreter {
 
     fn execute_catch(&mut self, clause: &CatchClause, value: Value) -> Result<Completion, JsError> {
         if let Some(name) = &clause.binding {
-            let previous = self.variables.insert(name.clone(), value);
+            let previous = self.variables.shadow(name.clone(), value);
             let result = self.execute(&clause.body);
 
-            if let Some(previous) = previous {
-                self.variables.insert(name.clone(), previous);
-            } else {
-                self.variables.remove(name);
-            }
+            self.variables.restore(previous);
 
             result
         } else {
@@ -430,5 +426,27 @@ mod tests {
             evaluate(&script).unwrap(),
             Value::String("TypeError".to_owned())
         );
+    }
+
+    #[test]
+    fn restores_shadowed_catch_binding_when_handler_throws() {
+        let result = evaluate(
+            r#"
+                let error = 'outer';
+
+                try {
+                    try {
+                        throw 'first';
+                    } catch (error) {
+                        throw 'second';
+                    }
+                } catch (other) {}
+
+                error;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("outer".to_owned()));
     }
 }

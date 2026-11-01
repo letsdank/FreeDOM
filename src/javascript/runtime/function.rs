@@ -146,14 +146,10 @@ impl Interpreter {
             return self.call_function(function, arguments);
         };
 
-        let previous_this = self.variables.insert("this".to_owned(), receiver);
+        let previous_this = self.variables.shadow("this".to_owned(), receiver);
         let result = self.call_function(function, arguments);
 
-        if let Some(previous_this) = previous_this {
-            self.variables.insert("this".to_owned(), previous_this);
-        } else {
-            self.variables.remove("this");
-        }
+        self.variables.restore(previous_this);
 
         result
     }
@@ -173,9 +169,9 @@ impl Interpreter {
 
             let previous = self
                 .variables
-                .insert(parameter.name.clone(), Value::Undefined);
+                .shadow(parameter.name.clone(), Value::Undefined);
 
-            replaced_bindings.push((parameter.name.clone(), previous));
+            replaced_bindings.push(previous);
             local_names.push(parameter.name.clone());
         }
 
@@ -205,9 +201,9 @@ impl Interpreter {
                     continue;
                 }
 
-                let previous = self.variables.insert(name.clone(), Value::Undefined);
+                let previous = self.variables.shadow(name.clone(), Value::Undefined);
 
-                replaced_bindings.push((name.clone(), previous));
+                replaced_bindings.push(previous);
                 local_names.push(name);
             }
 
@@ -220,12 +216,8 @@ impl Interpreter {
             result
         })();
 
-        for (name, previous) in replaced_bindings.into_iter().rev() {
-            if let Some(value) = previous {
-                self.variables.insert(name, value);
-            } else {
-                self.variables.remove(&name);
-            }
+        for previous in replaced_bindings.into_iter().rev() {
+            self.variables.restore(previous);
         }
 
         result.map(Completion::into_value)
@@ -559,5 +551,27 @@ mod tests {
         .unwrap_err();
 
         assert!(error.message.contains("FunctionValue"));
+    }
+
+    #[test]
+    fn restores_parameter_binding_when_default_initializer_throws() {
+        let result = evaluate(
+            r#"
+                let value = 9;
+
+                function f(value = missing) {
+                    return value;
+                }
+
+                try {
+                    f();
+                } catch (error) {}
+
+                value;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(9.0));
     }
 }
