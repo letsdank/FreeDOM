@@ -24,9 +24,7 @@ impl Interpreter {
         mode: ForInBindingMode,
     ) -> Result<Completion, JsError> {
         if matches!(mode, ForInBindingMode::Var) {
-            self.variables
-                .entry(binding.to_owned())
-                .or_insert(Value::Undefined);
+            self.variables.insert_if_absent(binding, Value::Undefined);
         }
 
         let target = self.evaluate_expression(object)?;

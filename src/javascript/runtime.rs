@@ -8,6 +8,11 @@ use super::{
     JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
 };
 
+use self::bindings::Bindings;
+
+#[path = "runtime/bindings.rs"]
+mod bindings;
+
 #[path = "runtime/dom.rs"]
 mod dom_bindings;
 
@@ -109,7 +114,7 @@ impl Completion {
 }
 
 pub(super) struct Interpreter {
-    variables: HashMap<String, Value>,
+    variables: Bindings,
     cleanups: Vec<Cleanup>,
     function_locals: Vec<Vec<String>>,
     object_prototype: ObjectStorage,
@@ -117,7 +122,7 @@ pub(super) struct Interpreter {
 
 impl Interpreter {
     pub(super) fn new() -> Self {
-        let mut variables = HashMap::new();
+        let mut variables = Bindings::default();
 
         // Most intrinsic properties are not implemented yet.
         let Value::Object(object_prototype) = Value::intrinsic_object_prototype() else {
