@@ -96,6 +96,23 @@ fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "https://example.org".to_owned());
 
+    if requested_url == "--probe-testharness" {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        );
+
+        let source =
+            std::fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
+
+        javascript::probe_testharness(&source)
+            .map_err(|error| anyhow::anyhow!("testharness bootstrap failed: {error}"))?;
+
+        println!("testharness bootstraped in a synthetic host; WPT tests were not run");
+
+        return Ok(());
+    }
+
     let page =
         load_page(&requested_url).with_context(|| format!("не удалось открыть {requested_url}"))?;
 
