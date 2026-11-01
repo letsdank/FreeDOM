@@ -34,6 +34,8 @@ impl Interpreter {
         match receiver.unwrap_or(Value::Undefined) {
             Value::Object(object) => Ok(Value::Boolean(object.borrow().get(&key).is_some())),
 
+            Value::Array(array) => Ok(Value::Boolean(Self::array_has_own(&array, &key))),
+
             Value::Null | Value::Undefined => Err(JsError::type_error(
                 "Object.prototype.hasOwnProperty requires a non-null value",
             )),

@@ -232,6 +232,7 @@ impl ObjectState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ArrayState {
     pub(super) values: Vec<Value>,
+    pub(super) present: Vec<bool>,
     pub(super) properties: ObjectState,
 }
 
@@ -455,8 +456,11 @@ impl Value {
     }
 
     pub(crate) fn array(values: Vec<Value>) -> Self {
+        let present = vec![true; values.len()];
+
         Self::Array(Rc::new(RefCell::new(ArrayState {
             values,
+            present,
             properties: ObjectState::default(),
         })))
     }
@@ -565,7 +569,12 @@ mod tests {
             unreachable!();
         };
 
-        storage.borrow_mut().values.push(Value::Number(2.0));
+        let mut array = storage.borrow_mut();
+
+        array.values.push(Value::Number(2.0));
+        array.present.push(true);
+
+        drop(array);
 
         assert_eq!(
             original.as_array(),

@@ -20,7 +20,7 @@ impl Interpreter {
                 Ok(Value::TestContextMethod(TestContextMethod::AddCleanup))
             }
 
-            (Value::Array(values), property) => Ok(Self::array_get(values, property)),
+            (Value::Array(values), property) => Ok(self.array_property(values, property)),
 
             (Value::Function(function), property) => Ok(function.get(property)),
 
@@ -268,7 +268,7 @@ impl Interpreter {
         }
 
         if let Value::Array(values) = object {
-            return Ok(Self::array_get(values, &index.to_js_string()));
+            return Ok(self.array_property(values, &index.to_js_string()));
         }
 
         if let Value::Object(values) = object {

@@ -2,8 +2,8 @@
 //!
 //! <https://tc39.es/ecma262/#sec-array-objects>
 //!
-//! This implementation uses dense storage and does not yet implement array
-//! length assignment, property descriptors, or sparse array holes.
+//! Storage records holes created by indexed assignment, but array literal
+//! elisions, length assignment, and property descriptors are not implemented.
 
 use super::{Interpreter, JsError, Value};
 use crate::javascript::{ArrayMethodKind, ArrayStorage};
@@ -28,34 +28,36 @@ impl Interpreter {
         usize::try_from(index).ok()
     }
 
-    pub(super) fn array_get(receiver: ArrayStorage, name: &str) -> Value {
+    pub(super) fn array_get(receiver: ArrayStorage, name: &str) -> Option<Value> {
         if name == "length" {
-            return Value::Number(receiver.borrow().values.len() as f64);
+            return Some(Value::Number(receiver.borrow().values.len() as f64));
         }
 
         if let Some(index) = Self::array_index(name) {
-            return receiver
-                .borrow()
-                .values
+            let array = receiver.borrow();
+
+            return array
+                .present
                 .get(index)
-                .cloned()
-                .unwrap_or(Value::Undefined);
+                .copied()
+                .unwrap_or(false)
+                .then(|| array.values[index].clone());
         }
 
         let own = receiver.borrow().properties.get(name).cloned();
 
         if let Some(value) = own {
-            return value;
+            return Some(value);
         }
 
         let method = match name {
             "push" => ArrayMethodKind::Push,
             "pop" => ArrayMethodKind::Pop,
             "join" => ArrayMethodKind::Join,
-            _ => return Value::Undefined,
+            _ => return None,
         };
 
-        Value::ArrayMethod { receiver, method }
+        Some(Value::ArrayMethod { receiver, method })
     }
 
     pub(super) fn array_set(
@@ -84,10 +86,17 @@ impl Interpreter {
                     .try_reserve(additional)
                     .map_err(|_| JsError::runtime("array allocation failed"))?;
 
+                array
+                    .present
+                    .try_reserve(additional)
+                    .map_err(|_| JsError::runtime("array allocation failed"))?;
+
                 array.values.resize(length, Value::Undefined);
+                array.present.resize(length, false);
             }
 
             array.values[index] = value;
+            array.present[index] = true;
         } else {
             array.properties.set(name.to_owned(), value);
         }
@@ -97,6 +106,10 @@ impl Interpreter {
 
     pub(super) fn array_push(receiver: ArrayStorage, values: Vec<Value>) -> Result<Value, JsError> {
         let mut receiver = receiver.borrow_mut();
+
+        receiver
+            .present
+            .extend(std::iter::repeat_n(true, values.len()));
 
         receiver.values.extend(values);
 
@@ -110,11 +123,11 @@ impl Interpreter {
             ));
         }
 
-        Ok(receiver
-            .borrow_mut()
-            .values
-            .pop()
-            .unwrap_or(Value::Undefined))
+        let mut receiver = receiver.borrow_mut();
+
+        receiver.present.pop();
+
+        Ok(receiver.values.pop().unwrap_or(Value::Undefined))
     }
 
     pub(super) fn array_join(
@@ -145,11 +158,39 @@ impl Interpreter {
 
         Ok(Value::String(joined))
     }
+
+    pub(super) fn array_property(&self, receiver: ArrayStorage, name: &str) -> Value {
+        if let Some(value) = Self::array_get(receiver, name) {
+            return value;
+        }
+
+        match crate::javascript::value::ObjectState::lookup(&self.object_prototype, name) {
+            crate::javascript::value::PropertyLookup::Found(value) => value,
+
+            crate::javascript::value::PropertyLookup::Absent
+            | crate::javascript::value::PropertyLookup::Unknown => Value::Undefined,
+        }
+    }
+
+    pub(super) fn array_has_own(receiver: &ArrayStorage, name: &str) -> bool {
+        if name == "length" {
+            return true;
+        }
+
+        let array = receiver.borrow();
+
+        if let Some(index) = Self::array_index(name) {
+            return array.present.get(index).copied().unwrap_or(false);
+        }
+
+        array.properties.get(name).is_some()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Interpreter, Value};
+    use crate::javascript::evaluate;
 
     #[test]
     fn recognizes_canonical_array_indices() {
@@ -181,17 +222,138 @@ mod tests {
 
         assert_eq!(
             Interpreter::array_get(storage.clone(), "01"),
-            Value::Number(7.0)
+            Some(Value::Number(7.0))
         );
 
         assert_eq!(
             Interpreter::array_get(storage.clone(), "0"),
-            Value::Number(1.0)
+            Some(Value::Number(1.0))
         );
 
         assert_eq!(
             Interpreter::array_get(storage, "length"),
-            Value::Number(1.0)
+            Some(Value::Number(1.0))
         );
+    }
+
+    #[test]
+    fn has_own_distinguishes_holes_and_undefined() {
+        let value = evaluate(
+            r#"
+                let array = [undefined];
+                array[3] = undefined;
+
+                array.hasOwnProperty(0) &&
+                    !array.hasOwnProperty(1) &&
+                    !array.hasOwnProperty(2) &&
+                    array.hasOwnProperty(3) &&
+                    !array.hasOwnProperty(4) &&
+                    array.hasOwnProperty('length') &&
+                    !array.hasOwnProperty('push');
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value, Value::Boolean(true));
+    }
+
+    #[test]
+    fn updating_and_popping_holes_keeps_presence_consistent() {
+        let value = evaluate(
+            r#"
+                let array = [];
+
+                array[3] = 3;
+                array[1] = undefined;
+                array.pop();
+
+                let before =
+                    !array.hasOwnProperty(2) &&
+                    array.hasOwnProperty(1);
+
+                array.push(undefined);
+
+                before &&
+                    array.hasOwnProperty(3) &&
+                    !array.hasOwnProperty(2);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value, Value::Boolean(true));
+    }
+
+    #[test]
+    fn array_inherits_and_can_shadow_object_prototype_properties() {
+        let value = evaluate(
+            r#"
+                Object.prototype['1'] = 7;
+
+                let array = [];
+                array[2] = 9;
+
+                let inherited =
+                    array[1] === 7 &&
+                    !array.hasOwnProperty(1);
+
+                array[1] = undefined;
+
+                inherited &&
+                    array[1] === undefined &&
+                    array.hasOwnProperty(1);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value, Value::Boolean(true));
+    }
+
+    #[test]
+    fn array_has_own_named_properties_without_inheriting_them() {
+        let value = evaluate(
+            r#"
+                let array = [];
+
+                array['01'] = undefined;
+                array['4294967295'] = 1;
+
+                array.hasOwnProperty('01') &&
+                    array.hasOwnProperty('4294967295') &&
+                    !array.hasOwnProperty(1) &&
+                    !array.hasOwnProperty('hasOwnProperty');
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value, Value::Boolean(true));
+    }
+
+    #[test]
+    fn evaluates_array_has_own_property_fragment_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        assert!(source.contains("if (array.hasOwnProperty(i))"));
+
+        let value = evaluate(
+            r#"
+                let array = [];
+                array[1] = undefined;
+
+                let i = 1;
+                let found = false;
+
+                if (array.hasOwnProperty(i)) {
+                    found = true;
+                }
+
+                found;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value, Value::Boolean(true));
     }
 }
