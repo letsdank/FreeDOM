@@ -11,12 +11,16 @@ use crate::javascript::Value;
 
 #[derive(Default)]
 pub(super) struct Bindings {
-    values: HashMap<String, Value>,
+    values: HashMap<String, Binding>,
+}
+
+struct Binding {
+    value: Value,
 }
 
 pub(super) struct BindingSnapshot {
     name: String,
-    previous: Option<Value>,
+    previous: Option<Binding>,
 }
 
 impl Bindings {
@@ -25,21 +29,23 @@ impl Bindings {
     }
 
     pub(super) fn get(&self, name: &str) -> Option<&Value> {
-        self.values.get(name)
+        self.values.get(name).map(|binding| &binding.value)
     }
 
     pub(super) fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
-        self.values.get_mut(name)
+        self.values.get_mut(name).map(|binding| &mut binding.value)
     }
 
     pub(super) fn insert(&mut self, name: String, value: Value) -> Option<Value> {
-        self.values.insert(name, value)
+        self.values
+            .insert(name, Binding { value })
+            .map(|binding| binding.value)
     }
 
     pub(super) fn assign_existing(&mut self, name: &str, value: Value) -> Result<(), Value> {
         match self.values.get_mut(name) {
             Some(binding) => {
-                *binding = value;
+                binding.value = value;
                 Ok(())
             }
 
@@ -48,23 +54,25 @@ impl Bindings {
     }
 
     pub(super) fn insert_if_absent(&mut self, name: &str, value: Value) {
-        self.values.entry(name.to_owned()).or_insert(value);
+        self.values
+            .entry(name.to_owned())
+            .or_insert(Binding { value });
     }
 
     pub(super) fn remove(&mut self, name: &str) -> Option<Value> {
-        self.values.remove(name)
+        self.values.remove(name).map(|binding| binding.value)
     }
 
     pub(super) fn shadow(&mut self, name: String, value: Value) -> BindingSnapshot {
-        let previous = self.values.insert(name.clone(), value);
+        let previous = self.values.insert(name.clone(), Binding { value });
 
         BindingSnapshot { name, previous }
     }
 
     pub(super) fn restore(&mut self, snapshot: BindingSnapshot) {
         match snapshot.previous {
-            Some(value) => {
-                self.values.insert(snapshot.name, value);
+            Some(binding) => {
+                self.values.insert(snapshot.name, binding);
             }
 
             None => {
@@ -178,5 +186,27 @@ mod tests {
         bindings.restore(first);
         assert_eq!(bindings.get("x"), Some(&Value::Undefined));
         assert!(bindings.contains_key("x"));
+    }
+
+    #[test]
+    fn shadow_restores_the_original_object_reference() {
+        let mut bindings = Bindings::default();
+        let original = Value::object_with_null_prototype();
+
+        bindings.insert("x".to_owned(), original.clone());
+
+        let snapshot = bindings.shadow("x".to_owned(), Value::Number(9.0));
+
+        bindings.restore(snapshot);
+
+        let Value::Object(original) = original else {
+            panic!("expected object");
+        };
+
+        let Some(Value::Object(restored)) = bindings.get("x") else {
+            panic!("expected object");
+        };
+
+        assert!(std::rc::Rc::ptr_eq(&original, restored));
     }
 }
