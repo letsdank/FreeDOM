@@ -106,6 +106,12 @@ impl Interpreter {
             false,
         );
 
+        object_prototype.borrow_mut().define_own_data_property(
+            "hasOwnProperty".to_owned(),
+            Value::NativeFunction(NativeFunction::ObjectHasOwnProperty),
+            false,
+        );
+
         variables.insert("undefined".to_owned(), Value::Undefined);
 
         variables.insert(

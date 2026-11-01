@@ -19,6 +19,7 @@ pub enum NativeFunction {
     ObjectKeys,
     ObjectCreate,
     ObjectEntries,
+    ObjectHasOwnProperty,
 }
 
 #[derive(Clone, Debug, PartialEq)]

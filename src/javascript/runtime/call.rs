@@ -98,6 +98,10 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ObjectCreate) => Self::object_create(values),
 
+            Value::NativeFunction(NativeFunction::ObjectHasOwnProperty) => {
+                Self::object_has_own_property(receiver, values)
+            }
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }

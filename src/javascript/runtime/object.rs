@@ -1,10 +1,49 @@
 //! Partial Object constructor methods.
 //!
 //! <https://tc39.es/ecma262/#sec-object.create>
+//! <https://tc39.es/ecma262/#sec-object.prototype.hasownproperty>
 
 use super::{Interpreter, JsError, Value};
 
 impl Interpreter {
+    pub(super) fn object_has_own_property(
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        let key = match arguments.first().unwrap_or(&Value::Undefined) {
+            Value::String(value) => value.clone(),
+
+            Value::Undefined => "undefined".to_owned(),
+
+            Value::Null => "null".to_owned(),
+
+            Value::Boolean(value) => value.to_string(),
+
+            Value::Number(value) => crate::javascript::number::integer_property_key(*value)
+                .ok_or_else(|| {
+                    JsError::unsupported("numeric property key conversion is not implemented")
+                })?,
+
+            _ => {
+                return Err(JsError::unsupported(
+                    "object property key conversion is not implemented",
+                ));
+            }
+        };
+
+        match receiver.unwrap_or(Value::Undefined) {
+            Value::Object(object) => Ok(Value::Boolean(object.borrow().get(&key).is_some())),
+
+            Value::Null | Value::Undefined => Err(JsError::type_error(
+                "Object.prototype.hasOwnProperty requires a non-null value",
+            )),
+
+            _ => Err(JsError::unsupported(
+                "Object.prototype.hasOwnProperty is only implemented for ordinary objects",
+            )),
+        }
+    }
+
     pub(super) fn object_create(arguments: Vec<Value>) -> Result<Value, JsError> {
         let prototype = match arguments.first().unwrap_or(&Value::Undefined) {
             Value::Null => None,
@@ -409,6 +448,122 @@ mod tests {
             "let e = {}; \
             let constructor = Object; \
             e.constructor === constructor;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn has_own_property_does_not_follow_the_prototype_chain() {
+        let result = evaluate(
+            r#"
+                let parent = { inherited: 1 };
+                let child = Object.create(parent);
+                child.own = undefined;
+
+                child.hasOwnProperty('own') &&
+                    !child.hasOwnProperty('inherited') &&
+                    !child.hasOwnProperty('missing');
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn has_own_property_is_shared_and_not_enumerable() {
+        let result = evaluate(
+            r#"
+                let object = {};
+
+                object.hasOwnProperty === Object.prototype.hasOwnProperty &&
+                    !object.hasOwnProperty('hasOwnProperty') &&
+                    Object.prototype.hasOwnProperty('hasOwnProperty') &&
+                    Object.keys(Object.prototype).length === 0 &&
+                    ('hasOwnProperty' in object);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn has_own_property_converts_supported_keys_and_uses_undefined_by_default() {
+        let result = evaluate(
+            r#"
+                let object = {};
+
+                object['undefined'] = 1;
+                object['null'] = 2;
+                object['true'] = 3;
+                object['0'] = 4;
+                object['12'] = 5;
+
+                object.hasOwnProperty() &&
+                    object.hasOwnProperty(null) &&
+                    object.hasOwnProperty(true) &&
+                    object.hasOwnProperty(-0) &&
+                    object.hasOwnProperty(12);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn detached_has_own_property_requires_a_receiver() {
+        let result = evaluate(
+            r#"
+                let f = Object.prototype.hasOwnProperty;
+                let name = '';
+
+                try {
+                    f('x');
+                } catch (error) {
+                    name = error.name;
+                }
+
+                name;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("TypeError".to_owned()));
+    }
+
+    #[test]
+    fn unsupported_has_own_property_keys_are_not_silently_coerced() {
+        for source in ["({}).hasOwnProperty({});", "({}).hasOwnProperty(1.5);"] {
+            let error = evaluate(source).unwrap_err();
+
+            assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+        }
+    }
+
+    #[test]
+    fn runs_has_own_property_condition_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        assert!(source.contains("if (properties.hasOwnProperty(\"message_events\"))"));
+
+        let result = evaluate(
+            r#"
+                let properties = { message_events: undefined };
+                let found = false;
+
+                if (properties.hasOwnProperty("message_events")) {
+                    found = true;
+                }
+
+                found;
+            "#,
         )
         .unwrap();
 
