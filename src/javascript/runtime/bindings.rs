@@ -335,4 +335,79 @@ mod tests {
             Some(&Value::String("a".to_owned()))
         );
     }
+
+    #[test]
+    fn redeclarations_update_existing_global_cells() {
+        let mut interpreter = super::super::Interpreter::new();
+
+        let first = crate::javascript::parse_program(
+            "var a = 1, b = 2; \
+            function f() { return a + b; }",
+        )
+        .unwrap();
+
+        interpreter.execute(&first).unwrap();
+
+        let a = interpreter.variables.values.get("a").unwrap().clone();
+        let b = interpreter.variables.values.get("b").unwrap().clone();
+        let f = interpreter.variables.values.get("f").unwrap().clone();
+
+        let second = crate::javascript::parse_program(
+            "var a = 10, b = 20; \
+            function f() { return a + b; }",
+        )
+        .unwrap();
+
+        interpreter.execute(&second).unwrap();
+
+        assert!(std::rc::Rc::ptr_eq(
+            &a,
+            interpreter.variables.values.get("a").unwrap()
+        ));
+
+        assert!(std::rc::Rc::ptr_eq(
+            &b,
+            interpreter.variables.values.get("b").unwrap()
+        ));
+
+        assert!(std::rc::Rc::ptr_eq(
+            &f,
+            interpreter.variables.values.get("f").unwrap()
+        ));
+
+        let check = crate::javascript::parse_program("f();").unwrap();
+
+        assert_eq!(
+            interpreter.execute(&check).unwrap().into_value(),
+            Value::Number(30.0)
+        );
+    }
+
+    #[test]
+    fn local_declaration_restores_global_cell_after_call() {
+        let mut interpreter = super::super::Interpreter::new();
+
+        let first = crate::javascript::parse_program("var x = 1;").unwrap();
+        interpreter.execute(&first).unwrap();
+
+        let global_x = interpreter.variables.values.get("x").unwrap().clone();
+
+        let second =
+            crate::javascript::parse_program("function f() { var x = 2; return x; } f();").unwrap();
+
+        assert_eq!(
+            interpreter.execute(&second).unwrap().into_value(),
+            Value::Number(2.0)
+        );
+
+        assert!(std::rc::Rc::ptr_eq(
+            &global_x,
+            interpreter.variables.values.get("x").unwrap()
+        ));
+
+        assert_eq!(
+            interpreter.variables.get("x").as_deref(),
+            Some(&Value::Number(1.0))
+        );
+    }
 }

@@ -14,7 +14,7 @@ impl Interpreter {
         // This is limited hoisting for the current flat environment model.
         for statement in program {
             if let Statement::FunctionDeclaration { name, function } = statement {
-                self.variables.insert(
+                self.variables.assign_or_insert(
                     name.clone(),
                     Value::function(function.clone(), self.object_prototype.clone()),
                 );
@@ -29,7 +29,7 @@ impl Interpreter {
 
                 Statement::Declaration { name, value } => {
                     let value = self.evaluate_expression(value)?;
-                    self.variables.insert(name.clone(), value);
+                    self.variables.assign_or_insert(name.clone(), value);
                     Value::Undefined
                 }
 
@@ -37,7 +37,7 @@ impl Interpreter {
                     for (name, value) in declarations {
                         let value = self.evaluate_expression(value)?;
 
-                        self.variables.insert(name.clone(), value);
+                        self.variables.assign_or_insert(name.clone(), value);
                     }
 
                     Value::Undefined
