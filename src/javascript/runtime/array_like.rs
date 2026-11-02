@@ -48,6 +48,8 @@ impl Interpreter {
                 }
             }
 
+            Value::Arguments(arguments) => arguments.length(),
+
             Value::Undefined
             | Value::Null
             | Value::Boolean(_)
@@ -80,6 +82,8 @@ impl Interpreter {
                 Value::Array(array) => self.array_property(array.clone(), &name),
 
                 Value::Object(object) => ordinary_property(object, &name)?,
+
+                Value::Arguments(arguments) => arguments.get_index(index)?,
 
                 _ => unreachable!("array-like type was already checked"),
             };
@@ -210,6 +214,40 @@ mod tests {
         let error = super::Interpreter::new()
             .create_list_from_array_like(&object)
             .unwrap_err();
+
+        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+    }
+
+    #[test]
+    fn apply_forwards_unmapped_arguments_object() {
+        let result = evaluate(
+            r#"
+                function add(a, b) {
+                    return a + b;
+                }
+
+                function forward() {
+                    return add.apply({}, arguments);
+                }
+
+                forward(2, 3) === 5;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn apply_does_not_guess_potentially_mapped_arguments() {
+        let error = evaluate(
+            "function target(x) { return x; } \
+            function forward(a) { \
+                return target.apply({}, arguments); \
+            } \
+            forward(7);",
+        )
+        .unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }

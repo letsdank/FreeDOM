@@ -192,9 +192,20 @@ impl Interpreter {
         if function.kind == FunctionKind::Ordinary
             && !local_names.iter().any(|name| name == "arguments")
         {
-            let previous = self
-                .variables
-                .shadow("arguments".to_owned(), Value::arguments(arguments.len()));
+            let potentially_mapped = if function
+                .parameters
+                .iter()
+                .all(|parameter| !parameter.is_rest && parameter.default.is_none())
+            {
+                function.parameters.len()
+            } else {
+                0
+            };
+
+            let previous = self.variables.shadow(
+                "arguments".to_owned(),
+                Value::arguments(arguments.clone(), potentially_mapped),
+            );
 
             replaced_bindings.push(previous);
             local_names.push("arguments".to_owned());
@@ -1129,5 +1140,100 @@ mod tests {
         );
 
         assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn reads_unmapped_indices_and_preserves_argument_identity() {
+        let result = evaluate(
+            r#"
+                let object = {};
+
+                function read() {
+                    return arguments;
+                }
+
+                let args = read(object, 'b');
+
+                args[0] === object &&
+                    args['1'] === 'b' &&
+                    args.length === 2;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn extra_arguments_are_readable_but_mapped_candidates_are_rejected() {
+        use crate::javascript::JsErrorKind;
+
+        assert_eq!(
+            evaluate(
+                "function f(a) { \
+                    a = 8; \
+                    return arguments[1]; \
+                } \
+                f(3, 7);"
+            )
+            .unwrap(),
+            Value::Number(7.0)
+        );
+
+        for source in [
+            "function f(a) { return arguments[0]; } f(3);",
+            "function f(a, a) { return arguments[0]; } f(1, 2);",
+            "function f() { return arguments[2]; } f(1);",
+            "function f() { return arguments['01']; } f(1);",
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap_err().kind,
+                JsErrorKind::UnsupportedFeature,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_and_rest_parameters_have_unmapped_indices() {
+        let result = evaluate(
+            r#"
+                function defaults(a = 1) {
+                    a = 9;
+                    return arguments[0];
+                }
+
+                function rest(a, ...others) {
+                    a = 9;
+                    return arguments[0] + arguments[1];
+                }
+
+                defaults(3) === 3 &&
+                    defaults(undefined) === undefined &&
+                    rest(4, 5) === 9;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn escaped_arguments_and_arrow_closures_retain_unmapped_values() {
+        let result = evaluate(
+            r#"
+                function get() {
+                    return () => arguments[0];
+                }
+
+                let first = get('a');
+                let second = get('b');
+
+                first() === 'a' && second() === 'b'
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }

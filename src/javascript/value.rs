@@ -579,8 +579,8 @@ impl Value {
         Self::NativeError(NativeErrorValue::new(name, message))
     }
 
-    pub(super) fn arguments(length: usize) -> Self {
-        Self::Arguments(ArgumentsValue::new(length))
+    pub(super) fn arguments(values: Vec<Value>, potentially_mapped: usize) -> Self {
+        Self::Arguments(ArgumentsValue::new(values, potentially_mapped))
     }
 
     pub(super) fn to_js_string(&self) -> String {

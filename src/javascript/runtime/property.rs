@@ -306,13 +306,34 @@ impl Interpreter {
 
     pub(super) fn index_value(&self, object: Value, index: Value) -> Result<Value, JsError> {
         if let Value::Arguments(arguments) = &object {
-            if matches!(&index,Value::String(name)if name=="length") {
+            if matches!(&index, Value::String(name) if name == "length") {
                 return Ok(Value::Number(arguments.length() as f64));
             }
 
-            return Err(JsError::unsupported(
-                "arguments indexed properties are not implemented",
-            ));
+            let name = match &index {
+                Value::String(name) => name.clone(),
+
+                Value::Number(number) => crate::javascript::number::integer_property_key(*number)
+                    .ok_or_else(|| {
+                    JsError::unsupported("arguments index conversion is not implemented")
+                })?,
+
+                _ => {
+                    return Err(JsError::unsupported(
+                        "arguments index conversion is not implemented",
+                    ));
+                }
+            };
+
+            let position = name
+                .parse::<usize>()
+                .ok()
+                .filter(|position| position.to_string() == name)
+                .ok_or_else(|| {
+                    JsError::unsupported("arguments property lookup is not implemented")
+                })?;
+
+            return arguments.get_index(position);
         }
 
         if matches!(object, Value::Null | Value::Undefined) {
