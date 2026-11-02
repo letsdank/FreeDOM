@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn unknown_prototypes_and_other_targets_are_explicitly_unsupported() {
-        for source in ["for (let k in {}) {}", "for (let k in []) {}"] {
+        for source in ["for (let k in []) {}"] {
             assert_eq!(
                 evaluate(source).unwrap_err().kind,
                 JsErrorKind::UnsupportedFeature
@@ -251,5 +251,115 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn enumerates_ordinary_objects_and_object_prototype() {
+        let result = evaluate(
+            r#"
+                Object.prototype.extra = 9;
+
+                let object = {
+                    b: 1,
+                    '2': 1,
+                    '1': 1,
+                    a: 1,
+                };
+
+                let result = '';
+
+                for (let key in object) {
+                    result += key + ',';
+                }
+
+                result;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("1,2,b,a,extra,".to_owned()));
+    }
+
+    #[test]
+    fn overwriting_virtual_builtin_keeps_it_non_enumerable() {
+        let result = evaluate(
+            r#"
+                Object.prototype.valueOf = 12;
+                Object.prototype.extra = 3;
+
+                let result = '';
+
+                for (let key in { own: 1 }) {
+                    result += key + ',';
+                }
+
+                result;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("own,extra,".to_owned()));
+    }
+
+    #[test]
+    fn overwriting_known_builtin_keeps_it_non_enumerable() {
+        let result = evaluate(
+            r#"
+                Object.prototype.toString = 3;
+
+                let object = Object.create(Object.prototype);
+                object.own = 1;
+
+                let result = '';
+
+                for (let key in object) {
+                    result += key + ',';
+                }
+
+                result;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("own,".to_owned()));
+    }
+
+    #[test]
+    fn enumerates_header_from_actual_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let header = source
+            .lines()
+            .map(str::trim)
+            .find(|line| *line == "for (const p in replacements) {")
+            .expect("WPT for-in header must exist");
+
+        let script = format!(
+            "let replacements = {{ '12': 'a', '2': 'b', x: 'c' }}; \
+            let keys = ''; \
+            {header} \
+                keys += p + ','; \
+            }} \
+            keys;"
+        );
+
+        assert_eq!(
+            evaluate(&script).unwrap(),
+            Value::String("2,12,x,".to_owned())
+        );
+    }
+
+    #[test]
+    fn enumeration_after_unimplemented_proto_write_is_not_guessed() {
+        let error = evaluate(
+            "Object.prototype.__proto__ = {}; \
+            for (let k in {}) {}",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }
 }

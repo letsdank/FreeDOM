@@ -141,10 +141,13 @@ impl ObjectState {
         {
             property.value = value;
         } else {
+            let enumerable = !(matches!(self.prototype, ObjectPrototype::IntrinsicObjectRoot)
+                && is_object_prototype_intrinsic(&name));
+
             self.properties.push(ObjectProperty {
                 name,
                 value,
-                enumerable: true,
+                enumerable,
             });
         }
     }
@@ -277,6 +280,13 @@ impl ObjectState {
             let (keys, prototype) = {
                 let state = current.borrow();
 
+                // The legacy __proto__ setter is not implemented yet.
+                if matches!(state.prototype, ObjectPrototype::IntrinsicObjectRoot)
+                    && state.get("__proto__").is_some()
+                {
+                    return None;
+                }
+
                 (state.own_keys_with_enumerability(), state.prototype.clone())
             };
 
@@ -289,7 +299,11 @@ impl ObjectState {
             match prototype {
                 ObjectPrototype::Null => return Some(result),
 
-                ObjectPrototype::Unknown | ObjectPrototype::IntrinsicObjectRoot => return None,
+                ObjectPrototype::Unknown => return None,
+
+                // The remaining built-in Object.prototype properties are
+                // non-enumerable and the intrinsic root has no prototype.
+                ObjectPrototype::IntrinsicObjectRoot => return Some(result),
 
                 ObjectPrototype::Object(prototype) => {
                     current = prototype;
@@ -813,5 +827,14 @@ mod tests {
         ));
 
         assert_eq!(properties.keys(), ["visible"]);
+    }
+
+    #[test]
+    fn enumeration_with_unknown_prototype_is_not_guessed() {
+        let Value::Object(object) = Value::object([("own".to_owned(), Value::Number(1.0))]) else {
+            panic!("expected object");
+        };
+
+        assert_eq!(ObjectState::for_in_keys(&object), None);
     }
 }
