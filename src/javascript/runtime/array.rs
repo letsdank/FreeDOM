@@ -54,6 +54,10 @@ impl Interpreter {
             return Some(Value::NativeFunction(NativeFunction::ArrayMap));
         }
 
+        if name == "some" {
+            return Some(Value::NativeFunction(NativeFunction::ArraySome));
+        }
+
         if name == "toString" {
             return Some(Value::NativeFunction(NativeFunction::ArrayToString));
         }

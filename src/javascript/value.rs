@@ -37,6 +37,7 @@ pub enum NativeFunction {
     StringConstructor,
     StringFromCharCode,
     ArrayMap,
+    ArraySome,
     ErrorConstructor,
     ErrorToString,
     TypeErrorConstructor,

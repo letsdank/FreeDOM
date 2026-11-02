@@ -105,6 +105,9 @@ mod string;
 #[path = "runtime/array_map.rs"]
 mod array_map;
 
+#[path = "runtime/array_some.rs"]
+mod array_some;
+
 #[path = "runtime/error.rs"]
 mod error;
 

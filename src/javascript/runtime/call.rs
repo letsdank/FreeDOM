@@ -161,6 +161,8 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ArrayMap) => self.array_map(receiver, values),
 
+            Value::NativeFunction(NativeFunction::ArraySome) => self.array_some(receiver, values),
+
             Value::NativeFunction(NativeFunction::ErrorConstructor) => self.construct_error(values),
 
             Value::NativeFunction(NativeFunction::ErrorToString) => Self::error_to_string(receiver),
