@@ -42,6 +42,10 @@ impl Interpreter {
                 ));
             }
 
+            Value::NativeFunction(NativeFunction::ArrayConstructor) => {
+                return Self::array_constructor(values);
+            }
+
             Value::NativeFunction(NativeFunction::StringConstructor) => {
                 return Err(JsError::unsupported(
                     "String object construction is not implemented",

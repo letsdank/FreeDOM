@@ -159,6 +159,10 @@ impl Interpreter {
                 self.string_from_char_code(values)
             }
 
+            Value::NativeFunction(NativeFunction::ArrayConstructor) => {
+                Self::array_constructor(values)
+            }
+
             Value::NativeFunction(NativeFunction::ArrayMap) => self.array_map(receiver, values),
 
             Value::NativeFunction(NativeFunction::ArraySome) => self.array_some(receiver, values),

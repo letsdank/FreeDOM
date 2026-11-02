@@ -293,6 +293,11 @@ impl Interpreter {
         variables.insert("Object".to_owned(), Value::ObjectConstructor);
 
         variables.insert(
+            "Array".to_owned(),
+            Value::NativeFunction(NativeFunction::ArrayConstructor),
+        );
+
+        variables.insert(
             "Error".to_owned(),
             Value::NativeFunction(NativeFunction::ErrorConstructor),
         );

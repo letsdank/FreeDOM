@@ -48,6 +48,10 @@ impl Interpreter {
                 Ok(Value::Object(self.promise_prototype.clone()))
             }
 
+            (Value::NativeFunction(NativeFunction::ArrayConstructor), "prototype") => Err(
+                JsError::unsupported("Array.prototype is not implemented yet"),
+            ),
+
             (Value::String(_), "split") => Ok(Value::NativeFunction(NativeFunction::StringSplit)),
 
             (Value::NativeFunction(NativeFunction::StringConstructor), "fromCharCode") => {

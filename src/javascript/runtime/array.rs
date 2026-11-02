@@ -9,6 +9,33 @@ use super::{Interpreter, JsError, NativeFunction, Value};
 use crate::javascript::{ArrayMethodKind, ArrayStorage};
 
 impl Interpreter {
+    /// Implements the supported cases of Array and new Array.
+    ///
+    /// <https://tc39.es/ecma262/#sec-array-constructor>
+    pub(super) fn array_constructor(arguments: Vec<Value>) -> Result<Value, JsError> {
+        const MAX_ARRAY_LENGTH: usize = 65_536;
+
+        if let [Value::Number(length)] = arguments.as_slice() {
+            if !length.is_finite()
+                || *length < 0.0
+                || length.fract() != 0.0
+                || *length > u32::MAX as f64
+            {
+                return Err(JsError::unsupported(
+                    "Array invalid-length RangeError is not implemented",
+                ));
+            }
+
+            if *length > MAX_ARRAY_LENGTH as f64 {
+                return Err(JsError::unsupported("Array allocation limit exceeded"));
+            }
+
+            return Ok(Value::array_from_slots(vec![None; *length as usize]));
+        }
+
+        Ok(Value::array(arguments))
+    }
+
     // ECMAScript array indices exclude 2^32 - 1 and non-canonical strings.
     // https://tc39.es/ecma262/#array-index
     fn array_index(name: &str) -> Option<usize> {
@@ -204,7 +231,7 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::{Interpreter, Value};
-    use crate::javascript::evaluate;
+    use crate::javascript::{JsErrorKind, evaluate};
 
     #[test]
     fn recognizes_canonical_array_indices() {
@@ -369,5 +396,45 @@ mod tests {
         .unwrap();
 
         assert_eq!(value, Value::Boolean(true));
+    }
+
+    #[test]
+    fn constructs_array_elements_and_holes() {
+        let result = evaluate(
+            r#"
+                let a = Array(2);
+                let b = new Array('x', 'y');
+                let c = Array(undefined);
+                let d = new Array();
+
+                typeof Array === 'function' &&
+                    a.length === 2 &&
+                    !a.hasOwnProperty('0') &&
+                    b.length === 2 &&
+                    b[1] === 'y' &&
+                    c.length === 1 &&
+                    c.hasOwnProperty('0') &&
+                    d.length === 0;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn array_constructor_reports_limits_and_unimplemented_prototype() {
+        for source in [
+            "Array(-1);",
+            "new Array(1.5);",
+            "Array(65537);",
+            "Array.prototype;",
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap_err().kind,
+                JsErrorKind::UnsupportedFeature,
+                "{source}"
+            );
+        }
     }
 }
