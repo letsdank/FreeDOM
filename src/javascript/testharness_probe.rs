@@ -66,4 +66,14 @@ mod tests {
 
         assert!(matches!(thrown.kind, JsErrorKind::Thrown(_)));
     }
+
+    #[test]
+    fn bootstraps_local_wpt_testharness_in_synthetic_host() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        probe_testharness(source).unwrap();
+    }
 }

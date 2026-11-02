@@ -223,7 +223,10 @@ impl Interpreter {
             self.variables.restore(previous);
         }
 
-        result.map(Completion::into_value)
+        result.map(|completion| match completion {
+            Completion::Normal(_) => Value::Undefined,
+            completion => completion.into_value(),
+        })
     }
 
     pub(super) fn create_function(&self, function: &UserFunction) -> Value {
@@ -809,5 +812,130 @@ mod tests {
             evaluate("async function f() {} new f();").unwrap_err().kind,
             JsErrorKind::NativeException(_)
         ));
+    }
+
+    #[test]
+    fn functions_without_return_ignore_last_statement_value() {
+        let result = evaluate(
+            r#"
+                let shared = {};
+
+                function f() {
+                    42;
+                }
+
+                function g() {
+                    shared;
+                }
+
+                let arrow = () => 42;
+
+                let block_arrow = () => {
+                    42;
+                };
+
+                f() === undefined &&
+                    g() === undefined &&
+                    arrow() === 42 &&
+                    block_arrow() === undefined;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        // A top-level script still returns its last expression value.
+        assert_eq!(evaluate("1; 2;").unwrap(), Value::Number(2.0));
+    }
+
+    #[test]
+    fn constructor_fallthrough_keeps_instance_but_explicit_object_return_wins() {
+        let result = evaluate(
+            r#"
+                let replacement = { marker: 2 };
+
+                function A() {
+                    this.items = [];
+                }
+
+                A.prototype.marker = 1;
+
+                function B() {
+                    this.items = [];
+                    return replacement;
+                }
+
+                let a = new A();
+                let b = new B();
+
+                a instanceof A &&
+                    a.marker === 1 &&
+                    a.items.length === 0 &&
+                    b === replacement &&
+                    b.marker === 2;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn promise_callback_without_return_fulfills_with_undefined() {
+        use crate::javascript::{DocumentScriptSession, DocumentState};
+
+        let mut document = DocumentState::with_title("");
+        let mut session = DocumentScriptSession::new(&document);
+
+        session
+            .evaluate(
+                r#"
+                let result = 'unset';
+
+                Promise.resolve(1)
+                    .then(function(x) {
+                        x + 1;
+                    })
+                    .then(function(x) {
+                        result = typeof x;
+                    });
+            "#,
+                &mut document,
+            )
+            .unwrap();
+
+        assert_eq!(
+            session.evaluate("result;", &mut document).unwrap(),
+            Value::String("undefined".to_owned())
+        );
+    }
+
+    #[test]
+    fn constructs_shell_environment_from_wpt_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let start = source
+            .find("    function ShellTestEnvironment() {")
+            .expect("WPT constructor must exist");
+
+        let end = source[start..]
+            .find("    function create_test_environment() {")
+            .expect("WPT section end must exist")
+            + start;
+
+        let fragment = &source[start..end];
+
+        let script = format!(
+            "{fragment}\n\
+            let environment = new ShellTestEnvironment(); \
+            environment.test_timeout() === null && \
+                environment.message_ports.length === 0 && \
+                typeof environment.add_on_loaded_callback === 'function';"
+        );
+
+        assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));
     }
 }
