@@ -38,6 +38,20 @@ impl Interpreter {
                 Self::ordinary_has_instance(&left, Value::Object(self.error_prototype.clone()))?
             }
 
+            Value::NativeFunction(NativeFunction::TypeErrorConstructor) => {
+                Self::ordinary_has_instance(
+                    &left,
+                    Value::Object(self.type_error_prototype.clone()),
+                )?
+            }
+
+            Value::NativeFunction(NativeFunction::ReferenceErrorConstructor) => {
+                Self::ordinary_has_instance(
+                    &left,
+                    Value::Object(self.reference_error_prototype.clone()),
+                )?
+            }
+
             Value::Undefined
             | Value::Null
             | Value::Boolean(_)

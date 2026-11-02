@@ -52,6 +52,18 @@ impl Interpreter {
                 return self.construct_error(values);
             }
 
+            Value::NativeFunction(NativeFunction::TypeErrorConstructor) => {
+                return self
+                    .construct_error_with_prototype(values, self.type_error_prototype.clone());
+            }
+
+            Value::NativeFunction(NativeFunction::ReferenceErrorConstructor) => {
+                return self.construct_error_with_prototype(
+                    values,
+                    self.reference_error_prototype.clone(),
+                );
+            }
+
             Value::ObjectConstructor | Value::ElementConstructor(_) => {
                 return Err(JsError::unsupported(
                     "construction with this built-in is not implemented",

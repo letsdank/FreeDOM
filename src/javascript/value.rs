@@ -39,6 +39,8 @@ pub enum NativeFunction {
     ArrayMap,
     ErrorConstructor,
     ErrorToString,
+    TypeErrorConstructor,
+    ReferenceErrorConstructor,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -341,7 +343,11 @@ impl NativeErrorValue {
     fn new(name: &str, message: &str) -> Self {
         let mut properties = ObjectState::default();
 
-        properties.set("message".to_owned(), Value::String(message.to_owned()));
+        properties.define_own_data_property(
+            "message".to_owned(),
+            Value::String(message.to_owned()),
+            false,
+        );
 
         Self {
             default_name: name.to_owned(),
@@ -403,6 +409,16 @@ impl NativeErrorValue {
             Some(true)
         } else {
             ObjectState::has_prototype(prototype, target)
+        }
+    }
+
+    pub(super) fn builtin_name(&self) -> &str {
+        &self.default_name
+    }
+
+    pub(super) fn attach_prototype_if_missing(&mut self, prototype: ObjectStorage) {
+        if self.prototype.is_none() {
+            self.prototype = Some(prototype);
         }
     }
 }

@@ -239,13 +239,12 @@ impl Interpreter {
         match self.dispatch_call(handler, None, vec![argument]) {
             Ok(value) => {
                 if Self::promise_handle(&value).as_ref() == Some(&reaction.target) {
-                    self.settle_promise(
-                        &reaction.target,
-                        Outcome::Rejected(Value::native_error(
-                            "TypeError",
-                            "promise cannot resolve to itself",
-                        )),
-                    );
+                    let mut error =
+                        Value::native_error("TypeError", "promise cannot resolve to itself");
+
+                    self.attach_native_error_prototype(&mut error);
+
+                    self.settle_promise(&reaction.target, Outcome::Rejected(error));
                 } else {
                     Self::require_primitive(&value)?;
 
@@ -254,7 +253,9 @@ impl Interpreter {
             }
 
             Err(error) => match error.kind {
-                JsErrorKind::Thrown(value) | JsErrorKind::NativeException(value) => {
+                JsErrorKind::Thrown(mut value) | JsErrorKind::NativeException(mut value) => {
+                    self.attach_native_error_prototype(&mut value);
+
                     self.settle_promise(&reaction.target, Outcome::Rejected(value));
                 }
 

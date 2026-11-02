@@ -165,6 +165,14 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ErrorToString) => Self::error_to_string(receiver),
 
+            Value::NativeFunction(NativeFunction::TypeErrorConstructor) => {
+                self.construct_error_with_prototype(values, self.type_error_prototype.clone())
+            }
+
+            Value::NativeFunction(NativeFunction::ReferenceErrorConstructor) => {
+                self.construct_error_with_prototype(values, self.reference_error_prototype.clone())
+            }
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }

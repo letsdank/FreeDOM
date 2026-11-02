@@ -6,11 +6,19 @@
 //! Error causes, stack traces, subclass prototypes, and general object-to-string
 //! conversion are not implemented.
 
-use super::{Interpreter, JsError, Value};
+use super::{Interpreter, JsError, NativeFunction, ObjectStorage, Value};
 use crate::javascript::value::{ObjectState, PropertyLookup};
 
 impl Interpreter {
     pub(super) fn construct_error(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        self.construct_error_with_prototype(arguments, self.error_prototype.clone())
+    }
+
+    pub(super) fn construct_error_with_prototype(
+        &self,
+        arguments: Vec<Value>,
+        prototype: ObjectStorage,
+    ) -> Result<Value, JsError> {
         if !matches!(
             arguments.get(1),
             None | Some(
@@ -38,10 +46,7 @@ impl Interpreter {
             }
         };
 
-        Ok(Value::error_with_prototype(
-            message,
-            self.error_prototype.clone(),
-        ))
+        Ok(Value::error_with_prototype(message, prototype))
     }
 
     pub(super) fn error_to_string(receiver: Option<Value>) -> Result<Value, JsError> {
@@ -103,6 +108,55 @@ impl Interpreter {
         };
 
         Ok(Value::String(result))
+    }
+
+    pub(super) fn make_error_subtype_prototype(
+        parent: &ObjectStorage,
+        name: &str,
+        constructor: NativeFunction,
+    ) -> ObjectStorage {
+        let Value::Object(prototype) = Value::object_with_prototype(parent.clone()) else {
+            unreachable!("object constructor returns an object");
+        };
+
+        {
+            let mut properties = prototype.borrow_mut();
+
+            properties.define_own_data_property(
+                "name".to_owned(),
+                Value::String(name.to_owned()),
+                false,
+            );
+
+            properties.define_own_data_property(
+                "message".to_owned(),
+                Value::String(String::new()),
+                false,
+            );
+
+            properties.define_own_data_property(
+                "constructor".to_owned(),
+                Value::NativeFunction(constructor),
+                false,
+            );
+        }
+
+        prototype
+    }
+
+    pub(super) fn attach_native_error_prototype(&self, value: &mut Value) {
+        if let Value::NativeError(error) = value {
+            let prototype = match error.builtin_name() {
+                "TypeError" => Some(&self.type_error_prototype),
+                "ReferenceError" => Some(&self.reference_error_prototype),
+                "Error" => Some(&self.error_prototype),
+                _ => None,
+            };
+
+            if let Some(prototype) = prototype {
+                error.attach_prototype_if_missing(prototype.clone());
+            }
+        }
     }
 }
 
@@ -201,10 +255,6 @@ mod tests {
                 "{source}"
             );
         }
-
-        let error = evaluate("try { missing; } catch (e) { e instanceof Error; }").unwrap_err();
-
-        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }
 
     #[test]
@@ -233,5 +283,171 @@ mod tests {
         );
 
         assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn native_reference_and_type_errors_have_correct_prototype_chains() {
+        let result = evaluate(
+            r#"
+                let reference = false;
+                let type = false;
+
+                function Other() {}
+
+                try {
+                    missing;
+                } catch (e) {
+                    reference =
+                        e instanceof ReferenceError &&
+                        e instanceof Error &&
+                        e instanceof Object &&
+                        !(e instanceof TypeError) &&
+                        !(e instanceof Other) &&
+                        e.name === 'ReferenceError' &&
+                        e.constructor === ReferenceError &&
+                        e.hasOwnProperty('message');
+                }
+
+                try {
+                    null.x;
+                } catch (e) {
+                    type =
+                        e instanceof TypeError &&
+                        e instanceof Error &&
+                        !(e instanceof ReferenceError) &&
+                        e.name === 'TypeError' &&
+                        e.constructor === TypeError;
+                }
+
+                reference && type;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn native_error_identity_survives_rethrow_and_mutated_name() {
+        let result = evaluate(
+            r#"
+                let saved;
+
+                try {
+                    try {
+                        missing;
+                    } catch (e) {
+                        saved = e;
+                        e.name = 'Custom';
+                        throw e;
+                    }
+                } catch (e) {
+                    saved === e &&
+                        e.name === 'Custom' &&
+                        e instanceof ReferenceError &&
+                        e instanceof Error &&
+                        !(e instanceof TypeError);
+                }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn constructors_create_independent_error_subtypes() {
+        let result = evaluate(
+            r#"
+                let a = TypeError('bad');
+                let b = new ReferenceError('missing');
+
+                a instanceof TypeError &&
+                    a instanceof Error &&
+                    !(a instanceof ReferenceError) &&
+                    a.message === 'bad' &&
+                    b instanceof ReferenceError &&
+                    b instanceof Error &&
+                    !(b instanceof TypeError) &&
+                    b.message === 'missing' &&
+                    TypeError.prototype instanceof Error &&
+                    ReferenceError.prototype instanceof Error &&
+                    Object.keys(TypeError.prototype).length === 0;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn native_errors_use_realm_prototypes_even_if_globals_change() {
+        let result = evaluate(
+            r#"
+                let constructor = ReferenceError;
+                ReferenceError = 1;
+
+                let result = false;
+
+                try {
+                    missing;
+                } catch (e) {
+                    result =
+                        e instanceof constructor &&
+                        e instanceof Error &&
+                        e.constructor === constructor;
+                }
+
+                result;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn promise_reactions_bind_native_exception_prototypes() {
+        use crate::javascript::{DocumentScriptSession, DocumentState};
+
+        let mut document = DocumentState::with_title("");
+        let mut session = DocumentScriptSession::new(&document);
+
+        session
+            .evaluate(
+                r#"
+                let callbackError = false;
+                let cycleError = false;
+
+                Promise.resolve(1)
+                    .then(Error.prototype.toString)
+                    .then(undefined, function(e) {
+                        callbackError =
+                            e instanceof TypeError &&
+                            e instanceof Error;
+                    });
+
+                let p;
+
+                p = Promise.resolve().then(function() {
+                    return p;
+                });
+
+                p.then(undefined, function(e) {
+                    cycleError =
+                        e instanceof TypeError &&
+                        e instanceof Error;
+                });
+            "#,
+                &mut document,
+            )
+            .unwrap();
+
+        assert_eq!(
+            session
+                .evaluate("callbackError && cycleError;", &mut document)
+                .unwrap(),
+            Value::Boolean(true)
+        );
     }
 }

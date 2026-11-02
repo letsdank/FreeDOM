@@ -141,6 +141,8 @@ pub(super) struct Interpreter {
     performing_microtask_checkpoint: bool,
     promise_prototype: ObjectStorage,
     error_prototype: ObjectStorage,
+    type_error_prototype: ObjectStorage,
+    reference_error_prototype: ObjectStorage,
 }
 
 impl Interpreter {
@@ -197,6 +199,18 @@ impl Interpreter {
             "toString".to_owned(),
             Value::NativeFunction(NativeFunction::ErrorToString),
             false,
+        );
+
+        let type_error_prototype = Self::make_error_subtype_prototype(
+            &error_prototype,
+            "TypeError",
+            NativeFunction::TypeErrorConstructor,
+        );
+
+        let reference_error_prototype = Self::make_error_subtype_prototype(
+            &error_prototype,
+            "ReferenceError",
+            NativeFunction::ReferenceErrorConstructor,
         );
 
         let Value::Object(promise_prototype) =
@@ -262,6 +276,16 @@ impl Interpreter {
         );
 
         variables.insert(
+            "TypeError".to_owned(),
+            Value::NativeFunction(NativeFunction::TypeErrorConstructor),
+        );
+
+        variables.insert(
+            "ReferenceError".to_owned(),
+            Value::NativeFunction(NativeFunction::ReferenceErrorConstructor),
+        );
+
+        variables.insert(
             "Promise".to_owned(),
             Value::NativeFunction(NativeFunction::PromiseConstructor),
         );
@@ -282,6 +306,8 @@ impl Interpreter {
             performing_microtask_checkpoint: false,
             promise_prototype,
             error_prototype,
+            type_error_prototype,
+            reference_error_prototype,
         }
     }
 
@@ -295,7 +321,15 @@ impl Interpreter {
     }
 
     pub(super) fn execute(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
-        self.execute_statements(program)
+        let mut result = self.execute_statements(program);
+
+        if let Err(error) = &mut result {
+            if let super::JsErrorKind::NativeException(value) = &mut error.kind {
+                self.attach_native_error_prototype(value);
+            }
+        }
+
+        result
     }
 
     pub(super) fn execute_script(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
