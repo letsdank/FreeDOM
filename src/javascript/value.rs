@@ -7,6 +7,7 @@
 use crate::url::Url;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
+use super::arguments::ArgumentsValue;
 use super::runtime::bindings::CapturedBindings;
 use super::runtime::promise::PromiseHandle;
 use super::{DocumentState, FunctionKind, UserFunction, regexp};
@@ -554,11 +555,16 @@ pub enum Value {
     RegExp(RegExpValue),
     RegExpTest(RegExpValue),
     RegExpExec(RegExpValue),
+    Arguments(ArgumentsValue),
 }
 
 impl Value {
     pub(super) fn native_error(name: &str, message: &str) -> Self {
         Self::NativeError(NativeErrorValue::new(name, message))
+    }
+
+    pub(super) fn arguments(length: usize) -> Self {
+        Self::Arguments(ArgumentsValue::new(length))
     }
 
     pub(super) fn to_js_string(&self) -> String {
@@ -624,6 +630,8 @@ impl Value {
             Self::RegExp(_) => "[object RegExp]".to_owned(),
             Self::RegExpTest(_) => "function".to_owned(),
             Self::RegExpExec(_) => "function".to_owned(),
+
+            Self::Arguments(_) => "[object Arguments]".to_owned(),
         }
     }
 

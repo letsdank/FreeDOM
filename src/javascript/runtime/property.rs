@@ -64,6 +64,12 @@ impl Interpreter {
                 PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
             }),
 
+            (Value::Arguments(arguments), "length") => Ok(Value::Number(arguments.length() as f64)),
+
+            (Value::Arguments(_), _) => Err(JsError::unsupported(
+                "arguments property is not implemented",
+            )),
+
             (Value::Url(url), "href") => Ok(Value::String(url.to_string())),
 
             (Value::Url(url), "protocol") => Ok(Value::String(format!("{}:", url.scheme()))),
@@ -291,6 +297,16 @@ impl Interpreter {
     }
 
     pub(super) fn index_value(&self, object: Value, index: Value) -> Result<Value, JsError> {
+        if let Value::Arguments(arguments) = &object {
+            if matches!(&index,Value::String(name)if name=="length") {
+                return Ok(Value::Number(arguments.length() as f64));
+            }
+
+            return Err(JsError::unsupported(
+                "arguments indexed properties are not implemented",
+            ));
+        }
+
         if matches!(object, Value::Null | Value::Undefined) {
             return Err(JsError::type_error(
                 "cannot read property of null or undefined",

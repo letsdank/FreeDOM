@@ -159,6 +159,20 @@ impl Interpreter {
         function: &UserFunction,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
+        let body_locals = function_local_names(&function.body);
+
+        if function.kind == FunctionKind::Ordinary
+            && !function
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == "arguments")
+            && body_locals.iter().any(|name| name == "arguments")
+        {
+            return Err(JsError::unsupported(
+                "function body declarations named arguments are not implemented",
+            ));
+        }
+
         let mut replaced_bindings = Vec::new();
         let mut local_names = Vec::new();
 
@@ -173,6 +187,17 @@ impl Interpreter {
 
             replaced_bindings.push(previous);
             local_names.push(parameter.name.clone());
+        }
+
+        if function.kind == FunctionKind::Ordinary
+            && !local_names.iter().any(|name| name == "arguments")
+        {
+            let previous = self
+                .variables
+                .shadow("arguments".to_owned(), Value::arguments(arguments.len()));
+
+            replaced_bindings.push(previous);
+            local_names.push("arguments".to_owned());
         }
 
         self.function_locals.push(local_names.clone());
@@ -198,7 +223,7 @@ impl Interpreter {
                     })?;
             }
 
-            for name in function_local_names(&function.body) {
+            for name in body_locals {
                 if local_names.contains(&name) {
                     continue;
                 }
@@ -934,6 +959,173 @@ mod tests {
             environment.test_timeout() === null && \
                 environment.message_ports.length === 0 && \
                 typeof environment.add_on_loaded_callback === 'function';"
+        );
+
+        assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn arguments_length_counts_actual_arguments_and_is_an_object() {
+        let result = evaluate(
+            r#"
+                function count(a, b) {
+                    return arguments.length;
+                }
+
+                count() === 0 &&
+                    count(1) === 1 &&
+                    count(1, 2, 3) === 3 &&
+                    typeof count(1, 2) === 'number';
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn arguments_identity_type_and_indexed_length() {
+        let result = evaluate(
+            r#"
+                function get() {
+                    return arguments;
+                }
+
+                let a = get(1, 2);
+                let same = a;
+                let b = get(1, 2);
+
+                typeof a === 'object' &&
+                    a === same &&
+                    a !== b &&
+                    a.length === 2 &&
+                    a['length'] === 2 &&
+                    Object.prototype.toString.call(a) === '[object Arguments]';
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn arrows_capture_outer_arguments_and_ordinary_functions_get_their_own() {
+        let result = evaluate(
+            r#"
+                function outer() {
+                    let arrow = () => arguments.length;
+
+                    function inner() {
+                        return arguments.length;
+                    }
+
+                    return [arrow, inner];
+                }
+
+                let functions = outer(1, 2, 3);
+
+                functions[0]() === 3 &&
+                    functions[1](1) === 1;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn arguments_are_available_in_defaults_and_parameter_shadowing_is_preserved() {
+        let result = evaluate(
+            r#"
+                function defaults(a = arguments.length) {
+                    return a;
+                }
+
+                function named(arguments) {
+                    return arguments.length;
+                }
+
+                defaults() === 0 &&
+                    defaults(undefined, 4) === 2 &&
+                    named([1, 2, 3]) === 3;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn restores_outer_arguments_after_return_and_throw() {
+        let result = evaluate(
+            r#"
+                let arguments = 99;
+
+                function count() {
+                    return arguments.length;
+                }
+
+                function fail() {
+                    throw arguments.length;
+                }
+
+                let result = 0;
+
+                try {
+                    fail(1, 2);
+                } catch (error) {
+                    result = error;
+                }
+
+                count(1) === 1 &&
+                    result === 2 &&
+                    arguments === 99;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn unsupported_arguments_features_are_explicit() {
+        use crate::javascript::JsErrorKind;
+
+        for source in [
+            "function f(a) { return arguments[0]; } f(3);",
+            "function f() { return arguments.callee; } f();",
+            "function f() { arguments.length = 2; } f();",
+            "function f() { var arguments; } f();",
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap_err().kind,
+                JsErrorKind::UnsupportedFeature,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_arguments_length_in_real_wpt_step_fragment() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js",
+        ));
+
+        let fragment = source
+            .lines()
+            .map(str::trim)
+            .find(|line| *line == "if (arguments.length === 1) {")
+            .expect("WPT step condition must exist");
+
+        let script = format!(
+            "function f(a, b) {{ \
+                {fragment} \
+                    return 1; \
+                }} \
+                return 0; \
+            }} \
+            f(9) === 1 && f(9, 8) === 0;"
         );
 
         assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));

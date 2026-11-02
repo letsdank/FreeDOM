@@ -93,6 +93,7 @@ impl Interpreter {
             | Value::NodeList(_)
             | Value::ClassList(_)
             | Value::RegExp(_)
+            | Value::Arguments(_)
             | Value::TestContext => "object",
 
             Value::Boolean(_) => "boolean",
@@ -147,6 +148,7 @@ impl Interpreter {
             | Value::RegExp(_)
             | Value::RegExpTest(_)
             | Value::RegExpExec(_)
+            | Value::Arguments(_)
             | Value::TestContext => None,
         }
     }

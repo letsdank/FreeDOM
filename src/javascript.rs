@@ -50,6 +50,9 @@ mod number;
 #[path = "javascript/value.rs"]
 mod value;
 
+#[path = "javascript/arguments.rs"]
+mod arguments;
+
 pub use value::{NativeFunction, RegExpValue, Value};
 
 pub(crate) use value::{

@@ -125,6 +125,10 @@ impl Interpreter {
                         Ok(())
                     }
 
+                    Value::Arguments(_) => Err(JsError::unsupported(
+                        "arguments property mutation is not implemented",
+                    )),
+
                     Value::Element(node_id) if property == "textContent" => {
                         self.set_document_element_text_content(node_id, value.to_js_string())
                     }
@@ -206,6 +210,10 @@ impl Interpreter {
                     error.set(index.to_js_string(), value);
                     Ok(())
                 }
+
+                Value::Arguments(_) => Err(JsError::unsupported(
+                    "arguments property mutation is not implemented",
+                )),
 
                 Value::Array(values) => Self::array_set(values, &index.to_js_string(), value),
 

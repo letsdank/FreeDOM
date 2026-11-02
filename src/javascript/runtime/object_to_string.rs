@@ -18,6 +18,7 @@ impl Interpreter {
             Value::Array(_) => "Array",
             Value::NativeError(_) => "Error",
             Value::RegExp(_) => "RegExp",
+            Value::Arguments(_) => "Arguments",
 
             Value::Function(_)
             | Value::NativeFunction(_)
