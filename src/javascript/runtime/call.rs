@@ -77,12 +77,18 @@ impl Interpreter {
             Value::ArrayMethod {
                 receiver,
                 method: ArrayMethodKind::Push,
-            } => Self::array_push(receiver, values),
+            } => {
+                self.ensure_array_prototype_is_not_mutated(&receiver)?;
+                Self::array_push(receiver, values)
+            }
 
             Value::ArrayMethod {
                 receiver,
                 method: ArrayMethodKind::Pop,
-            } => Self::array_pop(receiver, values),
+            } => {
+                self.ensure_array_prototype_is_not_mutated(&receiver)?;
+                Self::array_pop(receiver, values)
+            }
 
             Value::ArrayMethod {
                 receiver,
@@ -166,6 +172,8 @@ impl Interpreter {
             Value::NativeFunction(NativeFunction::ArrayMap) => self.array_map(receiver, values),
 
             Value::NativeFunction(NativeFunction::ArraySome) => self.array_some(receiver, values),
+
+            Value::NativeFunction(NativeFunction::ArraySlice) => self.array_slice(receiver, values),
 
             Value::NativeFunction(NativeFunction::ErrorConstructor) => self.construct_error(values),
 

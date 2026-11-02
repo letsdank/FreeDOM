@@ -1,7 +1,7 @@
 use crate::url::Url;
 use std::collections::{HashMap, VecDeque};
 
-use super::value::{FunctionValue, ObjectStorage};
+use super::value::{ArrayStorage, FunctionValue, ObjectStorage};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
     JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
@@ -108,6 +108,9 @@ mod array_map;
 #[path = "runtime/array_some.rs"]
 mod array_some;
 
+#[path = "runtime/array_slice.rs"]
+mod array_slice;
+
 #[path = "runtime/error.rs"]
 mod error;
 
@@ -146,6 +149,7 @@ pub(super) struct Interpreter {
     error_prototype: ObjectStorage,
     type_error_prototype: ObjectStorage,
     reference_error_prototype: ObjectStorage,
+    array_prototype: ArrayStorage,
 }
 
 impl Interpreter {
@@ -193,6 +197,28 @@ impl Interpreter {
             Value::NativeFunction(NativeFunction::ObjectToString),
             false,
         );
+
+        let Value::Array(array_prototype) = Value::array(Vec::new()) else {
+            unreachable!("array constructor returns an array");
+        };
+
+        {
+            let mut prototype = array_prototype.borrow_mut();
+
+            for (name, function) in [
+                ("constructor", NativeFunction::ArrayConstructor),
+                ("slice", NativeFunction::ArraySlice),
+                ("map", NativeFunction::ArrayMap),
+                ("some", NativeFunction::ArraySome),
+                ("toString", NativeFunction::ArrayToString),
+            ] {
+                prototype.properties.define_own_data_property(
+                    name.to_owned(),
+                    Value::NativeFunction(function),
+                    false,
+                );
+            }
+        }
 
         let Value::Object(error_prototype) = Value::object_with_prototype(object_prototype.clone())
         else {
@@ -335,6 +361,7 @@ impl Interpreter {
             error_prototype,
             type_error_prototype,
             reference_error_prototype,
+            array_prototype,
         }
     }
 

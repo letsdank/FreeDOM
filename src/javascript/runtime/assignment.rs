@@ -179,7 +179,10 @@ impl Interpreter {
                         Ok(())
                     }
 
-                    Value::Array(values) => Self::array_set(values, &property, value),
+                    Value::Array(values) => {
+                        self.ensure_array_prototype_is_not_mutated(&values)?;
+                        Self::array_set(values, &property, value)
+                    }
 
                     Value::Element(_) => Err(JsError::runtime(format!(
                         "Element.{property} is not implemented yet"
@@ -215,7 +218,10 @@ impl Interpreter {
                     "arguments property mutation is not implemented",
                 )),
 
-                Value::Array(values) => Self::array_set(values, &index.to_js_string(), value),
+                Value::Array(values) => {
+                    self.ensure_array_prototype_is_not_mutated(&values)?;
+                    Self::array_set(values, &index.to_js_string(), value)
+                }
 
                 Value::RegExp(regexp) if index.to_js_string() == "lastIndex" => {
                     regexp.inner.borrow_mut().last_index = value;

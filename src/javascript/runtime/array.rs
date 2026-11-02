@@ -85,6 +85,14 @@ impl Interpreter {
             return Some(Value::NativeFunction(NativeFunction::ArraySome));
         }
 
+        if name == "slice" {
+            return Some(Value::NativeFunction(NativeFunction::ArraySlice));
+        }
+
+        if name == "constructor" {
+            return Some(Value::NativeFunction(NativeFunction::ArrayConstructor));
+        }
+
         if name == "toString" {
             return Some(Value::NativeFunction(NativeFunction::ArrayToString));
         }
@@ -138,6 +146,19 @@ impl Interpreter {
             array.present[index] = true;
         } else {
             array.properties.set(name.to_owned(), value);
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn ensure_array_prototype_is_not_mutated(
+        &self,
+        array: &ArrayStorage,
+    ) -> Result<(), JsError> {
+        if std::rc::Rc::ptr_eq(array, &self.array_prototype) {
+            return Err(JsError::unsupported(
+                "Array.prototype mutation is not implemented",
+            ));
         }
 
         Ok(())
@@ -424,12 +445,7 @@ mod tests {
 
     #[test]
     fn array_constructor_reports_limits_and_unimplemented_prototype() {
-        for source in [
-            "Array(-1);",
-            "new Array(1.5);",
-            "Array(65537);",
-            "Array.prototype;",
-        ] {
+        for source in ["Array(-1);", "new Array(1.5);", "Array(65537);"] {
             assert_eq!(
                 evaluate(source).unwrap_err().kind,
                 JsErrorKind::UnsupportedFeature,
