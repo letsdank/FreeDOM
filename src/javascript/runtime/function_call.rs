@@ -30,12 +30,17 @@ impl Interpreter {
                     ));
                 }
 
-                if !matches!(
+                let object_receiver = matches!(
                     this_arg,
                     Value::Object(_) | Value::Array(_) | Value::Function(_)
-                ) {
+                );
+
+                let unused_nullish_receiver = matches!(this_arg, Value::Undefined | Value::Null)
+                    && !super::references::referenced_names(function.definition()).contains("this");
+
+                if !object_receiver && !unused_nullish_receiver {
                     return Err(JsError::unsupported(
-                        "Function.call this binding is only implemented for objects",
+                        "Function.call this binding is not implemented for this receiver",
                     ));
                 }
 
@@ -166,7 +171,7 @@ mod tests {
     #[test]
     fn unsupported_call_cases_are_not_silently_approximated() {
         for source in [
-            "let f = function() {}; f.call(null);",
+            "let f = function() { return this; }; f.call(null);",
             "let f = () => 1; f.call({});",
         ] {
             let error = evaluate(source).unwrap_err();
@@ -264,5 +269,35 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::String("TypeError".to_owned()));
+    }
+
+    #[test]
+    fn calls_functions_with_unused_nullish_this() {
+        let result = evaluate(
+            r#"
+                function add(a, b) { return a + b; }
+                function seven() { return 7; }
+                
+                add.call(undefined, 1, 2) === 3 &&
+                    add.call(null, 4, 5) === 9 &&
+                    seven.call() === 7;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn rejects_nullish_receivers_if_this_may_be_observed() {
+        for source in [
+            "function f() { return this; } f.call(undefined);",
+            "function f() { return () => this; } f.call(null);",
+            "function f(a = this) { return a; } f.call(undefined);",
+        ] {
+            let error = evaluate(source).unwrap_err();
+
+            assert_eq!(error.kind, JsErrorKind::UnsupportedFeature, "{source}");
+        }
     }
 }

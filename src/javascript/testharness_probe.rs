@@ -7,7 +7,7 @@
 
 use super::{Completion, Interpreter, JsError, Value, parse_program};
 
-pub(crate) fn probe_testharness(source: &str) -> Result<(), JsError> {
+fn bootstrap_testharness(source: &str) -> Result<Interpreter, JsError> {
     let mut interpreter = Interpreter::new_without_wpt_shim();
 
     interpreter.execute(&parse_program("let self = {};")?)?;
@@ -26,12 +26,49 @@ pub(crate) fn probe_testharness(source: &str) -> Result<(), JsError> {
         }
     }
 
-    Ok(())
+    Ok(interpreter)
+}
+
+pub(crate) fn probe_testharness(source: &str) -> Result<(), JsError> {
+    bootstrap_testharness(source).map(|_| ())
+}
+
+/// Runs one synchronous harness test and checks its result callback.
+///
+/// This does not verify harness completion or execute a WPT document.
+pub(crate) fn probe_testharness_test(source: &str) -> Result<(), JsError> {
+    let mut interpreter = bootstrap_testharness(source)?;
+
+    let program = parse_program(
+        r#"
+            let freedom_probe_count = 0;
+            let freedom_probe_status = -1;
+
+            self.add_result_callback(function(result) {
+                freedom_probe_count = freedom_probe_count + 1;
+                freedom_probe_status = result.status;
+            });
+
+            self.test(function() {
+                self.assert_equals(1, 1);
+            }, 'FreeDOM synchronous harness probe');
+
+            freedom_probe_count === 1 && freedom_probe_status === 0;
+        "#,
+    )?;
+
+    match interpreter.execute_script(&program)? {
+        Completion::Normal(Value::Boolean(true)) => Ok(()),
+
+        _ => Err(JsError::runtime(
+            "testharness did not report exactly one passing test result",
+        )),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::probe_testharness;
+    use super::{probe_testharness, probe_testharness_test};
     use crate::javascript::JsErrorKind;
 
     #[test]
@@ -95,5 +132,43 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn synchronous_probe_checks_the_result_callback() {
+        let passing = r#"
+            let result_callback = null;
+
+            self.add_result_callback = function(callback) {
+                result_callback = callback;
+            };
+
+            self.assert_equals = function(a, b) {
+                if (a !== b) {
+                    throw 'not equal';
+                }
+            };
+
+            self.add_completion_callback = function() {};
+
+            self.test = function(callback) {
+                callback();
+                result_callback({ status: 0 });
+            };
+        "#;
+
+        probe_testharness_test(passing).unwrap();
+
+        let failing = passing.replace("status: 0", "status: 1");
+        assert!(probe_testharness_test(&failing).is_err());
+
+        let missing = passing.replace("result_callback({ status: 0 });", "");
+        assert!(probe_testharness_test(&missing).is_err());
+
+        let duplicate = passing.replace(
+            "result_callback({ status: 0 });",
+            "result_callback({ status: 0 }); result_callback({ status: 0 });",
+        );
+        assert!(probe_testharness_test(&duplicate).is_err());
     }
 }

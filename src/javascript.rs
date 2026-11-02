@@ -70,7 +70,7 @@ use runtime::{Completion, Interpreter};
 #[path = "javascript/testharness_probe.rs"]
 mod testharness_probe;
 
-pub(crate) use testharness_probe::probe_testharness;
+pub(crate) use testharness_probe::{probe_testharness, probe_testharness_test};
 
 #[path = "javascript/session.rs"]
 mod session;

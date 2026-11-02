@@ -96,7 +96,7 @@ fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "https://example.org".to_owned());
 
-    if requested_url == "--probe-testharness" {
+    if requested_url == "--probe-testharness" || requested_url == "--probe-testharness-test" {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/wpt/resources/testharness.js"
@@ -105,10 +105,20 @@ fn main() -> Result<()> {
         let source =
             std::fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
 
-        javascript::probe_testharness(&source)
-            .map_err(|error| anyhow::anyhow!("testharness bootstrap failed: {error}"))?;
+        if requested_url == "--probe-testharness-test" {
+            javascript::probe_testharness_test(&source).map_err(|error| {
+                anyhow::anyhow!("testharness synchronous probe failed: {error}")
+            })?;
 
-        println!("testharness bootstraped in a synthetic host; WPT tests were not run");
+            println!(
+                "testharness reported one passing synchronous test; WPT documents were not run"
+            );
+        } else {
+            javascript::probe_testharness(&source)
+                .map_err(|error| anyhow::anyhow!("testharness bootstrap failed: {error}"))?;
+
+            println!("testharness bootstraped in a synthetic host; WPT tests were not run");
+        }
 
         return Ok(());
     }
