@@ -1,6 +1,9 @@
 use crate::graphics::raster::{Color, Surface};
 use std::{error::Error, fmt, io::Cursor};
 
+#[path = "image/png/mod.rs"]
+pub mod png_format;
+
 const MAX_IMAGE_DIMENSION: usize = 4_096;
 const MAX_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
 
