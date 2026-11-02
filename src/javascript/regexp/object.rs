@@ -74,6 +74,10 @@ impl RegExp {
         self.flags.global || self.flags.sticky
     }
 
+    pub(crate) fn is_global(&self) -> bool {
+        self.flags.global
+    }
+
     pub(crate) fn set_last_index(&mut self, value: usize) {
         self.last_index = value;
     }

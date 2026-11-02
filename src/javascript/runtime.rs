@@ -102,6 +102,9 @@ pub(super) mod promise;
 #[path = "runtime/string.rs"]
 mod string;
 
+#[path = "runtime/string_replace.rs"]
+mod string_replace;
+
 #[path = "runtime/array_map.rs"]
 mod array_map;
 

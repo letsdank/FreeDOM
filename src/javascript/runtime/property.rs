@@ -54,6 +54,10 @@ impl Interpreter {
 
             (Value::String(_), "split") => Ok(Value::NativeFunction(NativeFunction::StringSplit)),
 
+            (Value::String(_), "replace") => {
+                Ok(Value::NativeFunction(NativeFunction::StringReplace))
+            }
+
             (Value::NativeFunction(NativeFunction::StringConstructor), "fromCharCode") => {
                 Ok(Value::NativeFunction(NativeFunction::StringFromCharCode))
             }

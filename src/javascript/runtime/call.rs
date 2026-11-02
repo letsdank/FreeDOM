@@ -157,6 +157,10 @@ impl Interpreter {
                 self.string_split(receiver, values)
             }
 
+            Value::NativeFunction(NativeFunction::StringReplace) => {
+                self.string_replace(receiver, values)
+            }
+
             Value::NativeFunction(NativeFunction::StringConstructor) => {
                 Self::string_constructor(values)
             }

@@ -34,6 +34,7 @@ pub enum NativeFunction {
     PromiseReject,
     PromiseThen,
     StringSplit,
+    StringReplace,
     StringConstructor,
     StringFromCharCode,
     ArrayConstructor,
