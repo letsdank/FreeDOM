@@ -237,6 +237,10 @@ impl Interpreter {
                 let value = self.evaluate_expression(expression)?;
                 Ok(Value::String(Self::type_of(&value).to_owned()))
             }
+
+            Expression::Await(_) => {
+                Err(JsError::unsupported("await evaluation is not implemented"))
+            }
         }
     }
 

@@ -13,11 +13,20 @@ impl Parser<'_> {
     // A concise arrow body evaluates an assignment expression and returns it.
     // https://tc39.es/ecma262/#sec-arrow-function-definitions
     pub(super) fn parse_arrow_body(&mut self) -> Result<Vec<Statement>, JsError> {
-        if self.cursor.check(&TokenKind::LeftBrace)? {
-            self.parse_function_body()
-        } else {
-            Ok(vec![Statement::Return(self.parse_assignment_expression()?)])
-        }
+        let previous = std::mem::replace(&mut self.await_allowed, false);
+
+        let result = (|| {
+            if self.cursor.check(&TokenKind::LeftBrace)? {
+                self.parse_function_body()
+            } else {
+                self.parse_assignment_expression()
+                    .map(|expression| vec![Statement::Return(expression)])
+            }
+        })();
+
+        self.await_allowed = previous;
+
+        result
     }
 
     pub(super) fn parse_expression(&mut self) -> Result<Expression, JsError> {
@@ -294,6 +303,10 @@ impl Parser<'_> {
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, JsError> {
+        if self.await_allowed && self.consume_contextual_keyword("await")? {
+            return Ok(Expression::Await(Box::new(self.parse_unary_expression()?)));
+        }
+
         if self.cursor.consume_optional(&TokenKind::PlusPlus)? {
             return Ok(Expression::Update {
                 target: Box::new(self.parse_unary_expression()?),

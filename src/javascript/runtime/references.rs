@@ -206,6 +206,7 @@ fn visit_expression(expression: &Expression, names: &mut HashSet<String>) {
         }
 
         Expression::Not(value)
+        | Expression::Await(value)
         | Expression::UnaryPlus(value)
         | Expression::UnaryMinus(value)
         | Expression::TypeOf(value)

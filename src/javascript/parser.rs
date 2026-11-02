@@ -33,6 +33,7 @@ pub(super) fn parse_program(source: &str) -> Result<Vec<Statement>, JsError> {
 struct Parser<'source> {
     cursor: ParserCursor<'source>,
     source: &'source str,
+    await_allowed: bool,
 }
 
 impl<'source> Parser<'source> {
@@ -40,6 +41,7 @@ impl<'source> Parser<'source> {
         Self {
             cursor: ParserCursor::new(source),
             source,
+            await_allowed: false,
         }
     }
 

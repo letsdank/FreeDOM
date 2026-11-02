@@ -135,6 +135,7 @@ pub(crate) enum Expression {
         alternate: Box<Expression>,
     },
     TypeOf(Box<Expression>),
+    Await(Box<Expression>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -158,6 +159,7 @@ impl FunctionParameter {
 pub(crate) enum FunctionKind {
     Ordinary,
     Arrow,
+    Async,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -10,6 +10,16 @@ use super::{
 
 impl Parser<'_> {
     pub(super) fn parse_function_expression(&mut self) -> Result<Expression, JsError> {
+        let previous = std::mem::replace(&mut self.await_allowed, false);
+
+        let result = self.parse_ordinary_function_expression();
+
+        self.await_allowed = previous;
+
+        result
+    }
+
+    fn parse_ordinary_function_expression(&mut self) -> Result<Expression, JsError> {
         self.cursor
             .consume(&TokenKind::LeftParen, "expected '(' after function keyword")?;
 
@@ -136,18 +146,54 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_function_declaration(&mut self) -> Result<Statement, JsError> {
+        self.parse_function_declaration_with_kind(FunctionKind::Ordinary)
+    }
+
+    pub(super) fn parse_async_function_declaration(&mut self) -> Result<Statement, JsError> {
+        self.parse_function_declaration_with_kind(FunctionKind::Async)
+    }
+
+    fn parse_function_declaration_with_kind(
+        &mut self,
+        kind: FunctionKind,
+    ) -> Result<Statement, JsError> {
+        let previous = std::mem::replace(&mut self.await_allowed, false);
+
+        let result = self.parse_function_declaration_inner(kind);
+
+        self.await_allowed = previous;
+
+        result
+    }
+
+    fn parse_function_declaration_inner(
+        &mut self,
+        kind: FunctionKind,
+    ) -> Result<Statement, JsError> {
         let (name, _) = self.consume_identifier("expected a function name")?;
 
         self.cursor
             .consume(&TokenKind::LeftParen, "expected '(' after function name")?;
 
         let parameters = self.parse_function_parameters()?;
+
+        if kind == FunctionKind::Async
+            && parameters.iter().any(|parameter| parameter.name == "await")
+        {
+            return Err(JsError::syntax(
+                self.cursor.peek()?.offset,
+                "await cannot be an async function parameter",
+            ));
+        }
+
+        self.await_allowed = kind == FunctionKind::Async;
+
         let body = self.parse_function_body()?;
 
         Ok(Statement::FunctionDeclaration {
             name,
             function: UserFunction {
-                kind: FunctionKind::Ordinary,
+                kind,
                 parameters,
                 body,
             },
@@ -158,7 +204,7 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use crate::javascript::parser::parse_program;
-    use crate::javascript::{Expression, Statement};
+    use crate::javascript::{Expression, FunctionKind, Statement};
 
     #[test]
     fn parses_function_parameters_and_body() {
@@ -308,5 +354,116 @@ mod tests {
         ] {
             assert!(parse_program(source).is_err(), "{source}");
         }
+    }
+
+    #[test]
+    fn parses_async_function_and_await_expressions_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let start = source
+            .find("async function fetch_json(resource) {")
+            .expect("WPT async function must exist");
+
+        let tail = &source[start..];
+
+        let end = tail.find("\n    }").expect("WPT function end must exist") + "\n    }".len();
+
+        let program = parse_program(&tail[..end]).unwrap();
+
+        let [Statement::FunctionDeclaration { name, function }] = program.as_slice() else {
+            panic!("expected function declaration");
+        };
+
+        assert_eq!(name, "fetch_json");
+        assert_eq!(function.kind, FunctionKind::Async);
+
+        assert!(matches!(
+            &function.body[..],
+            [
+                Statement::Declaration {
+                    name,
+                    value: Expression::Await(first)
+                },
+                Statement::Return(Expression::Await(second))
+            ] if name == "response"
+                && matches!(first.as_ref(), Expression::Call { .. })
+                && matches!(second.as_ref(), Expression::Call { .. })
+        ));
+    }
+
+    #[test]
+    fn async_is_contextual_and_line_break_disallows_async_declaration() {
+        for gap in ["\n", "\r\n", "/*\n*/", "\u{2028}", "\u{2029}"] {
+            let program = parse_program(&format!("async{gap}function f() {{}}")).unwrap();
+
+            assert!(
+                matches!(
+                    &program[..],
+                    [
+                        Statement::Expression(Expression::Identifier(name)),
+                        Statement::FunctionDeclaration { function, .. }
+                    ] if name == "async"
+                        && function.kind == FunctionKind::Ordinary
+                ),
+                "{gap:?}"
+            );
+        }
+
+        for gap in [" ", "/* comment */"] {
+            let program = parse_program(&format!("async{gap}function f() {{}}")).unwrap();
+
+            assert!(
+                matches!(
+                    &program[..],
+                    [Statement::FunctionDeclaration { function, .. }]
+                        if function.kind == FunctionKind::Async
+                ),
+                "{gap:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_ordinary_function_restores_await_context() {
+        let program = parse_program(
+            "async function f() { \
+                function g() { \
+                    let await = 1; \
+                    return await; \
+                } \
+                return await task; \
+            }",
+        )
+        .unwrap();
+
+        let [Statement::FunctionDeclaration { function, .. }] = &program[..] else {
+            panic!("expected declaration");
+        };
+
+        assert!(matches!(
+            &function.body[..],
+            [
+                Statement::FunctionDeclaration {
+                    function: nested,
+                    ..
+                },
+                Statement::Return(Expression::Await(_))
+            ] if nested.kind == FunctionKind::Ordinary
+                && matches!(
+                    &nested.body[..],
+                    [
+                        Statement::Declaration { name, .. },
+                        Statement::Return(Expression::Identifier(id))
+                    ] if name == "await" && id == "await"
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_await_as_async_function_parameter() {
+        assert!(parse_program("async function f(await) {}").is_err());
     }
 }

@@ -255,6 +255,12 @@ impl Interpreter {
         arguments: Vec<Value>,
         receiver: Option<Value>,
     ) -> Result<Value, JsError> {
+        if function.definition().kind == FunctionKind::Async {
+            return Err(JsError::unsupported(
+                "async function invocation is not implemented",
+            ));
+        }
+
         let previous = self.variables.install_captures(function.captures());
 
         self.capture_frames.push(function.captures().clone());
@@ -767,5 +773,41 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn creates_async_functions_but_does_not_execute_them() {
+        use crate::javascript::{DocumentScriptSession, DocumentState, JsErrorKind};
+
+        let mut document = DocumentState::with_title("");
+        let mut session = DocumentScriptSession::new(&document);
+
+        let result = session
+            .evaluate(
+                "let count = 0; \
+            async function f(x = (count = 1)) { \
+                count = 2; \
+                return await x; \
+            } \
+            typeof f === 'function' && f.prototype === undefined;",
+                &mut document,
+            )
+            .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let error = session.evaluate("f();", &mut document).unwrap_err();
+
+        assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+
+        assert_eq!(
+            session.evaluate("count;", &mut document).unwrap(),
+            Value::Number(0.0)
+        );
+
+        assert!(matches!(
+            evaluate("async function f() {} new f();").unwrap_err().kind,
+            JsErrorKind::NativeException(_)
+        ));
     }
 }
