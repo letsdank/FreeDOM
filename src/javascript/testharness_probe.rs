@@ -43,6 +43,7 @@ pub(crate) fn probe_testharness_test(source: &str) -> Result<(), JsError> {
         r#"
             let freedom_probe_count = 0;
             let freedom_probe_status = -1;
+            let freedom_probe_body_ran = false;
 
             self.add_result_callback(function(result) {
                 freedom_probe_count = freedom_probe_count + 1;
@@ -50,10 +51,13 @@ pub(crate) fn probe_testharness_test(source: &str) -> Result<(), JsError> {
             });
 
             self.test(function() {
+                freedom_probe_body_ran = true;
                 self.assert_equals(1, 1);
             }, 'FreeDOM synchronous harness probe');
 
-            freedom_probe_count === 1 && freedom_probe_status === 0;
+            freedom_probe_body_ran &&
+                freedom_probe_count === 1 &&
+                freedom_probe_status === 0;
         "#,
     )?;
 
@@ -165,10 +169,23 @@ mod tests {
         let missing = passing.replace("result_callback({ status: 0 });", "");
         assert!(probe_testharness_test(&missing).is_err());
 
+        let body_not_run = passing.replace("callback();", "");
+        assert!(probe_testharness_test(&body_not_run).is_err());
+
         let duplicate = passing.replace(
             "result_callback({ status: 0 });",
             "result_callback({ status: 0 }); result_callback({ status: 0 });",
         );
         assert!(probe_testharness_test(&duplicate).is_err());
+    }
+
+    #[test]
+    fn runs_synchronous_probe_with_upstream_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        probe_testharness_test(source).unwrap();
     }
 }

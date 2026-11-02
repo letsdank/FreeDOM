@@ -179,10 +179,7 @@ impl Interpreter {
                         Ok(())
                     }
 
-                    Value::Array(values) => {
-                        self.ensure_array_prototype_is_not_mutated(&values)?;
-                        Self::array_set(values, &property, value)
-                    }
+                    Value::Array(values) => self.set_array_property(values, &property, value),
 
                     Value::Element(_) => Err(JsError::runtime(format!(
                         "Element.{property} is not implemented yet"
@@ -219,8 +216,7 @@ impl Interpreter {
                 )),
 
                 Value::Array(values) => {
-                    self.ensure_array_prototype_is_not_mutated(&values)?;
-                    Self::array_set(values, &index.to_js_string(), value)
+                    self.set_array_property(values, &index.to_js_string(), value)
                 }
 
                 Value::RegExp(regexp) if index.to_js_string() == "lastIndex" => {

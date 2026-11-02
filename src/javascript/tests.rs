@@ -1131,14 +1131,15 @@ fn array_named_properties_coexist_with_methods() {
 }
 
 #[test]
-fn array_length_assignment_is_explicitly_unsupported() {
-    let error = evaluate("const values = [1]; values.length = 0;").unwrap_err();
+fn array_length_assignment_truncates_elements() {
+    let result = evaluate(
+        "const values = [1]; \
+        values.length = 0; \
+        values.length === 0 && !values.hasOwnProperty('0');",
+    )
+    .unwrap();
 
-    assert!(
-        error
-            .message
-            .contains("Array.length assignment is not implemented")
-    );
+    assert_eq!(result, Value::Boolean(true));
 }
 
 #[test]

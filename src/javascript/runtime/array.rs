@@ -3,18 +3,18 @@
 //! <https://tc39.es/ecma262/#sec-array-objects>
 //!
 //! Storage records holes created by array literals and indexed assignment.
-//! Length assignment and property descriptors are not implemented.
+//! Array property descriptors and object-to-number conversion are incomplete.
 
 use super::{Interpreter, JsError, NativeFunction, Value};
 use crate::javascript::{ArrayMethodKind, ArrayStorage};
+
+const MAX_ARRAY_LENGTH: usize = 65_536;
 
 impl Interpreter {
     /// Implements the supported cases of Array and new Array.
     ///
     /// <https://tc39.es/ecma262/#sec-array-constructor>
     pub(super) fn array_constructor(arguments: Vec<Value>) -> Result<Value, JsError> {
-        const MAX_ARRAY_LENGTH: usize = 65_536;
-
         if let [Value::Number(length)] = arguments.as_slice() {
             if !length.is_finite()
                 || *length < 0.0
@@ -160,6 +160,59 @@ impl Interpreter {
                 "Array.prototype mutation is not implemented",
             ));
         }
+
+        Ok(())
+    }
+
+    pub(super) fn set_array_property(
+        &self,
+        receiver: ArrayStorage,
+        name: &str,
+        value: Value,
+    ) -> Result<(), JsError> {
+        self.ensure_array_prototype_is_not_mutated(&receiver)?;
+
+        if name != "length" {
+            return Self::array_set(receiver, name, value);
+        }
+
+        let number = self.to_number(&value).ok_or_else(|| {
+            JsError::unsupported("Array.length object-to-number conversion is not implemented")
+        })?;
+
+        if !number.is_finite() || number < 0.0 || number.fract() != 0.0 || number > u32::MAX as f64
+        {
+            return Err(JsError::unsupported(
+                "Array.length invalid-length RangeError is not implemented",
+            ));
+        }
+
+        let length = number as usize;
+        let mut array = receiver.borrow_mut();
+        let current_length = array.values.len();
+
+        if length > current_length {
+            if length > MAX_ARRAY_LENGTH {
+                return Err(JsError::unsupported(
+                    "Array.length allocation limit exceeded",
+                ));
+            }
+
+            let additional = length - current_length;
+
+            array
+                .values
+                .try_reserve(additional)
+                .map_err(|_| JsError::unsupported("Array.length allocation failed"))?;
+
+            array
+                .present
+                .try_reserve(additional)
+                .map_err(|_| JsError::unsupported("Array.length allocation failed"))?;
+        }
+
+        array.values.resize(length, Value::Undefined);
+        array.present.resize(length, false);
 
         Ok(())
     }
@@ -451,6 +504,83 @@ mod tests {
                 JsErrorKind::UnsupportedFeature,
                 "{source}"
             );
+        }
+    }
+
+    #[test]
+    fn sets_length_shrinks_and_regrows_without_restoring_elements() {
+        let result = evaluate(
+            r#"
+                let a = [10, 20, 30];
+                a.extra = 9;
+
+                let assigned = (a.length = 1);
+                a['length'] = '3';
+
+                assigned === 1 &&
+                    a.length === 3 &&
+                    a[0] === 10 &&
+                    !a.hasOwnProperty('1') &&
+                    !a.hasOwnProperty('2') &&
+                    a.extra === 9;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn sets_length_from_supported_primitive_values() {
+        let result = evaluate(
+            r#"
+                let a = [7, 8];
+
+                a.length = true;
+                let first = a.length === 1 && a[0] === 7;
+
+                a.length = null;
+                a.length = 2;
+
+                first &&
+                    a.length === 2 &&
+                    !a.hasOwnProperty('0') &&
+                    !a.hasOwnProperty('1');
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn rejects_invalid_or_unsupported_lengths_without_mutation() {
+        let interpreter = Interpreter::new();
+
+        let Value::Array(array) = Value::array(vec![Value::Number(1.0), Value::Number(2.0)]) else {
+            unreachable!();
+        };
+
+        for value in [
+            Value::Number(-1.0),
+            Value::Number(1.5),
+            Value::Number(f64::NAN),
+            Value::Number(f64::INFINITY),
+            Value::Number(4_294_967_296.0),
+            Value::Number(65_537.0),
+            Value::Undefined,
+            Value::object([]),
+        ] {
+            let error = interpreter
+                .set_array_property(array.clone(), "length", value)
+                .unwrap_err();
+
+            assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+
+            let state = array.borrow();
+
+            assert_eq!(state.values, vec![Value::Number(1.0), Value::Number(2.0)]);
+            assert_eq!(state.present, vec![true, true]);
         }
     }
 }

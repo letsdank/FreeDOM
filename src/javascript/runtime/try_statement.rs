@@ -204,7 +204,7 @@ mod tests {
         document.title = "before".to_owned();
 
         let error = evaluate_with_document(
-            "let a = []; try { a.length = 1; } \
+            "let a = []; try { a.pop(1); } \
             catch (e) { document.title = 'catch'; } \
             finally { document.title = 'finally'; }",
             &mut document,
