@@ -146,6 +146,25 @@ pub(super) struct Interpreter {
 }
 
 impl Interpreter {
+    /// Creates a clean environment for running the upstream WPT harness.
+    ///
+    /// Legacy WPT helpers remain installed by `new` until existing tests are migrated.
+    pub(super) fn new_without_wpt_shim() -> Self {
+        let mut interpreter = Self::new();
+
+        for name in [
+            "test",
+            "assert_equals",
+            "assert_true",
+            "assert_false",
+            "assert_not_equals",
+        ] {
+            interpreter.variables.remove(name);
+        }
+
+        interpreter
+    }
+
     pub(super) fn new() -> Self {
         let mut variables = Bindings::default();
 

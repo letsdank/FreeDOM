@@ -3,12 +3,12 @@
 //! <https://web-platform-tests.org/writing-tests/testharness-api.html>
 //!
 //! This is not a WPT runner or a browser environment: `self` is an ordinary
-//! object, and the existing native assertion shim remains installed.
+//! object, and the legacy native WPT assertion shim is not installed.
 
 use super::{Completion, Interpreter, JsError, Value, parse_program};
 
 pub(crate) fn probe_testharness(source: &str) -> Result<(), JsError> {
-    let mut interpreter = Interpreter::new();
+    let mut interpreter = Interpreter::new_without_wpt_shim();
 
     interpreter.execute(&parse_program("let self = {};")?)?;
 
@@ -75,5 +75,25 @@ mod tests {
         ));
 
         probe_testharness(source).unwrap();
+    }
+
+    #[test]
+    fn does_not_install_legacy_wpt_globals() {
+        probe_testharness(
+            r#"
+                if (typeof test !== "undefined" ||
+                    typeof assert_equals !== "undefined" ||
+                    typeof assert_true !== "undefined" ||
+                    typeof assert_false !== "undefined" ||
+                    typeof assert_not_equals !== "undefined") {
+                    throw "legacy WPT globals are present";
+                }
+
+                self.test = function() {};
+                self.assert_equals = function() {};
+                self.add_completion_callback = function() {};
+            "#,
+        )
+        .unwrap();
     }
 }
