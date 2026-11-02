@@ -50,6 +50,10 @@ impl Interpreter {
 
             (Value::String(_), "split") => Ok(Value::NativeFunction(NativeFunction::StringSplit)),
 
+            (Value::NativeFunction(NativeFunction::StringConstructor), "fromCharCode") => {
+                Ok(Value::NativeFunction(NativeFunction::StringFromCharCode))
+            }
+
             (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
                 PropertyLookup::Found(value) => value,
 

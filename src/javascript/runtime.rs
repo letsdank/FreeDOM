@@ -226,6 +226,11 @@ impl Interpreter {
             Value::NativeFunction(NativeFunction::PromiseConstructor),
         );
 
+        variables.insert(
+            "String".to_owned(),
+            Value::NativeFunction(NativeFunction::StringConstructor),
+        );
+
         Self {
             variables,
             cleanups: Vec::new(),

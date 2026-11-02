@@ -2,6 +2,8 @@
 //!
 //! <https://tc39.es/ecma262/#sec-string.prototype.split>
 //! <https://tc39.es/ecma262/#sec-touint32>
+//! <https://tc39.es/ecma262/#sec-string.fromcharcode>
+//! <https://tc39.es/ecma262/#sec-touint16>
 //!
 //! Strings are currently stored as UTF-8 Rust strings rather than arbitrary
 //! ECMAScript UTF-16 code units. RegExp and object separators are unsupported.
@@ -88,6 +90,72 @@ impl Interpreter {
         };
 
         Ok(Value::array(parts))
+    }
+
+    pub(super) fn string_constructor(arguments: Vec<Value>) -> Result<Value, JsError> {
+        let Some(value) = arguments.into_iter().next() else {
+            return Ok(Value::String(String::new()));
+        };
+
+        let string = match value {
+            Value::String(value) => value,
+
+            Value::Undefined => "undefined".to_owned(),
+
+            Value::Null => "null".to_owned(),
+
+            Value::Boolean(value) => value.to_string(),
+
+            Value::Number(value) if value.is_nan() => "NaN".to_owned(),
+
+            Value::Number(value) if value == f64::INFINITY => "Infinity".to_owned(),
+
+            Value::Number(value) if value == f64::NEG_INFINITY => "-Infinity".to_owned(),
+
+            Value::Number(value) if value == 0.0 => "0".to_owned(),
+
+            Value::Number(value)
+                if value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0 =>
+            {
+                value.to_string()
+            }
+
+            _ => {
+                return Err(JsError::unsupported(
+                    "String conversion of this value is not implemented",
+                ));
+            }
+        };
+
+        Ok(Value::String(string))
+    }
+
+    pub(super) fn string_from_char_code(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        let mut units = Vec::with_capacity(arguments.len());
+
+        for value in &arguments {
+            let number = self.to_number(value).ok_or_else(|| {
+                JsError::unsupported("String.fromCharCode object coercion is not implemented")
+            })?;
+
+            let unit = if !number.is_finite() || number == 0.0 {
+                0
+            } else {
+                number.trunc().rem_euclid(65_536.0) as u16
+            };
+
+            units.push(unit);
+        }
+
+        let string = std::char::decode_utf16(units)
+            .collect::<Result<String, _>>()
+            .map_err(|_| {
+                JsError::unsupported(
+                    "String.fromCharCode requires unpaired UTF-16 surrogate support",
+                )
+            })?;
+
+        Ok(Value::String(string))
     }
 }
 
@@ -225,6 +293,123 @@ mod tests {
             components.length === 2 && \
                 components[0] === 'assert' && \
                 components[1] === 'example';"
+        );
+
+        assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn string_function_converts_supported_values() {
+        let result = evaluate(
+            r#"
+                String() === '' &&
+                    String(undefined) === 'undefined' &&
+                    String(null) === 'null' &&
+                    String(true) === 'true' &&
+                    String(-0) === '0' &&
+                    String(42) === '42' &&
+                    String(0 / 0) === 'NaN' &&
+                    String(1 / 0) === 'Infinity' &&
+                    String(-1 / 0) === '-Infinity' &&
+                    typeof String === 'function';
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn from_char_code_converts_arguments_to_utf16_units() {
+        let result =
+            evaluate("String.fromCharCode(65.9, '0x42', 65536, -1, null, true, 1 / 0);").unwrap();
+
+        assert_eq!(result, Value::String("AB\0\u{ffff}\0\u{1}\0".to_owned()));
+
+        assert_eq!(
+            evaluate("String.fromCharCode();").unwrap(),
+            Value::String(String::new())
+        );
+
+        assert_eq!(
+            evaluate("let f = String['fromCharCode']; f(65);").unwrap(),
+            Value::String("A".to_owned())
+        );
+    }
+
+    #[test]
+    fn decodes_valid_surrogate_pairs_without_replacement() {
+        assert_eq!(
+            evaluate("String.fromCharCode(55357, 56832);").unwrap(),
+            Value::String("😀".to_owned())
+        );
+
+        for source in [
+            "String.fromCharCode(55296);",
+            "String.fromCharCode(56320);",
+            "String.fromCharCode(55296, 65);",
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap_err().kind,
+                JsErrorKind::UnsupportedFeature,
+                "{source}",
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_conversions_and_boxed_string_construction() {
+        for source in [
+            "String({});",
+            "String(1.5);",
+            "String.fromCharCode({});",
+            "new String('x');",
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap_err().kind,
+                JsErrorKind::UnsupportedFeature,
+                "{source}",
+            );
+        }
+    }
+
+    #[test]
+    fn executes_from_char_code_loop_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let header = source
+            .lines()
+            .map(str::trim)
+            .find(|line| *line == "for (const p in replacements) {")
+            .expect("WPT loop header must exist");
+
+        let body = source
+            .lines()
+            .map(str::trim)
+            .find(|line| {
+                *line == r#"formatEscapeMap[String.fromCharCode(p)] = "\\" + replacements[p];"#
+            })
+            .expect("WPT loop body must exist");
+
+        let script = format!(
+            r#"
+                let replacements = {{
+                    '9': 't',
+                    '0xfffd': 'ufffd'
+                }};
+
+                let formatEscapeMap = {{}};
+
+                {header}
+                    {body}
+                }}
+
+                formatEscapeMap[String.fromCharCode(9)] === '\\t' &&
+                    formatEscapeMap[String.fromCharCode(65533)] === '\\ufffd';
+            "#
         );
 
         assert_eq!(evaluate(&script).unwrap(), Value::Boolean(true));

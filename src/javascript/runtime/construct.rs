@@ -42,6 +42,12 @@ impl Interpreter {
                 ));
             }
 
+            Value::NativeFunction(NativeFunction::StringConstructor) => {
+                return Err(JsError::unsupported(
+                    "String object construction is not implemented",
+                ));
+            }
+
             Value::ObjectConstructor | Value::ElementConstructor(_) => {
                 return Err(JsError::unsupported(
                     "construction with this built-in is not implemented",

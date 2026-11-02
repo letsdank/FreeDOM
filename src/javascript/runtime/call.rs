@@ -151,6 +151,14 @@ impl Interpreter {
                 self.string_split(receiver, values)
             }
 
+            Value::NativeFunction(NativeFunction::StringConstructor) => {
+                Self::string_constructor(values)
+            }
+
+            Value::NativeFunction(NativeFunction::StringFromCharCode) => {
+                self.string_from_char_code(values)
+            }
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }
