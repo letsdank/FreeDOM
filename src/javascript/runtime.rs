@@ -103,6 +103,9 @@ pub(super) mod promise;
 #[path = "runtime/string.rs"]
 mod string;
 
+#[path = "runtime/array_map.rs"]
+mod array_map;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: FunctionValue,

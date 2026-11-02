@@ -35,6 +35,7 @@ pub enum NativeFunction {
     StringSplit,
     StringConstructor,
     StringFromCharCode,
+    ArrayMap,
 }
 
 #[derive(Clone, Debug, PartialEq)]
