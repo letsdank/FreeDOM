@@ -33,41 +33,146 @@ pub(crate) fn probe_testharness(source: &str) -> Result<(), JsError> {
     bootstrap_testharness(source).map(|_| ())
 }
 
-/// Runs one synchronous harness test and checks its result callback.
-///
-/// This does not verify harness completion or execute a WPT document.
+/// Runs one synchronous harness test in the synthetic shell.
 pub(crate) fn probe_testharness_test(source: &str) -> Result<(), JsError> {
-    let mut interpreter = bootstrap_testharness(source)?;
-
-    let program = parse_program(
-        r#"
-            let freedom_probe_count = 0;
-            let freedom_probe_status = -1;
+    let report = run_harness_scripts(
+        source,
+        &[r#"
             let freedom_probe_body_ran = false;
 
-            self.add_result_callback(function(result) {
-                freedom_probe_count = freedom_probe_count + 1;
-                freedom_probe_status = result.status;
-            });
-
-            self.test(function() {
+            test(function() {
                 freedom_probe_body_ran = true;
-                self.assert_equals(1, 1);
+                assert_equals(1, 1);
             }, 'FreeDOM synchronous harness probe');
 
-            freedom_probe_body_ran &&
-                freedom_probe_count === 1 &&
-                freedom_probe_status === 0;
+            if (!freedom_probe_body_ran) {
+                throw 'test body did not run';
+            }
+        "#],
+    )?;
+
+    if report.harness_status == 0
+        && report.results.len() == 1
+        && report.results[0].name == "FreeDOM synchronous harness probe"
+        && report.results[0].status == 0
+    {
+        Ok(())
+    } else {
+        Err(JsError::runtime(
+            "testharness did not report exactly one passing test result",
+        ))
+    }
+}
+
+/// A synthetic shell report; this is not an HTML WPT run.
+#[derive(Debug, PartialEq)]
+pub(crate) struct HarnessReport {
+    pub(crate) harness_status: u8,
+    pub(crate) results: Vec<HarnessResult>,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct HarnessResult {
+    pub(crate) name: String,
+    pub(crate) status: u8,
+}
+
+/// Runs synchronous scripts against the upstream harness in a synthetic shell.
+///
+/// This forces explicit_done; async tests, HTML, resource loading and real
+/// Window globals are not supported.
+pub(crate) fn run_harness_scripts(
+    source: &str,
+    scripts: &[&str],
+) -> Result<HarnessReport, JsError> {
+    let mut interpreter = bootstrap_testharness(source)?;
+
+    let bridge = parse_program(
+        r#"
+            let __freedom_results = [];
+            let __freedom_completions = 0;
+            let __freedom_harness_status = -1;
+
+            self.add_result_callback(function(result) {
+                __freedom_results.push([result.name, result.status]);
+            });
+
+            self.add_completion_callback(function(results, status) {
+                __freedom_completions += 1;
+                __freedom_harness_status = status.status;
+            });
+
+            self.setup(null, { explicit_done: true });
+
+            let test = self.test;
+            let assert_equals = self.assert_equals;
         "#,
     )?;
 
-    match interpreter.execute_script(&program)? {
-        Completion::Normal(Value::Boolean(true)) => Ok(()),
+    interpreter.execute_script(&bridge)?;
 
-        _ => Err(JsError::runtime(
-            "testharness did not report exactly one passing test result",
-        )),
+    for source in scripts {
+        let program = parse_program(source)?;
+        interpreter.execute_script(&program)?;
     }
+
+    interpreter.execute_script(&parse_program("self.done()")?)?;
+
+    let snapshot = interpreter
+        .execute_script(&parse_program(
+            "[__freedom_results, __freedom_completions, __freedom_harness_status];",
+        )?)?
+        .into_value();
+
+    let fields = snapshot
+        .as_array()
+        .ok_or_else(|| JsError::runtime("invalid harness report"))?;
+
+    if fields.len() != 3 || fields[1] != Value::Number(1.0) {
+        return Err(JsError::runtime(
+            "testharness did not complete exactly once",
+        ));
+    }
+
+    let harness_status = match fields[2] {
+        Value::Number(number) if number.fract() == 0.0 && (0.0..=3.0).contains(&number) => {
+            number as u8
+        }
+
+        _ => {
+            return Err(JsError::runtime("invalid testharness completion status"));
+        }
+    };
+
+    let records = fields[0]
+        .as_array()
+        .ok_or_else(|| JsError::runtime("invalid testharness result list"))?;
+
+    let mut results = Vec::with_capacity(records.len());
+
+    for record in records {
+        let record = record
+            .as_array()
+            .ok_or_else(|| JsError::runtime("invalid testharness result"))?;
+
+        let [Value::String(name), Value::Number(status)] = record.as_slice() else {
+            return Err(JsError::runtime("invalid testharness result fields"));
+        };
+
+        if status.fract() != 0.0 || !(0.0..=4.0).contains(status) {
+            return Err(JsError::runtime("invalid testharness subtest status"));
+        }
+
+        results.push(HarnessResult {
+            name: name.clone(),
+            status: *status as u8,
+        });
+    }
+
+    Ok(HarnessReport {
+        harness_status,
+        results,
+    })
 }
 
 #[cfg(test)]
@@ -142,6 +247,7 @@ mod tests {
     fn synchronous_probe_checks_the_result_callback() {
         let passing = r#"
             let result_callback = null;
+            let completion_callback = null;
 
             self.add_result_callback = function(callback) {
                 result_callback = callback;
@@ -153,11 +259,19 @@ mod tests {
                 }
             };
 
-            self.add_completion_callback = function() {};
+            self.add_completion_callback = function(callback) {
+                completion_callback = callback;
+            };
 
-            self.test = function(callback) {
+            self.setup = function() {};
+
+            self.done = function() {
+                completion_callback([], { status: 0 });
+            };
+
+            self.test = function(callback, name) {
                 callback();
-                result_callback({ status: 0 });
+                result_callback({ name: name, status: 0 });
             };
         "#;
 
@@ -166,16 +280,18 @@ mod tests {
         let failing = passing.replace("status: 0", "status: 1");
         assert!(probe_testharness_test(&failing).is_err());
 
-        let missing = passing.replace("result_callback({ status: 0 });", "");
+        let missing = passing.replace("result_callback({ name: name, status: 0 });", "");
         assert!(probe_testharness_test(&missing).is_err());
 
         let body_not_run = passing.replace("callback();", "");
         assert!(probe_testharness_test(&body_not_run).is_err());
 
         let duplicate = passing.replace(
-            "result_callback({ status: 0 });",
-            "result_callback({ status: 0 }); result_callback({ status: 0 });",
+            "result_callback({ name: name, status: 0 });",
+            "result_callback({ name: name, status: 0 }); \
+            result_callback({ name: name, status: 0 });",
         );
+
         assert!(probe_testharness_test(&duplicate).is_err());
     }
 
@@ -187,5 +303,70 @@ mod tests {
         ));
 
         probe_testharness_test(source).unwrap();
+    }
+
+    #[test]
+    fn runs_multiple_scripts_with_upstream_harness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/resources/testharness.js"
+        ));
+
+        let report = super::run_harness_scripts(
+            source,
+            &[
+                "test(function() { assert_equals(1, 1); }, 'first');",
+                "test(function() { assert_equals(2, 2); }, 'second');",
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(report.harness_status, 0);
+
+        assert_eq!(
+            report.results,
+            vec![
+                super::HarnessResult {
+                    name: "first".into(),
+                    status: 0
+                },
+                super::HarnessResult {
+                    name: "second".into(),
+                    status: 0
+                },
+            ]
+        );
+
+        let failed = super::run_harness_scripts(
+            source,
+            &[
+                "test(function() { assert_equals(1, 1); }, 'first');",
+                "test(function() { assert_equals(2, 3); }, 'second');",
+            ],
+        );
+
+        match failed {
+            Ok(report) => {
+                assert_eq!(report.results.len(), 2);
+                assert_eq!(report.results[0].status, 0);
+                assert_eq!(report.results[1].status, 1);
+            }
+
+            Err(error) => {
+                assert!(matches!(
+                    error.kind,
+                    JsErrorKind::UnsupportedFeature | JsErrorKind::UnclassifiedRuntime
+                ));
+            }
+        }
+
+        let empty = super::run_harness_scripts(source, &[]).unwrap();
+
+        assert_eq!(empty.harness_status, 1);
+        assert!(empty.results.is_empty());
+
+        let syntax = super::run_harness_scripts(source, &["let = ;"]).unwrap_err();
+
+        assert_eq!(syntax.kind, JsErrorKind::Syntax);
     }
 }
