@@ -8,6 +8,7 @@ use crate::url::Url;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 use super::runtime::bindings::CapturedBindings;
+use super::runtime::promise::PromiseHandle;
 use super::{DocumentState, FunctionKind, UserFunction, regexp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +28,10 @@ pub enum NativeFunction {
     ArrayToString,
     FunctionBind,
     QueueMicrotask,
+    PromiseConstructor,
+    PromiseResolve,
+    PromiseReject,
+    PromiseThen,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +68,7 @@ pub(crate) enum TestContextMethod {
 pub(crate) struct ObjectState {
     properties: Vec<ObjectProperty>,
     prototype: ObjectPrototype,
+    pub(super) promise: Option<PromiseHandle>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -604,6 +610,7 @@ impl Value {
         let state = ObjectState {
             properties: Vec::new(),
             prototype: ObjectPrototype::Null,
+            promise: None,
         };
 
         Self::Object(Rc::new(RefCell::new(state)))
@@ -613,6 +620,7 @@ impl Value {
         let state = ObjectState {
             properties: Vec::new(),
             prototype: ObjectPrototype::Object(prototype),
+            promise: None,
         };
 
         Self::Object(Rc::new(RefCell::new(state)))
@@ -622,6 +630,7 @@ impl Value {
         let state = ObjectState {
             properties: Vec::new(),
             prototype: ObjectPrototype::IntrinsicObjectRoot,
+            promise: None,
         };
 
         Self::Object(Rc::new(RefCell::new(state)))

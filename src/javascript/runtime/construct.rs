@@ -4,7 +4,7 @@
 //!
 //! Exotic prototype objects, constructor properties and new.target are incomplete.
 
-use super::{Expression, Interpreter, JsError, Value};
+use super::{Expression, Interpreter, JsError, NativeFunction, Value};
 use crate::javascript::FunctionKind;
 
 impl Interpreter {
@@ -34,6 +34,12 @@ impl Interpreter {
 
             Value::Function(function) if function.definition().kind == FunctionKind::Ordinary => {
                 function
+            }
+
+            Value::NativeFunction(NativeFunction::PromiseConstructor) => {
+                return Err(JsError::unsupported(
+                    "Promise construction is not implemented",
+                ));
             }
 
             Value::ObjectConstructor | Value::ElementConstructor(_) => {

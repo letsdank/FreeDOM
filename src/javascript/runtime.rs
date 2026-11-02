@@ -97,6 +97,9 @@ mod for_of_array;
 #[path = "runtime/microtasks.rs"]
 mod microtasks;
 
+#[path = "runtime/promise.rs"]
+pub(super) mod promise;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: FunctionValue,
@@ -126,8 +129,9 @@ pub(super) struct Interpreter {
     object_prototype: ObjectStorage,
     capture_frames: Vec<CapturedBindings>,
     catch_bindings: Vec<(usize, String)>,
-    microtasks: VecDeque<Value>,
+    microtasks: VecDeque<microtasks::Microtask>,
     performing_microtask_checkpoint: bool,
+    promise_prototype: ObjectStorage,
 }
 
 impl Interpreter {
@@ -154,6 +158,24 @@ impl Interpreter {
         object_prototype.borrow_mut().define_own_data_property(
             "toString".to_owned(),
             Value::NativeFunction(NativeFunction::ObjectToString),
+            false,
+        );
+
+        let Value::Object(promise_prototype) =
+            Value::object_with_prototype(object_prototype.clone())
+        else {
+            unreachable!("object constructor returns an object");
+        };
+
+        promise_prototype.borrow_mut().define_own_data_property(
+            "then".to_owned(),
+            Value::NativeFunction(NativeFunction::PromiseThen),
+            false,
+        );
+
+        promise_prototype.borrow_mut().define_own_data_property(
+            "constructor".to_owned(),
+            Value::NativeFunction(NativeFunction::PromiseConstructor),
             false,
         );
 
@@ -196,6 +218,11 @@ impl Interpreter {
 
         variables.insert("Object".to_owned(), Value::ObjectConstructor);
 
+        variables.insert(
+            "Promise".to_owned(),
+            Value::NativeFunction(NativeFunction::PromiseConstructor),
+        );
+
         Self {
             variables,
             cleanups: Vec::new(),
@@ -205,6 +232,7 @@ impl Interpreter {
             catch_bindings: Vec::new(),
             microtasks: VecDeque::new(),
             performing_microtask_checkpoint: false,
+            promise_prototype,
         }
     }
 

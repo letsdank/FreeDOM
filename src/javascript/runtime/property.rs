@@ -36,6 +36,18 @@ impl Interpreter {
                 Ok(Value::NativeFunction(NativeFunction::FunctionBind))
             }
 
+            (Value::NativeFunction(NativeFunction::PromiseConstructor), "resolve") => {
+                Ok(Value::NativeFunction(NativeFunction::PromiseResolve))
+            }
+
+            (Value::NativeFunction(NativeFunction::PromiseConstructor), "reject") => {
+                Ok(Value::NativeFunction(NativeFunction::PromiseReject))
+            }
+
+            (Value::NativeFunction(NativeFunction::PromiseConstructor), "prototype") => {
+                Ok(Value::Object(self.promise_prototype.clone()))
+            }
+
             (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
                 PropertyLookup::Found(value) => value,
 

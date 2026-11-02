@@ -1,13 +1,19 @@
 //! Partial host microtask queue.
 //!
 //! <https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#microtask-queuing>
-//! <https://html.spec.whatwg.org/mutlipage/webappapis.html#perform-a-microtask-checkpoint>
+//! <https://html.spec.whatwg.org/multipage/webappapis.html#perform-a-microtask-checkpoint>
 //!
 //! Checkpoints currently run after top-level scripts, not a complete event loop.
 //! An engine failure aborts the checkpoint and discards pending microtasks.
 
+use super::promise::PromiseReactionJob;
 use super::{Interpreter, JsError, Value};
 use crate::javascript::JsErrorKind;
+
+pub(super) enum Microtask {
+    Callback(Value),
+    PromiseReaction(PromiseReactionJob),
+}
 
 impl Interpreter {
     pub(super) fn queue_microtask(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -22,7 +28,7 @@ impl Interpreter {
             | Value::TestContextMethod(_)
             | Value::RegExpTest(_)
             | Value::RegExpExec(_) => {
-                self.microtasks.push_back(callback);
+                self.microtasks.push_back(Microtask::Callback(callback));
 
                 Ok(Value::Undefined)
             }
@@ -45,8 +51,16 @@ impl Interpreter {
         self.performing_microtask_checkpoint = true;
 
         let result = (|| {
-            while let Some(callback) = self.microtasks.pop_front() {
-                if let Err(error) = self.dispatch_call(callback, None, Vec::new()) {
+            while let Some(job) = self.microtasks.pop_front() {
+                let job_result = match job {
+                    Microtask::Callback(callback) => {
+                        self.dispatch_call(callback, None, Vec::new()).map(|_| ())
+                    }
+
+                    Microtask::PromiseReaction(reaction) => self.run_promise_reaction(reaction),
+                };
+
+                if let Err(error) = job_result {
                     match error.kind {
                         JsErrorKind::Thrown(_) | JsErrorKind::NativeException(_) => {
                             eprintln!("FreeDOM: uncaught microtask exception: {error}");

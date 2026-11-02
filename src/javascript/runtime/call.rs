@@ -131,6 +131,22 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::QueueMicrotask) => self.queue_microtask(values),
 
+            Value::NativeFunction(NativeFunction::PromiseConstructor) => {
+                Err(JsError::type_error("Promise constructor requires new"))
+            }
+
+            Value::NativeFunction(NativeFunction::PromiseResolve) => {
+                self.promise_resolve(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::PromiseReject) => {
+                self.promise_reject(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::PromiseThen) => {
+                self.promise_then(receiver, values)
+            }
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }
