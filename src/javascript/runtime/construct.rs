@@ -48,6 +48,10 @@ impl Interpreter {
                 ));
             }
 
+            Value::NativeFunction(NativeFunction::ErrorConstructor) => {
+                return self.construct_error(values);
+            }
+
             Value::ObjectConstructor | Value::ElementConstructor(_) => {
                 return Err(JsError::unsupported(
                     "construction with this built-in is not implemented",

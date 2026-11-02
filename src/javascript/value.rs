@@ -36,6 +36,8 @@ pub enum NativeFunction {
     StringConstructor,
     StringFromCharCode,
     ArrayMap,
+    ErrorConstructor,
+    ErrorToString,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -326,11 +328,12 @@ pub(crate) struct ArrayState {
 pub(crate) type ArrayStorage = Rc<RefCell<ArrayState>>;
 pub(crate) type ObjectStorage = Rc<RefCell<ObjectState>>;
 
-/// A partial native Error object; prototypes and property descriptors are not implemented.
+/// A partial native Error object with optional prototype support.
 #[derive(Clone, Debug)]
 pub struct NativeErrorValue {
     default_name: String,
     properties: ObjectStorage,
+    prototype: Option<ObjectStorage>,
 }
 
 impl NativeErrorValue {
@@ -342,12 +345,39 @@ impl NativeErrorValue {
         Self {
             default_name: name.to_owned(),
             properties: Rc::new(RefCell::new(properties)),
+            prototype: None,
+        }
+    }
+
+    fn new_with_prototype(message: Option<String>, prototype: ObjectStorage) -> Self {
+        let mut properties = ObjectState::default();
+
+        if let Some(message) = message {
+            properties.define_own_data_property(
+                "message".to_owned(),
+                Value::String(message),
+                false,
+            );
+        }
+
+        Self {
+            default_name: "Error".to_owned(),
+            properties: Rc::new(RefCell::new(properties)),
+            prototype: Some(prototype),
         }
     }
 
     pub(super) fn get(&self, name: &str) -> Value {
         if let Some(value) = self.properties.borrow().get(name) {
             return value.clone();
+        }
+
+        if let Some(prototype) = &self.prototype {
+            return match ObjectState::lookup(prototype, name) {
+                PropertyLookup::Found(value) => value,
+
+                PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
+            };
         }
 
         if name == "name" {
@@ -359,6 +389,20 @@ impl NativeErrorValue {
 
     pub(super) fn set(&self, name: String, value: Value) {
         self.properties.borrow_mut().set(name, value);
+    }
+
+    pub(super) fn has_own_property(&self, name: &str) -> bool {
+        self.properties.borrow().get(name).is_some()
+    }
+
+    pub(super) fn has_prototype(&self, target: &ObjectStorage) -> Option<bool> {
+        let prototype = self.prototype.as_ref()?;
+
+        if Rc::ptr_eq(prototype, target) {
+            Some(true)
+        } else {
+            ObjectState::has_prototype(prototype, target)
+        }
     }
 }
 
@@ -675,6 +719,10 @@ impl Value {
             binding: None,
             captures,
         })
+    }
+
+    pub(super) fn error_with_prototype(message: Option<String>, prototype: ObjectStorage) -> Self {
+        Self::NativeError(NativeErrorValue::new_with_prototype(message, prototype))
     }
 
     pub fn as_array(&self) -> Option<Vec<Value>> {

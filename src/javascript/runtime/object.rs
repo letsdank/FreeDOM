@@ -36,6 +36,8 @@ impl Interpreter {
 
             Value::Array(array) => Ok(Value::Boolean(Self::array_has_own(&array, &key))),
 
+            Value::NativeError(error) => Ok(Value::Boolean(error.has_own_property(&key))),
+
             Value::Null | Value::Undefined => Err(JsError::type_error(
                 "Object.prototype.hasOwnProperty requires a non-null value",
             )),

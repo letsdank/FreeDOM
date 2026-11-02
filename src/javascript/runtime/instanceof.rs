@@ -5,7 +5,7 @@
 //!
 //! Symbol.hasInstance, bound functions and exotic prototype chains are incomplete.
 
-use super::{Interpreter, JsError, Value};
+use super::{Interpreter, JsError, NativeFunction, Value};
 use crate::javascript::value::ObjectState;
 
 impl Interpreter {
@@ -32,6 +32,10 @@ impl Interpreter {
 
             Value::ObjectConstructor => {
                 Self::ordinary_has_instance(&left, Value::Object(self.object_prototype.clone()))?
+            }
+
+            Value::NativeFunction(NativeFunction::ErrorConstructor) => {
+                Self::ordinary_has_instance(&left, Value::Object(self.error_prototype.clone()))?
             }
 
             Value::Undefined
@@ -92,6 +96,10 @@ impl Interpreter {
                     JsError::unsupported("instanceof reached an unimplemented prototype")
                 })
             }
+
+            Value::NativeError(error) => error.has_prototype(&prototype).ok_or_else(|| {
+                JsError::unsupported("instanceof for this native error has no prototype")
+            }),
 
             _ => Err(JsError::unsupported(
                 "instanceof for this left-hand object is not implemented",

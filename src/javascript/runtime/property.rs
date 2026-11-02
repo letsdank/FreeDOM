@@ -54,6 +54,10 @@ impl Interpreter {
                 Ok(Value::NativeFunction(NativeFunction::StringFromCharCode))
             }
 
+            (Value::NativeFunction(NativeFunction::ErrorConstructor), "prototype") => {
+                Ok(Value::Object(self.error_prototype.clone()))
+            }
+
             (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
                 PropertyLookup::Found(value) => value,
 

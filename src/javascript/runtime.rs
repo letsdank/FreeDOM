@@ -1,6 +1,5 @@
-use std::collections::{HashMap, VecDeque};
-
 use crate::url::Url;
+use std::collections::{HashMap, VecDeque};
 
 use super::value::{FunctionValue, ObjectStorage};
 use super::{
@@ -106,6 +105,9 @@ mod string;
 #[path = "runtime/array_map.rs"]
 mod array_map;
 
+#[path = "runtime/error.rs"]
+mod error;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: FunctionValue,
@@ -138,6 +140,7 @@ pub(super) struct Interpreter {
     microtasks: VecDeque<microtasks::Microtask>,
     performing_microtask_checkpoint: bool,
     promise_prototype: ObjectStorage,
+    error_prototype: ObjectStorage,
 }
 
 impl Interpreter {
@@ -164,6 +167,35 @@ impl Interpreter {
         object_prototype.borrow_mut().define_own_data_property(
             "toString".to_owned(),
             Value::NativeFunction(NativeFunction::ObjectToString),
+            false,
+        );
+
+        let Value::Object(error_prototype) = Value::object_with_prototype(object_prototype.clone())
+        else {
+            unreachable!("object constructor returns an object");
+        };
+
+        error_prototype.borrow_mut().define_own_data_property(
+            "name".to_owned(),
+            Value::String("Error".to_owned()),
+            false,
+        );
+
+        error_prototype.borrow_mut().define_own_data_property(
+            "message".to_owned(),
+            Value::String(String::new()),
+            false,
+        );
+
+        error_prototype.borrow_mut().define_own_data_property(
+            "constructor".to_owned(),
+            Value::NativeFunction(NativeFunction::ErrorConstructor),
+            false,
+        );
+
+        error_prototype.borrow_mut().define_own_data_property(
+            "toString".to_owned(),
+            Value::NativeFunction(NativeFunction::ErrorToString),
             false,
         );
 
@@ -225,6 +257,11 @@ impl Interpreter {
         variables.insert("Object".to_owned(), Value::ObjectConstructor);
 
         variables.insert(
+            "Error".to_owned(),
+            Value::NativeFunction(NativeFunction::ErrorConstructor),
+        );
+
+        variables.insert(
             "Promise".to_owned(),
             Value::NativeFunction(NativeFunction::PromiseConstructor),
         );
@@ -244,6 +281,7 @@ impl Interpreter {
             microtasks: VecDeque::new(),
             performing_microtask_checkpoint: false,
             promise_prototype,
+            error_prototype,
         }
     }
 

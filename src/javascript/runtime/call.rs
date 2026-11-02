@@ -161,6 +161,10 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ArrayMap) => self.array_map(receiver, values),
 
+            Value::NativeFunction(NativeFunction::ErrorConstructor) => self.construct_error(values),
+
+            Value::NativeFunction(NativeFunction::ErrorToString) => Self::error_to_string(receiver),
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }
