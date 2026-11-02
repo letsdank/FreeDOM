@@ -100,6 +100,9 @@ mod microtasks;
 #[path = "runtime/promise.rs"]
 pub(super) mod promise;
 
+#[path = "runtime/string.rs"]
+mod string;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: FunctionValue,

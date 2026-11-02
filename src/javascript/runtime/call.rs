@@ -147,6 +147,10 @@ impl Interpreter {
                 self.promise_then(receiver, values)
             }
 
+            Value::NativeFunction(NativeFunction::StringSplit) => {
+                self.string_split(receiver, values)
+            }
+
             Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
                 self.get_element_by_id(document, values)
             }

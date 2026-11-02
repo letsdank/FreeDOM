@@ -32,6 +32,7 @@ pub enum NativeFunction {
     PromiseResolve,
     PromiseReject,
     PromiseThen,
+    StringSplit,
 }
 
 #[derive(Clone, Debug, PartialEq)]

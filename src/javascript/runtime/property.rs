@@ -48,6 +48,8 @@ impl Interpreter {
                 Ok(Value::Object(self.promise_prototype.clone()))
             }
 
+            (Value::String(_), "split") => Ok(Value::NativeFunction(NativeFunction::StringSplit)),
+
             (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
                 PropertyLookup::Found(value) => value,
 
@@ -327,6 +329,10 @@ impl Interpreter {
                     "cannot read property {property:?} from this value"
                 ))),
             };
+        }
+
+        if matches!((&object,&index),(Value::String(_),Value::String(name))if name == "split") {
+            return self.member_value(object, "split");
         }
 
         let Some(index) = self.to_number(&index) else {
