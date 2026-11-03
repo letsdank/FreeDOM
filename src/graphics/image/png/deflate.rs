@@ -10,9 +10,11 @@ use std::io::{self, Read};
 
 mod block;
 mod huffman;
+mod output;
 
 pub use self::block::{DeflateBlockHeader, DeflateBlockType, copy_stored_block, read_block_header};
 pub use self::huffman::{HuffmanError, HuffmanTree};
+pub use self::output::DeflateOutput;
 
 /// Streaming bit reader for DEFLATE. It does not decompress data.
 pub struct DeflateBitReader<R> {
