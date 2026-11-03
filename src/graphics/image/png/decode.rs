@@ -10,6 +10,10 @@ use super::{
     decode_zlib, unfilter_row,
 };
 
+mod palette;
+
+use self::palette::Palette;
+
 #[derive(Clone, Copy, Debug)]
 pub struct PngDecodeLimits {
     pub max_width: u32,
@@ -52,6 +56,7 @@ pub enum PngDecodeError {
     AllocationFailed,
     ScanlineLength { expected: usize, actual: usize },
     TransparencyCrcMismatch { offset: usize },
+    MissingPalette,
 }
 
 impl fmt::Display for PngDecodeError {
@@ -79,9 +84,9 @@ impl From<PngError> for PngDecodeError {
 
 /// Decodes the default image, checking critical chunk CRCs.
 ///
-/// Supports non-interlaced 8-bit grayscale, RGB and their alpha variants
-/// Grayscale and RGB tRNS is applied with strict CRC checks. Other ancillary
-/// chunks and trailing data are ignored.
+/// Supports non-interlaced 8-bit grayscale, RGB, indexed-color and their
+/// applicable alpha representations. Supported tRNS chunks use strict CRC
+/// checks. Other ancillary chunks and trailing data are ignored.
 ///
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
 /// bound output sizes, not input size or CPU time.
@@ -89,15 +94,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
     let idat = IdatReader::new(input)?;
     let header = idat.structure().header;
 
-    if !matches!(
-        header.color_type,
-        ColorType::Grayscale
-            | ColorType::GrayscaleAlpha
-            | ColorType::Truecolor
-            | ColorType::TruecolorAlpha
-    ) || header.bit_depth != 8
-        || header.interlace != InterlaceMethod::None
-    {
+    if header.bit_depth != 8 || header.interlace != InterlaceMethod::None {
         return Err(PngDecodeError::UnsupportedFormat(header));
     }
 
@@ -117,7 +114,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         ColorType::GrayscaleAlpha => 2,
         ColorType::Truecolor => 3,
         ColorType::TruecolorAlpha => 4,
-        _ => return Err(PngDecodeError::UnsupportedFormat(header)),
+        ColorType::Indexed => 1,
     };
 
     let row_bytes = width
@@ -149,6 +146,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
     let mut seen_idat = false;
     let mut seen_palette = false;
     let mut transparent = None;
+    let mut palette: Option<Palette<'_>> = None;
 
     while let Some(chunk) = reader.next_chunk()? {
         if chunk.is_critical() && !chunk.crc_matches() {
@@ -162,6 +160,10 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
             b"IHDR" => {}
 
             b"IDAT" => {
+                if header.color_type == ColorType::Indexed && palette.is_none() {
+                    return Err(PngDecodeError::MissingPalette);
+                }
+
                 seen_idat = true;
             }
 
@@ -175,17 +177,34 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
                         header.color_type,
                         ColorType::Grayscale | ColorType::GrayscaleAlpha
                     )
-                    || chunk.data.is_empty()
-                    || chunk.data.len() > 768
-                    || chunk.data.len() % 3 != 0
                 {
                     return Err(PngDecodeError::InvalidPalette);
                 }
 
+                palette = Some(Palette::new(chunk.data)?);
                 seen_palette = true;
             }
 
             b"tRNS" => {
+                if header.color_type == ColorType::Indexed {
+                    if seen_idat {
+                        return Err(PngDecodeError::InvalidTransparencyChunk);
+                    }
+
+                    let indexed_palette = palette
+                        .as_mut()
+                        .ok_or(PngDecodeError::InvalidTransparencyChunk)?;
+
+                    if !chunk.crc_matches() {
+                        return Err(PngDecodeError::TransparencyCrcMismatch {
+                            offset: chunk.offset,
+                        });
+                    }
+
+                    indexed_palette.set_alpha(chunk.data)?;
+                    continue;
+                }
+
                 let expected_len = match header.color_type {
                     ColorType::Grayscale => 2,
                     ColorType::Truecolor => 6,
@@ -269,6 +288,21 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         // Expand backwards so that source samples are not overwritten.
         for i in (0..pixels).rev() {
             let source = i * channels;
+
+            if header.color_type == ColorType::Indexed {
+                let index = filtered[source];
+
+                let color = palette
+                    .as_ref()
+                    .ok_or(PngDecodeError::MissingPalette)?
+                    .rgba(index);
+
+                let destination = i * 4;
+
+                filtered[destination..destination + 4].clone_from_slice(&color);
+
+                continue;
+            }
 
             let (rgb, alpha) = match channels {
                 1 => {

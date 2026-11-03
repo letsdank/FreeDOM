@@ -20,7 +20,7 @@ fn append_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     png.extend_from_slice(&crc.to_be_bytes());
 }
 
-fn insert_chunk(png: &mut Vec<u8>, before: &[u8; 4], kind: &[u8; 4], data: &[u8]) {
+pub(super) fn insert_chunk(png: &mut Vec<u8>, before: &[u8; 4], kind: &[u8; 4], data: &[u8]) {
     let mut reader = ChunkReader::new(png).unwrap();
 
     let offset = loop {
@@ -111,7 +111,7 @@ fn preserves_transparent_rgba_samples_from_existing_encoder() {
     assert_eq!(image.pixels, [230, 13, 45, 0, 10, 20, 30, 128]);
 }
 
-fn corrupt_crc(png: &mut [u8], kind: &[u8; 4]) {
+pub(super) fn corrupt_crc(png: &mut [u8], kind: &[u8; 4]) {
     let mut reader = ChunkReader::new(png).unwrap();
 
     let position = loop {
