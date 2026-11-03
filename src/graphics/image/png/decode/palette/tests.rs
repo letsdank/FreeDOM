@@ -184,7 +184,7 @@ fn rejects_missing_palette_and_invalid_indexed_trns() {
 }
 
 #[test]
-fn rejects_corrupted_palette_and_unsupported_packed_depth() {
+fn rejects_corrupted_palette_and_decodes_one_bit_palette() {
     let mut indexed = encode_indexed(1, 1, &[0], &[1, 2, 3], None, png::FilterType::Sub);
 
     corrupt_crc(&mut indexed, b"PLTE");
@@ -211,8 +211,7 @@ fn rejects_corrupted_palette_and_unsupported_packed_depth() {
             .unwrap();
     }
 
-    assert!(matches!(
-        decode_rgba8(&png, PngDecodeLimits::default()),
-        Err(PngDecodeError::UnsupportedFormat(_))
-    ));
+    let image = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(image.pixels, [0, 0, 0, 255]);
 }

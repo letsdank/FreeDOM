@@ -1,4 +1,4 @@
-//! Minimal non-interlaced 8-bit RGB and RGBA PNG decoding.
+//! Non-interlaced 8-bit RGB and RGBA PNG decoding.
 //!
 //! PNG Third Edition, sections 9-11 and 13:
 //! <https://www.w3.org/TR/png-3>
@@ -84,9 +84,9 @@ impl From<PngError> for PngDecodeError {
 
 /// Decodes the default image, checking critical chunk CRCs.
 ///
-/// Supports non-interlaced 8-bit grayscale, RGB, indexed-color and their
-/// applicable alpha representations. Supported tRNS chunks use strict CRC
-/// checks. Other ancillary chunks and trailing data are ignored.
+/// Supports non-interlaced grayscale and indexed images at depths 1, 2, 4,
+/// and 8, and RGB or alpha-bearing images at depth 8. Supported tRNS chunks
+/// use strict CRC checks. Other ancillary chunks and trailing data are ignored.
 ///
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
 /// bound output sizes, not input size or CPU time.
@@ -94,7 +94,14 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
     let idat = IdatReader::new(input)?;
     let header = idat.structure().header;
 
-    if header.bit_depth != 8 || header.interlace != InterlaceMethod::None {
+    let supported_depth = match header.color_type {
+        ColorType::Grayscale | ColorType::Indexed => {
+            matches!(header.bit_depth, 1 | 2 | 4 | 8)
+        }
+        _ => header.bit_depth == 8,
+    };
+
+    if !supported_depth || header.interlace != InterlaceMethod::None {
         return Err(PngDecodeError::UnsupportedFormat(header));
     }
 
@@ -117,9 +124,15 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         ColorType::Indexed => 1,
     };
 
+    let bits_per_pixel = channels * usize::from(header.bit_depth);
+
     let row_bytes = width
-        .checked_mul(channels)
-        .ok_or(PngDecodeError::SizeOverflow)?;
+        .checked_mul(bits_per_pixel)
+        .and_then(|bits| bits.checked_add(7))
+        .ok_or(PngDecodeError::SizeOverflow)?
+        / 8;
+
+    let filter_bytes_per_pixel = bits_per_pixel.div_ceil(8);
 
     let rgba_bytes = pixels.checked_mul(4).ok_or(PngDecodeError::SizeOverflow)?;
 
@@ -181,6 +194,12 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
                     return Err(PngDecodeError::InvalidPalette);
                 }
 
+                if header.color_type == ColorType::Indexed
+                    && chunk.data.len() > (1usize << header.bit_depth) * 3
+                {
+                    return Err(PngDecodeError::InvalidPalette);
+                }
+
                 palette = Some(Palette::new(chunk.data)?);
                 seen_palette = true;
             }
@@ -225,7 +244,12 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
                 // PNG uses the least significant bits when sample depth is below 16.
                 transparent = Some(match header.color_type {
-                    ColorType::Grayscale => TransparentKey::Gray(chunk.data[1]),
+                    ColorType::Grayscale => {
+                        let mask = (1u16 << header.bit_depth) - 1;
+                        let value = u16::from_be_bytes([chunk.data[0], chunk.data[1]]);
+
+                        TransparentKey::Gray((value & mask) as u8)
+                    }
 
                     ColorType::Truecolor => {
                         TransparentKey::Rgb([chunk.data[1], chunk.data[3], chunk.data[5]])
@@ -276,8 +300,13 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
             Some(&before[destination - row_bytes..])
         };
 
-        unfilter_row(filter, &mut after[..row_bytes], previous, channels)
-            .map_err(|source| PngDecodeError::Filter { row: y, source })?;
+        unfilter_row(
+            filter,
+            &mut after[..row_bytes],
+            previous,
+            filter_bytes_per_pixel,
+        )
+        .map_err(|source| PngDecodeError::Filter { row: y, source })?;
     }
 
     filtered.truncate(row_bytes * height);
@@ -289,8 +318,21 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         for i in (0..pixels).rev() {
             let source = i * channels;
 
+            let sample = if header.bit_depth < 8 {
+                let x = i % width;
+                let y = i / width;
+
+                let bit = x * usize::from(header.bit_depth);
+                let byte = filtered[y * row_bytes + bit / 8];
+                let shift = 8 - usize::from(header.bit_depth) - bit % 8;
+
+                (byte >> shift) & ((1u8 << header.bit_depth) - 1)
+            } else {
+                filtered[source]
+            };
+
             if header.color_type == ColorType::Indexed {
-                let index = filtered[source];
+                let index = sample;
 
                 let color = palette
                     .as_ref()
@@ -306,7 +348,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
             let (rgb, alpha) = match channels {
                 1 => {
-                    let gray = filtered[source];
+                    let gray = sample;
 
                     let alpha = if transparent == Some(TransparentKey::Gray(gray)) {
                         0
@@ -314,7 +356,10 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
                         255
                     };
 
-                    ([gray; 3], alpha)
+                    let max_sample = (1u16 << header.bit_depth) - 1;
+                    let gray8 = (u16::from(gray) * 255 / max_sample) as u8;
+
+                    ([gray8; 3], alpha)
                 }
 
                 2 => {
@@ -355,3 +400,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "decode/packed_tests.rs"]
+mod packed_tests;
