@@ -84,9 +84,10 @@ impl From<PngError> for PngDecodeError {
 
 /// Decodes the default image, checking critical chunk CRCs.
 ///
-/// Supports non-interlaced grayscale and indexed images at depths 1, 2, 4,
-/// and 8, and RGB or alpha-bearing images at depth 8. Supported tRNS chunks
-/// use strict CRC checks. Other ancillary chunks and trailing data are ignored.
+/// Supports non-interlaced grayscale at depths 1, 2, 4, 8 and 16;
+/// indexed color at depths 1, 2, 4 and 8; and RGB or alpha-bearing
+/// images at depth 8 and 16. Supported tRNS chunks use strict CRC
+/// checks. Other ancillary chunks and trailing data are ignored.
 ///
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
 /// bound output sizes, not input size or CPU time.
@@ -95,10 +96,13 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
     let header = idat.structure().header;
 
     let supported_depth = match header.color_type {
-        ColorType::Grayscale | ColorType::Indexed => {
+        ColorType::Grayscale => {
+            matches!(header.bit_depth, 1 | 2 | 4 | 8 | 16)
+        }
+        ColorType::Indexed => {
             matches!(header.bit_depth, 1 | 2 | 4 | 8)
         }
-        _ => header.bit_depth == 8,
+        _ => matches!(header.bit_depth, 8 | 16),
     };
 
     if !supported_depth || header.interlace != InterlaceMethod::None {
@@ -152,8 +156,8 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
     #[derive(Clone, Copy, Eq, PartialEq)]
     enum TransparentKey {
-        Gray(u8),
-        Rgb([u8; 3]),
+        Gray(u16),
+        Rgb([u16; 3]),
     }
 
     let mut seen_idat = false;
@@ -243,17 +247,24 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
                 }
 
                 // PNG uses the least significant bits when sample depth is below 16.
+                let mask = if header.bit_depth == 16 {
+                    u16::MAX
+                } else {
+                    (1u16 << header.bit_depth) - 1
+                };
+
                 transparent = Some(match header.color_type {
                     ColorType::Grayscale => {
-                        let mask = (1u16 << header.bit_depth) - 1;
                         let value = u16::from_be_bytes([chunk.data[0], chunk.data[1]]);
 
-                        TransparentKey::Gray((value & mask) as u8)
+                        TransparentKey::Gray(value & mask)
                     }
 
-                    ColorType::Truecolor => {
-                        TransparentKey::Rgb([chunk.data[1], chunk.data[3], chunk.data[5]])
-                    }
+                    ColorType::Truecolor => TransparentKey::Rgb([
+                        u16::from_be_bytes([chunk.data[0], chunk.data[1]]) & mask,
+                        u16::from_be_bytes([chunk.data[2], chunk.data[3]]) & mask,
+                        u16::from_be_bytes([chunk.data[4], chunk.data[5]]) & mask,
+                    ]),
 
                     _ => unreachable!(),
                 });
@@ -311,7 +322,72 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
     filtered.truncate(row_bytes * height);
 
-    if channels != 4 {
+    if header.bit_depth == 16 {
+        let bytes_per_pixel = channels * 2;
+
+        if rgba_bytes > filtered.len() {
+            filtered.resize(rgba_bytes, 0);
+        }
+
+        for step in 0..pixels {
+            // Expand grayscale backwards; process equal-sized or shrinking
+            // representations forwards to avoid overwriting unread pixels.
+            let i = if bytes_per_pixel < 4 {
+                pixels - 1 - step
+            } else {
+                step
+            };
+
+            let source = i * bytes_per_pixel;
+            let mut samples = [0u16; 4];
+
+            for c in 0..channels {
+                samples[c] =
+                    u16::from_be_bytes([filtered[source + c * 2], filtered[source + c * 2 + 1]]);
+            }
+
+            let (rgb, alpha) = match header.color_type {
+                ColorType::Grayscale => {
+                    let alpha = if transparent == Some(TransparentKey::Gray(samples[0])) {
+                        0
+                    } else {
+                        u16::MAX
+                    };
+
+                    ([samples[0]; 3], alpha)
+                }
+
+                ColorType::GrayscaleAlpha => ([samples[0]; 3], samples[1]),
+
+                ColorType::Truecolor => {
+                    let rgb = [samples[0], samples[1], samples[2]];
+
+                    let alpha = if transparent == Some(TransparentKey::Rgb(rgb)) {
+                        0
+                    } else {
+                        u16::MAX
+                    };
+
+                    (rgb, alpha)
+                }
+
+                ColorType::TruecolorAlpha => ([samples[0], samples[1], samples[2]], samples[3]),
+
+                ColorType::Indexed => unreachable!(),
+            };
+
+            let destination = i * 4;
+
+            filtered[destination..destination + 4].copy_from_slice(&[
+                (rgb[0] >> 8) as u8,
+                (rgb[1] >> 8) as u8,
+                (rgb[2] >> 8) as u8,
+                (alpha >> 8) as u8,
+            ]);
+        }
+
+        filtered.truncate(rgba_bytes);
+    } else if channels != 4 {
         filtered.resize(rgba_bytes, 0);
 
         // Expand backwards so that source samples are not overwritten.
@@ -350,7 +426,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
                 1 => {
                     let gray = sample;
 
-                    let alpha = if transparent == Some(TransparentKey::Gray(gray)) {
+                    let alpha = if transparent == Some(TransparentKey::Gray(u16::from(gray))) {
                         0
                     } else {
                         255
@@ -372,7 +448,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
                 3 => {
                     let rgb = [filtered[source], filtered[source + 1], filtered[source + 2]];
 
-                    let alpha = if transparent == Some(TransparentKey::Rgb(rgb)) {
+                    let alpha = if transparent == Some(TransparentKey::Rgb(rgb.map(u16::from))) {
                         0
                     } else {
                         255
@@ -404,3 +480,7 @@ mod tests;
 #[cfg(test)]
 #[path = "decode/packed_tests.rs"]
 mod packed_tests;
+
+#[cfg(test)]
+#[path = "decode/sixteen_tests.rs"]
+mod sixteen_tests;

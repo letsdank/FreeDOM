@@ -172,7 +172,7 @@ fn enforces_all_limits() {
 }
 
 #[test]
-fn rejects_unsupported_depth_and_adam7() {
+fn decodes_rgb16_and_rejects_adam7() {
     let mut rgb = Vec::new();
 
     {
@@ -187,10 +187,9 @@ fn rejects_unsupported_depth_and_adam7() {
             .unwrap();
     }
 
-    assert!(matches!(
-        decode_rgba8(&rgb, PngDecodeLimits::default()),
-        Err(PngDecodeError::UnsupportedFormat(_))
-    ));
+    let image = decode_rgba8(&rgb, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(image.pixels, [0, 0, 0, 255]);
 
     let (mut adam7, _) = encode_with_filter(png::FilterType::Sub);
 
