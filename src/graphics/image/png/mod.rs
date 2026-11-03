@@ -9,9 +9,11 @@
 
 use std::{error::Error, fmt};
 
+mod idat;
 mod ihdr;
 mod structure;
 
+pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 pub use self::structure::{PngStructure, inspect_structure};
 
