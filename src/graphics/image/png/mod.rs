@@ -12,10 +12,12 @@ use std::{error::Error, fmt};
 mod idat;
 mod ihdr;
 mod structure;
+mod zlib;
 
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 pub use self::structure::{PngStructure, inspect_structure};
+pub use self::zlib::{ZlibHeader, ZlibHeaderError};
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const MAX_CHUNK_LENGTH: u32 = 0x7fff_ffff;
