@@ -12,6 +12,10 @@ use super::{
 
 mod palette;
 
+// The pass plan will be used by the Adam7 reconstruction stage.
+#[allow(dead_code)]
+mod adam7;
+
 use self::palette::Palette;
 
 #[derive(Clone, Copy, Debug)]
