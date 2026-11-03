@@ -9,12 +9,14 @@
 
 use std::{error::Error, fmt};
 
+mod adler32;
 mod deflate;
 mod idat;
 mod ihdr;
 mod structure;
 mod zlib;
 
+pub use self::adler32::{Adler32, Adler32Writer, verify_zlib_adler32};
 pub use self::deflate::{
     DeflateBitReader, DeflateBlockHeader, DeflateBlockType, copy_stored_block, read_block_header,
 };
