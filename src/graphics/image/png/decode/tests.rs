@@ -172,18 +172,18 @@ fn enforces_all_limits() {
 }
 
 #[test]
-fn rejects_other_formats_and_adam7() {
+fn rejects_unsupported_depth_and_adam7() {
     let mut rgb = Vec::new();
 
     {
         let mut encoder = png::Encoder::new(&mut rgb, 1, 1);
         encoder.set_color(png::ColorType::Rgb);
-        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_depth(png::BitDepth::Sixteen);
 
         encoder
             .write_header()
             .unwrap()
-            .write_image_data(&[1, 2, 3])
+            .write_image_data(&[0, 1, 0, 2, 0, 3])
             .unwrap();
     }
 
@@ -300,4 +300,156 @@ fn rejects_invalid_filter_and_scanline_lengths() {
         decode_rgba8(&long, PngDecodeLimits::default()),
         Err(PngDecodeError::Inflate(_))
     ));
+}
+
+fn encode_rgb(width: u32, height: u32, pixels: &[u8], filter: png::FilterType) -> Vec<u8> {
+    let mut output = Vec::new();
+
+    {
+        let mut encoder = png::Encoder::new(&mut output, width, height);
+
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_filter(filter);
+        encoder.set_compression(png::Compression::Default);
+
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(pixels)
+            .unwrap();
+    }
+
+    output
+}
+
+#[test]
+fn decodes_rgb8_for_all_filters_and_single_pixel_rows() {
+    for (width, height) in [(1u32, 3u32), (13, 4)] {
+        let pixels: Vec<u8> = (0..width as usize * height as usize * 3)
+            .map(|i| (i * 37 + 11) as u8)
+            .collect();
+
+        let expected: Vec<u8> = pixels
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect();
+
+        for filter in [
+            png::FilterType::NoFilter,
+            png::FilterType::Sub,
+            png::FilterType::Up,
+            png::FilterType::Avg,
+            png::FilterType::Paeth,
+        ] {
+            let png = encode_rgb(width, height, &pixels, filter);
+
+            let image = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+            assert_eq!((image.width, image.height), (width, height));
+            assert_eq!(image.pixels, expected, "filter {filter:?}");
+        }
+    }
+}
+
+#[test]
+fn rgb_trns_matches_low_bits_and_preserves_transparent_rgb() {
+    // Inspired by WPT png/trns-chunk.html; this fixture is locally generated.
+    let mut png = encode_rgb(
+        3,
+        1,
+        &[255, 0, 0, 254, 0, 0, 255, 0, 1],
+        png::FilterType::Sub,
+    );
+
+    insert_chunk(
+        &mut png,
+        b"IDAT",
+        b"tRNS",
+        &[0xff, 0xff, 0xff, 0x00, 0xff, 0x00],
+    );
+
+    let image = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(image.pixels, [255, 0, 0, 0, 254, 0, 0, 255, 255, 0, 1, 255]);
+}
+
+#[test]
+fn rejects_invalid_rgb_trns_and_bad_crc() {
+    let png = encode_rgb(1, 1, &[1, 2, 3], png::FilterType::Sub);
+
+    let trns = [0, 1, 0, 2, 0, 3];
+
+    let mut short = png.clone();
+    insert_chunk(&mut short, b"IDAT", b"tRNS", &[0, 1]);
+
+    assert!(matches!(
+        decode_rgba8(&short, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidTransparencyChunk)
+    ));
+
+    let mut duplicate = png.clone();
+
+    insert_chunk(&mut duplicate, b"IDAT", b"tRNS", &trns);
+    insert_chunk(&mut duplicate, b"IDAT", b"tRNS", &trns);
+
+    assert!(matches!(
+        decode_rgba8(&duplicate, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidTransparencyChunk)
+    ));
+
+    let mut late = png.clone();
+    insert_chunk(&mut late, b"IEND", b"tRNS", &trns);
+
+    assert!(matches!(
+        decode_rgba8(&late, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidTransparencyChunk)
+    ));
+
+    let mut bad_crc = png.clone();
+    insert_chunk(&mut bad_crc, b"IDAT", b"tRNS", &trns);
+    corrupt_crc(&mut bad_crc, b"tRNS");
+
+    assert!(matches!(
+        decode_rgba8(&bad_crc, PngDecodeLimits::default()),
+        Err(PngDecodeError::TransparencyCrcMismatch { .. })
+    ));
+
+    let mut palette_after = png;
+
+    insert_chunk(&mut palette_after, b"IDAT", b"tRNS", &trns);
+    insert_chunk(&mut palette_after, b"IDAT", b"PLTE", &[1, 2, 3]);
+
+    assert!(matches!(
+        decode_rgba8(&palette_after, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidPalette)
+    ));
+}
+
+#[test]
+fn wpt_fixture_trns_high_bits_are_ignored() {
+    // Fixture:
+    // https://github.com/web-platform-tests/wpt/blob/master/png/support/trns-high-bits-set.png
+    //
+    // Original browser test:
+    // https://github.com/web-platform-tests/wpt/blob/master/png/trns-chunk.html
+    //
+    // This checks source alpha only; it does not run the browser/canvas test.
+    let png = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/wpt/png/support/trns-high-bits-set.png"
+    ));
+
+    let image = decode_rgba8(png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!((image.width, image.height), (100, 50));
+    assert_eq!(image.pixels.len(), 100 * 50 * 4);
+
+    let offset = (5usize * image.width as usize + 5) * 4;
+    let alpha = image.pixels[offset + 3];
+
+    assert!(
+        alpha <= 2,
+        "WPT fixture alpha at (5, 5): expected 0 ± 2, got {alpha}"
+    );
 }

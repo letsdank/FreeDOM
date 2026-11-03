@@ -1,4 +1,4 @@
-//! Minimal non-interlaced 8-bit RGBA PNG decoding.
+//! Minimal non-interlaced 8-bit RGB and RGBA PNG decoding.
 //!
 //! PNG Third Edition, sections 9-11 and 13:
 //! <https://www.w3.org/TR/png-3>
@@ -51,6 +51,7 @@ pub enum PngDecodeError {
     LimitExceeded,
     AllocationFailed,
     ScanlineLength { expected: usize, actual: usize },
+    TransparencyCrcMismatch { offset: usize },
 }
 
 impl fmt::Display for PngDecodeError {
@@ -76,18 +77,22 @@ impl From<PngError> for PngDecodeError {
     }
 }
 
-/// Decodes the default image only, with strict critical-chunk CRC checks.
+/// Decodes the default image, checking critical chunk CRCs.
 ///
-/// Supports only non-interlaced 8-bit RGBA. Ancillary chunks and trailing data
-/// are ignored except that tRNS is rejected for RGBA. Color profiles, gamma,
-/// HDR and animation are not interpreted. Limits bound output sizes, not input
-/// size or CPU time.
+/// Supports non-interlaced 8-bit RGB and RGBA. RGB tRNS is applied with
+/// strict CRC checks and is rejected for RGBA. Other ancillary chunks and
+/// trailing data are ignored.
+///
+/// Color profiles, gamma, HDR and animation are not interpreted. Limits
+/// bound output sizes, not input size or CPU time.
 pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image, PngDecodeError> {
     let idat = IdatReader::new(input)?;
     let header = idat.structure().header;
 
-    if header.color_type != ColorType::TruecolorAlpha
-        || header.bit_depth != 8
+    if !matches!(
+        header.color_type,
+        ColorType::Truecolor | ColorType::TruecolorAlpha
+    ) || header.bit_depth != 8
         || header.interlace != InterlaceMethod::None
     {
         return Err(PngDecodeError::UnsupportedFormat(header));
@@ -104,7 +109,17 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         .checked_mul(height)
         .ok_or(PngDecodeError::SizeOverflow)?;
 
-    let row_bytes = width.checked_mul(4).ok_or(PngDecodeError::SizeOverflow)?;
+    let channels = if header.color_type == ColorType::Truecolor {
+        3
+    } else {
+        4
+    };
+
+    let row_bytes = width
+        .checked_mul(channels)
+        .ok_or(PngDecodeError::SizeOverflow)?;
+
+    let rgba_bytes = pixels.checked_mul(4).ok_or(PngDecodeError::SizeOverflow)?;
 
     let stride = row_bytes
         .checked_add(1)
@@ -119,8 +134,10 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
     }
 
     let mut reader = ChunkReader::new(input)?;
+
     let mut seen_idat = false;
     let mut seen_palette = false;
+    let mut transparent_rgb = None;
 
     while let Some(chunk) = reader.next_chunk()? {
         if chunk.is_critical() && !chunk.crc_matches() {
@@ -142,6 +159,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
             b"PLTE" => {
                 if seen_palette
                     || seen_idat
+                    || transparent_rgb.is_some()
                     || chunk.data.is_empty()
                     || chunk.data.len() > 768
                     || chunk.data.len() % 3 != 0
@@ -153,7 +171,22 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
             }
 
             b"tRNS" => {
-                return Err(PngDecodeError::InvalidTransparencyChunk);
+                if header.color_type != ColorType::Truecolor
+                    || seen_idat
+                    || transparent_rgb.is_some()
+                    || chunk.data.len() != 6
+                {
+                    return Err(PngDecodeError::InvalidTransparencyChunk);
+                }
+
+                if !chunk.crc_matches() {
+                    return Err(PngDecodeError::TransparencyCrcMismatch {
+                        offset: chunk.offset,
+                    });
+                }
+
+                // PNG uses the least significant bits when sample depth < 16.
+                transparent_rgb = Some([chunk.data[1], chunk.data[3], chunk.data[5]]);
             }
 
             _ if chunk.is_critical() => {
@@ -167,7 +200,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
     let mut buffer = Vec::new();
 
     buffer
-        .try_reserve_exact(filtered_len)
+        .try_reserve_exact(filtered_len.max(rgba_bytes))
         .map_err(|_| PngDecodeError::AllocationFailed)?;
 
     let mut filtered = decode_zlib(idat, buffer, filtered_len)
@@ -197,11 +230,26 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
             Some(&before[destination - row_bytes..])
         };
 
-        unfilter_row(filter, &mut after[..row_bytes], previous, 4)
+        unfilter_row(filter, &mut after[..row_bytes], previous, channels)
             .map_err(|source| PngDecodeError::Filter { row: y, source })?;
     }
 
-    filtered.truncate(pixels * 4);
+    filtered.truncate(row_bytes * height);
+
+    if channels == 3 {
+        filtered.resize(rgba_bytes, 0);
+
+        // Expand backwards so that RGB samples are not overwritten.
+        for i in (0..pixels).rev() {
+            let source = i * 3;
+
+            let rgb = [filtered[source], filtered[source + 1], filtered[source + 2]];
+            let destination = i * 4;
+
+            filtered[destination..destination + 3].copy_from_slice(&rgb);
+            filtered[destination + 3] = if transparent_rgb == Some(rgb) { 0 } else { 255 };
+        }
+    }
 
     Ok(Rgba8Image {
         width: header.width,
