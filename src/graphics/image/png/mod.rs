@@ -19,7 +19,8 @@ mod zlib;
 pub use self::adler32::{Adler32, Adler32Writer, verify_zlib_adler32};
 pub use self::deflate::{
     DeflateBitReader, DeflateBlockHeader, DeflateBlockType, DeflateOutput, HuffmanError,
-    HuffmanTree, copy_stored_block, decode_fixed_huffman_block, read_block_header,
+    HuffmanTree, copy_stored_block, decode_dynamic_huffman_block, decode_fixed_huffman_block,
+    read_block_header,
 };
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
