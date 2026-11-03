@@ -29,6 +29,42 @@ impl fmt::Display for ImageError {
 impl Error for ImageError {}
 
 pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
+    use png_format::{PngDecodeError, PngDecodeLimits, decode_rgba8};
+
+    let limits = PngDecodeLimits {
+        max_width: MAX_IMAGE_DIMENSION as u32,
+        max_height: MAX_IMAGE_DIMENSION as u32,
+        max_pixels: MAX_IMAGE_PIXELS,
+
+        // A non-interlaced 16-bit RGBA pixel occupies eight filtered bytes.
+        // Each scanline also has one filter byte.
+        max_filtered_bytes: MAX_IMAGE_PIXELS * 8 + MAX_IMAGE_DIMENSION,
+    };
+
+    match decode_rgba8(encoded, limits) {
+        Ok(image) => {
+            let width = image.width as usize;
+            let height = image.height as usize;
+
+            let mut surface = Surface::new(width, height, Color::TRANSPARENT);
+
+            for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
+                let color = Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]);
+
+                surface.set_pixel(index % width, index / width, color);
+            }
+
+            Ok(surface)
+        }
+
+        // Keep support for Adam7 until our decoder implements it.
+        Err(PngDecodeError::UnsupportedFormat(_)) => decode_png_legacy(encoded),
+
+        Err(error) => Err(ImageError::new(error.to_string())),
+    }
+}
+
+pub fn decode_png_legacy(encoded: &[u8]) -> Result<Surface, ImageError> {
     let mut decoder = png::Decoder::new(Cursor::new(encoded));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
 
@@ -181,5 +217,70 @@ mod tests {
     #[test]
     fn rejects_non_png_data() {
         assert!(decode_png(b"FreeDOM is not a PNG").is_err());
+    }
+
+    #[test]
+    fn renders_wpt_apng_default_image() {
+        // This tests the static IDAT image, not animation playback.
+        let png = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/png/apng/support/033.png"
+        ));
+
+        let image = decode_png(png).unwrap();
+
+        assert_eq!((image.width(), image.height()), (128, 64));
+
+        assert!(
+            image
+                .pixels()
+                .iter()
+                .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255))
+        );
+    }
+
+    #[test]
+    fn uses_fallback_for_interlaced_png() {
+        let mut source = Surface::new(1, 1, Color::TRANSPARENT);
+        source.set_pixel(0, 0, Color::rgba(42, 123, 207, 181));
+
+        let mut encoded = encode_png(&source).unwrap();
+
+        // For a 1x1 image Adam7 has a single non-empty pass.
+        encoded[28] = 1;
+
+        // CRC of the modified 1x1 RGBA8 IHDR.
+        encoded[29..33].copy_from_slice(&0x6812_f41fu32.to_be_bytes());
+
+        assert!(matches!(
+            png_format::decode_rgba8(&encoded, png_format::PngDecodeLimits::default(),),
+            Err(png_format::PngDecodeError::UnsupportedFormat(_))
+        ));
+
+        let decoded = decode_png(&encoded).unwrap();
+
+        assert_eq!(decoded.pixel(0, 0), source.pixel(0, 0));
+    }
+
+    #[test]
+    fn reports_native_critical_crc_error_without_fallback() {
+        let source = Surface::new(1, 1, Color::TRANSPARENT);
+        let mut encoded = encode_png(&source).unwrap();
+
+        let mut reader = png_format::ChunkReader::new(&encoded).unwrap();
+
+        let crc_position = loop {
+            let chunk = reader.next_chunk().unwrap().unwrap();
+
+            if chunk.kind == *b"IDAT" {
+                break chunk.offset + 8 + chunk.data.len();
+            }
+        };
+
+        encoded[crc_position] ^= 1;
+
+        let error = decode_png(&encoded).unwrap_err();
+
+        assert!(error.to_string().contains("CriticalCrcMismatch"));
     }
 }
