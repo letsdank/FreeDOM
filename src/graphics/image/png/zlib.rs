@@ -12,6 +12,9 @@ use std::{
     io::{self, Read},
 };
 
+mod decode;
+pub use self::decode::{ZlibDecodeResult, decode_zlib};
+
 /// Metadata from a zlib header under PNG compression method 0.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ZlibHeader {

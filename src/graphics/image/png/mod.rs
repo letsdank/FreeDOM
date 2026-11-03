@@ -25,7 +25,7 @@ pub use self::deflate::{
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 pub use self::structure::{PngStructure, inspect_structure};
-pub use self::zlib::{ZlibHeader, ZlibHeaderError};
+pub use self::zlib::{ZlibDecodeResult, ZlibHeader, ZlibHeaderError, decode_zlib};
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const MAX_CHUNK_LENGTH: u32 = 0x7fff_ffff;
