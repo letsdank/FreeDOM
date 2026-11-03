@@ -8,6 +8,10 @@
 
 use std::io::{self, Read};
 
+mod block;
+
+pub use self::block::{DeflateBlockHeader, DeflateBlockType, copy_stored_block, read_block_header};
+
 /// Streaming bit reader for DEFLATE. It does not decompress data.
 pub struct DeflateBitReader<R> {
     inner: R,

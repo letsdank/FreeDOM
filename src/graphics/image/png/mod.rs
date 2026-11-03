@@ -15,7 +15,9 @@ mod ihdr;
 mod structure;
 mod zlib;
 
-pub use self::deflate::DeflateBitReader;
+pub use self::deflate::{
+    DeflateBitReader, DeflateBlockHeader, DeflateBlockType, copy_stored_block, read_block_header,
+};
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 pub use self::structure::{PngStructure, inspect_structure};
