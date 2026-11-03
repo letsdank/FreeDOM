@@ -5,6 +5,8 @@
 
 use super::PngDecodeError;
 
+pub(super) mod reconstruct;
+
 // (x start, y start, x step, y step), in PNG pass order.
 const PATTERN: [(usize, usize, usize, usize); 7] = [
     (0, 0, 8, 8),

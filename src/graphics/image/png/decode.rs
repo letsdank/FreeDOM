@@ -49,17 +49,37 @@ pub struct Rgba8Image {
 pub enum PngDecodeError {
     Container(PngError),
     Inflate(io::Error),
-    Filter { row: usize, source: PngFilterError },
+    Filter {
+        row: usize,
+        source: PngFilterError,
+    },
+    Adam7Filter {
+        pass: usize,
+        row: usize,
+        source: PngFilterError,
+    },
+    Adam7OutputLength {
+        expected: usize,
+        actual: usize,
+    },
     UnsupportedFormat(Ihdr),
     UnknownCriticalChunk([u8; 4]),
     InvalidTransparencyChunk,
     InvalidPalette,
-    CriticalCrcMismatch { kind: [u8; 4], offset: usize },
+    CriticalCrcMismatch {
+        kind: [u8; 4],
+        offset: usize,
+    },
     SizeOverflow,
     LimitExceeded,
     AllocationFailed,
-    ScanlineLength { expected: usize, actual: usize },
-    TransparencyCrcMismatch { offset: usize },
+    ScanlineLength {
+        expected: usize,
+        actual: usize,
+    },
+    TransparencyCrcMismatch {
+        offset: usize,
+    },
     MissingPalette,
 }
 
@@ -75,6 +95,7 @@ impl Error for PngDecodeError {
             Self::Container(error) => Some(error),
             Self::Inflate(error) => Some(error),
             Self::Filter { source, .. } => Some(source),
+            Self::Adam7Filter { source, .. } => Some(source),
             _ => None,
         }
     }
