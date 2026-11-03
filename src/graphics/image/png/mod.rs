@@ -3,11 +3,15 @@
 //! PNG Third Edition, sections 5.2-5.5:
 //! <https://www.w3.org/TR/png-3/>
 //!
-//! This module reads chunk framing, not a compete PNG image. It does not yet
-//! validate required chunks, their order, decompression, or pixel data. CRC
+//! Chunk framing and IHDR metadata parsing; this is not a complete PNG parser.
+//! Later chunks, decompression and pixel data are not validated. Chunk CRC
 //! results are exposed to the caller so higher layers can choose error recovery.
 
 use std::{error::Error, fmt};
+
+mod ihdr;
+
+pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const MAX_CHUNK_LENGTH: u32 = 0x7fff_ffff;
@@ -26,6 +30,16 @@ pub enum PngErrorKind {
     ChunkTooLarge,
     InvalidChunkType,
     OffsetOverflow,
+    MissingIhdr,
+    ExpectedIhdr { found: [u8; 4] },
+    InvalidIhdrLength { actual: usize },
+    InvalidIhdrCrc { stored: u32, computed: u32 },
+    InvalidDimensions { width: u32, height: u32 },
+    InvalidColorType(u8),
+    InvalidBitDepth { color_type: u8, bit_depth: u8 },
+    InvalidCompressionMethod(u8),
+    InvalidFilterMethod(u8),
+    InvalidInterlaceMethod(u8),
 }
 
 impl fmt::Display for PngError {
