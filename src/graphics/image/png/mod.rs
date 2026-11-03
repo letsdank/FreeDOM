@@ -10,8 +10,10 @@
 use std::{error::Error, fmt};
 
 mod ihdr;
+mod structure;
 
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
+pub use self::structure::{PngStructure, inspect_structure};
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const MAX_CHUNK_LENGTH: u32 = 0x7fff_ffff;
@@ -40,6 +42,11 @@ pub enum PngErrorKind {
     InvalidCompressionMethod(u8),
     InvalidFilterMethod(u8),
     InvalidInterlaceMethod(u8),
+    DuplicateIhdr,
+    MissingIdat,
+    NonConsecutiveIdat,
+    MissingIend,
+    InvalidIendLength { actual: usize },
 }
 
 impl fmt::Display for PngError {
