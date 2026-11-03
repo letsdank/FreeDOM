@@ -79,9 +79,9 @@ impl From<PngError> for PngDecodeError {
 
 /// Decodes the default image, checking critical chunk CRCs.
 ///
-/// Supports non-interlaced 8-bit RGB and RGBA. RGB tRNS is applied with
-/// strict CRC checks and is rejected for RGBA. Other ancillary chunks and
-/// trailing data are ignored.
+/// Supports non-interlaced 8-bit grayscale, RGB and their alpha variants
+/// Grayscale and RGB tRNS is applied with strict CRC checks. Other ancillary
+/// chunks and trailing data are ignored.
 ///
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
 /// bound output sizes, not input size or CPU time.
@@ -91,7 +91,10 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
     if !matches!(
         header.color_type,
-        ColorType::Truecolor | ColorType::TruecolorAlpha
+        ColorType::Grayscale
+            | ColorType::GrayscaleAlpha
+            | ColorType::Truecolor
+            | ColorType::TruecolorAlpha
     ) || header.bit_depth != 8
         || header.interlace != InterlaceMethod::None
     {
@@ -109,10 +112,12 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         .checked_mul(height)
         .ok_or(PngDecodeError::SizeOverflow)?;
 
-    let channels = if header.color_type == ColorType::Truecolor {
-        3
-    } else {
-        4
+    let channels = match header.color_type {
+        ColorType::Grayscale => 1,
+        ColorType::GrayscaleAlpha => 2,
+        ColorType::Truecolor => 3,
+        ColorType::TruecolorAlpha => 4,
+        _ => return Err(PngDecodeError::UnsupportedFormat(header)),
     };
 
     let row_bytes = width
@@ -135,9 +140,15 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
     let mut reader = ChunkReader::new(input)?;
 
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum TransparentKey {
+        Gray(u8),
+        Rgb([u8; 3]),
+    }
+
     let mut seen_idat = false;
     let mut seen_palette = false;
-    let mut transparent_rgb = None;
+    let mut transparent = None;
 
     while let Some(chunk) = reader.next_chunk()? {
         if chunk.is_critical() && !chunk.crc_matches() {
@@ -159,7 +170,11 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
             b"PLTE" => {
                 if seen_palette
                     || seen_idat
-                    || transparent_rgb.is_some()
+                    || transparent.is_some()
+                    || matches!(
+                        header.color_type,
+                        ColorType::Grayscale | ColorType::GrayscaleAlpha
+                    )
                     || chunk.data.is_empty()
                     || chunk.data.len() > 768
                     || chunk.data.len() % 3 != 0
@@ -171,11 +186,15 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
             }
 
             b"tRNS" => {
-                if header.color_type != ColorType::Truecolor
-                    || seen_idat
-                    || transparent_rgb.is_some()
-                    || chunk.data.len() != 6
-                {
+                let expected_len = match header.color_type {
+                    ColorType::Grayscale => 2,
+                    ColorType::Truecolor => 6,
+
+                    // Images with an alpha channel must not contain tRNS.
+                    _ => return Err(PngDecodeError::InvalidTransparencyChunk),
+                };
+
+                if seen_idat || transparent.is_some() || chunk.data.len() != expected_len {
                     return Err(PngDecodeError::InvalidTransparencyChunk);
                 }
 
@@ -185,8 +204,16 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
                     });
                 }
 
-                // PNG uses the least significant bits when sample depth < 16.
-                transparent_rgb = Some([chunk.data[1], chunk.data[3], chunk.data[5]]);
+                // PNG uses the least significant bits when sample depth is below 16.
+                transparent = Some(match header.color_type {
+                    ColorType::Grayscale => TransparentKey::Gray(chunk.data[1]),
+
+                    ColorType::Truecolor => {
+                        TransparentKey::Rgb([chunk.data[1], chunk.data[3], chunk.data[5]])
+                    }
+
+                    _ => unreachable!(),
+                });
             }
 
             _ if chunk.is_critical() => {
@@ -236,18 +263,52 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
     filtered.truncate(row_bytes * height);
 
-    if channels == 3 {
+    if channels != 4 {
         filtered.resize(rgba_bytes, 0);
 
-        // Expand backwards so that RGB samples are not overwritten.
+        // Expand backwards so that source samples are not overwritten.
         for i in (0..pixels).rev() {
-            let source = i * 3;
+            let source = i * channels;
 
-            let rgb = [filtered[source], filtered[source + 1], filtered[source + 2]];
+            let (rgb, alpha) = match channels {
+                1 => {
+                    let gray = filtered[source];
+
+                    let alpha = if transparent == Some(TransparentKey::Gray(gray)) {
+                        0
+                    } else {
+                        255
+                    };
+
+                    ([gray; 3], alpha)
+                }
+
+                2 => {
+                    let gray = filtered[source];
+                    let alpha = filtered[source + 1];
+
+                    ([gray; 3], alpha)
+                }
+
+                3 => {
+                    let rgb = [filtered[source], filtered[source + 1], filtered[source + 2]];
+
+                    let alpha = if transparent == Some(TransparentKey::Rgb(rgb)) {
+                        0
+                    } else {
+                        255
+                    };
+
+                    (rgb, alpha)
+                }
+
+                _ => unreachable!(),
+            };
+
             let destination = i * 4;
 
             filtered[destination..destination + 3].copy_from_slice(&rgb);
-            filtered[destination + 3] = if transparent_rgb == Some(rgb) { 0 } else { 255 };
+            filtered[destination + 3] = alpha;
         }
     }
 

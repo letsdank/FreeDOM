@@ -453,3 +453,152 @@ fn wpt_fixture_trns_high_bits_are_ignored() {
         "WPT fixture alpha at (5, 5): expected 0 ± 2, got {alpha}"
     );
 }
+
+fn encode_gray(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    alpha: bool,
+    filter: png::FilterType,
+) -> Vec<u8> {
+    let mut png = Vec::new();
+
+    {
+        let mut encoder = png::Encoder::new(&mut png, width, height);
+
+        encoder.set_color(if alpha {
+            png::ColorType::GrayscaleAlpha
+        } else {
+            png::ColorType::Grayscale
+        });
+
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_filter(filter);
+        encoder.set_compression(png::Compression::Default);
+
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(pixels)
+            .unwrap();
+    }
+
+    png
+}
+
+#[test]
+fn decodes_grayscale_and_gray_alpha_with_all_filters() {
+    for (width, height) in [(1u32, 3u32), (13, 4)] {
+        for alpha in [false, true] {
+            let mut pixels = Vec::new();
+            let mut expected = Vec::new();
+
+            for i in 0..width as usize * height as usize {
+                let gray = (i * 37 + 11) as u8;
+                let a = if alpha { (i * 23) as u8 } else { 255 };
+
+                pixels.push(gray);
+
+                if alpha {
+                    pixels.push(a);
+                }
+
+                expected.extend_from_slice(&[gray, gray, gray, a]);
+            }
+
+            for filter in [
+                png::FilterType::NoFilter,
+                png::FilterType::Sub,
+                png::FilterType::Up,
+                png::FilterType::Avg,
+                png::FilterType::Paeth,
+            ] {
+                let png = encode_gray(width, height, &pixels, alpha, filter);
+                let image = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+                assert_eq!((image.width, image.height), (width, height));
+                assert_eq!(image.pixels, expected, "alpha={alpha}, filter={filter:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn grayscale_trns_uses_low_bits_and_preserves_samples() {
+    let mut png = encode_gray(3, 1, &[0, 128, 255], false, png::FilterType::Sub);
+
+    insert_chunk(&mut png, b"IDAT", b"tRNS", &[0xff, 0x80]);
+
+    let image = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(
+        image.pixels,
+        [0, 0, 0, 255, 128, 128, 128, 0, 255, 255, 255, 255]
+    );
+}
+
+#[test]
+fn rejects_invalid_grayscale_transparency_and_palette() {
+    let gray = encode_gray(1, 1, &[42], false, png::FilterType::Sub);
+
+    let mut short = gray.clone();
+    insert_chunk(&mut short, b"IDAT", b"tRNS", &[42]);
+
+    assert!(matches!(
+        decode_rgba8(&short, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidTransparencyChunk)
+    ));
+
+    let mut duplicate = gray.clone();
+
+    insert_chunk(&mut duplicate, b"IDAT", b"tRNS", &[0, 42]);
+    insert_chunk(&mut duplicate, b"IDAT", b"tRNS", &[0, 42]);
+
+    assert!(matches!(
+        decode_rgba8(&duplicate, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidTransparencyChunk)
+    ));
+
+    let mut late = gray.clone();
+    insert_chunk(&mut late, b"IEND", b"tRNS", &[0, 42]);
+
+    assert!(matches!(
+        decode_rgba8(&late, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidTransparencyChunk)
+    ));
+
+    let mut bad_crc = gray.clone();
+    insert_chunk(&mut bad_crc, b"IDAT", b"tRNS", &[0, 42]);
+    corrupt_crc(&mut bad_crc, b"tRNS");
+
+    assert!(matches!(
+        decode_rgba8(&bad_crc, PngDecodeLimits::default()),
+        Err(PngDecodeError::TransparencyCrcMismatch { .. })
+    ));
+
+    let mut palette = gray;
+    insert_chunk(&mut palette, b"IDAT", b"PLTE", &[1, 2, 3]);
+
+    assert!(matches!(
+        decode_rgba8(&palette, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidPalette)
+    ));
+
+    let mut gray_alpha = encode_gray(1, 1, &[42, 128], true, png::FilterType::Sub);
+
+    insert_chunk(&mut gray_alpha, b"IDAT", b"tRNS", &[0, 42]);
+
+    assert!(matches!(
+        decode_rgba8(&gray_alpha, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidTransparencyChunk)
+    ));
+
+    let mut gray_alpha = encode_gray(1, 1, &[42, 128], true, png::FilterType::Sub);
+
+    insert_chunk(&mut gray_alpha, b"IDAT", b"PLTE", &[1, 2, 3]);
+
+    assert!(matches!(
+        decode_rgba8(&gray_alpha, PngDecodeLimits::default()),
+        Err(PngDecodeError::InvalidPalette)
+    ));
+}
