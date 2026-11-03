@@ -11,6 +11,7 @@ use std::{error::Error, fmt};
 
 mod adler32;
 mod deflate;
+mod filter;
 mod idat;
 mod ihdr;
 mod structure;
@@ -22,6 +23,7 @@ pub use self::deflate::{
     HuffmanTree, copy_stored_block, decode_dynamic_huffman_block, decode_fixed_huffman_block,
     read_block_header,
 };
+pub use self::filter::{PngFilterError, unfilter_row};
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 pub use self::structure::{PngStructure, inspect_structure};
