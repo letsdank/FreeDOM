@@ -9,11 +9,13 @@
 
 use std::{error::Error, fmt};
 
+mod deflate;
 mod idat;
 mod ihdr;
 mod structure;
 mod zlib;
 
+pub use self::deflate::DeflateBitReader;
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 pub use self::structure::{PngStructure, inspect_structure};
