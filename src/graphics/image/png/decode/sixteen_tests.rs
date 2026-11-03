@@ -140,3 +140,21 @@ fn compares_full_sixteen_bit_transparency_key() {
 
     assert_eq!(image.pixels, [0x12, 0x56, 0x9a, 0, 0x12, 0x56, 0x9a, 255]);
 }
+
+#[test]
+fn decodes_wpt_apng_16bit_default_image() {
+    // This checks the IDAT default image, not APNG playback or the WPT reftest.
+    let png = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/wpt/png/apng/support/033.png"
+    ));
+
+    let image = decode_rgba8(png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!((image.width, image.height), (128, 64));
+    assert_eq!(image.pixels.len(), 128 * 64 * 4);
+
+    for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
+        assert_eq!(pixel, [255, 0, 0, 255], "unexpected pixel at index {index}");
+    }
+}
