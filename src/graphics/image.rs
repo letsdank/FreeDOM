@@ -36,9 +36,8 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
         max_height: MAX_IMAGE_DIMENSION as u32,
         max_pixels: MAX_IMAGE_PIXELS,
 
-        // A non-interlaced 16-bit RGBA pixel occupies eight filtered bytes.
-        // Each scanline also has one filter byte.
-        max_filtered_bytes: MAX_IMAGE_PIXELS * 8 + MAX_IMAGE_DIMENSION,
+        // Account for 16-bit RGBA samples and Adam7 row overhead.
+        max_filtered_bytes: MAX_IMAGE_PIXELS * 8 + MAX_IMAGE_DIMENSION * 14,
     };
 
     match decode_rgba8(encoded, limits) {
@@ -57,7 +56,7 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
             Ok(surface)
         }
 
-        // Keep support for Adam7 until our decoder implements it.
+        // Keep the existing decoder as a fallback for unsupported formats.
         Err(PngDecodeError::UnsupportedFormat(_)) => decode_png_legacy(encoded),
 
         Err(error) => Err(ImageError::new(error.to_string())),
@@ -240,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn uses_fallback_for_interlaced_png() {
+    fn decodes_interlaced_png_with_native_decoder() {
         let mut source = Surface::new(1, 1, Color::TRANSPARENT);
         source.set_pixel(0, 0, Color::rgba(42, 123, 207, 181));
 
@@ -252,10 +251,10 @@ mod tests {
         // CRC of the modified 1x1 RGBA8 IHDR.
         encoded[29..33].copy_from_slice(&0x6812_f41fu32.to_be_bytes());
 
-        assert!(matches!(
-            png_format::decode_rgba8(&encoded, png_format::PngDecodeLimits::default(),),
-            Err(png_format::PngDecodeError::UnsupportedFormat(_))
-        ));
+        let native =
+            png_format::decode_rgba8(&encoded, png_format::PngDecodeLimits::default()).unwrap();
+
+        assert_eq!(native.pixels, [42, 123, 207, 181]);
 
         let decoded = decode_png(&encoded).unwrap();
 

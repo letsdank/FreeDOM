@@ -172,7 +172,7 @@ fn enforces_all_limits() {
 }
 
 #[test]
-fn decodes_rgb16_and_rejects_adam7() {
+fn decodes_rgb16_and_rejects_invalid_adam7_data() {
     let mut rgb = Vec::new();
 
     {
@@ -200,10 +200,7 @@ fn decodes_rgb16_and_rejects_adam7() {
 
     adam7[29..33].copy_from_slice(&crc.to_be_bytes());
 
-    assert!(matches!(
-        decode_rgba8(&adam7, PngDecodeLimits::default()),
-        Err(PngDecodeError::UnsupportedFormat(_))
-    ));
+    assert!(decode_rgba8(&adam7, PngDecodeLimits::default()).is_err());
 }
 
 #[test]

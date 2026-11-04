@@ -1,4 +1,4 @@
-//! Non-interlaced 8-bit RGB and RGBA PNG decoding.
+//! PNG decoding into RGBA8 samples.
 //!
 //! PNG Third Edition, sections 9-11 and 13:
 //! <https://www.w3.org/TR/png-3>
@@ -10,11 +10,8 @@ use super::{
     decode_zlib, unfilter_row,
 };
 
-mod palette;
-
-// The pass plan will be used by the Adam7 reconstruction stage.
-#[allow(dead_code)]
 mod adam7;
+mod palette;
 
 use self::palette::Palette;
 
@@ -130,7 +127,7 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         _ => matches!(header.bit_depth, 8 | 16),
     };
 
-    if !supported_depth || header.interlace != InterlaceMethod::None {
+    if !supported_depth {
         return Err(PngDecodeError::UnsupportedFormat(header));
     }
 
@@ -169,9 +166,13 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         .checked_add(1)
         .ok_or(PngDecodeError::SizeOverflow)?;
 
-    let filtered_len = stride
-        .checked_mul(height)
-        .ok_or(PngDecodeError::SizeOverflow)?;
+    let filtered_len = match header.interlace {
+        InterlaceMethod::None => stride
+            .checked_mul(height)
+            .ok_or(PngDecodeError::SizeOverflow)?,
+
+        InterlaceMethod::Adam7 => adam7::plan(width, height, bits_per_pixel)?.filtered_len,
+    };
 
     if pixels > limits.max_pixels || filtered_len > limits.max_filtered_bytes {
         return Err(PngDecodeError::LimitExceeded);
@@ -320,32 +321,50 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         });
     }
 
-    // Compact each reconstructed row over its filter byte in the same buffer.
-    for y in 0..height {
-        let source = y * stride;
-        let destination = y * row_bytes;
-        let filter = filtered[source];
+    if header.interlace == InterlaceMethod::Adam7 {
+        let raw_len = row_bytes
+            .checked_mul(height)
+            .ok_or(PngDecodeError::SizeOverflow)?;
 
-        filtered.copy_within(source + 1..source + stride, destination);
+        let mut output = Vec::new();
 
-        let (before, after) = filtered.split_at_mut(destination);
+        output
+            .try_reserve_exact(raw_len.max(rgba_bytes))
+            .map_err(|_| PngDecodeError::AllocationFailed)?;
 
-        let previous = if y == 0 {
-            None
-        } else {
-            Some(&before[destination - row_bytes..])
-        };
+        output.resize(raw_len, 0);
 
-        unfilter_row(
-            filter,
-            &mut after[..row_bytes],
-            previous,
-            filter_bytes_per_pixel,
-        )
-        .map_err(|source| PngDecodeError::Filter { row: y, source })?;
+        adam7::reconstruct::reconstruct(width, height, bits_per_pixel, &mut filtered, &mut output)?;
+
+        filtered = output;
+    } else {
+        // Compact each reconstructed row over its filter byte in the same buffer.
+        for y in 0..height {
+            let source = y * stride;
+            let destination = y * row_bytes;
+            let filter = filtered[source];
+
+            filtered.copy_within(source + 1..source + stride, destination);
+
+            let (before, after) = filtered.split_at_mut(destination);
+
+            let previous = if y == 0 {
+                None
+            } else {
+                Some(&before[destination - row_bytes..])
+            };
+
+            unfilter_row(
+                filter,
+                &mut after[..row_bytes],
+                previous,
+                filter_bytes_per_pixel,
+            )
+            .map_err(|source| PngDecodeError::Filter { row: y, source })?;
+        }
+
+        filtered.truncate(row_bytes * height);
     }
-
-    filtered.truncate(row_bytes * height);
 
     if header.bit_depth == 16 {
         let bytes_per_pixel = channels * 2;
