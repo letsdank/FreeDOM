@@ -13,12 +13,14 @@ mod compressed;
 mod dynamic;
 mod huffman;
 mod output;
+mod writer;
 
 pub use self::block::{DeflateBlockHeader, DeflateBlockType, copy_stored_block, read_block_header};
 pub use self::compressed::decode_fixed_huffman_block;
 pub use self::dynamic::decode_dynamic_huffman_block;
 pub use self::huffman::{HuffmanError, HuffmanTree};
 pub use self::output::DeflateOutput;
+pub use self::writer::DeflateBitWriter;
 
 /// Streaming bit reader for DEFLATE. It does not decompress data.
 pub struct DeflateBitReader<R> {
