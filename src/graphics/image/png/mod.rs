@@ -23,8 +23,9 @@ pub use self::adler32::{Adler32, Adler32Writer, verify_zlib_adler32};
 pub use self::decode::{PngDecodeError, PngDecodeLimits, Rgba8Image, decode_rgba8};
 pub use self::deflate::{
     DeflateBitReader, DeflateBitWriter, DeflateBlockHeader, DeflateBlockType, DeflateOutput,
-    HuffmanError, HuffmanTree, copy_stored_block, decode_dynamic_huffman_block,
-    decode_fixed_huffman_block, encode_fixed_literals, read_block_header,
+    HuffmanError, HuffmanTree, Lz77Finder, Lz77Token, copy_stored_block,
+    decode_dynamic_huffman_block, decode_fixed_huffman_block, encode_fixed_literals,
+    read_block_header,
 };
 pub use self::encode::{PngEncodeError, encode_rgba8};
 pub use self::filter::{PngFilterError, unfilter_row};
