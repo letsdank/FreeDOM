@@ -12,6 +12,7 @@ use std::{error::Error, fmt};
 mod adler32;
 mod decode;
 mod deflate;
+mod encode;
 mod filter;
 mod idat;
 mod ihdr;
@@ -25,6 +26,7 @@ pub use self::deflate::{
     HuffmanTree, copy_stored_block, decode_dynamic_huffman_block, decode_fixed_huffman_block,
     read_block_header,
 };
+pub use self::encode::{PngEncodeError, encode_rgba8};
 pub use self::filter::{PngFilterError, unfilter_row};
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};

@@ -140,29 +140,18 @@ pub fn encode_png(surface: &Surface) -> Result<Vec<u8>, ImageError> {
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or_else(|| ImageError::new("image pixel data is too large"))?;
 
-    let mut pixels = Vec::with_capacity(capacity);
+    let mut pixels = Vec::new();
+
+    pixels
+        .try_reserve_exact(capacity)
+        .map_err(|_| ImageError::new("image pixel allocation failed"))?;
 
     for color in surface.pixels() {
         pixels.extend_from_slice(&[color.red, color.green, color.blue, color.alpha]);
     }
 
-    let mut encoded = Vec::new();
-
-    {
-        let mut encoder = png::Encoder::new(&mut encoded, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-
-        let mut writer = encoder
-            .write_header()
-            .map_err(|error| ImageError::new(error.to_string()))?;
-
-        writer
-            .write_image_data(&pixels)
-            .map_err(|error| ImageError::new(error.to_string()))?;
-    }
-
-    Ok(encoded)
+    png_format::encode_rgba8(width, height, &pixels)
+        .map_err(|error| ImageError::new(error.to_string()))
 }
 
 fn validate_dimensions(width: usize, height: usize) -> Result<(), ImageError> {
@@ -281,5 +270,22 @@ mod tests {
         let error = decode_png(&encoded).unwrap_err();
 
         assert!(error.to_string().contains("CriticalCrcMismatch"));
+    }
+
+    #[test]
+    fn image_encoder_writes_stored_zlib_blocks() {
+        let surface = Surface::new(2, 2, Color::rgba(50, 100, 150, 120));
+
+        let encoded = encode_png(&surface).unwrap();
+        let mut reader = png_format::ChunkReader::new(&encoded).unwrap();
+
+        let _ihdr = reader.next_chunk().unwrap().unwrap();
+        let idat = reader.next_chunk().unwrap().unwrap();
+
+        assert_eq!(idat.kind, *b"IDAT");
+        assert!(idat.crc_matches());
+
+        // zlib header followed by a final stored DEFLATE block.
+        assert_eq!(&idat.data[..3], &[0x78, 0x01, 0x01]);
     }
 }
