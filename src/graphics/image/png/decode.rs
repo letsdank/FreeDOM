@@ -42,6 +42,21 @@ pub struct Rgba8Image {
     pub pixels: Vec<u8>,
 }
 
+/// Unassociated RGBA16 samples in big-endian byte order.
+/// No color management is applied.
+#[derive(Debug, Eq, PartialEq)]
+pub struct Rgba16BeImage {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+enum OutputDepth {
+    Eight,
+    Sixteen,
+}
+
 #[derive(Debug)]
 pub enum PngDecodeError {
     Container(PngError),
@@ -112,6 +127,37 @@ impl From<PngError> for PngDecodeError {
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
 /// bound output sizes, not input size or CPU time.
 pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image, PngDecodeError> {
+    let (width, height, pixels) = decode_rgba(input, limits, OutputDepth::Eight)?;
+
+    Ok(Rgba8Image {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Decodes unassociated RGBA16 samples as big-endian bytes.
+///
+/// Lower bit depths are expanded to the full 16-bit range.
+/// The result contains eight bytes per pixel. No color management is applied.
+pub fn decode_rgba16_be(
+    input: &[u8],
+    limits: PngDecodeLimits,
+) -> Result<Rgba16BeImage, PngDecodeError> {
+    let (width, height, pixels) = decode_rgba(input, limits, OutputDepth::Sixteen)?;
+
+    Ok(Rgba16BeImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+fn decode_rgba(
+    input: &[u8],
+    limits: PngDecodeLimits,
+    output_depth: OutputDepth,
+) -> Result<(u32, u32, Vec<u8>), PngDecodeError> {
     let idat = IdatReader::new(input)?;
     let header = idat.structure().header;
 
@@ -144,7 +190,12 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
 
     let filter_bytes_per_pixel = bits_per_pixel.div_ceil(8);
 
-    let rgba_bytes = pixels.checked_mul(4).ok_or(PngDecodeError::SizeOverflow)?;
+    let rgba_bytes = pixels
+        .checked_mul(match output_depth {
+            OutputDepth::Eight => 4,
+            OutputDepth::Sixteen => 8,
+        })
+        .ok_or(PngDecodeError::SizeOverflow)?;
 
     let stride = row_bytes
         .checked_add(1)
@@ -360,7 +411,12 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         for step in 0..pixels {
             // Expand grayscale backwards; process equal-sized or shrinking
             // representations forwards to avoid overwriting unread pixels.
-            let i = if bytes_per_pixel < 4 {
+            let output_bytes_per_pixel = match output_depth {
+                OutputDepth::Eight => 4,
+                OutputDepth::Sixteen => 8,
+            };
+
+            let i = if bytes_per_pixel < output_bytes_per_pixel {
                 pixels - 1 - step
             } else {
                 step
@@ -404,14 +460,24 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
                 ColorType::Indexed => unreachable!(),
             };
 
-            let destination = i * 4;
+            let destination = i * output_bytes_per_pixel;
+            let values = [rgb[0], rgb[1], rgb[2], alpha];
 
-            filtered[destination..destination + 4].copy_from_slice(&[
-                (rgb[0] >> 8) as u8,
-                (rgb[1] >> 8) as u8,
-                (rgb[2] >> 8) as u8,
-                (alpha >> 8) as u8,
-            ]);
+            match output_depth {
+                OutputDepth::Eight => {
+                    for (index, value) in values.into_iter().enumerate() {
+                        filtered[destination + index] = (value >> 8) as u8;
+                    }
+                }
+
+                OutputDepth::Sixteen => {
+                    for (index, value) in values.into_iter().enumerate() {
+                        let start = destination + index * 2;
+
+                        filtered[start..start + 2].copy_from_slice(&value.to_be_bytes());
+                    }
+                }
+            }
         }
 
         filtered.truncate(rgba_bytes);
@@ -495,11 +561,19 @@ pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image,
         }
     }
 
-    Ok(Rgba8Image {
-        width: header.width,
-        height: header.height,
-        pixels: filtered,
-    })
+    if matches!(output_depth, OutputDepth::Sixteen) && header.bit_depth != 16 {
+        filtered.resize(rgba_bytes, 0);
+
+        // Expand each 8-bit component to the full 16-bit range.
+        for i in (0..pixels * 4).rev() {
+            let sample = filtered[i];
+
+            filtered[i * 2] = sample;
+            filtered[i * 2 + 1] = sample;
+        }
+    }
+
+    Ok((header.width, header.height, filtered))
 }
 
 #[cfg(test)]

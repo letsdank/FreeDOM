@@ -20,7 +20,9 @@ mod structure;
 mod zlib;
 
 pub use self::adler32::{Adler32, Adler32Writer, verify_zlib_adler32};
-pub use self::decode::{PngDecodeError, PngDecodeLimits, Rgba8Image, decode_rgba8};
+pub use self::decode::{
+    PngDecodeError, PngDecodeLimits, Rgba8Image, Rgba16BeImage, decode_rgba8, decode_rgba16_be,
+};
 pub use self::deflate::{
     DeflateBitReader, DeflateBitWriter, DeflateBlockHeader, DeflateBlockType, DeflateOutput,
     HuffmanError, HuffmanTree, Lz77Finder, Lz77Token, copy_stored_block,
