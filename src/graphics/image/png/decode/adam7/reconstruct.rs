@@ -113,4 +113,5 @@ pub(in super::super) fn reconstruct(
 }
 
 #[cfg(test)]
+#[path = "reconstruct_tests.rs"]
 mod tests;

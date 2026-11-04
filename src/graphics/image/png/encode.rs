@@ -138,4 +138,5 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
 }
 
 #[cfg(test)]
+#[path = "encode_tests.rs"]
 mod tests;

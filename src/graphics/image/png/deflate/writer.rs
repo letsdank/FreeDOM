@@ -75,4 +75,5 @@ impl<W: Write> DeflateBitWriter<W> {
 }
 
 #[cfg(test)]
+#[path = "writer_tests.rs"]
 mod tests;

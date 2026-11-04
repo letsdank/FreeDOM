@@ -53,4 +53,5 @@ pub fn encode_zlib_stored(input: &[u8], mut writer: impl Write) -> io::Result<()
 }
 
 #[cfg(test)]
+#[path = "encode_tests.rs"]
 mod tests;

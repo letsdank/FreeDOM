@@ -38,4 +38,5 @@ pub fn encode_fixed_literals<W: Write>(input: &[u8], writer: W) -> io::Result<W>
 }
 
 #[cfg(test)]
+#[path = "fixed_encode_tests.rs"]
 mod tests;

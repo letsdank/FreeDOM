@@ -6,6 +6,7 @@
 use super::PngDecodeError;
 
 #[cfg(test)]
+#[path = "palette_tests.rs"]
 mod tests;
 
 pub(super) struct Palette<'a> {
