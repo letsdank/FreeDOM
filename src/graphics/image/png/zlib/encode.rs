@@ -1,4 +1,4 @@
-//! Minimal zlib encoding with uncompressed DEFLATE blocks.
+//! Minimal zlib encoding with stored or fixed-Huffman DEFLATE blocks.
 //!
 //! RFC 1950, section 2.2:
 //! <https://www.rfc-editor.org/rfc/rfc1950#section-2.2>
@@ -8,7 +8,7 @@
 
 use std::io::{self, Write};
 
-use super::super::Adler32;
+use super::super::{Adler32, encode_fixed_literals};
 
 const MAX_STORED_BLOCK: usize = u16::MAX as usize;
 
@@ -46,6 +46,24 @@ pub fn encode_zlib_stored(input: &[u8], mut writer: impl Write) -> io::Result<()
 
         remaining = rest;
     }
+
+    writer.write_all(&checksum.checksum().to_be_bytes())?;
+
+    Ok(())
+}
+
+/// Writes a complete zlib stream containing one fixed-Huffman block.
+///
+/// The block contains literals only, without LZ77 matches. The writer is
+/// not flushed; an I/O error may leave a partial stream.
+pub fn encode_zlib_fixed_literals(input: &[u8], mut writer: impl Write) -> io::Result<()> {
+    // CM=8, CINFO=7, no preset dictionary.
+    writer.write_all(&[0x78, 0x01])?;
+
+    encode_fixed_literals(input, &mut writer)?;
+
+    let mut checksum = Adler32::new();
+    checksum.update(input);
 
     writer.write_all(&checksum.checksum().to_be_bytes())?;
 
