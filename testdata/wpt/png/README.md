@@ -19,3 +19,17 @@ execute the original Canvas-based WPT test.
 
 FreeDOM checks only the static IDAT default image. APNG frame playback
 and the original browser reftest are not implemented by this test.
+
+## PngSuite indexed-color fixtures
+
+- `../css/css-ui/support/PTS/basi3p02.png` is the interlaced image:
+  [WPT source](https://github.com/web-platform-tests/wpt/blob/master/css/css-ui/support/PTS/basi3p02.png).
+- `../css/css-ui/support/PTS/basn3p02.png` is the non-interlaced image:
+  [WPT source](https://github.com/web-platform-tests/wpt/blob/master/css/css-ui/support/PTS/basn3p02.png).
+- Original manual browser test:
+  [`css/css-ui/cursor-image-png-024-manual.html`](https://github.com/web-platform-tests/wpt/blob/master/css/css-ui/cursor-image-png-024-manual.html).
+- Interlaced SHA-256: `85f304eaaf6831b2bcc2c08892b947fef52f06337aaf23312d6326e367d73f77`.
+- Non-interlaced SHA-256: `0466bb7ed9984cf03b70704564bcffab1df8ec0e8167473ba0f75e4fedce5a8f`.
+
+FreeDOM compares the decoded pixel data and checks selected pixel values.
+This does not execute the original manual CSS cursor test.

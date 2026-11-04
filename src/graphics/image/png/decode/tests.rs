@@ -598,3 +598,53 @@ fn rejects_invalid_grayscale_transparency_and_palette() {
         Err(PngDecodeError::InvalidPalette)
     ));
 }
+
+#[test]
+fn decodes_wpt_pngsuite_interlaced_palette_image() {
+    let interlaced = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/wpt/css/css-ui/support/PTS/basi3p02.png"
+    ));
+    let non_interlaced = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/wpt/css/css-ui/support/PTS/basn3p02.png"
+    ));
+
+    let interlaced_header = IdatReader::new(interlaced).unwrap().structure().header;
+    let plain_header = IdatReader::new(non_interlaced).unwrap().structure().header;
+
+    assert_eq!(interlaced_header.interlace, InterlaceMethod::Adam7);
+    assert_eq!(plain_header.interlace, InterlaceMethod::None);
+    assert_eq!(interlaced_header.bit_depth, 2);
+    assert_eq!(interlaced_header.color_type, ColorType::Indexed);
+
+    let actual = decode_rgba8(interlaced, PngDecodeLimits::default()).unwrap();
+    let expected = decode_rgba8(non_interlaced, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!((actual.width, actual.height), (32, 32));
+    assert_eq!((expected.width, expected.height), (32, 32));
+    assert_eq!(actual.pixels.len(), 32 * 32 * 4);
+
+    assert_eq!(actual.pixels, expected.pixels);
+
+    let known_pixels = [
+        (0, 0, [0, 0, 255, 255]),
+        (4, 0, [255, 0, 0, 255]),
+        (8, 0, [255, 255, 0, 255]),
+        (12, 0, [0, 255, 0, 255]),
+        (0, 4, [0, 255, 0, 255]),
+        (4, 4, [0, 0, 255, 255]),
+        (16, 16, [0, 0, 255, 255]),
+        (31, 31, [0, 0, 255, 255]),
+    ];
+
+    for (x, y, color) in known_pixels {
+        let offset = (y * 32 + x) * 4;
+
+        assert_eq!(
+            &actual.pixels[offset..offset + 4],
+            &color,
+            "unexpected pixel at ({x}, {y})"
+        );
+    }
+}
