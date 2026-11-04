@@ -13,7 +13,10 @@ use std::{
 };
 
 mod decode;
+mod encode;
+
 pub use self::decode::{ZlibDecodeResult, decode_zlib};
+pub use self::encode::encode_zlib_stored;
 
 /// Metadata from a zlib header under PNG compression method 0.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
