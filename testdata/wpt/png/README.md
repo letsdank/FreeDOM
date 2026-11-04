@@ -33,3 +33,19 @@ and the original browser reftest are not implemented by this test.
 
 FreeDOM compares the decoded pixel data and checks selected pixel values.
 This does not execute the original manual CSS cursor test.
+
+## Unknown ancillary chunks
+
+- `errors/support/invalid-unknown-ancillary.png`
+- `errors/support/invalid-unknown-ancillary-after-IDAT.png`
+- `errors/support/no-invalid-chunks.png`
+
+These files come from [web-platform-tests](https://github.com/web-platform-tests/wpt/tree/master/png/errors/support).
+
+Original browser reftests:
+
+- [`unknown-ancillary-error-recovery.html`](https://github.com/web-platform-tests/wpt/blob/master/png/errors/unknown-ancillary-error-recovery.html)
+- [`unknown-ancillary-error-recovery-2.html`](https://github.com/web-platform-tests/wpt/blob/master/png/errors/unknown-ancillary-error-recovery-2.html)
+
+FreeDOM compares decoded RGBA pixels against the reference image. This test
+does not execute the original HTML reftests or test browser rendering.

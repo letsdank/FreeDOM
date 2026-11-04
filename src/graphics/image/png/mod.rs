@@ -90,7 +90,7 @@ pub struct Chunk<'a> {
 impl Chunk<'_> {
     /// Whether the first chunk-type byte marks this chunk as critical.
     pub fn is_critical(&self) -> bool {
-        self.kind[0].is_ascii_uppercase()
+        self.kind[0] & 0x20 == 0
     }
 
     /// Computes the PNG CRC over the four type bytes and the chunk data.
@@ -162,7 +162,11 @@ impl<'a> ChunkReader<'a> {
 
         let kind = [header[4], header[5], header[6], header[7]];
 
-        if !kind.iter().all(u8::is_ascii_alphabetic) {
+        // Unknown ancillary chunks can be ignored even when their type bytes
+        // are not valid ASCII letters. Critical types remain strictly checked.
+        // PNG Third Edition, section 13.3:
+        // https://www.w3.org/TR/png-3/#13Decoders.Errors
+        if kind[0] & 0x20 == 0 && !kind.iter().all(u8::is_ascii_alphabetic) {
             return Err(PngError {
                 offset: offset + 4,
                 kind: PngErrorKind::InvalidChunkType,
@@ -341,5 +345,41 @@ mod tests {
         let error = ChunkReader::new(&huge).unwrap().next_chunk().unwrap_err();
 
         assert_eq!(error.kind, PngErrorKind::ChunkTooLarge);
+    }
+
+    #[test]
+    fn accepts_unknown_ancillary_chunk_types_even_if_not_alphabetic() {
+        for kind in [[b's', 1, b'I', b'T'], [0xa1, b'R', 14, b'S']] {
+            let mut bytes = SIGNATURE.to_vec();
+
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+            bytes.extend_from_slice(&kind);
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+
+            let mut reader = ChunkReader::new(&bytes).unwrap();
+            let chunk = reader.next_chunk().unwrap().unwrap();
+
+            assert_eq!(chunk.kind, kind);
+            assert!(!chunk.is_critical());
+            assert!(reader.next_chunk().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn malformed_ancillary_type_does_not_bypass_framing_checks() {
+        let mut bytes = SIGNATURE.to_vec();
+
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes.extend_from_slice(&[b's', 1, b'I', b'T']);
+        bytes.extend_from_slice(&[1, 2]);
+
+        let mut reader = ChunkReader::new(&bytes).unwrap();
+
+        for _ in 0..2 {
+            let error = reader.next_chunk().unwrap_err();
+
+            assert_eq!(error.offset, 8);
+            assert_eq!(error.kind, PngErrorKind::TruncatedChunk);
+        }
     }
 }

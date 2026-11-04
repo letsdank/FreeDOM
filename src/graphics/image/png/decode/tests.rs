@@ -648,3 +648,56 @@ fn decodes_wpt_pngsuite_interlaced_palette_image() {
         );
     }
 }
+
+#[test]
+fn ignores_unknown_ancillary_chunks_in_wpt_images() {
+    // WPT browser reftests:
+    // https://github.com/web-platform-tests/wpt/blob/master/png/errors/unknown-ancillary-error-recovery.html
+    // https://github.com/web-platform-tests/wpt/blob/master/png/errors/unknown-ancillary-error-recovery-2.html
+
+    let reference = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/wpt/png/errors/support/no-invalid-chunks.png"
+    ));
+
+    let expected = decode_rgba8(reference, PngDecodeLimits::default())
+        .expect("failed to decode WPT reference PNG");
+
+    assert!(
+        expected.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0),
+        "WPT reference PNG must contain visible pixels"
+    );
+
+    let cases: [(&str, &[u8]); 2] = [
+        (
+            "unknown ancillary chunk before IDAT",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/wpt/png/errors/support/invalid-unknown-ancillary.png"
+            )),
+        ),
+        (
+            "unknown ancillary chunk after IDAT",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/wpt/png/errors/support/invalid-unknown-ancillary-after-IDAT.png"
+            )),
+        ),
+    ];
+
+    for (description, input) in cases {
+        let actual = decode_rgba8(input, PngDecodeLimits::default())
+            .unwrap_or_else(|error| panic!("{description}: {error}"));
+
+        assert_eq!(
+            (actual.width, actual.height),
+            (expected.width, expected.height),
+            "{description}: image dimensions differ"
+        );
+
+        assert_eq!(
+            actual.pixels, expected.pixels,
+            "{description}: decoded pixels differ"
+        );
+    }
+}
