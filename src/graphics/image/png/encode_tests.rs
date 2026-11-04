@@ -59,7 +59,7 @@ fn writes_required_chunks_with_valid_crc() {
 
     assert_eq!(idat.kind, *b"IDAT");
     assert!(idat.crc_matches());
-    assert_eq!(&idat.data[..3], &[0x78, 0x01, 0x01]);
+    assert_eq!(&idat.data[..2], &[0x78, 0x01]);
 
     let iend = reader.next_chunk().unwrap().unwrap();
 
@@ -94,4 +94,76 @@ fn rejects_invalid_dimensions_and_pixel_lengths() {
             actual: 5
         })
     ));
+}
+
+fn idat_block_type(png: &[u8]) -> u8 {
+    let mut reader = ChunkReader::new(png).unwrap();
+
+    let _ihdr = reader.next_chunk().unwrap().unwrap();
+    let idat = reader.next_chunk().unwrap().unwrap();
+
+    assert_eq!(idat.kind, *b"IDAT");
+    assert!(idat.crc_matches());
+
+    (idat.data[2] >> 1) & 3
+}
+
+#[test]
+fn chooses_compressed_for_repeated_pixels_and_stored_for_random() {
+    let (width, height) = (128, 128);
+
+    let repeated = [50, 100, 150, 120].repeat(width * height);
+
+    let mut state = 0x1234_5678u32;
+
+    let random: Vec<u8> = (0..width * height * 4)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+
+            (state >> 24) as u8
+        })
+        .collect();
+
+    for (pixels, expected_type) in [(&repeated, 1), (&random, 0)] {
+        let png = encode_rgba8(width as u32, height as u32, pixels).unwrap();
+
+        assert_eq!(idat_block_type(&png), expected_type);
+
+        let decoded = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+        assert_eq!(decoded.pixels, *pixels);
+
+        // Check the PNG with the existing independent decoder.
+        let mut decoder = png::Decoder::new(png.as_slice()).read_info().unwrap();
+
+        let mut buffer = vec![0; decoder.output_buffer_size()];
+        let info = decoder.next_frame(&mut buffer).unwrap();
+
+        assert_eq!(&buffer[..info.buffer_size()], pixels.as_slice());
+
+        if expected_type == 1 {
+            assert!(png.len() < pixels.len() / 10);
+        }
+    }
+}
+
+#[test]
+fn compressed_candidate_stops_at_limit() {
+    use std::io::Write;
+
+    let mut candidate = CandidateWriter {
+        bytes: Vec::new(),
+        limit: 2,
+        exceeded: false,
+        allocation_failed: false,
+    };
+
+    candidate.write_all(&[1, 2]).unwrap();
+
+    assert!(candidate.write_all(&[3]).is_err());
+    assert!(candidate.exceeded);
+    assert!(!candidate.allocation_failed);
+    assert_eq!(candidate.bytes, [1, 2]);
 }

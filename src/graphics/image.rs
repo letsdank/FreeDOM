@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn image_encoder_writes_stored_zlib_blocks() {
+    fn image_encoder_writes_compressed_zlib_blocks() {
         let surface = Surface::new(2, 2, Color::rgba(50, 100, 150, 120));
 
         let encoded = encode_png(&surface).unwrap();
@@ -285,7 +285,8 @@ mod tests {
         assert_eq!(idat.kind, *b"IDAT");
         assert!(idat.crc_matches());
 
-        // zlib header followed by a final stored DEFLATE block.
-        assert_eq!(&idat.data[..3], &[0x78, 0x01, 0x01]);
+        // zlib header followed by a final fixed-Huffman DEFLATE block.
+        assert_eq!(&idat.data[..2], &[0x78, 0x01]);
+        assert_eq!(idat.data[2] & 0b111, 0b011);
     }
 }

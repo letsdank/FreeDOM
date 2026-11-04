@@ -1,11 +1,15 @@
-//! Non-interlaced RGBA8 PNG encoding using stored DEFLATE blocks.
+//! Non-interlaced RGBA8 PNG encoding using DEFLATE.
 //!
 //! PNG Third Edition, sections 5, 7, 9, 10 and 11:
 //! <https://www.w3.org/TR/png-3>
 
-use std::{error::Error, fmt, io};
+use std::{
+    error::Error,
+    fmt,
+    io::{self, Write},
+};
 
-use super::{MAX_CHUNK_LENGTH, SIGNATURE, encode_zlib_stored, update_crc};
+use super::{MAX_CHUNK_LENGTH, SIGNATURE, encode_zlib_fixed_lz77, encode_zlib_stored, update_crc};
 
 #[derive(Debug)]
 pub enum PngEncodeError {
@@ -43,9 +47,42 @@ fn write_chunk(output: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     output.extend_from_slice(&crc.to_be_bytes());
 }
 
+/// Collects a compressed candidate until it reaches the size limit.
+struct CandidateWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+    allocation_failed: bool,
+}
+
+impl Write for CandidateWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit - self.bytes.len() {
+            self.exceeded = true;
+
+            return Err(io::Error::other("compressed candidate exceeds limit"));
+        }
+
+        if self.bytes.try_reserve(bytes.len()).is_err() {
+            self.allocation_failed = true;
+
+            return Err(io::Error::other("compressed candidate allocation failed"));
+        }
+
+        self.bytes.extend_from_slice(bytes);
+
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Encodes unassociated RGBA8 samples as a non-interlaced PNG.
 ///
-/// Uses filter 0 and uncompressed DEFLATE. No color metadata is written.
+/// Uses filter 0 and chooses the smaller of fixed-Huffman LZ77 and stored
+/// DEFLATE. No color metadata is written.
 pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, PngEncodeError> {
     if width == 0 || height == 0 || width > 0x7fff_ffff || height > 0x7fff_ffff {
         return Err(PngEncodeError::InvalidDimensions);
@@ -77,20 +114,15 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
 
     // Each stored block adds five bytes; zlib adds a two-byte
     // header and a four-byte Adler32- checksum.
-    let zlib_len = blocks
+    let stored_len = blocks
         .checked_mul(5)
         .and_then(|size| size.checked_add(filtered_len))
         .and_then(|size| size.checked_add(6))
         .ok_or(PngEncodeError::SizeOverflow)?;
 
-    if zlib_len > MAX_CHUNK_LENGTH as usize {
+    if stored_len > MAX_CHUNK_LENGTH as usize {
         return Err(PngEncodeError::ChunkTooLarge);
     }
-
-    // Signature + IHDR + IDAT framing + IEND.
-    let capacity = zlib_len
-        .checked_add(57)
-        .ok_or(PngEncodeError::SizeOverflow)?;
 
     let mut filtered = Vec::new();
 
@@ -99,9 +131,39 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
         .map_err(|_| PngEncodeError::AllocationFailed)?;
 
     for row in pixels.chunks_exact(row_bytes) {
+        // Filter type 0: None.
         filtered.push(0);
         filtered.extend_from_slice(row);
     }
+
+    // Stop once the candidate cannot beat the stored representation.
+    let mut candidate = CandidateWriter {
+        bytes: Vec::new(),
+        limit: stored_len - 1,
+        exceeded: false,
+        allocation_failed: false,
+    };
+
+    let compressed = match encode_zlib_fixed_lz77(&filtered, &mut candidate) {
+        Ok(()) => Some(candidate.bytes),
+
+        Err(_) if candidate.exceeded => None,
+
+        Err(_) if candidate.allocation_failed => {
+            return Err(PngEncodeError::AllocationFailed);
+        }
+
+        Err(error) => {
+            return Err(PngEncodeError::Io(error));
+        }
+    };
+
+    let zlib_len = compressed.as_ref().map_or(stored_len, Vec::len);
+
+    // Signature + IHDR + IDAT framing + IEND.
+    let capacity = zlib_len
+        .checked_add(57)
+        .ok_or(PngEncodeError::SizeOverflow)?;
 
     let mut output = Vec::new();
 
@@ -126,7 +188,11 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
 
     let data_start = output.len();
 
-    encode_zlib_stored(&filtered, &mut output).map_err(PngEncodeError::Io)?;
+    if let Some(compressed) = compressed {
+        output.extend_from_slice(&compressed);
+    } else {
+        encode_zlib_stored(&filtered, &mut output).map_err(PngEncodeError::Io)?;
+    }
 
     let crc = update_crc(update_crc(0xffff_ffff, b"IDAT"), &output[data_start..]) ^ 0xffff_ffff;
 
