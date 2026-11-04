@@ -1,5 +1,5 @@
 use crate::graphics::raster::{Color, Surface};
-use std::{error::Error, fmt, io::Cursor};
+use std::{error::Error, fmt};
 
 #[path = "image/png/mod.rs"]
 pub mod png_format;
@@ -29,7 +29,7 @@ impl fmt::Display for ImageError {
 impl Error for ImageError {}
 
 pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
-    use png_format::{PngDecodeError, PngDecodeLimits, decode_rgba8};
+    use png_format::{PngDecodeLimits, decode_rgba8};
 
     let limits = PngDecodeLimits {
         max_width: MAX_IMAGE_DIMENSION as u32,
@@ -40,89 +40,18 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
         max_filtered_bytes: MAX_IMAGE_PIXELS * 8 + MAX_IMAGE_DIMENSION * 14,
     };
 
-    match decode_rgba8(encoded, limits) {
-        Ok(image) => {
-            let width = image.width as usize;
-            let height = image.height as usize;
+    let image =
+        decode_rgba8(encoded, limits).map_err(|error| ImageError::new(error.to_string()))?;
 
-            let mut surface = Surface::new(width, height, Color::TRANSPARENT);
-
-            for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
-                let color = Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]);
-
-                surface.set_pixel(index % width, index / width, color);
-            }
-
-            Ok(surface)
-        }
-
-        // Keep the existing decoder as a fallback for unsupported formats.
-        Err(PngDecodeError::UnsupportedFormat(_)) => decode_png_legacy(encoded),
-
-        Err(error) => Err(ImageError::new(error.to_string())),
-    }
-}
-
-pub fn decode_png_legacy(encoded: &[u8]) -> Result<Surface, ImageError> {
-    let mut decoder = png::Decoder::new(Cursor::new(encoded));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-
-    let mut reader = decoder
-        .read_info()
-        .map_err(|error| ImageError::new(error.to_string()))?;
-
-    let header = reader.info();
-    let width = header.width as usize;
-    let height = header.height as usize;
-
-    validate_dimensions(width, height)?;
-
-    let mut buffer = vec![0; reader.output_buffer_size()];
-
-    let frame = reader
-        .next_frame(&mut buffer)
-        .map_err(|error| ImageError::new(error.to_string()))?;
-
-    let width = frame.width as usize;
-    let height = frame.height as usize;
-
-    validate_dimensions(width, height)?;
-
-    let bytes = &buffer[..frame.buffer_size()];
-    let channels = match frame.color_type {
-        png::ColorType::Rgb => 3,
-        png::ColorType::Rgba => 4,
-        png::ColorType::Grayscale => 1,
-        png::ColorType::GrayscaleAlpha => 2,
-        png::ColorType::Indexed => {
-            return Err(ImageError::new("indexed PNG was not expanded"));
-        }
-    };
-
-    let expected_length = width
-        .checked_mul(height)
-        .and_then(|pixels| pixels.checked_mul(channels))
-        .ok_or_else(|| ImageError::new("PNG pixel data is too large"))?;
-
-    if bytes.len() != expected_length {
-        return Err(ImageError::new("PNG pixel data has an invalid length"));
-    }
+    let width = image.width as usize;
+    let height = image.height as usize;
 
     let mut surface = Surface::new(width, height, Color::TRANSPARENT);
 
-    for (index, pixel) in bytes.chunks_exact(channels).enumerate() {
-        let color = match frame.color_type {
-            png::ColorType::Rgb => Color::rgba(pixel[0], pixel[1], pixel[2], 255),
-            png::ColorType::Rgba => Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]),
-            png::ColorType::Grayscale => Color::rgba(pixel[0], pixel[0], pixel[0], 255),
-            png::ColorType::GrayscaleAlpha => Color::rgba(pixel[0], pixel[0], pixel[0], pixel[1]),
-            png::ColorType::Indexed => unreachable!(),
-        };
+    for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
+        let color = Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]);
 
-        let x = index % width;
-        let y = index / width;
-
-        surface.set_pixel(x, y, color);
+        surface.set_pixel(index % width, index / width, color);
     }
 
     Ok(surface)
@@ -152,28 +81,6 @@ pub fn encode_png(surface: &Surface) -> Result<Vec<u8>, ImageError> {
 
     png_format::encode_rgba8(width, height, &pixels)
         .map_err(|error| ImageError::new(error.to_string()))
-}
-
-fn validate_dimensions(width: usize, height: usize) -> Result<(), ImageError> {
-    if width == 0 || height == 0 {
-        return Err(ImageError::new("image dimensions must not be zero"));
-    }
-
-    if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
-        return Err(ImageError::new(
-            "image dimensions exceed implementation limits",
-        ));
-    }
-
-    let pixels = width
-        .checked_mul(height)
-        .ok_or_else(|| ImageError::new("image dimensions overflow"))?;
-
-    if pixels > MAX_IMAGE_PIXELS {
-        return Err(ImageError::new("image contains too many pixels"));
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -288,5 +195,49 @@ mod tests {
         // zlib header followed by a final fixed-Huffman DEFLATE block.
         assert_eq!(&idat.data[..2], &[0x78, 0x01]);
         assert_eq!(idat.data[2] & 0b111, 0b011);
+    }
+
+    #[test]
+    fn decodes_wpt_ancillary_images_into_surface() {
+        // This checks the image API, not the original HTML reftests.
+        let reference = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/png/errors/support/no-invalid-chunks.png"
+        ));
+
+        let expected = decode_png(reference).unwrap();
+
+        let cases: [(&str, &[u8]); 2] = [
+            (
+                "before IDAT",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/testdata/wpt/png/errors/support/invalid-unknown-ancillary.png"
+                )),
+            ),
+            (
+                "after IDAT",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/testdata/wpt/png/errors/support/invalid-unknown-ancillary-after-IDAT.png"
+                )),
+            ),
+        ];
+
+        for (description, input) in cases {
+            let actual = decode_png(input).unwrap_or_else(|error| panic!("{description}: {error}"));
+
+            assert_eq!(
+                (actual.width(), actual.height()),
+                (expected.width(), expected.height()),
+                "{description}: dimensions differ"
+            );
+
+            assert_eq!(
+                actual.pixels(),
+                expected.pixels(),
+                "{description}: pixels differ"
+            );
+        }
     }
 }

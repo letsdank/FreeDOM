@@ -6,8 +6,8 @@
 use std::{error::Error, fmt, io};
 
 use super::{
-    ChunkReader, ColorType, IdatReader, Ihdr, InterlaceMethod, PngError, PngFilterError,
-    decode_zlib, unfilter_row,
+    ChunkReader, ColorType, IdatReader, InterlaceMethod, PngError, PngFilterError, decode_zlib,
+    unfilter_row,
 };
 
 mod adam7;
@@ -59,7 +59,6 @@ pub enum PngDecodeError {
         expected: usize,
         actual: usize,
     },
-    UnsupportedFormat(Ihdr),
     UnknownCriticalChunk([u8; 4]),
     InvalidTransparencyChunk,
     InvalidPalette,
@@ -106,9 +105,8 @@ impl From<PngError> for PngDecodeError {
 
 /// Decodes the default image, checking critical chunk CRCs.
 ///
-/// Supports non-interlaced grayscale at depths 1, 2, 4, 8 and 16;
-/// indexed color at depths 1, 2, 4 and 8; and RGB or alpha-bearing
-/// images at depth 8 and 16. Supported tRNS chunks use strict CRC
+/// Supports both non-interlaced and Adam7 images for all standard PNG
+/// color types and bit depths. Supported tRNS chunks use strict CRC
 /// checks. Other ancillary chunks and trailing data are ignored.
 ///
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
@@ -116,20 +114,6 @@ impl From<PngError> for PngDecodeError {
 pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image, PngDecodeError> {
     let idat = IdatReader::new(input)?;
     let header = idat.structure().header;
-
-    let supported_depth = match header.color_type {
-        ColorType::Grayscale => {
-            matches!(header.bit_depth, 1 | 2 | 4 | 8 | 16)
-        }
-        ColorType::Indexed => {
-            matches!(header.bit_depth, 1 | 2 | 4 | 8)
-        }
-        _ => matches!(header.bit_depth, 8 | 16),
-    };
-
-    if !supported_depth {
-        return Err(PngDecodeError::UnsupportedFormat(header));
-    }
 
     if header.width > limits.max_width || header.height > limits.max_height {
         return Err(PngDecodeError::LimitExceeded);
