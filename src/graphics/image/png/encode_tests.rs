@@ -219,3 +219,63 @@ fn adaptive_filtering_roundtrips_and_improves_a_gradient() {
     // The PNG consists of 57 framing bytes plus the IDAT payload.
     assert!(png.len() - 57 < unfiltered_zlib.len());
 }
+
+#[test]
+fn encodes_rgba16_big_endian_without_losing_sample_bits() {
+    for (width, height) in [(1u32, 1u32), (7, 5)] {
+        let samples: Vec<u16> = (0..width as usize * height as usize * 4)
+            .map(|i| (i as u16).wrapping_mul(7919).wrapping_add(0x1234))
+            .collect();
+
+        let bytes: Vec<u8> = samples
+            .iter()
+            .flat_map(|value| value.to_be_bytes())
+            .collect();
+
+        let encoded = encode_rgba16_be(width, height, &bytes).unwrap();
+
+        // The independent decoder must return every original byte.
+        let mut reader = png::Decoder::new(encoded.as_slice()).read_info().unwrap();
+
+        let mut output = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut output).unwrap();
+
+        assert_eq!(
+            (info.width, info.height, info.color_type, info.bit_depth),
+            (width, height, png::ColorType::Rgba, png::BitDepth::Sixteen)
+        );
+
+        assert_eq!(&output[..info.buffer_size()], bytes.as_slice());
+
+        // Our current decoder returns RGBA8, keeping the high byte.
+        let image = decode_rgba8(&encoded, PngDecodeLimits::default()).unwrap();
+
+        let expected: Vec<u8> = samples.iter().map(|&sample| (sample >> 8) as u8).collect();
+
+        assert_eq!(image.pixels, expected);
+    }
+}
+
+#[test]
+fn rejects_invalid_rgba16_input() {
+    assert!(matches!(
+        encode_rgba16_be(0, 1, &[]),
+        Err(PngEncodeError::InvalidDimensions)
+    ));
+
+    assert!(matches!(
+        encode_rgba16_be(1, 1, &[0; 7]),
+        Err(PngEncodeError::PixelLength {
+            expected: 8,
+            actual: 7
+        })
+    ));
+
+    assert!(matches!(
+        encode_rgba16_be(1, 1, &[0; 9]),
+        Err(PngEncodeError::PixelLength {
+            expected: 8,
+            actual: 9
+        })
+    ));
+}

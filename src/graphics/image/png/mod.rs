@@ -27,7 +27,7 @@ pub use self::deflate::{
     decode_dynamic_huffman_block, decode_fixed_huffman_block, encode_fixed_literals,
     encode_fixed_lz77, read_block_header,
 };
-pub use self::encode::{PngEncodeError, encode_rgba8};
+pub use self::encode::{PngEncodeError, encode_rgba8, encode_rgba16_be};
 pub use self::filter::{PngFilterError, filter_row, unfilter_row};
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};

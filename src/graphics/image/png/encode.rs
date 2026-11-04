@@ -96,6 +96,23 @@ fn filter_score(row: &[u8]) -> u64 {
 /// Chooses a filter for each row and the smaller of fixed-Huffman LZ77
 /// and stored DEFLATE. No color metadata is written.
 pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, PngEncodeError> {
+    encode_rgba(width, height, pixels, 8)
+}
+
+/// Encodes unassociated RGBA16 samples in big-endian byte order.
+///
+/// The input contains eight bytes per pixel in R, G, B, A order.
+/// No color metadata is written.
+pub fn encode_rgba16_be(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, PngEncodeError> {
+    encode_rgba(width, height, pixels, 16)
+}
+
+fn encode_rgba(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    bit_depth: u8,
+) -> Result<Vec<u8>, PngEncodeError> {
     if width == 0 || height == 0 || width > 0x7fff_ffff || height > 0x7fff_ffff {
         return Err(PngEncodeError::InvalidDimensions);
     }
@@ -103,7 +120,11 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
     let width = usize::try_from(width).map_err(|_| PngEncodeError::SizeOverflow)?;
     let height = usize::try_from(height).map_err(|_| PngEncodeError::SizeOverflow)?;
 
-    let row_bytes = width.checked_mul(4).ok_or(PngEncodeError::SizeOverflow)?;
+    let bytes_per_pixel = 4 * usize::from(bit_depth / 8);
+
+    let row_bytes = width
+        .checked_mul(bytes_per_pixel)
+        .ok_or(PngEncodeError::SizeOverflow)?;
 
     let expected = row_bytes
         .checked_mul(height)
@@ -170,7 +191,8 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
                 break;
             }
 
-            filter_row(filter, row, previous, 4, &mut scratch).map_err(PngEncodeError::Filter)?;
+            filter_row(filter, row, previous, bytes_per_pixel, &mut scratch)
+                .map_err(PngEncodeError::Filter)?;
 
             let score = filter_score(&scratch);
 
@@ -226,7 +248,7 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
     ihdr[..4].copy_from_slice(&(width as u32).to_be_bytes());
     ihdr[4..8].copy_from_slice(&(height as u32).to_be_bytes());
 
-    ihdr[8] = 8; // Bit depth.
+    ihdr[8] = bit_depth; // Bit depth.
     ihdr[9] = 6; // RGBA.
 
     write_chunk(&mut output, b"IHDR", &ihdr);
