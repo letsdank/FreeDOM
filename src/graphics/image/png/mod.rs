@@ -25,7 +25,7 @@ pub use self::deflate::{
     DeflateBitReader, DeflateBitWriter, DeflateBlockHeader, DeflateBlockType, DeflateOutput,
     HuffmanError, HuffmanTree, Lz77Finder, Lz77Token, copy_stored_block,
     decode_dynamic_huffman_block, decode_fixed_huffman_block, encode_fixed_literals,
-    read_block_header,
+    encode_fixed_lz77, read_block_header,
 };
 pub use self::encode::{PngEncodeError, encode_rgba8};
 pub use self::filter::{PngFilterError, unfilter_row};

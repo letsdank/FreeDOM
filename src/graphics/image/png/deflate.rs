@@ -15,12 +15,13 @@ mod fixed_encode;
 mod huffman;
 mod lz77;
 mod output;
+mod tables;
 mod writer;
 
 pub use self::block::{DeflateBlockHeader, DeflateBlockType, copy_stored_block, read_block_header};
 pub use self::compressed::decode_fixed_huffman_block;
 pub use self::dynamic::decode_dynamic_huffman_block;
-pub use self::fixed_encode::encode_fixed_literals;
+pub use self::fixed_encode::{encode_fixed_literals, encode_fixed_lz77};
 pub use self::huffman::{HuffmanError, HuffmanTree};
 pub use self::lz77::{Lz77Finder, Lz77Token};
 pub use self::output::DeflateOutput;
