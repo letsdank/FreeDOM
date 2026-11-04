@@ -9,7 +9,10 @@ use std::{
     io::{self, Write},
 };
 
-use super::{MAX_CHUNK_LENGTH, SIGNATURE, encode_zlib_fixed_lz77, encode_zlib_stored, update_crc};
+use super::{
+    MAX_CHUNK_LENGTH, PngFilterError, SIGNATURE, encode_zlib_fixed_lz77, encode_zlib_stored,
+    filter_row, update_crc,
+};
 
 #[derive(Debug)]
 pub enum PngEncodeError {
@@ -18,6 +21,7 @@ pub enum PngEncodeError {
     PixelLength { expected: usize, actual: usize },
     ChunkTooLarge,
     AllocationFailed,
+    Filter(PngFilterError),
     Io(io::Error),
 }
 
@@ -31,6 +35,7 @@ impl Error for PngEncodeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
+            Self::Filter(error) => Some(error),
             _ => None,
         }
     }
@@ -79,10 +84,17 @@ impl Write for CandidateWriter {
     }
 }
 
+// Sum absolute signed residuals, as suggested in PNG Third Edition, 12.7.
+fn filter_score(row: &[u8]) -> u64 {
+    row.iter()
+        .map(|&byte| u64::from((byte as i8).unsigned_abs()))
+        .sum()
+}
+
 /// Encodes unassociated RGBA8 samples as a non-interlaced PNG.
 ///
-/// Uses filter 0 and chooses the smaller of fixed-Huffman LZ77 and stored
-/// DEFLATE. No color metadata is written.
+/// Chooses a filter for each row and the smaller of fixed-Huffman LZ77
+/// and stored DEFLATE. No color metadata is written.
 pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, PngEncodeError> {
     if width == 0 || height == 0 || width > 0x7fff_ffff || height > 0x7fff_ffff {
         return Err(PngEncodeError::InvalidDimensions);
@@ -130,10 +142,46 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
         .try_reserve_exact(filtered_len)
         .map_err(|_| PngEncodeError::AllocationFailed)?;
 
-    for row in pixels.chunks_exact(row_bytes) {
-        // Filter type 0: None.
+    let mut scratch = Vec::new();
+
+    scratch
+        .try_reserve_exact(row_bytes)
+        .map_err(|_| PngEncodeError::AllocationFailed)?;
+
+    scratch.resize(row_bytes, 0);
+
+    for (y, row) in pixels.chunks_exact(row_bytes).enumerate() {
+        let previous = if y == 0 {
+            None
+        } else {
+            Some(&pixels[(y - 1) * row_bytes..y * row_bytes])
+        };
+
+        let start = filtered.len();
+
+        // Start with filter 0, None.
         filtered.push(0);
         filtered.extend_from_slice(row);
+
+        let mut best_score = filter_score(row);
+
+        for filter in 1..=4 {
+            if best_score == 0 {
+                break;
+            }
+
+            filter_row(filter, row, previous, 4, &mut scratch).map_err(PngEncodeError::Filter)?;
+
+            let score = filter_score(&scratch);
+
+            if score < best_score {
+                best_score = score;
+
+                filtered[start] = filter;
+
+                filtered[start + 1..start + 1 + row_bytes].copy_from_slice(&scratch);
+            }
+        }
     }
 
     // Stop once the candidate cannot beat the stored representation.

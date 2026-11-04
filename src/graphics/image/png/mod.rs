@@ -28,7 +28,7 @@ pub use self::deflate::{
     encode_fixed_lz77, read_block_header,
 };
 pub use self::encode::{PngEncodeError, encode_rgba8};
-pub use self::filter::{PngFilterError, unfilter_row};
+pub use self::filter::{PngFilterError, filter_row, unfilter_row};
 pub use self::idat::IdatReader;
 pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 pub use self::structure::{PngStructure, inspect_structure};

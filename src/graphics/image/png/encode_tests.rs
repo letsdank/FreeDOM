@@ -167,3 +167,55 @@ fn compressed_candidate_stops_at_limit() {
     assert!(!candidate.allocation_failed);
     assert_eq!(candidate.bytes, [1, 2]);
 }
+
+#[test]
+fn scores_signed_residual_bytes() {
+    assert_eq!(filter_score(&[0, 1, 127, 128, 255]), 257);
+}
+
+#[test]
+fn adaptive_filtering_roundtrips_and_improves_a_gradient() {
+    use crate::graphics::image::png_format::{IdatReader, decode_zlib, encode_zlib_fixed_lz77};
+
+    let (width, height) = (128usize, 64usize);
+
+    let row: Vec<u8> = (0..width)
+        .flat_map(|x| [x as u8, (x * 2) as u8, (255 - x) as u8, 255])
+        .collect();
+
+    let pixels = row.repeat(height);
+
+    let png = encode_rgba8(width as u32, height as u32, &pixels).unwrap();
+    let idat = IdatReader::new(&png).unwrap();
+    let stride = width * 4 + 1;
+
+    let filtered = decode_zlib(idat, Vec::new(), stride * height)
+        .unwrap()
+        .output;
+
+    // The second row is identical to the first, so Up produces zeros.
+    assert_eq!(filtered[stride], 2);
+
+    let decoded = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(decoded.pixels, pixels);
+
+    let mut decoder = png::Decoder::new(png.as_slice()).read_info().unwrap();
+    let mut buffer = vec![0; decoder.output_buffer_size()];
+    let info = decoder.next_frame(&mut buffer).unwrap();
+
+    assert_eq!(&buffer[..info.buffer_size()], pixels.as_slice());
+
+    let mut none = Vec::new();
+
+    for _ in 0..height {
+        none.push(0);
+        none.extend_from_slice(&row);
+    }
+
+    let mut unfiltered_zlib = Vec::new();
+    encode_zlib_fixed_lz77(&none, &mut unfiltered_zlib).unwrap();
+
+    // The PNG consists of 57 framing bytes plus the IDAT payload.
+    assert!(png.len() - 57 < unfiltered_zlib.len());
+}
