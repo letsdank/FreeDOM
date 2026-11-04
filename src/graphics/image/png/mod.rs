@@ -34,7 +34,7 @@ pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 pub use self::structure::{PngStructure, inspect_structure};
 pub use self::zlib::{
     ZlibDecodeResult, ZlibHeader, ZlibHeaderError, decode_zlib, encode_zlib_fixed_literals,
-    encode_zlib_stored,
+    encode_zlib_fixed_lz77, encode_zlib_stored,
 };
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";

@@ -2,6 +2,7 @@ use std::io::{self, Read, Write};
 
 use super::super::decode_zlib;
 use super::encode_zlib_fixed_literals;
+use super::encode_zlib_fixed_lz77;
 use super::encode_zlib_stored;
 
 #[test]
@@ -184,4 +185,101 @@ fn fixed_literal_zlib_checksum_detects_corruption() {
             .read_to_end(&mut output)
             .is_err()
     )
+}
+
+#[test]
+fn lz77_zlib_roundtrips_with_both_decoders() {
+    let mut state = 0x1234_5678u32;
+
+    let random: Vec<u8> = (0..65_536)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+
+            (state >> 24) as u8
+        })
+        .collect();
+
+    let inputs = [
+        Vec::new(),
+        b"hello".to_vec(),
+        vec![0; 10_000],
+        b"abracadabra".repeat(1_000),
+        random,
+    ];
+
+    for input in inputs {
+        let mut encoded = Vec::new();
+
+        encode_zlib_fixed_lz77(&input, &mut encoded).unwrap();
+
+        assert_eq!(&encoded[..2], &[0x78, 0x01]);
+
+        // BFINAL=1 and BTYPE=01.
+        assert_eq!(encoded[2] & 0b111, 0b011);
+
+        let result = decode_zlib(encoded.as_slice(), Vec::new(), input.len()).unwrap();
+
+        assert_eq!(result.output, input);
+
+        let mut independent = Vec::new();
+        let mut decoder = flate2::read::ZlibDecoder::new(encoded.as_slice());
+
+        decoder.read_to_end(&mut independent).unwrap();
+
+        assert_eq!(decoder.total_in() as usize, encoded.len());
+        assert_eq!(independent, input);
+    }
+}
+
+#[test]
+fn lz77_zlib_compresses_repeated_data() {
+    let input = vec![0; 10_00];
+
+    let mut compressed = Vec::new();
+    let mut stored = Vec::new();
+
+    encode_zlib_fixed_lz77(&input, &mut compressed).unwrap();
+    encode_zlib_stored(&input, &mut stored).unwrap();
+
+    assert!(compressed.len() < stored.len() / 10);
+}
+
+#[test]
+fn lz77_zlib_propagates_write_errors_and_checks_checksum() {
+    let mut stalled = ShortWriter {
+        bytes: Vec::new(),
+        max: 0,
+    };
+
+    let error = encode_zlib_fixed_lz77(b"test", &mut stalled).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+
+    let mut short = ShortWriter {
+        bytes: Vec::new(),
+        max: 1,
+    };
+
+    encode_zlib_fixed_lz77(b"short writes", &mut short).unwrap();
+
+    let decoded = decode_zlib(short.bytes.as_slice(), Vec::new(), 12).unwrap();
+
+    assert_eq!(decoded.output, b"short writes");
+
+    // Corrupt the Adler-32 trailer.
+    *short.bytes.last_mut().unwrap() ^= 1;
+
+    let error = decode_zlib(short.bytes.as_slice(), Vec::new(), 12).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+    let mut output = Vec::new();
+
+    assert!(
+        flate2::read::ZlibDecoder::new(short.bytes.as_slice())
+            .read_to_end(&mut output)
+            .is_err()
+    );
 }

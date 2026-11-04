@@ -8,7 +8,7 @@
 
 use std::io::{self, Write};
 
-use super::super::{Adler32, encode_fixed_literals};
+use super::super::{Adler32, encode_fixed_literals, encode_fixed_lz77};
 
 const MAX_STORED_BLOCK: usize = u16::MAX as usize;
 
@@ -56,11 +56,27 @@ pub fn encode_zlib_stored(input: &[u8], mut writer: impl Write) -> io::Result<()
 ///
 /// The block contains literals only, without LZ77 matches. The writer is
 /// not flushed; an I/O error may leave a partial stream.
-pub fn encode_zlib_fixed_literals(input: &[u8], mut writer: impl Write) -> io::Result<()> {
+pub fn encode_zlib_fixed_literals(input: &[u8], writer: impl Write) -> io::Result<()> {
+    encode_zlib_fixed(input, writer, false)
+}
+
+/// Writes a complete zlib stream using fixed Huffman codes and LZ77 matches.
+///
+/// The writer is not flushed; an error may leave a partial stream. For
+/// incompressible input the result can be larger than a stored stream.
+pub fn encode_zlib_fixed_lz77(input: &[u8], writer: impl Write) -> io::Result<()> {
+    encode_zlib_fixed(input, writer, true)
+}
+
+fn encode_zlib_fixed(input: &[u8], mut writer: impl Write, use_lz77: bool) -> io::Result<()> {
     // CM=8, CINFO=7, no preset dictionary.
     writer.write_all(&[0x78, 0x01])?;
 
-    encode_fixed_literals(input, &mut writer)?;
+    if use_lz77 {
+        encode_fixed_lz77(input, &mut writer)?;
+    } else {
+        encode_fixed_literals(input, &mut writer)?;
+    }
 
     let mut checksum = Adler32::new();
     checksum.update(input);
