@@ -49,3 +49,13 @@ Original browser reftests:
 
 FreeDOM compares decoded RGBA pixels against the reference image. This test
 does not execute the original HTML reftests or test browser rendering.
+
+## Display P3 cICP fixture
+
+- `support/cicp-display-p3.png` comes from
+  [web-platform-tests](https://github.com/web-platform-tests/wpt/blob/master/png/support/cicp-display-p3.png).
+- Original browser test:
+  [`png/cicp-chunk.html`](https://github.com/web-platform-tests/wpt/blob/master/png/cicp-chunk.html).
+
+FreeDOM checks one converted pixel through its image surface.
+This does not execute the original Canvas-based WPT test.

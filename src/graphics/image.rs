@@ -4,6 +4,9 @@ use std::{error::Error, fmt};
 #[path = "image/png/mod.rs"]
 pub mod png_format;
 
+#[path = "image/color.rs"]
+mod color;
+
 const MAX_IMAGE_DIMENSION: usize = 4_096;
 const MAX_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
 
@@ -29,7 +32,7 @@ impl fmt::Display for ImageError {
 impl Error for ImageError {}
 
 pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
-    use png_format::{PngDecodeLimits, decode_rgba8};
+    use png_format::{Cicp, PngDecodeLimits, decode_rgba8};
 
     let limits = PngDecodeLimits {
         max_width: MAX_IMAGE_DIMENSION as u32,
@@ -46,9 +49,27 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
     let width = image.width as usize;
     let height = image.height as usize;
 
+    let display_p3 = matches!(
+        image.cicp,
+        Some(Cicp {
+            color_primaries: 12,
+            transfer_function: 13,
+            matrix_coefficients: 0,
+            video_full_range_flag: 1,
+        })
+    );
+
     let mut surface = Surface::new(width, height, Color::TRANSPARENT);
 
     for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
+        let pixel = [pixel[0], pixel[1], pixel[2], pixel[3]];
+
+        let pixel = if display_p3 {
+            color::display_p3_to_srgb(pixel)
+        } else {
+            pixel
+        };
+
         let color = Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]);
 
         surface.set_pixel(index % width, index / width, color);
@@ -237,6 +258,78 @@ mod tests {
                 actual.pixels(),
                 expected.pixels(),
                 "{description}: pixels differ"
+            );
+        }
+    }
+
+    #[test]
+    fn converts_only_supported_cicp_to_the_surface() {
+        fn png_with_cicp(cicp: Option<[u8; 4]>) -> Vec<u8> {
+            let mut bytes = Vec::new();
+
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+
+                let mut writer = encoder.write_header().unwrap();
+
+                if let Some(cicp) = cicp {
+                    writer
+                        .write_chunk(png::chunk::ChunkType(*b"cICP"), &cicp)
+                        .unwrap();
+                }
+
+                writer.write_image_data(&[51, 102, 153, 117]).unwrap();
+            }
+
+            bytes
+        }
+
+        let p3 = png_with_cicp(Some([12, 13, 0, 1]));
+
+        // The low-level decoder preserves the encoded values.
+        let raw = png_format::decode_rgba8(&p3, png_format::PngDecodeLimits::default()).unwrap();
+
+        assert_eq!(raw.pixels, [51, 102, 153, 117]);
+
+        // The image surface receives sRGB values.
+        assert_eq!(
+            decode_png(&p3).unwrap().pixel(0, 0),
+            Some(Color::rgba(27, 104, 157, 117))
+        );
+
+        // Untagged and currently unsupported color encodings stay unchanged.
+        for cicp in [None, Some([9, 16, 0, 1])] {
+            let png = png_with_cicp(cicp);
+
+            assert_eq!(
+                decode_png(&png).unwrap().pixel(0, 0),
+                Some(Color::rgba(51, 102, 153, 117))
+            );
+        }
+    }
+
+    #[test]
+    fn converts_wpt_cicp_display_p3_image_to_srgb_surface() {
+        // This checks the source image and expected pixel from the WPT.
+        // It does not execute the original Canvas test.
+        let png = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/png/support/cicp-display-p3.png"
+        ));
+
+        let image = decode_png(png).unwrap();
+        let pixel = image.pixel(5, 5).unwrap();
+
+        let actual = [pixel.red, pixel.green, pixel.blue, pixel.alpha];
+        let expected = [27u8, 104, 157, 255];
+
+        for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 2,
+                "channel {index}: expected approximately {expected}, got {actual}"
             );
         }
     }
