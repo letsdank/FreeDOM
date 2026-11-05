@@ -40,6 +40,7 @@ pub struct Rgba8Image {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    pub cicp: Option<Cicp>,
 }
 
 /// Unassociated RGBA16 samples in big-endian byte order.
@@ -49,6 +50,19 @@ pub struct Rgba16BeImage {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    pub cicp: Option<Cicp>,
+}
+
+/// Raw cICP code points; presence does not imply color conversion support.
+///
+/// PNG Third Edition, section 11.3.2.6:
+/// <https://www.w3.org/TR/png-3/#cICP-chunk>
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cicp {
+    pub color_primaries: u8,
+    pub transfer_function: u8,
+    pub matrix_coefficients: u8,
+    pub video_full_range_flag: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -122,17 +136,19 @@ impl From<PngError> for PngDecodeError {
 ///
 /// Supports both non-interlaced and Adam7 images for all standard PNG
 /// color types and bit depths. Supported tRNS chunks use strict CRC
-/// checks. Other ancillary chunks and trailing data are ignored.
+/// checks. Valid cICP metadata is returned but not applied to pixels.
+/// Other ancillary chunks and trailing data are ignored.
 ///
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
 /// bound output sizes, not input size or CPU time.
 pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image, PngDecodeError> {
-    let (width, height, pixels) = decode_rgba(input, limits, OutputDepth::Eight)?;
+    let (width, height, pixels, cicp) = decode_rgba(input, limits, OutputDepth::Eight)?;
 
     Ok(Rgba8Image {
         width,
         height,
         pixels,
+        cicp,
     })
 }
 
@@ -144,12 +160,13 @@ pub fn decode_rgba16_be(
     input: &[u8],
     limits: PngDecodeLimits,
 ) -> Result<Rgba16BeImage, PngDecodeError> {
-    let (width, height, pixels) = decode_rgba(input, limits, OutputDepth::Sixteen)?;
+    let (width, height, pixels, cicp) = decode_rgba(input, limits, OutputDepth::Sixteen)?;
 
     Ok(Rgba16BeImage {
         width,
         height,
         pixels,
+        cicp,
     })
 }
 
@@ -157,7 +174,7 @@ fn decode_rgba(
     input: &[u8],
     limits: PngDecodeLimits,
     output_depth: OutputDepth,
-) -> Result<(u32, u32, Vec<u8>), PngDecodeError> {
+) -> Result<(u32, u32, Vec<u8>, Option<Cicp>), PngDecodeError> {
     let idat = IdatReader::new(input)?;
     let header = idat.structure().header;
 
@@ -223,6 +240,8 @@ fn decode_rgba(
 
     let mut seen_idat = false;
     let mut seen_palette = false;
+    let mut seen_cicp = false;
+    let mut cicp = None;
     let mut transparent = None;
     let mut palette: Option<Palette<'_>> = None;
 
@@ -246,6 +265,26 @@ fn decode_rgba(
             }
 
             b"IEND" => break,
+
+            b"cICP" => {
+                // A malformed ancillary color chunk is ignored.
+                // cICP must precede PLTE and IDAT.
+                if !seen_cicp && !seen_palette && !seen_idat && chunk.crc_matches() {
+                    if let [primaries, transfer, 0, range @ 0..=1] = chunk.data {
+                        cicp = Some(Cicp {
+                            color_primaries: *primaries,
+                            transfer_function: *transfer,
+                            matrix_coefficients: 0,
+                            video_full_range_flag: *range,
+                        });
+                    }
+                } else {
+                    // Ignore ambiguous duplicate or misplaced metadata.
+                    cicp = None;
+                }
+
+                seen_cicp = true;
+            }
 
             b"PLTE" => {
                 if seen_palette
@@ -573,7 +612,7 @@ fn decode_rgba(
         }
     }
 
-    Ok((header.width, header.height, filtered))
+    Ok((header.width, header.height, filtered, cicp))
 }
 
 #[cfg(test)]

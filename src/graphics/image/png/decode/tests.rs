@@ -701,3 +701,120 @@ fn ignores_unknown_ancillary_chunks_in_wpt_images() {
         );
     }
 }
+
+#[test]
+fn exposes_cicp_without_changing_pixels() {
+    let surface = Surface::new(1, 1, Color::rgba(51, 102, 153, 255));
+    let mut png = encode_png(&surface).unwrap();
+
+    // Display P3 primaries and transfer function, RGB, full range.
+    insert_chunk(&mut png, b"IDAT", b"cICP", &[12, 13, 0, 1]);
+
+    let expected = Some(Cicp {
+        color_primaries: 12,
+        transfer_function: 13,
+        matrix_coefficients: 0,
+        video_full_range_flag: 1,
+    });
+
+    let image8 = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+    let image16 = decode_rgba16_be(&png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(image8.cicp, expected);
+    assert_eq!(image16.cicp, expected);
+
+    // Parsing metadata alone must not transform the samples.
+    assert_eq!(image8.pixels, [51, 102, 153, 255]);
+    assert_eq!(image16.pixels, [51, 51, 102, 102, 153, 153, 255, 255]);
+}
+
+#[test]
+fn ignores_invalid_duplicate_late_and_corrupt_cicp() {
+    let surface = Surface::new(1, 1, Color::rgba(1, 2, 3, 255));
+    let original = encode_png(&surface).unwrap();
+
+    for data in [&[1, 2, 0][..], &[1, 2, 1, 1][..], &[1, 2, 0, 2][..]] {
+        let mut png = original.clone();
+
+        insert_chunk(&mut png, b"IDAT", b"cICP", data);
+
+        let image = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+        assert_eq!(image.cicp, None);
+        assert_eq!(image.pixels, [1, 2, 3, 255]);
+    }
+
+    let mut duplicate = original.clone();
+
+    insert_chunk(&mut duplicate, b"IDAT", b"cICP", &[12, 13, 0, 1]);
+    insert_chunk(&mut duplicate, b"IDAT", b"cICP", &[9, 16, 0, 1]);
+
+    assert_eq!(
+        decode_rgba8(&duplicate, PngDecodeLimits::default())
+            .unwrap()
+            .cicp,
+        None
+    );
+
+    let mut late = original.clone();
+
+    insert_chunk(&mut late, b"IEND", b"cICP", &[12, 13, 0, 1]);
+
+    assert_eq!(
+        decode_rgba8(&late, PngDecodeLimits::default())
+            .unwrap()
+            .cicp,
+        None
+    );
+
+    let mut after_palette = original.clone();
+
+    insert_chunk(&mut after_palette, b"IDAT", b"PLTE", &[1, 2, 3]);
+    insert_chunk(&mut after_palette, b"IDAT", b"cICP", &[12, 13, 0, 1]);
+
+    assert_eq!(
+        decode_rgba8(&after_palette, PngDecodeLimits::default())
+            .unwrap()
+            .cicp,
+        None
+    );
+
+    let mut corrupt = original.clone();
+
+    insert_chunk(&mut corrupt, b"IDAT", b"cICP", &[12, 13, 0, 1]);
+    corrupt_crc(&mut corrupt, b"cICP");
+
+    assert_eq!(
+        decode_rgba8(&corrupt, PngDecodeLimits::default())
+            .unwrap()
+            .cicp,
+        None
+    );
+
+    assert_eq!(
+        decode_rgba8(&original, PngDecodeLimits::default())
+            .unwrap()
+            .cicp,
+        None
+    );
+}
+
+#[test]
+fn keeps_unknown_cicp_code_points_without_claiming_support() {
+    let surface = Surface::new(1, 1, Color::rgba(1, 2, 3, 255));
+    let mut png = encode_png(&surface).unwrap();
+
+    insert_chunk(&mut png, b"IDAT", b"cICP", &[250, 251, 0, 1]);
+
+    let image = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(
+        image.cicp,
+        Some(Cicp {
+            color_primaries: 250,
+            transfer_function: 251,
+            matrix_coefficients: 0,
+            video_full_range_flag: 1,
+        })
+    );
+}
