@@ -3,11 +3,11 @@
 //! PNG Third Edition, sections 9-11 and 13:
 //! <https://www.w3.org/TR/png-3>
 
-use std::{error::Error, fmt, io};
+use std::{error::Error, fmt, io, io::Read};
 
 use super::{
-    AnimationControl, ChunkReader, ColorType, IdatReader, InterlaceMethod, PngError,
-    PngFilterError, decode_zlib, unfilter_row,
+    AnimationControl, ChunkReader, ColorType, FrameDataError, FrameDataReader, FrameSource,
+    IdatReader, IndexedFrame, InterlaceMethod, PngError, PngFilterError, decode_zlib, unfilter_row,
 };
 
 mod adam7;
@@ -81,41 +81,72 @@ struct DecodedRgba {
     animation_control: Option<AnimationControl>,
 }
 
+enum CompressedStream<'input, 'parts> {
+    Idat(IdatReader<'input>),
+    Fdat(FrameDataReader<'parts, 'input>),
+}
+
+impl Read for CompressedStream<'_, '_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Idat(input) => input.read(output),
+            Self::Fdat(input) => input.read(output),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum PngDecodeError {
     Container(PngError),
     Inflate(io::Error),
+
     Filter {
         row: usize,
         source: PngFilterError,
     },
+
     Adam7Filter {
         pass: usize,
         row: usize,
         source: PngFilterError,
     },
+
     Adam7OutputLength {
         expected: usize,
         actual: usize,
     },
+
     UnknownCriticalChunk([u8; 4]),
     InvalidTransparencyChunk,
     InvalidPalette,
+
     CriticalCrcMismatch {
         kind: [u8; 4],
         offset: usize,
     },
+
     SizeOverflow,
     LimitExceeded,
     AllocationFailed,
+
     ScanlineLength {
         expected: usize,
         actual: usize,
     },
+
     TransparencyCrcMismatch {
         offset: usize,
     },
+
     MissingPalette,
+    InvalidFrameBounds,
+
+    FrameIndexOutOfBounds {
+        index: usize,
+        frame_count: usize,
+    },
+
+    FrameData(FrameDataError),
 }
 
 impl fmt::Display for PngDecodeError {
@@ -131,6 +162,7 @@ impl Error for PngDecodeError {
             Self::Inflate(error) => Some(error),
             Self::Filter { source, .. } => Some(source),
             Self::Adam7Filter { source, .. } => Some(source),
+            Self::FrameData(error) => Some(error),
             _ => None,
         }
     }
@@ -152,9 +184,41 @@ impl From<PngError> for PngDecodeError {
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
 /// bound output sizes, not input size or CPU time.
 pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image, PngDecodeError> {
-    let image = decode_rgba(input, limits, OutputDepth::Eight)?;
+    let image = decode_rgba(input, limits, OutputDepth::Eight, None)?;
 
     Ok(Rgba8Image {
+        width: image.width,
+        height: image.height,
+        pixels: image.pixels,
+        cicp: image.cicp,
+        animation_control: image.animation_control,
+    })
+}
+
+pub(super) fn decode_indexed_frame_rgba8(
+    input: &[u8],
+    frame: &IndexedFrame<'_>,
+    limits: PngDecodeLimits,
+) -> Result<Rgba8Image, PngDecodeError> {
+    let image = decode_rgba(input, limits, OutputDepth::Eight, Some(frame))?;
+
+    Ok(Rgba8Image {
+        width: image.width,
+        height: image.height,
+        pixels: image.pixels,
+        cicp: image.cicp,
+        animation_control: image.animation_control,
+    })
+}
+
+pub(super) fn decode_indexed_frame_rgba16_be(
+    input: &[u8],
+    frame: &IndexedFrame<'_>,
+    limits: PngDecodeLimits,
+) -> Result<Rgba16BeImage, PngDecodeError> {
+    let image = decode_rgba(input, limits, OutputDepth::Sixteen, Some(frame))?;
+
+    Ok(Rgba16BeImage {
         width: image.width,
         height: image.height,
         pixels: image.pixels,
@@ -171,7 +235,7 @@ pub fn decode_rgba16_be(
     input: &[u8],
     limits: PngDecodeLimits,
 ) -> Result<Rgba16BeImage, PngDecodeError> {
-    let image = decode_rgba(input, limits, OutputDepth::Sixteen)?;
+    let image = decode_rgba(input, limits, OutputDepth::Sixteen, None)?;
 
     Ok(Rgba16BeImage {
         width: image.width,
@@ -186,9 +250,65 @@ fn decode_rgba(
     input: &[u8],
     limits: PngDecodeLimits,
     output_depth: OutputDepth,
+    frame: Option<&IndexedFrame<'_>>,
 ) -> Result<DecodedRgba, PngDecodeError> {
     let idat = IdatReader::new(input)?;
-    let header = idat.structure().header;
+    let mut header = idat.structure().header;
+
+    // Bound the original canvas even when decoding a smaller frame.
+    let canvas_pixels = usize::try_from(header.width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(header.height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or(PngDecodeError::SizeOverflow)?;
+
+    if header.width > limits.max_width
+        || header.height > limits.max_height
+        || canvas_pixels > limits.max_pixels
+    {
+        return Err(PngDecodeError::LimitExceeded);
+    }
+
+    if let Some(frame) = frame {
+        let control = frame.control;
+
+        if control.width == 0
+            || control.height == 0
+            || control
+                .x_offset
+                .checked_add(control.width)
+                .is_none_or(|right| right > header.width)
+            || control
+                .y_offset
+                .checked_add(control.height)
+                .is_none_or(|bottom| bottom > header.height)
+            || (matches!(frame.source, FrameSource::DefaultImage)
+                && (control.width != header.width
+                    || control.height != header.height
+                    || control.x_offset != 0
+                    || control.y_offset != 0))
+        {
+            return Err(PngDecodeError::InvalidFrameBounds);
+        }
+
+        header.width = control.width;
+        header.height = control.height;
+    }
+
+    let stream = match frame {
+        Some(frame) => match &frame.source {
+            FrameSource::DefaultImage => CompressedStream::Idat(idat),
+
+            FrameSource::Fdat(parts) => CompressedStream::Fdat(
+                FrameDataReader::new(&frame.control, parts).map_err(PngDecodeError::FrameData)?,
+            ),
+        },
+
+        None => CompressedStream::Idat(idat),
+    };
 
     if header.width > limits.max_width || header.height > limits.max_height {
         return Err(PngDecodeError::LimitExceeded);
@@ -409,7 +529,7 @@ fn decode_rgba(
         .try_reserve_exact(filtered_len.max(rgba_bytes))
         .map_err(|_| PngDecodeError::AllocationFailed)?;
 
-    let mut filtered = decode_zlib(idat, buffer, filtered_len)
+    let mut filtered = decode_zlib(stream, buffer, filtered_len)
         .map_err(PngDecodeError::Inflate)?
         .output;
 

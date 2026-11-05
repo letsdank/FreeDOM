@@ -3,6 +3,7 @@
 //! PNG Third Edition, section 4.9:
 //! <https://www.w3.org/TR/png-3/#apng-frame-based-animation>
 
+use super::super::{PngDecodeError, PngDecodeLimits, Rgba8Image, Rgba16BeImage};
 use super::inspect::scan_animation;
 use super::{AnimationError, AnimationLimits, AnimationSummary, FrameControl, FrameData};
 
@@ -24,6 +25,7 @@ pub struct IndexedFrame<'a> {
 
 #[derive(Debug)]
 pub struct AnimationIndex<'a> {
+    input: &'a [u8],
     pub summary: AnimationSummary,
     pub frames: Vec<IndexedFrame<'a>>,
 }
@@ -42,7 +44,47 @@ pub fn index_animation<'a>(
         return Ok(None);
     };
 
-    Ok(Some(AnimationIndex { summary, frames }))
+    Ok(Some(AnimationIndex {
+        input,
+        summary,
+        frames,
+    }))
+}
+
+impl AnimationIndex<'_> {
+    /// Decodes one uncomposited frame, not the animation canvas.
+    pub fn decode_frame_rgba8(
+        &self,
+        index: usize,
+        limits: PngDecodeLimits,
+    ) -> Result<Rgba8Image, PngDecodeError> {
+        let frame = self
+            .frames
+            .get(index)
+            .ok_or(PngDecodeError::FrameIndexOutOfBounds {
+                index,
+                frame_count: self.frames.len(),
+            })?;
+
+        super::super::decode::decode_indexed_frame_rgba8(self.input, frame, limits)
+    }
+
+    /// Decodes one uncomposited frame as big-endian RGBA16.
+    pub fn decode_frame_rgba16_be(
+        &self,
+        index: usize,
+        limits: PngDecodeLimits,
+    ) -> Result<Rgba16BeImage, PngDecodeError> {
+        let frame = self
+            .frames
+            .get(index)
+            .ok_or(PngDecodeError::FrameIndexOutOfBounds {
+                index,
+                frame_count: self.frames.len(),
+            })?;
+
+        super::super::decode::decode_indexed_frame_rgba16_be(self.input, frame, limits)
+    }
 }
 
 #[cfg(test)]
@@ -220,5 +262,163 @@ mod tests {
             ),
             Err(AnimationError::ChunkLimit)
         ));
+    }
+
+    #[test]
+    fn decodes_wpt_animation_frames_as_uncomposited_pixels() {
+        // This checks frame pixels, not animation playback or the browser reftest.
+        let png = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/png/apng/support/033.png"
+        ));
+
+        let index = index_animation(png, AnimationLimits::default())
+            .unwrap()
+            .unwrap();
+
+        let limits = PngDecodeLimits::default();
+
+        let black = index.decode_frame_rgba8(0, limits).unwrap();
+        let blue = index.decode_frame_rgba8(1, limits).unwrap();
+
+        assert_eq!((black.width, black.height), (128, 64));
+
+        assert!(
+            black
+                .pixels
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 0, 255])
+        );
+
+        assert!(
+            blue.pixels
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 255, 128])
+        );
+
+        let blue16 = index.decode_frame_rgba16_be(1, limits).unwrap();
+
+        assert!(
+            blue16
+                .pixels
+                .chunks_exact(8)
+                .all(|pixel| pixel == [0, 0, 0, 0, 255, 255, 128, 0])
+        );
+
+        // Compare both uncomposited frames with an independent decoder.
+        let mut reference = png::Decoder::new(&png[..]).read_info().unwrap();
+        let mut buffer = vec![0; reference.output_buffer_size()];
+
+        // This fixture's default image is not part of the animation.
+        reference.next_frame(&mut buffer).unwrap();
+
+        for frame_buffer in 0..2 {
+            let info = reference.next_frame(&mut buffer).unwrap();
+            let actual = index.decode_frame_rgba16_be(frame_buffer, limits).unwrap();
+
+            assert_eq!(&buffer[..info.buffer_size()], actual.pixels.as_slice());
+        }
+
+        assert!(matches!(
+            index.decode_frame_rgba8(2, limits),
+            Err(PngDecodeError::FrameIndexOutOfBounds {
+                index: 2,
+                frame_count: 2
+            })
+        ));
+
+        assert!(matches!(
+            index.decode_frame_rgba8(
+                0,
+                PngDecodeLimits {
+                    max_pixels: 1,
+                    ..limits
+                }
+            ),
+            Err(PngDecodeError::LimitExceeded)
+        ));
+    }
+
+    #[test]
+    fn decodes_default_animation_frame_from_idat() {
+        let png = sample(true, false);
+
+        let index = index_animation(&png, AnimationLimits::default())
+            .unwrap()
+            .unwrap();
+
+        let image = index
+            .decode_frame_rgba8(0, PngDecodeLimits::default())
+            .unwrap();
+
+        assert_eq!((image.width, image.height), (1, 1));
+        assert_eq!(image.pixels, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn decodes_smaller_indexed_frame_using_original_palette() {
+        use crate::graphics::image::png_format::encode_zlib_stored;
+
+        let mut compressed = Vec::new();
+
+        // One 2-bit palette index: 01.
+        encode_zlib_stored(&[0, 0b0100_0000], &mut compressed).unwrap();
+
+        let mut png = Vec::new();
+
+        {
+            let mut encoder = png::Encoder::new(&mut png, 2, 2);
+
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Two);
+            encoder.set_palette(vec![255, 0, 0, 0, 255, 0]);
+            encoder.set_trns(vec![255, 42]);
+
+            let mut writer = encoder.write_header().unwrap();
+
+            writer
+                .write_chunk(png::chunk::ChunkType(*b"acTL"), &[0, 0, 0, 1, 0, 0, 0, 0])
+                .unwrap();
+
+            writer.write_image_data(&[0, 0]).unwrap();
+
+            let mut fctl = [0; 26];
+
+            fctl[4..8].copy_from_slice(&1u32.to_be_bytes());
+            fctl[8..12].copy_from_slice(&1u32.to_be_bytes());
+            fctl[12..16].copy_from_slice(&1u32.to_be_bytes());
+            fctl[16..20].copy_from_slice(&1u32.to_be_bytes());
+
+            writer
+                .write_chunk(png::chunk::ChunkType(*b"fcTL"), &fctl)
+                .unwrap();
+
+            let mut fdat = 1u32.to_be_bytes().to_vec();
+            fdat.extend_from_slice(&compressed);
+
+            writer
+                .write_chunk(png::chunk::ChunkType(*b"fdAT"), &fdat)
+                .unwrap();
+        }
+
+        let index = index_animation(&png, AnimationLimits::default())
+            .unwrap()
+            .unwrap();
+
+        let frame = index
+            .decode_frame_rgba8(0, PngDecodeLimits::default())
+            .unwrap();
+
+        assert_eq!((frame.width, frame.height), (1, 1));
+
+        assert_eq!(
+            (
+                index.frames[0].control.x_offset,
+                index.frames[0].control.y_offset
+            ),
+            (1, 1)
+        );
+
+        assert_eq!(frame.pixels, [0, 255, 0, 42]);
     }
 }
