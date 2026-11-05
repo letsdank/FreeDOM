@@ -10,6 +10,7 @@
 use std::{error::Error, fmt};
 
 mod adler32;
+mod apng;
 mod decode;
 mod deflate;
 mod encode;
@@ -20,6 +21,7 @@ mod structure;
 mod zlib;
 
 pub use self::adler32::{Adler32, Adler32Writer, verify_zlib_adler32};
+pub use self::apng::AnimationControl;
 pub use self::decode::{
     Cicp, PngDecodeError, PngDecodeLimits, Rgba8Image, Rgba16BeImage, decode_rgba8,
     decode_rgba16_be,

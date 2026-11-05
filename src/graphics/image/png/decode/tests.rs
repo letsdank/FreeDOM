@@ -818,3 +818,88 @@ fn keeps_unknown_cicp_code_points_without_claiming_support() {
         })
     );
 }
+
+#[test]
+fn reads_actl_from_wpt_apng_default_image() {
+    // This checks only the declaration and default image, not APNG playback.
+    let png = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/wpt/png/apng/support/033.png"
+    ));
+
+    let control = Some(AnimationControl {
+        num_frames: 2,
+        num_plays: 1,
+    });
+
+    let image8 = decode_rgba8(png, PngDecodeLimits::default()).unwrap();
+    let image16 = decode_rgba16_be(png, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(image8.animation_control, control);
+    assert_eq!(image16.animation_control, control);
+    assert_eq!((image8.width, image8.height), (128, 64));
+
+    assert!(
+        image8
+            .pixels
+            .chunks_exact(4)
+            .all(|pixel| pixel == [255, 0, 0, 255])
+    );
+}
+
+#[test]
+fn invalid_actl_does_not_prevent_default_image_decoding() {
+    let surface = Surface::new(1, 1, Color::rgba(1, 2, 3, 255));
+    let original = encode_png(&surface).unwrap();
+
+    let good = [0, 0, 0, 2, 0, 0, 0, 0];
+    let mut valid = original.clone();
+
+    insert_chunk(&mut valid, b"IDAT", b"acTL", &good);
+
+    assert_eq!(
+        decode_rgba8(&valid, PngDecodeLimits::default())
+            .unwrap()
+            .animation_control,
+        Some(AnimationControl {
+            num_frames: 2,
+            num_plays: 0,
+        })
+    );
+
+    let cases: &[&[u8]] = &[
+        &[],
+        &[0; 7],
+        &[0; 8],
+        &[0, 0, 0, 1, 0, 0, 0, 0, 0],
+        &[0x80, 0, 0, 0, 0, 0, 0, 0],
+        &[0, 0, 0, 1, 0x80, 0, 0, 0],
+    ];
+
+    for &data in cases {
+        let mut png = original.clone();
+
+        insert_chunk(&mut png, b"IDAT", b"acTL", data);
+
+        let decoded = decode_rgba8(&png, PngDecodeLimits::default()).unwrap();
+
+        assert_eq!(decoded.animation_control, None, "data={data:?}");
+        assert_eq!(decoded.pixels, [1, 2, 3, 255]);
+    }
+
+    let mut duplicate = valid.clone();
+    insert_chunk(&mut duplicate, b"IDAT", b"acTL", &good);
+
+    let mut late = original.clone();
+    insert_chunk(&mut late, b"IEND", b"acTL", &good);
+
+    let mut corrupt = valid;
+    corrupt_crc(&mut corrupt, b"acTL");
+
+    for png in [&duplicate, &late, &corrupt] {
+        let decoded = decode_rgba8(png, PngDecodeLimits::default()).unwrap();
+
+        assert_eq!(decoded.animation_control, None);
+        assert_eq!(decoded.pixels, [1, 2, 3, 255]);
+    }
+}

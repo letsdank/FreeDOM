@@ -6,8 +6,8 @@
 use std::{error::Error, fmt, io};
 
 use super::{
-    ChunkReader, ColorType, IdatReader, InterlaceMethod, PngError, PngFilterError, decode_zlib,
-    unfilter_row,
+    AnimationControl, ChunkReader, ColorType, IdatReader, InterlaceMethod, PngError,
+    PngFilterError, decode_zlib, unfilter_row,
 };
 
 mod adam7;
@@ -41,6 +41,7 @@ pub struct Rgba8Image {
     pub height: u32,
     pub pixels: Vec<u8>,
     pub cicp: Option<Cicp>,
+    pub animation_control: Option<AnimationControl>,
 }
 
 /// Unassociated RGBA16 samples in big-endian byte order.
@@ -51,6 +52,7 @@ pub struct Rgba16BeImage {
     pub height: u32,
     pub pixels: Vec<u8>,
     pub cicp: Option<Cicp>,
+    pub animation_control: Option<AnimationControl>,
 }
 
 /// Raw cICP code points; presence does not imply color conversion support.
@@ -69,6 +71,14 @@ pub struct Cicp {
 enum OutputDepth {
     Eight,
     Sixteen,
+}
+
+struct DecodedRgba {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    cicp: Option<Cicp>,
+    animation_control: Option<AnimationControl>,
 }
 
 #[derive(Debug)]
@@ -136,19 +146,20 @@ impl From<PngError> for PngDecodeError {
 ///
 /// Supports both non-interlaced and Adam7 images for all standard PNG
 /// color types and bit depths. Supported tRNS chunks use strict CRC
-/// checks. Valid cICP metadata is returned but not applied to pixels.
-/// Other ancillary chunks and trailing data are ignored.
+/// checks. Valid cICP and acTL metadata is returned but not applied
+/// to pixels. Other ancillary chunks and trailing data are ignored.
 ///
 /// Color profiles, gamma, HDR and animation are not interpreted. Limits
 /// bound output sizes, not input size or CPU time.
 pub fn decode_rgba8(input: &[u8], limits: PngDecodeLimits) -> Result<Rgba8Image, PngDecodeError> {
-    let (width, height, pixels, cicp) = decode_rgba(input, limits, OutputDepth::Eight)?;
+    let image = decode_rgba(input, limits, OutputDepth::Eight)?;
 
     Ok(Rgba8Image {
-        width,
-        height,
-        pixels,
-        cicp,
+        width: image.width,
+        height: image.height,
+        pixels: image.pixels,
+        cicp: image.cicp,
+        animation_control: image.animation_control,
     })
 }
 
@@ -160,13 +171,14 @@ pub fn decode_rgba16_be(
     input: &[u8],
     limits: PngDecodeLimits,
 ) -> Result<Rgba16BeImage, PngDecodeError> {
-    let (width, height, pixels, cicp) = decode_rgba(input, limits, OutputDepth::Sixteen)?;
+    let image = decode_rgba(input, limits, OutputDepth::Sixteen)?;
 
     Ok(Rgba16BeImage {
-        width,
-        height,
-        pixels,
-        cicp,
+        width: image.width,
+        height: image.height,
+        pixels: image.pixels,
+        cicp: image.cicp,
+        animation_control: image.animation_control,
     })
 }
 
@@ -174,7 +186,7 @@ fn decode_rgba(
     input: &[u8],
     limits: PngDecodeLimits,
     output_depth: OutputDepth,
-) -> Result<(u32, u32, Vec<u8>, Option<Cicp>), PngDecodeError> {
+) -> Result<DecodedRgba, PngDecodeError> {
     let idat = IdatReader::new(input)?;
     let header = idat.structure().header;
 
@@ -242,6 +254,8 @@ fn decode_rgba(
     let mut seen_palette = false;
     let mut seen_cicp = false;
     let mut cicp = None;
+    let mut seen_actl = false;
+    let mut animation_control = None;
     let mut transparent = None;
     let mut palette: Option<Palette<'_>> = None;
 
@@ -265,6 +279,17 @@ fn decode_rgba(
             }
 
             b"IEND" => break,
+
+            b"acTL" => {
+                // Ignore invalid animation metadata while keeping the default image.
+                if !seen_actl && !seen_idat {
+                    animation_control = super::apng::parse_animation_control(&chunk);
+                } else {
+                    animation_control = None;
+                }
+
+                seen_actl = true;
+            }
 
             b"cICP" => {
                 // A malformed ancillary color chunk is ignored.
@@ -612,7 +637,13 @@ fn decode_rgba(
         }
     }
 
-    Ok((header.width, header.height, filtered, cicp))
+    Ok(DecodedRgba {
+        width: header.width,
+        height: header.height,
+        pixels: filtered,
+        cicp,
+        animation_control,
+    })
 }
 
 #[cfg(test)]
