@@ -6,6 +6,10 @@
 use super::Chunk;
 use std::io::{self, Read};
 
+mod inspect;
+
+pub use self::inspect::{AnimationError, AnimationLimits, AnimationSummary, inspect_animation};
+
 /// Declared animation control values, not proof that the frames are valid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AnimationControl {
