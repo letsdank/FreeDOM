@@ -1069,7 +1069,7 @@ fn ray_crosses_segment(sample: Point, from: Point, to: Point) -> bool {
     crossing_x > sample.x
 }
 
-fn blend_source_over(destination: Color, source: Color, coverage: f32) -> Color {
+pub(crate) fn blend_source_over(destination: Color, source: Color, coverage: f32) -> Color {
     let source_alpha = source.alpha as f32 / 255.0 * coverage;
     let destination_alpha = destination.alpha as f32 / 255.0;
     let output_alpha = source_alpha + destination_alpha * (1.0 - source_alpha);
