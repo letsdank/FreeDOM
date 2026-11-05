@@ -10,13 +10,14 @@ use std::{
 };
 
 use super::{
-    MAX_CHUNK_LENGTH, PngFilterError, SIGNATURE, encode_zlib_fixed_lz77, encode_zlib_stored,
+    Cicp, MAX_CHUNK_LENGTH, PngFilterError, SIGNATURE, encode_zlib_fixed_lz77, encode_zlib_stored,
     filter_row, update_crc,
 };
 
 #[derive(Debug)]
 pub enum PngEncodeError {
     InvalidDimensions,
+    InvalidCicp,
     SizeOverflow,
     PixelLength { expected: usize, actual: usize },
     ChunkTooLarge,
@@ -96,7 +97,20 @@ fn filter_score(row: &[u8]) -> u64 {
 /// Chooses a filter for each row and the smaller of fixed-Huffman LZ77
 /// and stored DEFLATE. No color metadata is written.
 pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, PngEncodeError> {
-    encode_rgba(width, height, pixels, 8)
+    encode_rgba(width, height, pixels, 8, None)
+}
+
+/// Encodes RGBA8 samples with an explicit cICP color label.
+///
+/// Samples are not color-converted. Primaries and transfer code points
+/// are passed through; the caller is responsible for choosing valid values.
+pub fn encode_rgba8_with_cicp(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    cicp: Cicp,
+) -> Result<Vec<u8>, PngEncodeError> {
+    encode_rgba(width, height, pixels, 8, Some(cicp))
 }
 
 /// Encodes unassociated RGBA16 samples in big-endian byte order.
@@ -104,7 +118,20 @@ pub fn encode_rgba8(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, P
 /// The input contains eight bytes per pixel in R, G, B, A order.
 /// No color metadata is written.
 pub fn encode_rgba16_be(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, PngEncodeError> {
-    encode_rgba(width, height, pixels, 16)
+    encode_rgba(width, height, pixels, 16, None)
+}
+
+/// Encodes big-endian RGBA16 samples with an explicit cICP color label.
+///
+/// Samples are not color-converted. Primaries and transfer code points
+/// are passed through; the caller is responsible for choosing valid values.
+pub fn encode_rgba16_be_with_cicp(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    cicp: Cicp,
+) -> Result<Vec<u8>, PngEncodeError> {
+    encode_rgba(width, height, pixels, 16, Some(cicp))
 }
 
 fn encode_rgba(
@@ -112,7 +139,14 @@ fn encode_rgba(
     height: u32,
     pixels: &[u8],
     bit_depth: u8,
+    cicp: Option<Cicp>,
 ) -> Result<Vec<u8>, PngEncodeError> {
+    if let Some(value) = cicp {
+        if value.matrix_coefficients != 0 || value.video_full_range_flag > 1 {
+            return Err(PngEncodeError::InvalidCicp);
+        }
+    }
+
     if width == 0 || height == 0 || width > 0x7fff_ffff || height > 0x7fff_ffff {
         return Err(PngEncodeError::InvalidDimensions);
     }
@@ -230,9 +264,9 @@ fn encode_rgba(
 
     let zlib_len = compressed.as_ref().map_or(stored_len, Vec::len);
 
-    // Signature + IHDR + IDAT framing + IEND.
+    // Signature + IHDR + optional cICP + IDAT framing + IEND.
     let capacity = zlib_len
-        .checked_add(57)
+        .checked_add(if cicp.is_some() { 73 } else { 57 })
         .ok_or(PngEncodeError::SizeOverflow)?;
 
     let mut output = Vec::new();
@@ -252,6 +286,19 @@ fn encode_rgba(
     ihdr[9] = 6; // RGBA.
 
     write_chunk(&mut output, b"IHDR", &ihdr);
+
+    if let Some(cicp) = cicp {
+        write_chunk(
+            &mut output,
+            b"cICP",
+            &[
+                cicp.color_primaries,
+                cicp.transfer_function,
+                cicp.matrix_coefficients,
+                cicp.video_full_range_flag,
+            ],
+        );
+    }
 
     output.extend_from_slice(&(zlib_len as u32).to_be_bytes());
     output.extend_from_slice(b"IDAT");

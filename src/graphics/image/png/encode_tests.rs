@@ -279,3 +279,113 @@ fn rejects_invalid_rgba16_input() {
         })
     ));
 }
+
+#[test]
+fn encodes_cicp_and_roundtrips_rgba8_and_rgba16() {
+    let cicp = Cicp {
+        color_primaries: 12,
+        transfer_function: 13,
+        matrix_coefficients: 0,
+        video_full_range_flag: 1,
+    };
+
+    let samples16: [u16; 8] = [
+        0x3301, 0x6602, 0x9903, 0x1234, 0x33ff, 0x66ff, 0x99ff, 0x12ff,
+    ];
+
+    let bytes16: Vec<u8> = samples16.into_iter().flat_map(u16::to_be_bytes).collect();
+
+    let bytes8 = [51, 102, 153, 18, 51, 102, 133, 18];
+
+    let encoded8 = encode_rgba8_with_cicp(2, 1, &bytes8, cicp).unwrap();
+    let encoded16 = encode_rgba16_be_with_cicp(2, 1, &bytes16, cicp).unwrap();
+
+    for png in [&encoded8, &encoded16] {
+        let mut reader = ChunkReader::new(&png).unwrap();
+
+        assert_eq!(reader.next_chunk().unwrap().unwrap().kind, *b"IHDR");
+
+        let chunk = reader.next_chunk().unwrap().unwrap();
+
+        assert_eq!(chunk.kind, *b"cICP");
+        assert_eq!(chunk.data, [12, 13, 0, 1]);
+        assert!(chunk.crc_matches());
+
+        assert_eq!(reader.next_chunk().unwrap().unwrap().kind, *b"IDAT");
+    }
+
+    let decoded8 = decode_rgba8(&encoded8, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(decoded8.cicp, Some(cicp));
+    assert_eq!(decoded8.pixels, bytes8);
+
+    let decoded16 = super::super::decode_rgba16_be(&encoded16, PngDecodeLimits::default()).unwrap();
+
+    assert_eq!(decoded16.cicp, Some(cicp));
+    assert_eq!(decoded16.pixels, bytes16);
+
+    // Check the samples with an independent decoder.
+    let mut independent = png::Decoder::new(encoded16.as_slice()).read_info().unwrap();
+
+    let mut output = vec![0; independent.output_buffer_size()];
+    let info = independent.next_frame(&mut output).unwrap();
+
+    assert_eq!(
+        (info.color_type, info.bit_depth),
+        (png::ColorType::Rgba, png::BitDepth::Sixteen)
+    );
+
+    assert_eq!(&output[..info.buffer_size()], bytes16.as_slice());
+}
+
+#[test]
+fn rejects_invalid_cicp_fields() {
+    let mut cicp = Cicp {
+        color_primaries: 12,
+        transfer_function: 13,
+        matrix_coefficients: 1,
+        video_full_range_flag: 1,
+    };
+
+    assert!(matches!(
+        encode_rgba8_with_cicp(1, 1, &[0; 4], cicp),
+        Err(PngEncodeError::InvalidCicp)
+    ));
+
+    cicp.matrix_coefficients = 0;
+    cicp.video_full_range_flag = 2;
+
+    assert!(matches!(
+        encode_rgba16_be_with_cicp(1, 1, &[0; 8], cicp),
+        Err(PngEncodeError::InvalidCicp)
+    ));
+}
+
+#[test]
+fn reencodes_wpt_display_p3_without_losing_surface_color() {
+    // This checks a WPT fixture, not the original Canvas-based test.
+    let wpt = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/wpt/png/support/cicp-display-p3.png"
+    ));
+
+    let decoded = super::super::decode_rgba16_be(wpt, PngDecodeLimits::default()).unwrap();
+
+    let encoded = encode_rgba16_be_with_cicp(
+        decoded.width,
+        decoded.height,
+        &decoded.pixels,
+        decoded.cicp.unwrap(),
+    )
+    .unwrap();
+
+    let original = crate::graphics::image::decode_png(wpt).unwrap();
+    let result = crate::graphics::image::decode_png(&encoded).unwrap();
+
+    assert_eq!(
+        (result.width(), result.height()),
+        (original.width(), original.height())
+    );
+
+    assert_eq!(result.pixels(), original.pixels());
+}
