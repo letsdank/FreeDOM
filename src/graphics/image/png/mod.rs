@@ -22,8 +22,9 @@ mod zlib;
 
 pub use self::adler32::{Adler32, Adler32Writer, verify_zlib_adler32};
 pub use self::apng::{
-    AnimationControl, AnimationError, AnimationLimits, AnimationSummary, BlendOp, DisposeOp,
-    FrameControl, FrameControlError, FrameData, FrameDataError, FrameDataReader, inspect_animation,
+    AnimationControl, AnimationError, AnimationIndex, AnimationLimits, AnimationSummary, BlendOp,
+    DisposeOp, FrameControl, FrameControlError, FrameData, FrameDataError, FrameDataReader,
+    FrameSource, IndexedFrame, index_animation, inspect_animation,
 };
 pub use self::decode::{
     Cicp, PngDecodeError, PngDecodeLimits, Rgba8Image, Rgba16BeImage, decode_rgba8,

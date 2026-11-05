@@ -5,8 +5,8 @@
 
 use super::super::{ChunkReader, PngError, inspect_structure};
 use super::{
-    AnimationControl, FrameControl, FrameControlError, FrameData, FrameDataError,
-    parse_animation_control,
+    AnimationControl, FrameControl, FrameControlError, FrameData, FrameDataError, FrameSource,
+    IndexedFrame, parse_animation_control,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -54,6 +54,7 @@ pub enum AnimationError {
 
     FrameLimit,
     ChunkLimit,
+    AllocationFailed,
 }
 
 impl std::fmt::Display for AnimationError {
@@ -94,6 +95,14 @@ fn advance_sequence(expected: &mut u64, actual: u32) -> Result<(), AnimationErro
 pub fn inspect_animation(
     input: &[u8],
     limits: AnimationLimits,
+) -> Result<Option<AnimationSummary>, AnimationError> {
+    scan_animation(input, limits, None)
+}
+
+pub(super) fn scan_animation<'a>(
+    input: &'a [u8],
+    limits: AnimationLimits,
+    mut frames: Option<&mut Vec<IndexedFrame<'a>>>,
 ) -> Result<Option<AnimationSummary>, AnimationError> {
     let structure = inspect_structure(input).map_err(AnimationError::Png)?;
     let mut reader = ChunkReader::new(input).map_err(AnimationError::Png)?;
@@ -176,6 +185,21 @@ pub fn inspect_animation(
                     first_frame_uses_idat = true;
                 }
 
+                if let Some(frames) = frames.as_deref_mut() {
+                    frames
+                        .try_reserve(1)
+                        .map_err(|_| AnimationError::AllocationFailed)?;
+
+                    frames.push(IndexedFrame {
+                        control: frame,
+                        source: if frame_uses_idat {
+                            FrameSource::DefaultImage
+                        } else {
+                            FrameSource::Fdat(Vec::new())
+                        },
+                    });
+                }
+
                 frame_count += 1;
                 frame_open = true;
                 frame_has_data = false;
@@ -200,6 +224,22 @@ pub fn inspect_animation(
 
                 if fdat_chunks > limits.max_fdat_chunks {
                     return Err(AnimationError::ChunkLimit);
+                }
+
+                if let Some(frames) = frames.as_deref_mut() {
+                    let Some(IndexedFrame {
+                        source: FrameSource::Fdat(parts),
+                        ..
+                    }) = frames.last_mut()
+                    else {
+                        return Err(AnimationError::UnexpectedFrameData);
+                    };
+
+                    parts
+                        .try_reserve(1)
+                        .map_err(|_| AnimationError::AllocationFailed)?;
+
+                    parts.push(data);
                 }
 
                 frame_has_data = true;

@@ -6,8 +6,10 @@
 use super::Chunk;
 use std::io::{self, Read};
 
+mod index;
 mod inspect;
 
+pub use self::index::{AnimationIndex, FrameSource, IndexedFrame, index_animation};
 pub use self::inspect::{AnimationError, AnimationLimits, AnimationSummary, inspect_animation};
 
 /// Declared animation control values, not proof that the frames are valid.
