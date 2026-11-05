@@ -32,7 +32,7 @@ impl fmt::Display for ImageError {
 impl Error for ImageError {}
 
 pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
-    use png_format::{Cicp, PngDecodeLimits, decode_rgba8};
+    use png_format::{Cicp, PngDecodeLimits, decode_rgba8, decode_rgba16_be, read_ihdr};
 
     let limits = PngDecodeLimits {
         max_width: MAX_IMAGE_DIMENSION as u32,
@@ -43,14 +43,34 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
         max_filtered_bytes: MAX_IMAGE_PIXELS * 8 + MAX_IMAGE_DIMENSION * 14,
     };
 
-    let image =
-        decode_rgba8(encoded, limits).map_err(|error| ImageError::new(error.to_string()))?;
+    let header = read_ihdr(encoded).map_err(|error| ImageError::new(error.to_string()))?;
 
-    let width = image.width as usize;
-    let height = image.height as usize;
+    let sixteen_bit = header.bit_depth == 16;
+
+    let (width, height, pixels, cicp) = if sixteen_bit {
+        let image = decode_rgba16_be(encoded, limits)
+            .map_err(|error| ImageError::new(error.to_string()))?;
+
+        (
+            image.width as usize,
+            image.height as usize,
+            image.pixels,
+            image.cicp,
+        )
+    } else {
+        let image =
+            decode_rgba8(encoded, limits).map_err(|error| ImageError::new(error.to_string()))?;
+
+        (
+            image.width as usize,
+            image.height as usize,
+            image.pixels,
+            image.cicp,
+        )
+    };
 
     let display_p3 = matches!(
-        image.cicp,
+        cicp,
         Some(Cicp {
             color_primaries: 12,
             transfer_function: 13,
@@ -60,14 +80,29 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
     );
 
     let mut surface = Surface::new(width, height, Color::TRANSPARENT);
+    let bytes_per_pixel = if sixteen_bit { 8 } else { 4 };
 
-    for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
-        let pixel = [pixel[0], pixel[1], pixel[2], pixel[3]];
-
-        let pixel = if display_p3 {
-            color::display_p3_to_srgb(pixel)
+    for (index, pixel) in pixels.chunks_exact(bytes_per_pixel).enumerate() {
+        let pixel = if sixteen_bit {
+            if display_p3 {
+                color::display_p3_16_to_srgb([
+                    u16::from_be_bytes([pixel[0], pixel[1]]),
+                    u16::from_be_bytes([pixel[2], pixel[3]]),
+                    u16::from_be_bytes([pixel[4], pixel[5]]),
+                    u16::from_be_bytes([pixel[6], pixel[7]]),
+                ])
+            } else {
+                // Preserve the existing RGBA16 -> RGBA8 behavior.
+                [pixel[0], pixel[2], pixel[4], pixel[6]]
+            }
         } else {
-            pixel
+            let pixel = [pixel[0], pixel[1], pixel[2], pixel[3]];
+
+            if display_p3 {
+                color::display_p3_to_srgb(pixel)
+            } else {
+                pixel
+            }
         };
 
         let color = Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]);
@@ -332,5 +367,49 @@ mod tests {
                 "channel {index}: expected approximately {expected}, got {actual}"
             );
         }
+    }
+
+    #[test]
+    fn converts_16bit_p3_before_quantizing_to_surface() {
+        fn image(tagged: bool) -> Vec<u8> {
+            let mut bytes = Vec::new();
+
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
+
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Sixteen);
+
+                let mut writer = encoder.write_header().unwrap();
+
+                if tagged {
+                    writer
+                        .write_chunk(png::chunk::ChunkType(*b"cICP"), &[12, 13, 0, 1])
+                        .unwrap();
+                }
+
+                // The two pixels have identical high bytes, but different low bytes.
+                let samples = [
+                    0x3300u16, 0x6600, 0x9900, 0x1234, 0x33ff, 0x66ff, 0x99ff, 0x12ff,
+                ];
+
+                let pixels: Vec<u8> = samples.into_iter().flat_map(u16::to_be_bytes).collect();
+
+                writer.write_image_data(&pixels).unwrap();
+            }
+
+            bytes
+        }
+
+        let surface = decode_png(&image(true)).unwrap();
+
+        assert_eq!(surface.pixel(0, 0), Some(Color::rgba(26, 103, 157, 18)));
+        assert_eq!(surface.pixel(1, 0), Some(Color::rgba(28, 104, 158, 18)));
+
+        // Untagged images retain the previous high-byte conversion.
+        let surface = decode_png(&image(false)).unwrap();
+
+        assert_eq!(surface.pixel(0, 0), Some(Color::rgba(51, 102, 153, 18)));
+        assert_eq!(surface.pixel(1, 0), Some(Color::rgba(51, 102, 153, 18)));
     }
 }
