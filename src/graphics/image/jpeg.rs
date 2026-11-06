@@ -23,6 +23,9 @@ mod block;
 #[path = "jpeg/idct.rs"]
 mod idct;
 
+#[path = "jpeg/mcu.rs"]
+mod mcu;
+
 pub use self::block::{BlockDecodeError, decode_baseline_block};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
 pub use self::huffman::{
@@ -30,6 +33,7 @@ pub use self::huffman::{
     parse_dht_segment, read_huffman_tables,
 };
 pub use self::idct::{DequantizeError, dequantize, idct_8bit};
+pub use self::mcu::{BaselineMcuDecoder, Mcu, McuComponent, McuError};
 pub use self::scan::{
     BaselineScanError, ScanComponent, ScanHeader, read_first_scan_header, validate_baseline_scan,
 };
