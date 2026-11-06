@@ -14,10 +14,16 @@ mod huffman;
 #[path = "jpeg/entropy.rs"]
 mod entropy;
 
+#[path = "jpeg/scan.rs"]
+mod scan;
+
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
 pub use self::huffman::{
     HuffmanBuildError, HuffmanDecodeError, HuffmanDecoder, HuffmanTable, HuffmanTables,
     parse_dht_segment, read_huffman_tables,
+};
+pub use self::scan::{
+    BaselineScanError, ScanComponent, ScanHeader, read_first_scan_header, validate_baseline_scan,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +77,8 @@ pub enum JpegErrorKind {
     InvalidHuffmanTableId(u8),
     TooManyHuffmanSymbols,
     InvalidHuffmanCodeLengths,
+    MissingScanHeader,
+    InvalidScanHeader,
 }
 
 impl fmt::Display for JpegError {
