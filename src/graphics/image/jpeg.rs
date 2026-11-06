@@ -17,6 +17,10 @@ mod entropy;
 #[path = "jpeg/scan.rs"]
 mod scan;
 
+#[path = "jpeg/block.rs"]
+mod block;
+
+pub use self::block::{BlockDecodeError, decode_baseline_block};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
 pub use self::huffman::{
     HuffmanBuildError, HuffmanDecodeError, HuffmanDecoder, HuffmanTable, HuffmanTables,
