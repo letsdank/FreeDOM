@@ -50,6 +50,10 @@ pub enum JpegErrorKind {
     UnsupportedFrame(u8),
     InvalidFrameHeader,
     UnsupportedDeferredHeight,
+    InvalidQuantizationTable,
+    InvalidQuantizationPrecision(u8),
+    InvalidQuantizationTableId(u8),
+    ZeroQuantizationValue,
 }
 
 impl fmt::Display for JpegError {
@@ -215,6 +219,99 @@ pub fn read_frame_header(input: &[u8]) -> Result<JpegFrameHeader, JpegError> {
     }
 }
 
+/// Table entries in natural row-major coefficient order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuantizationTable {
+    /// Precision in bits: 8 or 16.
+    pub precision: u8,
+    pub values: [u16; 64],
+}
+
+// ITU-T T.81, Figure A.6, zig-zag index to row-major index.
+const ZIGZAG_TO_NATURAL: [usize; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+];
+
+/// Parses the payload of a DQT segment, excluding the marker and length.
+///
+/// Error offsets are relative to `data`. Duplicate identifiers in a segment
+/// use the last definition. Tables from other segments are not included.
+pub fn parse_dqt_segment(data: &[u8]) -> Result<[Option<QuantizationTable>; 4], JpegError> {
+    let error = |offset, kind| JpegError { offset, kind };
+
+    if data.is_empty() {
+        return Err(error(0, JpegErrorKind::InvalidQuantizationTable));
+    }
+
+    let mut tables: [Option<QuantizationTable>; 4] = [None, None, None, None];
+
+    let mut cursor = 0;
+
+    while cursor < data.len() {
+        let info_offset = cursor;
+        let info = data[cursor];
+
+        cursor += 1;
+
+        let precision = info >> 4;
+        let id = info & 0x0f;
+
+        if precision > 1 {
+            return Err(error(
+                info_offset,
+                JpegErrorKind::InvalidQuantizationPrecision(precision),
+            ));
+        }
+
+        if id > 3 {
+            return Err(error(
+                info_offset,
+                JpegErrorKind::InvalidQuantizationTableId(id),
+            ));
+        }
+
+        let entry_size = if precision == 0 { 1 } else { 2 };
+        let len = 64 * entry_size;
+
+        let end = cursor
+            .checked_add(len)
+            .ok_or_else(|| error(cursor, JpegErrorKind::Truncated))?;
+
+        let source = data
+            .get(cursor..end)
+            .ok_or_else(|| error(cursor, JpegErrorKind::Truncated))?;
+
+        let mut values = [0; 64];
+
+        for (index, &natural_index) in ZIGZAG_TO_NATURAL.iter().enumerate() {
+            let offset = index * entry_size;
+
+            let value = if entry_size == 1 {
+                u16::from(source[offset])
+            } else {
+                u16::from_be_bytes([source[offset], source[offset + 1]])
+            };
+
+            if value == 0 {
+                return Err(error(cursor + offset, JpegErrorKind::ZeroQuantizationValue));
+            }
+
+            values[natural_index] = value;
+        }
+
+        tables[id as usize] = Some(QuantizationTable {
+            precision: if precision == 0 { 8 } else { 16 },
+            values,
+        });
+
+        cursor = end;
+    }
+
+    Ok(tables)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +393,93 @@ mod tests {
         bytes.extend_from_slice(&SAMPLE[8..]);
 
         assert_eq!(read_frame_header(&bytes).unwrap().width, 32);
+    }
+
+    #[test]
+    fn reads_eight_and_sixteen_bit_quantization_tables_in_natural_order() {
+        let mut bytes = vec![0];
+
+        bytes.extend(1u8..=64);
+
+        // Precision 1, table identifier 1.
+        bytes.push(0x11);
+
+        for value in 256u16..320 {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+
+        let tables = parse_dqt_segment(&bytes).unwrap();
+
+        let first = tables[0].as_ref().unwrap();
+
+        assert_eq!(first.precision, 8);
+
+        assert_eq!(
+            [
+                first.values[0],
+                first.values[1],
+                first.values[8],
+                first.values[16]
+            ],
+            [1, 2, 3, 4]
+        );
+
+        let second = tables[1].as_ref().unwrap();
+
+        assert_eq!(second.precision, 16);
+
+        assert_eq!(
+            [second.values[0], second.values[1], second.values[8]],
+            [256, 257, 258]
+        );
+
+        assert!(tables[2].is_none());
+    }
+
+    #[test]
+    fn last_quantization_table_definition_wins() {
+        let mut bytes = vec![0];
+
+        bytes.extend([1; 64]);
+
+        bytes.push(0);
+        bytes.extend([2; 64]);
+
+        let tables = parse_dqt_segment(&bytes).unwrap();
+
+        assert_eq!(tables[0].as_ref().unwrap().values, [2; 64]);
+    }
+
+    #[test]
+    fn rejects_invalid_quantization_data() {
+        assert_eq!(
+            parse_dqt_segment(&[]).unwrap_err().kind,
+            JpegErrorKind::InvalidQuantizationTable
+        );
+
+        assert_eq!(
+            parse_dqt_segment(&[0x20]).unwrap_err().kind,
+            JpegErrorKind::InvalidQuantizationPrecision(2)
+        );
+
+        assert_eq!(
+            parse_dqt_segment(&[0x04]).unwrap_err().kind,
+            JpegErrorKind::InvalidQuantizationTableId(4)
+        );
+
+        assert_eq!(
+            parse_dqt_segment(&[0x10, 0x01]).unwrap_err().kind,
+            JpegErrorKind::Truncated
+        );
+
+        let mut bytes = vec![0];
+
+        bytes.extend([1; 64]);
+        bytes[2] = 0;
+
+        assert_eq!(
+            parse_dqt_segment(&bytes).unwrap_err().kind,
+            JpegErrorKind::ZeroQuantizationValue
+        );
     }
 }
