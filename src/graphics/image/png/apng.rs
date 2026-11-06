@@ -12,7 +12,9 @@ mod inspect;
 mod player;
 
 pub use self::composite::{AnimationCanvas, CompositeError};
-pub use self::index::{AnimationIndex, FrameSource, IndexedFrame, index_animation};
+pub use self::index::{
+    AnimationIndex, FrameSource, IndexedFrame, OwnedAnimationIndex, index_animation,
+};
 pub use self::inspect::{AnimationError, AnimationLimits, AnimationSummary, inspect_animation};
 pub use self::player::{AnimationPlayer, PlaybackError, PlaybackUpdate};
 
@@ -81,6 +83,7 @@ impl std::error::Error for FrameControlError {}
 pub struct FrameData<'a> {
     pub sequence_number: u32,
     pub compressed: &'a [u8],
+    pub(crate) compressed_offset: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +130,10 @@ impl<'a> FrameData<'a> {
         Ok(Self {
             sequence_number,
             compressed: &chunk.data[4..],
+            compressed_offset: chunk
+                .offset
+                .checked_add(12)
+                .ok_or(FrameDataError::InvalidLength)?,
         })
     }
 }
@@ -565,6 +572,7 @@ mod tests {
         let parts = [FrameData {
             sequence_number: 2,
             compressed: &[],
+            compressed_offset: 0,
         }];
 
         assert!(matches!(

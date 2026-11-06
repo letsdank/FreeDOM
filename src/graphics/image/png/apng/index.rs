@@ -3,6 +3,8 @@
 //! PNG Third Edition, section 4.9:
 //! <https://www.w3.org/TR/png-3/#apng-frame-based-animation>
 
+use std::ops::Range;
+
 use super::super::{PngDecodeError, PngDecodeLimits, Rgba8Image, Rgba16BeImage};
 use super::inspect::scan_animation;
 use super::{AnimationError, AnimationLimits, AnimationSummary, FrameControl, FrameData};
@@ -84,6 +86,175 @@ impl AnimationIndex<'_> {
             })?;
 
         super::super::decode::decode_indexed_frame_rgba16_be(self.input, frame, limits)
+    }
+}
+
+/// Owns the encoded PNG and stores frame payload locations as byte ranges.
+/// Compressed payloads are not copied. Frames are decoded on demand.
+#[derive(Debug)]
+pub struct OwnedAnimationIndex {
+    input: Vec<u8>,
+    summary: AnimationSummary,
+    frames: Vec<OwnedFrame>,
+}
+
+#[derive(Debug)]
+struct OwnedFrame {
+    control: FrameControl,
+    source: OwnedFrameSource,
+}
+
+#[derive(Debug)]
+enum OwnedFrameSource {
+    DefaultImage,
+    Fdat(Vec<OwnedFrameData>),
+}
+
+#[derive(Debug)]
+struct OwnedFrameData {
+    sequence_number: u32,
+    range: Range<usize>,
+}
+
+impl OwnedAnimationIndex {
+    /// Returns None for a static PNG. No input-size limit is imposed here.
+    pub fn new(input: Vec<u8>, limits: AnimationLimits) -> Result<Option<Self>, AnimationError> {
+        let Some(index) = index_animation(&input, limits)? else {
+            return Ok(None);
+        };
+
+        let summary = index.summary;
+        let mut frames = Vec::new();
+
+        frames
+            .try_reserve_exact(index.frames.len())
+            .map_err(|_| AnimationError::AllocationFailed)?;
+
+        for frame in &index.frames {
+            let source = match &frame.source {
+                FrameSource::DefaultImage => OwnedFrameSource::DefaultImage,
+
+                FrameSource::Fdat(parts) => {
+                    let mut ranges = Vec::new();
+
+                    ranges
+                        .try_reserve_exact(parts.len())
+                        .map_err(|_| AnimationError::AllocationFailed)?;
+
+                    for part in parts {
+                        let start = part.compressed_offset;
+
+                        let end = start
+                            .checked_add(part.compressed.len())
+                            .ok_or(AnimationError::InvalidFrameOffset)?;
+
+                        let bytes = input
+                            .get(start..end)
+                            .ok_or(AnimationError::InvalidFrameOffset)?;
+
+                        if bytes.as_ptr() != part.compressed.as_ptr() {
+                            return Err(AnimationError::InvalidFrameOffset);
+                        }
+
+                        ranges.push(OwnedFrameData {
+                            sequence_number: part.sequence_number,
+                            range: start..end,
+                        });
+                    }
+
+                    OwnedFrameSource::Fdat(ranges)
+                }
+            };
+
+            frames.push(OwnedFrame {
+                control: frame.control,
+                source,
+            });
+        }
+
+        Ok(Some(Self {
+            input,
+            summary,
+            frames,
+        }))
+    }
+
+    pub fn summary(&self) -> AnimationSummary {
+        self.summary
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn frame_control(&self, index: usize) -> Option<FrameControl> {
+        self.frames.get(index).map(|frame| frame.control)
+    }
+
+    pub fn encoded(&self) -> &[u8] {
+        &self.input
+    }
+
+    pub fn decode_frame_rgba8(
+        &self,
+        index: usize,
+        limits: PngDecodeLimits,
+    ) -> Result<Rgba8Image, PngDecodeError> {
+        let frame = self.borrow_frame(index)?;
+
+        super::super::decode::decode_indexed_frame_rgba8(&self.input, &frame, limits)
+    }
+
+    pub fn decode_frame_rgba16_be(
+        &self,
+        index: usize,
+        limits: PngDecodeLimits,
+    ) -> Result<Rgba16BeImage, PngDecodeError> {
+        let frame = self.borrow_frame(index)?;
+
+        super::super::decode::decode_indexed_frame_rgba16_be(&self.input, &frame, limits)
+    }
+
+    fn borrow_frame(&self, index: usize) -> Result<IndexedFrame<'_>, PngDecodeError> {
+        let frame = self
+            .frames
+            .get(index)
+            .ok_or(PngDecodeError::FrameIndexOutOfBounds {
+                index,
+                frame_count: self.frames.len(),
+            })?;
+
+        let source = match &frame.source {
+            OwnedFrameSource::DefaultImage => FrameSource::DefaultImage,
+
+            OwnedFrameSource::Fdat(ranges) => {
+                let mut parts = Vec::new();
+
+                parts
+                    .try_reserve_exact(ranges.len())
+                    .map_err(|_| PngDecodeError::AllocationFailed)?;
+
+                for part in ranges {
+                    let compressed = self
+                        .input
+                        .get(part.range.clone())
+                        .ok_or(PngDecodeError::InvalidFrameBounds)?;
+
+                    parts.push(FrameData {
+                        sequence_number: part.sequence_number,
+                        compressed,
+                        compressed_offset: part.range.start,
+                    });
+                }
+
+                FrameSource::Fdat(parts)
+            }
+        };
+
+        Ok(IndexedFrame {
+            control: frame.control,
+            source,
+        })
     }
 }
 
@@ -420,5 +591,80 @@ mod tests {
         );
 
         assert_eq!(frame.pixels, [0, 255, 0, 42]);
+    }
+
+    #[test]
+    fn owned_index_matches_borrowed_wpt_frames() {
+        let original = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/png/apng/support/033.png"
+        ));
+
+        let borrowed = index_animation(original, AnimationLimits::default())
+            .unwrap()
+            .unwrap();
+
+        let owned = OwnedAnimationIndex::new(original.to_vec(), AnimationLimits::default())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(owned.summary(), borrowed.summary);
+        assert_eq!(owned.frame_count(), borrowed.frames.len());
+        assert_eq!(owned.encoded(), original);
+
+        for (index, frame) in borrowed.frames.iter().enumerate() {
+            assert_eq!(owned.frame_control(index), Some(frame.control));
+
+            assert_eq!(
+                owned
+                    .decode_frame_rgba8(index, PngDecodeLimits::default())
+                    .unwrap(),
+                borrowed
+                    .decode_frame_rgba8(index, PngDecodeLimits::default())
+                    .unwrap()
+            );
+
+            assert_eq!(
+                owned
+                    .decode_frame_rgba16_be(index, PngDecodeLimits::default())
+                    .unwrap(),
+                borrowed
+                    .decode_frame_rgba16_be(index, PngDecodeLimits::default())
+                    .unwrap()
+            );
+        }
+
+        assert!(matches!(
+            owned.decode_frame_rgba8(2, PngDecodeLimits::default()),
+            Err(PngDecodeError::FrameIndexOutOfBounds {
+                index: 2,
+                frame_count: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn owned_index_handles_idat_frames_and_static_png() {
+        let png = sample(true, false);
+
+        let index = OwnedAnimationIndex::new(png, AnimationLimits::default())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            index
+                .decode_frame_rgba8(0, PngDecodeLimits::default())
+                .unwrap()
+                .pixels,
+            [1, 2, 3, 4]
+        );
+
+        let png = encode_rgba8(1, 1, &[1, 2, 3, 4]).unwrap();
+
+        assert!(
+            OwnedAnimationIndex::new(png, AnimationLimits::default())
+                .unwrap()
+                .is_none()
+        );
     }
 }

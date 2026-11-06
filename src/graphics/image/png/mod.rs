@@ -25,7 +25,7 @@ pub use self::apng::{
     AnimationCanvas, AnimationControl, AnimationError, AnimationIndex, AnimationLimits,
     AnimationPlayer, AnimationSummary, BlendOp, CompositeError, DisposeOp, FrameControl,
     FrameControlError, FrameData, FrameDataError, FrameDataReader, FrameSource, IndexedFrame,
-    PlaybackError, PlaybackUpdate, index_animation, inspect_animation,
+    OwnedAnimationIndex, PlaybackError, PlaybackUpdate, index_animation, inspect_animation,
 };
 pub use self::decode::{
     Cicp, PngDecodeError, PngDecodeLimits, Rgba8Image, Rgba16BeImage, decode_rgba8,

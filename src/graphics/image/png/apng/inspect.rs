@@ -55,6 +55,7 @@ pub enum AnimationError {
     FrameLimit,
     ChunkLimit,
     AllocationFailed,
+    InvalidFrameOffset,
 }
 
 impl std::fmt::Display for AnimationError {
