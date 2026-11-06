@@ -9,10 +9,12 @@ use std::io::{self, Read};
 mod composite;
 mod index;
 mod inspect;
+mod player;
 
 pub use self::composite::{AnimationCanvas, CompositeError};
 pub use self::index::{AnimationIndex, FrameSource, IndexedFrame, index_animation};
 pub use self::inspect::{AnimationError, AnimationLimits, AnimationSummary, inspect_animation};
+pub use self::player::{AnimationPlayer, PlaybackError, PlaybackUpdate};
 
 /// Declared animation control values, not proof that the frames are valid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
