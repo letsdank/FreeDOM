@@ -34,6 +34,24 @@ impl fmt::Display for ImageError {
 
 impl Error for ImageError {}
 
+/// Decodes supported baseline JPEG images without applying EXIF orientation.
+pub fn decode_jpeg(encode: &[u8]) -> Result<Surface, ImageError> {
+    let image = jpeg::decode_baseline_rgb8(encode, jpeg::PlaneLimits::default())
+        .map_err(|error| ImageError::new(error.to_string()))?;
+
+    let mut surface = Surface::new(image.width, image.height, Color::TRANSPARENT);
+
+    for (index, pixel) in image.pixels.chunks_exact(3).enumerate() {
+        surface.set_pixel(
+            index % image.width,
+            index / image.width,
+            Color::rgba(pixel[0], pixel[1], pixel[2], 255),
+        );
+    }
+
+    Ok(surface)
+}
+
 /// Decodes the PNG default image from IDAT.
 pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
     decode_png_impl(encoded, false)
@@ -512,5 +530,19 @@ mod tests {
         let image = decode_png_for_display(&png).unwrap();
 
         assert_eq!(image.pixel(0, 0), Some(Color::rgba(42, 123, 207, 181)));
+    }
+
+    #[test]
+    fn displays_a_baseline_jpeg_asset() {
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/images/arrow-oriented-upright.jpg"
+        ));
+
+        let image = decode_jpeg(bytes).unwrap();
+
+        assert_eq!((image.width(), image.height()), (240, 144));
+        assert_eq!(image.pixel(0, 0), Some(Color::rgba(0, 0, 0, 255)));
+        assert_eq!(image.pixel(120, 72), Some(Color::rgba(255, 255, 255, 255)));
     }
 }

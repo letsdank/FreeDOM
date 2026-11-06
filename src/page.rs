@@ -6,7 +6,7 @@ use crate::{
     fetch::Fetcher,
     graphics::{
         font::normalize_font_container,
-        image::decode_png_for_display,
+        image::{decode_jpeg, decode_png_for_display},
         raster::Surface as RasterSurface,
         svg::{SvgDocument, parse_svg_at, parse_svg_element, parse_svg_element_at},
     },
@@ -500,6 +500,8 @@ fn load_image(fetcher: &Fetcher, page_url: &Url, source: &str) -> Option<BlockCo
         Some("image/png") => decode_png_for_display(response.bytes())
             .ok()
             .map(BlockContent::Bitmap),
+
+        Some("image/jpeg") => decode_jpeg(response.bytes()).ok().map(BlockContent::Bitmap),
 
         _ => None,
     }

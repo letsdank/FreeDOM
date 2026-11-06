@@ -29,7 +29,11 @@ mod mcu;
 #[path = "jpeg/planes.rs"]
 mod planes;
 
+#[path = "jpeg/color.rs"]
+mod color;
+
 pub use self::block::{BlockDecodeError, decode_baseline_block};
+pub use self::color::{ColorDecodeError, Rgb8Image, decode_baseline_rgb8};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
 pub use self::huffman::{
     HuffmanBuildError, HuffmanDecodeError, HuffmanDecoder, HuffmanTable, HuffmanTables,
