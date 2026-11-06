@@ -64,82 +64,149 @@ impl fmt::Display for JpegError {
 
 impl Error for JpegError {}
 
-/// Reads the first supported frame header without decoding the image.
-pub fn read_frame_header(input: &[u8]) -> Result<JpegFrameHeader, JpegError> {
-    let error = |offset, kind| JpegError { offset, kind };
+/// Segment parsing stops at SOS or EOI; entropy-coded data is not inspected.
+#[derive(Debug)]
+struct HeaderSegment<'a> {
+    marker: u8,
+    marker_offset: usize,
+    data_offset: usize,
+    data: &'a [u8],
+}
 
-    if !input.starts_with(&[0xff, 0xd8]) {
-        return Err(error(0, JpegErrorKind::MissingStartOfImage));
+struct HeaderSegments<'a> {
+    input: &'a [u8],
+    cursor: usize,
+    end_marker_offset: Option<usize>,
+}
+
+impl<'a> HeaderSegments<'a> {
+    fn new(input: &'a [u8]) -> Result<Self, JpegError> {
+        if !input.starts_with(&[0xff, 0xd8]) {
+            return Err(JpegError {
+                offset: 0,
+                kind: JpegErrorKind::MissingStartOfImage,
+            });
+        }
+
+        Ok(Self {
+            input,
+            cursor: 2,
+            end_marker_offset: None,
+        })
     }
 
-    let mut cursor = 2;
-
-    loop {
-        let marker_offset = cursor;
-
-        if input.get(cursor) != Some(&0xff) {
-            return Err(error(
-                cursor,
-                if cursor == input.len() {
-                    JpegErrorKind::Truncated
-                } else {
-                    JpegErrorKind::ExpectedMarker
-                },
-            ));
+    fn next_segment(&mut self) -> Result<Option<HeaderSegment<'a>>, JpegError> {
+        if self.end_marker_offset.is_some() {
+            return Ok(None);
         }
 
-        while input.get(cursor) == Some(&0xff) {
-            cursor += 1;
-        }
+        let error = |offset, kind| JpegError { offset, kind };
 
-        let marker = *input
-            .get(cursor)
-            .ok_or_else(|| error(cursor, JpegErrorKind::Truncated))?;
+        loop {
+            let marker_offset = self.cursor;
 
-        cursor += 1;
-
-        match marker {
-            0x00 => {
-                return Err(error(marker_offset, JpegErrorKind::InvalidMarker));
-            }
-
-            // TEM is a standalone marker.
-            0x01 => continue,
-
-            0xd8 | 0xd0..=0xd7 => {
+            if self.input.get(self.cursor) != Some(&0xff) {
                 return Err(error(
-                    marker_offset,
-                    JpegErrorKind::UnexpectedMarker(marker),
+                    self.cursor,
+                    if self.cursor == self.input.len() {
+                        JpegErrorKind::Truncated
+                    } else {
+                        JpegErrorKind::ExpectedMarker
+                    },
                 ));
             }
 
-            // A frame header must appear before the scan or end of image.
-            0xd9 | 0xda => {
-                return Err(error(marker_offset, JpegErrorKind::MissingFrameHeader));
+            while self.input.get(self.cursor) == Some(&0xff) {
+                self.cursor += 1;
             }
 
-            _ => {}
+            let marker = *self
+                .input
+                .get(self.cursor)
+                .ok_or_else(|| error(self.cursor, JpegErrorKind::Truncated))?;
+
+            self.cursor += 1;
+
+            match marker {
+                0x00 => {
+                    return Err(error(marker_offset, JpegErrorKind::InvalidMarker));
+                }
+
+                // TEM is a standalone marker.
+                0x01 => continue,
+
+                0xd8 | 0xd0..=0xd7 => {
+                    return Err(error(
+                        marker_offset,
+                        JpegErrorKind::UnexpectedMarker(marker),
+                    ));
+                }
+
+                // Scan data is not parsed by this header.
+                0xd9 | 0xda => {
+                    self.end_marker_offset = Some(marker_offset);
+                    return Ok(None);
+                }
+
+                _ => {}
+            }
+
+            let bytes = self
+                .input
+                .get(self.cursor..self.cursor.saturating_add(2))
+                .ok_or_else(|| error(self.cursor, JpegErrorKind::Truncated))?;
+
+            let length = usize::from(u16::from_be_bytes([bytes[0], bytes[1]]));
+
+            if length < 2 {
+                return Err(error(self.cursor, JpegErrorKind::InvalidSegmentLength));
+            }
+
+            let end = self
+                .cursor
+                .checked_add(length)
+                .ok_or_else(|| error(self.cursor, JpegErrorKind::InvalidSegmentLength))?;
+
+            let data_offset = self.cursor + 2;
+
+            let data = self
+                .input
+                .get(data_offset..end)
+                .ok_or_else(|| error(self.cursor, JpegErrorKind::Truncated))?;
+
+            self.cursor = end;
+
+            return Ok(Some(HeaderSegment {
+                marker,
+                marker_offset,
+                data_offset,
+                data,
+            }));
         }
+    }
+}
 
-        let length_bytes = input
-            .get(cursor..cursor.saturating_add(2))
-            .ok_or_else(|| error(cursor, JpegErrorKind::Truncated))?;
+/// Reads the first supported frame header without decoding the image.
+pub fn read_frame_header(input: &[u8]) -> Result<JpegFrameHeader, JpegError> {
+    let error = |offset, kind| JpegError { offset, kind };
+    let mut segments = HeaderSegments::new(input)?;
 
-        let length = usize::from(u16::from_be_bytes([length_bytes[0], length_bytes[1]]));
+    loop {
+        let Some(segment) = segments.next_segment()? else {
+            return Err(error(
+                segments
+                    .end_marker_offset
+                    .expect("SOS or EOI was encountered"),
+                JpegErrorKind::MissingFrameHeader,
+            ));
+        };
 
-        if length < 2 {
-            return Err(error(cursor, JpegErrorKind::InvalidSegmentLength));
-        }
-
-        let end = cursor
-            .checked_add(length)
-            .ok_or_else(|| error(cursor, JpegErrorKind::InvalidSegmentLength))?;
-
-        let data = input
-            .get(cursor + 2..end)
-            .ok_or_else(|| error(cursor, JpegErrorKind::Truncated))?;
-
-        cursor = end;
+        let HeaderSegment {
+            marker,
+            marker_offset,
+            data,
+            ..
+        } = segment;
 
         let kind = match marker {
             0xc0 => JpegFrameKind::Baseline,
@@ -307,6 +374,33 @@ pub fn parse_dqt_segment(data: &[u8]) -> Result<[Option<QuantizationTable>; 4], 
         });
 
         cursor = end;
+    }
+
+    Ok(tables)
+}
+
+/// Reads DQT definitions before the first SOS or EOI marker.
+/// Does not validate scan data or prove that the JPEG is complete.
+pub fn read_quantization_tables(input: &[u8]) -> Result<[Option<QuantizationTable>; 4], JpegError> {
+    let mut segments = HeaderSegments::new(input)?;
+
+    let mut tables: [Option<QuantizationTable>; 4] = [None, None, None, None];
+
+    while let Some(segment) = segments.next_segment()? {
+        if segment.marker != 0xdb {
+            continue;
+        }
+
+        let parsed = parse_dqt_segment(segment.data).map_err(|mut error| {
+            error.offset += segment.data_offset;
+            error
+        })?;
+
+        for (destination, table) in tables.iter_mut().zip(parsed) {
+            if table.is_some() {
+                *destination = table;
+            }
+        }
     }
 
     Ok(tables)
@@ -481,5 +575,79 @@ mod tests {
             parse_dqt_segment(&bytes).unwrap_err().kind,
             JpegErrorKind::ZeroQuantizationValue
         );
+    }
+
+    #[test]
+    fn reads_wpt_progressive_jpeg_header_and_quantization_tables() {
+        // The WPT asset is tested here, not the original browser test.
+        let image = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/images/computer.jpg"
+        ));
+
+        let frame = read_frame_header(image).unwrap();
+
+        assert_eq!(
+            (
+                frame.kind,
+                frame.width,
+                frame.height,
+                frame.precision,
+                frame.components.len()
+            ),
+            (JpegFrameKind::Progressive, 320, 240, 8, 3)
+        );
+
+        let tables = read_quantization_tables(image).unwrap();
+
+        assert_eq!(tables[0].as_ref().unwrap().precision, 16);
+        assert_eq!(tables[1].as_ref().unwrap().precision, 16);
+
+        assert_eq!(tables[0].as_ref().unwrap().values[0], 100);
+        assert_eq!(tables[0].as_ref().unwrap().values[9], 106);
+
+        assert!(
+            frame
+                .components
+                .iter()
+                .all(|component| { tables[component.quantization_table as usize].is_some() })
+        );
+    }
+
+    #[test]
+    fn reads_quantization_segments_across_frame_and_overrides_previous_values() {
+        let mut data = vec![0xff, 0xd8, 0xff, 0xdb, 0, 67, 0];
+
+        data.extend([1; 64]);
+
+        // One-component baseline frame.
+        data.extend_from_slice(&[0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0]);
+        data.extend_from_slice(&[0xff, 0xdb, 0, 67, 0]);
+        data.extend([2; 64]);
+
+        // The reader stops at SOS and does not parse its contents.
+        data.extend_from_slice(&[0xff, 0xda]);
+
+        assert_eq!(read_frame_header(&data).unwrap().width, 1);
+
+        let tables = read_quantization_tables(&data).unwrap();
+
+        assert_eq!(tables[0].as_ref().unwrap().values, [2; 64]);
+    }
+
+    #[test]
+    fn quantization_error_offset_is_absolute() {
+        let mut data = vec![0xff, 0xd8, 0xff, 0xdb, 0, 67, 0];
+
+        data.extend([1; 64]);
+
+        data[8] = 0;
+
+        data.extend_from_slice(&[0xff, 0xda]);
+
+        let error = read_quantization_tables(&data).unwrap_err();
+
+        assert_eq!(error.kind, JpegErrorKind::ZeroQuantizationValue);
+        assert_eq!(error.offset, 8);
     }
 }
