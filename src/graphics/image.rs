@@ -31,8 +31,21 @@ impl fmt::Display for ImageError {
 
 impl Error for ImageError {}
 
+/// Decodes the PNG default image from IDAT.
 pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
-    use png_format::{Cicp, PngDecodeLimits, decode_rgba8, decode_rgba16_be, read_ihdr};
+    decode_png_impl(encoded, false)
+}
+
+/// Decides the first animation frame when APNG is valid; otherwise uses IDAT.
+pub fn decode_png_for_display(encoded: &[u8]) -> Result<Surface, ImageError> {
+    decode_png_impl(encoded, true)
+}
+
+fn decode_png_impl(encoded: &[u8], animated_first_frame: bool) -> Result<Surface, ImageError> {
+    use png_format::{
+        AnimationLimits, AnimationPlayer, Cicp, PlaybackUpdate, PngDecodeLimits, decode_rgba8,
+        decode_rgba16_be, read_ihdr,
+    };
 
     let limits = PngDecodeLimits {
         max_width: MAX_IMAGE_DIMENSION as u32,
@@ -45,9 +58,9 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
 
     let header = read_ihdr(encoded).map_err(|error| ImageError::new(error.to_string()))?;
 
-    let sixteen_bit = header.bit_depth == 16;
+    let mut sixteen_bit = header.bit_depth == 16;
 
-    let (width, height, pixels, cicp) = if sixteen_bit {
+    let (width, height, mut pixels, cicp, animation_control) = if sixteen_bit {
         let image = decode_rgba16_be(encoded, limits)
             .map_err(|error| ImageError::new(error.to_string()))?;
 
@@ -56,6 +69,7 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
             image.height as usize,
             image.pixels,
             image.cicp,
+            image.animation_control,
         )
     } else {
         let image =
@@ -66,8 +80,21 @@ pub fn decode_png(encoded: &[u8]) -> Result<Surface, ImageError> {
             image.height as usize,
             image.pixels,
             image.cicp,
+            image.animation_control,
         )
     };
+
+    if animated_first_frame && animation_control.is_some() {
+        if let Ok(mut player) = AnimationPlayer::new(encoded, AnimationLimits::default(), limits) {
+            if matches!(
+                player.advance(std::time::Duration::ZERO),
+                Ok(PlaybackUpdate::FrameChanged)
+            ) {
+                pixels = player.canvas().pixels().to_vec();
+                sixteen_bit = false;
+            }
+        }
+    }
 
     let display_p3 = matches!(
         cicp,
@@ -411,5 +438,76 @@ mod tests {
 
         assert_eq!(surface.pixel(0, 0), Some(Color::rgba(51, 102, 153, 18)));
         assert_eq!(surface.pixel(1, 0), Some(Color::rgba(51, 102, 153, 18)));
+    }
+
+    #[test]
+    fn displays_first_apng_frame_instead_of_the_default_image() {
+        // This checks the WPT image fixture, not the timed browser reftest.
+        let png = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/png/apng/support/033.png"
+        ));
+
+        let displayed = decode_png_for_display(png).unwrap();
+
+        assert_eq!((displayed.width(), displayed.height()), (128, 64));
+
+        assert!(
+            displayed
+                .pixels()
+                .iter()
+                .all(|pixel| *pixel == Color::rgba(0, 0, 0, 255))
+        );
+
+        let fallback = decode_png(png).unwrap();
+
+        assert!(
+            fallback
+                .pixels()
+                .iter()
+                .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255))
+        );
+    }
+
+    #[test]
+    fn displays_default_image_if_animation_frame_control_is_corrupt() {
+        let mut png = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/png/apng/support/033.png"
+        ))
+        .to_vec();
+
+        let offset = {
+            let mut chunks = png_format::ChunkReader::new(&png).unwrap();
+
+            loop {
+                let chunk = chunks.next_chunk().unwrap().unwrap();
+
+                if chunk.kind == *b"fcTL" {
+                    break chunk.offset;
+                }
+            }
+        };
+
+        // Corrupt fcTL without updating its CRC.
+        png[offset + 8] ^= 1;
+
+        let image = decode_png_for_display(&png).unwrap();
+
+        assert!(
+            image
+                .pixels()
+                .iter()
+                .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255))
+        );
+    }
+
+    #[test]
+    fn displays_static_png_without_changes() {
+        let png = png_format::encode_rgba8(1, 1, &[42, 123, 207, 181]).unwrap();
+
+        let image = decode_png_for_display(&png).unwrap();
+
+        assert_eq!(image.pixel(0, 0), Some(Color::rgba(42, 123, 207, 181)));
     }
 }
