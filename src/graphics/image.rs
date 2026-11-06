@@ -4,6 +4,9 @@ use std::{error::Error, fmt};
 #[path = "image/png/mod.rs"]
 pub mod png_format;
 
+#[path = "image/jpeg.rs"]
+pub mod jpeg;
+
 #[path = "image/color.rs"]
 mod color;
 
