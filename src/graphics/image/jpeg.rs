@@ -8,6 +8,11 @@
 
 use std::{error::Error, fmt};
 
+#[path = "jpeg/huffman.rs"]
+mod huffman;
+
+pub use self::huffman::{HuffmanTable, HuffmanTables, parse_dht_segment, read_huffman_tables};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JpegFrameKind {
     Baseline,
@@ -54,6 +59,11 @@ pub enum JpegErrorKind {
     InvalidQuantizationPrecision(u8),
     InvalidQuantizationTableId(u8),
     ZeroQuantizationValue,
+    InvalidHuffmanTable,
+    InvalidHuffmanClass(u8),
+    InvalidHuffmanTableId(u8),
+    TooManyHuffmanSymbols,
+    InvalidHuffmanCodeLengths,
 }
 
 impl fmt::Display for JpegError {
