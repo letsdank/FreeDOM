@@ -20,12 +20,16 @@ mod scan;
 #[path = "jpeg/block.rs"]
 mod block;
 
+#[path = "jpeg/idct.rs"]
+mod idct;
+
 pub use self::block::{BlockDecodeError, decode_baseline_block};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
 pub use self::huffman::{
     HuffmanBuildError, HuffmanDecodeError, HuffmanDecoder, HuffmanTable, HuffmanTables,
     parse_dht_segment, read_huffman_tables,
 };
+pub use self::idct::{DequantizeError, dequantize, idct_8bit};
 pub use self::scan::{
     BaselineScanError, ScanComponent, ScanHeader, read_first_scan_header, validate_baseline_scan,
 };
