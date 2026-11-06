@@ -11,7 +11,14 @@ use std::{error::Error, fmt};
 #[path = "jpeg/huffman.rs"]
 mod huffman;
 
-pub use self::huffman::{HuffmanTable, HuffmanTables, parse_dht_segment, read_huffman_tables};
+#[path = "jpeg/entropy.rs"]
+mod entropy;
+
+pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
+pub use self::huffman::{
+    HuffmanBuildError, HuffmanDecodeError, HuffmanDecoder, HuffmanTable, HuffmanTables,
+    parse_dht_segment, read_huffman_tables,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JpegFrameKind {

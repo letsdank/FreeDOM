@@ -3,7 +3,111 @@
 //! ITU-T T.81, sections B.2.4.2 and C.2:
 //! <https://www.w3.org/Graphics/JPEG/itu-t81.pdf>
 
-use super::{HeaderSegments, JpegError, JpegErrorKind};
+use super::{EntropyError, EntropyReader, HeaderSegments, JpegError, JpegErrorKind};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HuffmanBuildError {
+    Empty,
+    TooManySymbols,
+    CountMismatch,
+    InvalidCodeLengths,
+}
+
+impl std::fmt::Display for HuffmanBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid JPEG Huffman table: {self:?}")
+    }
+}
+
+impl std::error::Error for HuffmanBuildError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HuffmanDecodeError {
+    Entropy(EntropyError),
+    InvalidCode,
+}
+
+impl std::fmt::Display for HuffmanDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JPEG Huffman decode error: {self:?}")
+    }
+}
+
+impl std::error::Error for HuffmanDecodeError {}
+
+/// Canonical JPEG Huffman codes, indexed by code length.
+pub struct HuffmanDecoder {
+    counts: [u8; 16],
+    first_codes: [u32; 16],
+    first_symbols: [usize; 16],
+    symbols: Vec<u8>,
+}
+
+impl HuffmanDecoder {
+    pub fn new(table: &HuffmanTable) -> Result<Self, HuffmanBuildError> {
+        let count: usize = table.counts.iter().map(|&value| usize::from(value)).sum();
+
+        if count == 0 {
+            return Err(HuffmanBuildError::Empty);
+        }
+
+        if count > 256 {
+            return Err(HuffmanBuildError::TooManySymbols);
+        }
+
+        if count != table.symbols.len() {
+            return Err(HuffmanBuildError::CountMismatch);
+        }
+
+        let mut first_codes = [0; 16];
+        let mut first_symbols = [0; 16];
+
+        let mut code = 0u32;
+        let mut symbol = 0usize;
+
+        for index in 0..16 {
+            let amount = u32::from(table.counts[index]);
+
+            if code + amount >= (1u32 << (index + 1)) {
+                return Err(HuffmanBuildError::InvalidCodeLengths);
+            }
+
+            first_codes[index] = code;
+            first_symbols[index] = symbol;
+
+            code = (code + amount) << 1;
+            symbol += amount as usize;
+        }
+
+        Ok(Self {
+            counts: table.counts,
+            first_codes,
+            first_symbols,
+            symbols: table.symbols.clone(),
+        })
+    }
+
+    /// Bits consumed before an error remain consumed.
+    pub fn decode(&self, reader: &mut EntropyReader<'_>) -> Result<u8, HuffmanDecodeError> {
+        let mut code = 0u32;
+
+        for index in 0..16 {
+            let bit = reader.read_bit().map_err(HuffmanDecodeError::Entropy)?;
+
+            code = (code << 1) | u32::from(bit);
+
+            let first = self.first_codes[index];
+
+            if code >= first && code - first < u32::from(self.counts[index]) {
+                let symbol_index = self.first_symbols[index] + (code - first) as usize;
+
+                return Ok(self.symbols[symbol_index]);
+            }
+        }
+
+        Err(HuffmanDecodeError::InvalidCode)
+    }
+}
 
 /// JPEG Huffman table specification; codes are constructed separately.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,5 +365,85 @@ mod tests {
 
         assert_eq!(error.offset, 6);
         assert_eq!(error.kind, JpegErrorKind::InvalidHuffmanClass(2));
+    }
+
+    #[test]
+    fn decodes_canonical_codes_from_wpt_table() {
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/images/computer.jpg"
+        ));
+
+        let tables = read_huffman_tables(bytes).unwrap();
+
+        let decoder = HuffmanDecoder::new(tables.dc[0].as_ref().unwrap()).unwrap();
+
+        // Codes: 0, 10, 110, 1110, 11110 and 111110.
+        let mut reader = EntropyReader::new(&[0x5b, 0xbd, 0xf0]);
+
+        for expected in 0..6 {
+            assert_eq!(decoder.decode(&mut reader).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn builds_all_baseline_wpt_tables() {
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/images/arrow-oriented-upright.jpg"
+        ));
+
+        let frame = super::super::read_frame_header(bytes).unwrap();
+
+        assert_eq!(
+            (frame.kind, frame.width, frame.height),
+            (super::super::JpegFrameKind::Baseline, 240, 144)
+        );
+
+        let tables = read_huffman_tables(bytes).unwrap();
+
+        assert!(tables.dc.iter().any(Option::is_none));
+        assert!(tables.ac.iter().any(Option::is_none));
+
+        for table in tables.dc.iter().chain(&tables.ac).flatten() {
+            HuffmanDecoder::new(table).unwrap();
+        }
+    }
+
+    #[test]
+    fn validates_manually_constructed_tables_and_invalid_codes() {
+        let mut table = HuffmanTable {
+            counts: [0; 16],
+            symbols: vec![],
+        };
+
+        assert!(matches!(
+            HuffmanDecoder::new(&table),
+            Err(HuffmanBuildError::Empty)
+        ));
+
+        table.counts[0] = 1;
+
+        assert!(matches!(
+            HuffmanDecoder::new(&table),
+            Err(HuffmanBuildError::CountMismatch)
+        ));
+
+        table.symbols.push(3);
+
+        let decoder = HuffmanDecoder::new(&table).unwrap();
+
+        assert_eq!(
+            decoder.decode(&mut EntropyReader::new(&[0x80, 0x00])),
+            Err(HuffmanDecodeError::InvalidCode)
+        );
+
+        table.counts[0] = 2;
+        table.symbols.push(4);
+
+        assert!(matches!(
+            HuffmanDecoder::new(&table),
+            Err(HuffmanBuildError::InvalidCodeLengths)
+        ));
     }
 }
