@@ -26,6 +26,9 @@ mod idct;
 #[path = "jpeg/mcu.rs"]
 mod mcu;
 
+#[path = "jpeg/planes.rs"]
+mod planes;
+
 pub use self::block::{BlockDecodeError, decode_baseline_block};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
 pub use self::huffman::{
@@ -34,6 +37,9 @@ pub use self::huffman::{
 };
 pub use self::idct::{DequantizeError, dequantize, idct_8bit};
 pub use self::mcu::{BaselineMcuDecoder, Mcu, McuComponent, McuError};
+pub use self::planes::{
+    ComponentPlane, DecodedPlanes, PlaneDecodeError, PlaneLimits, decode_baseline_planes,
+};
 pub use self::scan::{
     BaselineScanError, ScanComponent, ScanHeader, read_first_scan_header, validate_baseline_scan,
 };

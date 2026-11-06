@@ -16,6 +16,8 @@ pub enum EntropyErrorKind {
     Marker(u8),
     InvalidByteStuffing,
     InvalidBitCount(u8),
+    InvalidPadding,
+    ExpectedMarker,
 }
 
 impl std::fmt::Display for EntropyError {
@@ -117,6 +119,45 @@ impl<'a> EntropyReader<'a> {
 
         Ok(result)
     }
+
+    /// Checks one-bit padding and peeks at the following marker without consuming it.
+    pub fn peek_scan_end_marker(&self) -> Result<u8, EntropyError> {
+        let error = |kind| EntropyError {
+            offset: self.cursor,
+            kind,
+        };
+
+        let mask = (1u16 << self.bits_left) - 1;
+
+        if u16::from(self.byte) & mask != mask {
+            return Err(error(EntropyErrorKind::InvalidPadding));
+        }
+
+        if self.input.get(self.cursor) != Some(&0xff) {
+            return Err(error(if self.cursor == self.input.len() {
+                EntropyErrorKind::Truncated
+            } else {
+                EntropyErrorKind::ExpectedMarker
+            }));
+        }
+
+        let mut index = self.cursor + 1;
+
+        while self.input.get(index) == Some(&0xff) {
+            index += 1;
+        }
+
+        let marker = *self
+            .input
+            .get(index)
+            .ok_or_else(|| error(EntropyErrorKind::Truncated))?;
+
+        if marker == 0 {
+            return Err(error(EntropyErrorKind::ExpectedMarker));
+        }
+
+        Ok(marker)
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +214,32 @@ mod tests {
         assert_eq!(
             reader.read_bits(17).unwrap_err().kind,
             EntropyErrorKind::InvalidBitCount(17)
+        );
+    }
+
+    #[test]
+    fn peeks_scan_end_only_after_one_bit_padding() {
+        let mut reader = EntropyReader::new(&[0x5f, 0xff, 0xff, 0xd9]);
+
+        assert_eq!(reader.read_bits(3).unwrap(), 2);
+        assert_eq!(reader.peek_scan_end_marker().unwrap(), 0xd9);
+        assert_eq!(reader.byte_position(), 1);
+        assert_eq!(reader.peek_scan_end_marker().unwrap(), 0xd9);
+
+        let mut reader = EntropyReader::new(&[0x40, 0xff, 0xd9]);
+
+        reader.read_bits(3).unwrap();
+
+        assert_eq!(
+            reader.peek_scan_end_marker().unwrap_err().kind,
+            EntropyErrorKind::InvalidPadding
+        );
+
+        let reader = EntropyReader::new(&[0xff, 0x00]);
+
+        assert_eq!(
+            reader.peek_scan_end_marker().unwrap_err().kind,
+            EntropyErrorKind::ExpectedMarker
         );
     }
 }
