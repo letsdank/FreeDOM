@@ -589,4 +589,75 @@ mod tests {
             Err(PlaneDecodeError::UnsupportedScanEnd(0xd0))
         ));
     }
+
+    #[test]
+    fn decodes_restart_jpeg_against_libjpeg_rgb_reference() {
+        // The JPEG was generated from the WPT computer.jpg asset using
+        // ImageMagick/libjpeg with a restart interval of two MCUs.
+        //
+        // The reference contains RGB8 pixels decoded by ImageMagick/libjpeg.
+        // This is a codec test, not an official WPT browser test.
+        let jpeg = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/jpeg/restart-2.jpg"
+        ));
+
+        let reference = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/jpeg/restart-2.rgb"
+        ));
+
+        assert_eq!(restart_interval(jpeg).unwrap(), 2);
+
+        let frame = read_frame_header(jpeg).unwrap();
+
+        assert_eq!((frame.width, frame.height), (320, 240));
+
+        // The fixture uses 4:4:4 sampling, avoiding differences between
+        // chroma upsampling implementations in this comparison.
+        assert!(frame.components.iter().all(|component| {
+            component.horizontal_sampling == 1 && component.vertical_sampling == 1
+        }));
+
+        let scan = read_first_scan_header(jpeg).unwrap();
+
+        let markers: Vec<u8> = jpeg[scan.entropy_offset..]
+            .windows(2)
+            .filter_map(|pair| {
+                (pair[0] == 0xff && (0xd0..=0xd7).contains(&pair[1])).then_some(pair[1])
+            })
+            .collect();
+
+        assert_eq!(markers.len(), 599);
+
+        for (index, marker) in markers.iter().copied().enumerate() {
+            assert_eq!(marker, 0xd0 + (index % 8) as u8, "restart marker {index}");
+        }
+
+        let image = super::super::decode_baseline_rgb8(jpeg, PlaneLimits::default()).unwrap();
+
+        assert_eq!((image.width, image.height), (320, 240));
+        assert_eq!(image.pixels.len(), reference.len());
+
+        let mut max_difference = 0u8;
+
+        for (index, (&actual, &expected)) in image.pixels.iter().zip(reference.iter()).enumerate() {
+            let difference = actual.abs_diff(expected);
+
+            max_difference = max_difference.max(difference);
+
+            // IDCT implementations may round samples differently.
+            assert!(
+                difference <= 4,
+                "channel {index}: expected {expected}, got {actual}, \
+                 difference {difference}"
+            );
+        }
+
+        eprintln!(
+            "JPEG restart fixture: {} RGB channels, max difference {}",
+            reference.len(),
+            max_difference
+        );
+    }
 }
