@@ -3,7 +3,7 @@
 //! ITU-T T.81, sections A.1 and A.2:
 //! <https://www.w3.org/Graphics/JPEG/itu-t81.pdf>
 //!
-//! This rejects restart intervals and scans that omit frame components.
+//! This rejects scans that omit frame components.
 //! Samples are not upsampled, color-converted, or EXIF-oriented.
 
 use super::{
@@ -37,7 +37,6 @@ pub enum PlaneDecodeError {
     Entropy(EntropyError),
     UnsupportedMultiScan,
     InvalidRestartInterval { offset: usize },
-    UnsupportedRestartInterval(u16),
     UnsupportedScanEnd(u8),
     LimitExceeded,
     SizeOverflow,
@@ -117,13 +116,7 @@ pub fn decode_baseline_planes(
     }
 
     let interval = restart_interval(input)?;
-
-    if interval != 0 {
-        return Err(PlaneDecodeError::UnsupportedRestartInterval(interval));
-    }
-
     let huffman = read_huffman_tables(input).map_err(PlaneDecodeError::Header)?;
-
     let quantization = read_quantization_tables(input).map_err(PlaneDecodeError::Header)?;
 
     let mut decoder = BaselineMcuDecoder::new(&frame, &scan, &huffman, &quantization)
@@ -204,11 +197,27 @@ pub fn decode_baseline_planes(
 
     let mut reader = EntropyReader::new(&input[scan.entropy_offset..]);
 
+    let mut completed_mcus = 0usize;
+    let mut next_restart = 0u8;
+
     for mcu_y in 0..rows {
         for mcu_x in 0..columns {
+            // Restart markers are between intervals, never after the final MCU.
+            if interval != 0 && completed_mcus != 0 && completed_mcus % usize::from(interval) == 0 {
+                reader
+                    .consume_restart_marker(0xd0 + next_restart)
+                    .map_err(PlaneDecodeError::Entropy)?;
+
+                decoder.reset_predictors();
+
+                next_restart = (next_restart + 1) % 8;
+            }
+
             let mcu = decoder
                 .decode_next(&mut reader)
                 .map_err(PlaneDecodeError::Mcu)?;
+
+            completed_mcus += 1;
 
             for (plane, component) in components.iter_mut().zip(mcu.components) {
                 let columns = usize::from(component.block_columns);
@@ -322,6 +331,130 @@ mod tests {
         bytes
     }
 
+    fn restart_image(mcus: u8) -> Vec<u8> {
+        let mut bytes = synthetic(true, Some(1));
+
+        let frame = bytes
+            .windows(2)
+            .position(|pair| pair == [0xff, 0xc0])
+            .unwrap();
+
+        let width = u16::from(mcus) * 16 - 15;
+
+        bytes[frame + 7..frame + 9].copy_from_slice(&width.to_be_bytes());
+
+        let scan = read_first_scan_header(&bytes).unwrap();
+
+        bytes.truncate(scan.entropy_offset);
+
+        for index in 0..mcus {
+            // Six blocks: DC difference +1 and AC end-of-block.
+            bytes.extend_from_slice(&[0x49, 0x24, 0xbf]);
+
+            if index + 1 != mcus {
+                bytes.extend_from_slice(&[0xff, 0xd0 + index % 8]);
+            }
+        }
+
+        bytes.extend_from_slice(&[0xff, 0xd9]);
+
+        bytes
+    }
+
+    #[test]
+    fn decodes_restart_intervals_and_resets_all_predictors() {
+        let data = restart_image(10);
+
+        let output = decode_baseline_planes(&data, PlaneLimits::default()).unwrap();
+
+        assert_eq!((output.width, output.height), (145, 9));
+
+        for index in 0..10 {
+            let x = index * 16;
+
+            assert_eq!(output.components[0].samples[x], 129);
+            assert_eq!(output.components[1].samples[x / 2], 129);
+            assert_eq!(output.components[2].samples[x / 2], 129);
+        }
+
+        // A final interval can end exactly at EOI without a restart marker.
+        assert!(decode_baseline_planes(&synthetic(true, Some(2)), PlaneLimits::default()).is_ok());
+        assert!(decode_baseline_planes(&synthetic(true, Some(0)), PlaneLimits::default()).is_ok());
+    }
+
+    #[test]
+    fn decodes_restart_interval_of_two_mcus() {
+        let mut data = synthetic(true, Some(2));
+
+        let frame = data
+            .windows(2)
+            .position(|pair| pair == [0xff, 0xc0])
+            .unwrap();
+
+        data[frame + 7..frame + 9].copy_from_slice(&49u16.to_be_bytes());
+
+        let scan = read_first_scan_header(&data).unwrap().entropy_offset;
+        let interval = data[scan..data.len() - 2].to_vec();
+
+        data.truncate(scan);
+
+        data.extend_from_slice(&interval);
+        data.extend_from_slice(&[0xff, 0xd0]);
+        data.extend_from_slice(&interval);
+        data.extend_from_slice(&[0xff, 0xd9]);
+
+        let output = decode_baseline_planes(&data, PlaneLimits::default()).unwrap();
+        let y = &output.components[0].samples;
+
+        assert_eq!([y[0], y[16], y[32], y[48]], [129, 133, 129, 133]);
+
+        let cb = &output.components[1].samples;
+
+        assert_eq!([cb[0], cb[8], cb[16], cb[24]], [129, 130, 129, 130]);
+    }
+
+    #[test]
+    fn rejects_bad_restart_markers_and_padding() {
+        let data = restart_image(2);
+        let scan = read_first_scan_header(&data).unwrap().entropy_offset;
+
+        let mut wrong = data.clone();
+        wrong[scan + 4] = 0xd1;
+
+        assert!(matches!(
+            decode_baseline_planes(&wrong, PlaneLimits::default()),
+            Err(PlaneDecodeError::Entropy(EntropyError {
+                kind: EntropyErrorKind::UnexpectedRestartMarker {
+                    expected: 0xd0,
+                    found: 0xd1,
+                },
+                ..
+            }))
+        ));
+
+        let mut invalid_padding = data.clone();
+        invalid_padding[scan + 2] &= !1;
+
+        assert!(matches!(
+            decode_baseline_planes(&invalid_padding, PlaneLimits::default()),
+            Err(PlaneDecodeError::Entropy(EntropyError {
+                kind: EntropyErrorKind::InvalidPadding,
+                ..
+            }))
+        ));
+
+        let mut missing = data;
+        missing.drain(scan + 3..scan + 5);
+
+        assert!(matches!(
+            decode_baseline_planes(&missing, PlaneLimits::default()),
+            Err(PlaneDecodeError::Entropy(EntropyError {
+                kind: EntropyErrorKind::ExpectedMarker,
+                ..
+            }))
+        ));
+    }
+
     #[test]
     fn reconstructs_420_planes_and_clips_partial_mcus() {
         let output =
@@ -397,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_limits_restart_multiscan_and_bad_end() {
+    fn rejects_limits_multiscan_and_bad_end() {
         let data = synthetic(true, None);
 
         let mut limits = PlaneLimits::default();
@@ -416,10 +549,8 @@ mod tests {
             Err(PlaneDecodeError::LimitExceeded)
         ));
 
-        assert!(matches!(
-            decode_baseline_planes(&synthetic(true, Some(3)), PlaneLimits::default()),
-            Err(PlaneDecodeError::UnsupportedRestartInterval(3))
-        ));
+        // An interval greater than the scan contains no restart marker.
+        assert!(decode_baseline_planes(&synthetic(true, Some(3)), PlaneLimits::default()).is_ok());
 
         assert!(matches!(
             decode_baseline_planes(&synthetic(false, None), PlaneLimits::default()),

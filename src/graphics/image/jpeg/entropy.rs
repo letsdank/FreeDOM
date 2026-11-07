@@ -18,6 +18,7 @@ pub enum EntropyErrorKind {
     InvalidBitCount(u8),
     InvalidPadding,
     ExpectedMarker,
+    UnexpectedRestartMarker { expected: u8, found: u8 },
 }
 
 impl std::fmt::Display for EntropyError {
@@ -158,6 +159,29 @@ impl<'a> EntropyReader<'a> {
 
         Ok(marker)
     }
+
+    /// Validates padding and consumes the expected restart marker and fill bytes.
+    /// On failure, the reader position and bit buffer remain unchanged.
+    pub(crate) fn consume_restart_marker(&mut self, expected: u8) -> Result<(), EntropyError> {
+        let found = self.peek_scan_end_marker()?;
+
+        if found != expected {
+            return Err(EntropyError {
+                offset: self.cursor,
+                kind: EntropyErrorKind::UnexpectedRestartMarker { expected, found },
+            });
+        }
+
+        while self.input.get(self.cursor) == Some(&0xff) {
+            self.cursor += 1;
+        }
+
+        self.cursor += 1;
+        self.bits_left = 0;
+        self.byte = 0;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -241,5 +265,38 @@ mod tests {
             reader.peek_scan_end_marker().unwrap_err().kind,
             EntropyErrorKind::ExpectedMarker
         );
+    }
+
+    #[test]
+    fn consumes_restart_marker_only_after_valid_padding_and_sequence() {
+        let mut reader = EntropyReader::new(&[0x5f, 0xff, 0xff, 0xd0, 0x80]);
+
+        assert_eq!(reader.read_bits(3).unwrap(), 2);
+
+        assert_eq!(
+            reader.consume_restart_marker(0xd1).unwrap_err().kind,
+            EntropyErrorKind::UnexpectedRestartMarker {
+                expected: 0xd1,
+                found: 0xd0
+            }
+        );
+
+        assert_eq!(reader.byte_position(), 1);
+
+        reader.consume_restart_marker(0xd0).unwrap();
+
+        assert_eq!(reader.byte_position(), 4);
+        assert_eq!(reader.read_bit().unwrap(), 1);
+
+        let mut invalid = EntropyReader::new(&[0x40, 0xff, 0xd0]);
+
+        invalid.read_bits(3).unwrap();
+
+        assert_eq!(
+            invalid.consume_restart_marker(0xd0).unwrap_err().kind,
+            EntropyErrorKind::InvalidPadding
+        );
+
+        assert_eq!(invalid.byte_position(), 1);
     }
 }
