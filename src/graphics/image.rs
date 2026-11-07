@@ -34,19 +34,25 @@ impl fmt::Display for ImageError {
 
 impl Error for ImageError {}
 
-/// Decodes supported baseline JPEG images without applying EXIF orientation.
-pub fn decode_jpeg(encode: &[u8]) -> Result<Surface, ImageError> {
-    let image = jpeg::decode_baseline_rgb8(encode, jpeg::PlaneLimits::default())
+/// Decodes supported baseline JPEG images and applies EXIF orientation.
+pub fn decode_jpeg(encoded: &[u8]) -> Result<Surface, ImageError> {
+    let image = jpeg::decode_baseline_rgb8(encoded, jpeg::PlaneLimits::default())
         .map_err(|error| ImageError::new(error.to_string()))?;
 
-    let mut surface = Surface::new(image.width, image.height, Color::TRANSPARENT);
+    let orientation = jpeg::read_orientation(encoded);
+    let (width, height) = orientation.dimensions(image.width, image.height);
 
-    for (index, pixel) in image.pixels.chunks_exact(3).enumerate() {
-        surface.set_pixel(
-            index % image.width,
-            index / image.width,
-            Color::rgba(pixel[0], pixel[1], pixel[2], 255),
-        );
+    let mut surface = Surface::new(width, height, Color::TRANSPARENT);
+
+    for y in 0..height {
+        for x in 0..width {
+            let (sx, sy) = orientation.source_position(x, y, image.width, image.height);
+
+            let index = (sy * image.width + sx) * 3;
+            let pixel = &image.pixels[index..index + 3];
+
+            surface.set_pixel(x, y, Color::rgba(pixel[0], pixel[1], pixel[2], 255));
+        }
     }
 
     Ok(surface)
@@ -539,10 +545,22 @@ mod tests {
             "/testdata/wpt/images/arrow-oriented-upright.jpg"
         ));
 
+        let raw = jpeg::decode_baseline_rgb8(bytes, jpeg::PlaneLimits::default()).unwrap();
         let image = decode_jpeg(bytes).unwrap();
 
-        assert_eq!((image.width(), image.height()), (240, 144));
-        assert_eq!(image.pixel(0, 0), Some(Color::rgba(0, 0, 0, 255)));
-        assert_eq!(image.pixel(120, 72), Some(Color::rgba(255, 255, 255, 255)));
+        assert_eq!((image.width(), image.height()), (144, 240));
+
+        // EXIF orientation 6 rotates the image 90 degrees clockwise.
+        for y in 0..image.height() {
+            for x in 0..image.width() {
+                let offset = ((raw.height - 1 - x) * raw.width + y) * 3;
+                let pixel = &raw.pixels[offset..offset + 3];
+
+                assert_eq!(
+                    image.pixel(x, y),
+                    Some(Color::rgba(pixel[0], pixel[1], pixel[2], 255))
+                );
+            }
+        }
     }
 }

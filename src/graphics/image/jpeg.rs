@@ -32,6 +32,9 @@ mod planes;
 #[path = "jpeg/color.rs"]
 mod color;
 
+#[path = "jpeg/orientation.rs"]
+mod orientation;
+
 pub use self::block::{BlockDecodeError, decode_baseline_block};
 pub use self::color::{ColorDecodeError, Rgb8Image, decode_baseline_rgb8};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
@@ -41,6 +44,7 @@ pub use self::huffman::{
 };
 pub use self::idct::{DequantizeError, dequantize, idct_8bit};
 pub use self::mcu::{BaselineMcuDecoder, Mcu, McuComponent, McuError};
+pub(crate) use self::orientation::read_orientation;
 pub use self::planes::{
     ComponentPlane, DecodedPlanes, PlaneDecodeError, PlaneLimits, decode_baseline_planes,
 };

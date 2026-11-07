@@ -188,7 +188,7 @@ mod tests {
         ComponentPlane {
             id,
             horizontal_sampling: h,
-            vertical_sampling: h,
+            vertical_sampling: v,
             width,
             height,
             samples: samples.to_vec(),
