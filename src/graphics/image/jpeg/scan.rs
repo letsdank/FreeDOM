@@ -44,7 +44,15 @@ pub fn read_first_scan_header(input: &[u8]) -> Result<ScanHeader, JpegError> {
         return Err(error(marker_offset, JpegErrorKind::MissingScanHeader));
     }
 
-    let cursor = segments.cursor;
+    parse_scan_header_at(input, marker_offset, segments.cursor)
+}
+
+pub(super) fn parse_scan_header_at(
+    input: &[u8],
+    marker_offset: usize,
+    cursor: usize,
+) -> Result<ScanHeader, JpegError> {
+    let error = |offset, kind| JpegError { offset, kind };
 
     let length_bytes = input
         .get(cursor..cursor.saturating_add(2))

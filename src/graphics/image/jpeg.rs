@@ -35,6 +35,9 @@ mod color;
 #[path = "jpeg/orientation.rs"]
 mod orientation;
 
+#[path = "jpeg/stream.rs"]
+mod stream;
+
 pub use self::block::{BlockDecodeError, decode_baseline_block};
 pub use self::color::{ColorDecodeError, Rgb8Image, decode_baseline_rgb8};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
@@ -51,6 +54,7 @@ pub use self::planes::{
 pub use self::scan::{
     BaselineScanError, ScanComponent, ScanHeader, read_first_scan_header, validate_baseline_scan,
 };
+pub use self::stream::{JpegEvent, JpegEventReader};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JpegFrameKind {
