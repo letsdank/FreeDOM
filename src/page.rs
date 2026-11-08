@@ -1921,4 +1921,32 @@ mod tests {
         assert_eq!(page.blocks[1].text(), Some("After"));
         assert_eq!(page.blocks[1].sources[0].indices(), &[1]);
     }
+
+    #[test]
+    fn box_tree_inspection_keeps_existing_flat_page_rendering() {
+        let page = parse_html(
+            "https://example.test/",
+            r#"<div>before <span>inside</span><div>child</div> after</div>"#,
+        );
+
+        let before: Vec<_> = page
+            .blocks
+            .iter()
+            .filter_map(|block| block.text().map(str::to_owned))
+            .collect();
+
+        let tree = crate::box_tree::BoxTree::build(&page.styled_tree).unwrap();
+        let dump = tree.format_debug();
+
+        assert!(dump.contains("anonymous block: inline run"));
+        assert!(dump.contains("inline <span>"));
+
+        let after: Vec<_> = page
+            .blocks
+            .iter()
+            .filter_map(|block| block.text().map(str::to_owned))
+            .collect();
+
+        assert_eq!(after, before);
+    }
 }

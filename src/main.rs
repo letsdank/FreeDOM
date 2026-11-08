@@ -1,3 +1,4 @@
+mod box_tree;
 mod css;
 mod fetch;
 mod layout_debug;
@@ -318,6 +319,15 @@ impl App {
             Key::Named(NamedKey::F8) => {
                 if !event.repeat {
                     self.inspect_block_at_cursor();
+                }
+            }
+
+            Key::Named(NamedKey::F7) => {
+                if !event.repeat {
+                    match box_tree::BoxTree::build(&self.page.styled_tree) {
+                        Ok(tree) => eprint!("{}", tree.format_debug()),
+                        Err(error) => eprintln!("FreeDOM box tree: {error}"),
+                    }
                 }
             }
 
