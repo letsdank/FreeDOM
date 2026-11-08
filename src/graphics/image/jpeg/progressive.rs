@@ -57,6 +57,9 @@ pub struct CoefficientComponent {
     blocks: Vec<[i32; 64]>,
 
     pub(super) dc_initialized: bool,
+
+    /// Initial approximation level by spectral (zigzag) index.
+    pub(super) ac_bits: [Option<u8>; 64],
 }
 
 impl CoefficientComponent {
@@ -227,6 +230,7 @@ impl ProgressiveState {
                 visible_rows,
                 blocks,
                 dc_initialized: false,
+                ac_bits: [None; 64],
             });
         }
 

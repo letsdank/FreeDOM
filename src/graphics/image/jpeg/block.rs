@@ -108,7 +108,10 @@ pub(super) fn decode_dc(
         .ok_or(BlockDecodeError::DcOverflow)
 }
 
-fn read_signed(reader: &mut EntropyReader<'_>, category: u8) -> Result<i32, BlockDecodeError> {
+pub(super) fn read_signed(
+    reader: &mut EntropyReader<'_>,
+    category: u8,
+) -> Result<i32, BlockDecodeError> {
     if category == 0 {
         return Ok(0);
     }
