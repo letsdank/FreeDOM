@@ -36,7 +36,7 @@ impl Error for ImageError {}
 
 /// Decodes supported baseline JPEG images and applies EXIF orientation.
 pub fn decode_jpeg(encoded: &[u8]) -> Result<Surface, ImageError> {
-    let image = jpeg::decode_baseline_rgb8(encoded, jpeg::PlaneLimits::default())
+    let image = jpeg::decode_rgb8(encoded, jpeg::PlaneLimits::default())
         .map_err(|error| ImageError::new(error.to_string()))?;
 
     let orientation = jpeg::read_orientation(encoded);

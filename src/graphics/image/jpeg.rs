@@ -47,8 +47,11 @@ mod progressive_dc;
 #[path = "jpeg/progressive_ac.rs"]
 mod progressive_ac;
 
+#[path = "jpeg/progressive_image.rs"]
+mod progressive_image;
+
 pub use self::block::{BlockDecodeError, decode_baseline_block};
-pub use self::color::{ColorDecodeError, Rgb8Image, decode_baseline_rgb8};
+pub use self::color::{ColorDecodeError, Rgb8Image, decode_baseline_rgb8, decode_rgb8};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
 pub use self::huffman::{
     HuffmanBuildError, HuffmanDecodeError, HuffmanDecoder, HuffmanTable, HuffmanTables,
@@ -65,6 +68,7 @@ pub use self::progressive::{
 };
 pub use self::progressive_ac::InitialAcError;
 pub use self::progressive_dc::InitialDcError;
+pub use self::progressive_image::{ProgressiveImageError, decode_progressive_planes};
 pub use self::scan::{
     BaselineScanError, ScanComponent, ScanHeader, read_first_scan_header, validate_baseline_scan,
 };

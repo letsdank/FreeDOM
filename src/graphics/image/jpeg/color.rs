@@ -7,7 +7,8 @@
 //! embedded color profiles are not applied.
 
 use super::{
-    DecodedPlanes, HeaderSegments, JpegError, PlaneDecodeError, PlaneLimits, decode_baseline_planes,
+    DecodedPlanes, HeaderSegments, JpegError, JpegFrameKind, PlaneDecodeError, PlaneLimits,
+    ProgressiveImageError, decode_baseline_planes, decode_progressive_planes, read_frame_header,
 };
 
 #[derive(Debug)]
@@ -25,6 +26,8 @@ pub enum ColorDecodeError {
     InvalidColorMetadata,
     SizeOverflow,
     AllocationFailed,
+    Progressive(ProgressiveImageError),
+    UnsupportedFrame(JpegFrameKind),
 }
 
 impl std::fmt::Display for ColorDecodeError {
@@ -43,6 +46,27 @@ pub fn decode_baseline_rgb8(
     limits: PlaneLimits,
 ) -> Result<Rgb8Image, ColorDecodeError> {
     let planes = decode_baseline_planes(input, limits).map_err(ColorDecodeError::Planes)?;
+
+    let model = color_model(input, &planes)?;
+
+    convert_planes(&planes, model)
+}
+
+/// Decodes supported sequential or progressive JPEG into RGB8.
+pub fn decode_rgb8(input: &[u8], limits: PlaneLimits) -> Result<Rgb8Image, ColorDecodeError> {
+    let frame = read_frame_header(input).map_err(ColorDecodeError::Header)?;
+
+    let planes = match frame.kind {
+        JpegFrameKind::Baseline => {
+            decode_baseline_planes(input, limits).map_err(ColorDecodeError::Planes)?
+        }
+
+        JpegFrameKind::Progressive => {
+            decode_progressive_planes(input, limits).map_err(ColorDecodeError::Progressive)?
+        }
+
+        kind => return Err(ColorDecodeError::UnsupportedFrame(kind)),
+    };
 
     let model = color_model(input, &planes)?;
 
