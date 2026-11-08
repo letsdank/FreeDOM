@@ -41,6 +41,9 @@ mod stream;
 #[path = "jpeg/progressive.rs"]
 mod progressive;
 
+#[path = "jpeg/progressive_dc.rs"]
+mod progressive_dc;
+
 pub use self::block::{BlockDecodeError, decode_baseline_block};
 pub use self::color::{ColorDecodeError, Rgb8Image, decode_baseline_rgb8};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
@@ -57,6 +60,7 @@ pub use self::planes::{
 pub use self::progressive::{
     CoefficientComponent, ProgressiveError, ProgressiveLimits, ProgressiveState,
 };
+pub use self::progressive_dc::InitialDcError;
 pub use self::scan::{
     BaselineScanError, ScanComponent, ScanHeader, read_first_scan_header, validate_baseline_scan,
 };

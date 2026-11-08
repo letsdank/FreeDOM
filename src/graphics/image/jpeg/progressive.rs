@@ -55,6 +55,8 @@ pub struct CoefficientComponent {
     visible_rows: usize,
 
     blocks: Vec<[i32; 64]>,
+
+    pub(super) dc_initialized: bool,
 }
 
 impl CoefficientComponent {
@@ -90,6 +92,7 @@ impl CoefficientComponent {
 pub struct ProgressiveState {
     components: Vec<CoefficientComponent>,
     huffman: HuffmanTables,
+    pub(super) frame: JpegFrameHeader,
 }
 
 impl ProgressiveState {
@@ -223,12 +226,14 @@ impl ProgressiveState {
                 visible_columns,
                 visible_rows,
                 blocks,
+                dc_initialized: false,
             });
         }
 
         Ok(Self {
             components,
             huffman: HuffmanTables::default(),
+            frame: frame.clone(),
         })
     }
 

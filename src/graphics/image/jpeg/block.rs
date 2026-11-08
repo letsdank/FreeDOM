@@ -37,17 +37,7 @@ pub fn decode_baseline_block(
     ac: &HuffmanDecoder,
     previous_dc: i32,
 ) -> Result<[i32; 64], BlockDecodeError> {
-    let category = dc.decode(reader).map_err(BlockDecodeError::DcHuffman)?;
-
-    if category > 11 {
-        return Err(BlockDecodeError::InvalidDcCategory(category));
-    }
-
-    let difference = read_signed(reader, category)?;
-
-    let dc_value = previous_dc
-        .checked_add(difference)
-        .ok_or(BlockDecodeError::DcOverflow)?;
+    let dc_value = decode_dc(reader, dc, previous_dc)?;
 
     let mut block = [0; 64];
     block[0] = dc_value;
@@ -98,6 +88,24 @@ pub fn decode_baseline_block(
     }
 
     Ok(block)
+}
+
+pub(super) fn decode_dc(
+    reader: &mut EntropyReader<'_>,
+    dc: &HuffmanDecoder,
+    previous_dc: i32,
+) -> Result<i32, BlockDecodeError> {
+    let category = dc.decode(reader).map_err(BlockDecodeError::DcHuffman)?;
+
+    if category > 11 {
+        return Err(BlockDecodeError::InvalidDcCategory(category));
+    }
+
+    let difference = read_signed(reader, category)?;
+
+    previous_dc
+        .checked_add(difference)
+        .ok_or(BlockDecodeError::DcOverflow)
 }
 
 fn read_signed(reader: &mut EntropyReader<'_>, category: u8) -> Result<i32, BlockDecodeError> {
