@@ -16,7 +16,17 @@ pub(crate) struct PageLayout {
 
 struct BlockLayout {
     top: i32,
+    width: i32,
     height: i32,
+}
+
+/// Geometry of a current layout block in document coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LayoutRect {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: i32,
+    pub(crate) height: i32,
 }
 
 #[derive(Clone, Copy)]
@@ -43,15 +53,23 @@ impl PageLayout {
         let mut top = 0_i32;
 
         for block in &page.blocks {
-            let height = match &block.content {
+            let (block_width, height) = match &block.content {
                 BlockContent::Svg(svg) => {
-                    let (_, height) = svg_block_size(svg, available_width);
-                    i32::try_from(height).unwrap_or(i32::MAX)
+                    let (width, height) = svg_block_size(svg, available_width);
+
+                    (
+                        i32::try_from(width).unwrap_or(i32::MAX),
+                        i32::try_from(height).unwrap_or(i32::MAX),
+                    )
                 }
 
                 BlockContent::Bitmap(bitmap) => {
-                    let (_, height) = bitmap_block_size(bitmap, available_width);
-                    i32::try_from(height).unwrap_or(i32::MAX)
+                    let (width, height) = bitmap_block_size(bitmap, available_width);
+
+                    (
+                        i32::try_from(width).unwrap_or(i32::MAX),
+                        i32::try_from(height).unwrap_or(i32::MAX),
+                    )
                 }
 
                 BlockContent::Text(text) => {
@@ -65,18 +83,24 @@ impl PageLayout {
 
                     let font = page_font.as_ref().or(fallback_font.as_ref());
 
-                    measure_wrapped_text(
+                    let height = measure_wrapped_text(
                         text,
                         text_width,
                         block.style.font_size,
                         block.style.font_weight,
                         block.style.font_style,
                         font,
-                    )
+                    );
+
+                    (text_width, height)
                 }
             };
 
-            blocks.push(BlockLayout { top, height });
+            blocks.push(BlockLayout {
+                top,
+                width: block_width,
+                height,
+            });
 
             top = top
                 .saturating_add(height)
@@ -104,6 +128,15 @@ impl PageLayout {
 
     pub(crate) fn content_height(&self) -> i32 {
         self.content_height
+    }
+
+    pub(crate) fn block_rects(&self) -> impl Iterator<Item = LayoutRect> + '_ {
+        self.blocks.iter().map(|block| LayoutRect {
+            x: CONTENT_HORIZONTAL_PADDING as i32,
+            y: block.top,
+            width: block.width,
+            height: block.height,
+        })
     }
 }
 

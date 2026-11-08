@@ -1637,4 +1637,100 @@ mod tests {
 
         assert_eq!(page.title, "Hello world");
     }
+
+    #[test]
+    fn layout_inspector_uses_real_block_sizes_without_polluting_cache() {
+        use crate::{
+            graphics::raster::{Color, Surface},
+            layout_debug::paint_layout_overlay,
+            page_layout::{LayoutRect, PageLayout},
+            render::{BlockRasterCache, GlyphRasterCache, paint},
+        };
+
+        let page = Page {
+            url: "https://example.test/".into(),
+            title: String::new(),
+
+            blocks: vec![
+                Block {
+                    content: BlockContent::Text("Hello".into()),
+                    style: TextStyle::initial(),
+                    link: None,
+                },
+                Block {
+                    content: BlockContent::Bitmap(Surface::new(30, 12, Color::BLACK)),
+                    style: TextStyle::initial(),
+                    link: None,
+                },
+            ],
+
+            font_faces: vec![],
+        };
+
+        let (width, height) = (100, 130);
+        let layout = PageLayout::build(&page, width, None);
+
+        assert_eq!(
+            layout.block_rects().collect::<Vec<_>>(),
+            vec![
+                LayoutRect {
+                    x: 16,
+                    y: 0,
+                    width: 68,
+                    height: 10,
+                },
+                LayoutRect {
+                    x: 16,
+                    y: 10,
+                    width: 30,
+                    height: 12
+                }
+            ]
+        );
+
+        let mut cache = BlockRasterCache::new();
+        let mut glyphs = GlyphRasterCache::new();
+
+        let mut first = vec![0; width * height];
+
+        paint(
+            &mut first,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut cache,
+            &mut glyphs,
+            0,
+            false,
+        );
+
+        let mut overlay = first.clone();
+
+        paint_layout_overlay(&mut overlay, width, height, &layout, 0);
+
+        assert_ne!(overlay, first);
+
+        let mut again = vec![0; width * height];
+
+        paint(
+            &mut again,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut cache,
+            &mut glyphs,
+            0,
+            false,
+        );
+
+        assert_eq!(first, again);
+    }
 }

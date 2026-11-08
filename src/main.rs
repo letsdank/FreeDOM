@@ -1,5 +1,6 @@
 mod css;
 mod fetch;
+mod layout_debug;
 mod page;
 mod page_layout;
 mod performance;
@@ -157,6 +158,7 @@ struct App {
     block_raster_cache: BlockRasterCache,
     frame_profiler: FrameProfiler,
     glyph_raster_cache: GlyphRasterCache,
+    show_layout_boxes: bool,
 }
 
 impl App {
@@ -186,6 +188,7 @@ impl App {
             block_raster_cache: BlockRasterCache::new(),
             frame_profiler: FrameProfiler::from_environment(),
             glyph_raster_cache: GlyphRasterCache::new(),
+            show_layout_boxes: false,
         }
     }
 
@@ -298,6 +301,13 @@ impl App {
                 self.request_redraw();
             }
 
+            Key::Named(NamedKey::F3) => {
+                if !event.repeat {
+                    self.show_layout_boxes = !self.show_layout_boxes;
+                    self.request_redraw();
+                }
+            }
+
             _ => {
                 if let Some(text) = &event.text {
                     let text = text.to_string();
@@ -373,6 +383,16 @@ impl App {
             self.scroll_y,
             profiling,
         );
+
+        if self.show_layout_boxes {
+            layout_debug::paint_layout_overlay(
+                &mut buffer,
+                width as usize,
+                height as usize,
+                layout,
+                self.scroll_y,
+            );
+        }
 
         let paint_duration = paint_started.map(|started| started.elapsed());
         let present_started = profiling.then(Instant::now);
