@@ -315,6 +315,12 @@ impl App {
                 }
             }
 
+            Key::Named(NamedKey::F8) => {
+                if !event.repeat {
+                    self.inspect_block_at_cursor();
+                }
+            }
+
             _ => {
                 if let Some(text) = &event.text {
                     let text = text.to_string();
@@ -422,6 +428,36 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn inspect_block_at_cursor(&self) {
+        let (Some((x, y)), Some(layout), Some(window)) = (
+            self.cursor_position,
+            self.layout.as_ref(),
+            self.window.as_ref(),
+        ) else {
+            eprintln!("FreeDOM inspector: no cursor position or page layout");
+            return;
+        };
+
+        let size = window.inner_size();
+
+        if layout.viewport_width() != size.width as usize {
+            eprintln!("FreeDOM inspector: layout is being updated");
+            return;
+        }
+
+        match layout.block_at_viewport_point(x, y, size.height as usize, self.scroll_y) {
+            Some(index) => {
+                if let Some(description) = self.page.describe_block_sources(index) {
+                    eprint!("{description}");
+                }
+            }
+
+            None => {
+                eprintln!("FreeDOM inspector: no block at cursor");
+            }
+        }
     }
 }
 

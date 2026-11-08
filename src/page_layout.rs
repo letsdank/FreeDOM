@@ -29,6 +29,22 @@ pub(crate) struct LayoutRect {
     pub(crate) height: i32,
 }
 
+impl LayoutRect {
+    fn contains(&self, x: i32, y: i32) -> bool {
+        if self.width <= 0 || self.height <= 0 {
+            return false;
+        }
+
+        let (x, y) = (i64::from(x), i64::from(y));
+        let (left, top) = (i64::from(self.x), i64::from(self.y));
+
+        x >= left
+            && x < left + i64::from(self.width)
+            && y >= top
+            && y < top + i64::from(self.height)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct TextMetrics {
     pub(crate) bitmap_scale: usize,
@@ -137,6 +153,31 @@ impl PageLayout {
             width: block.width,
             height: block.height,
         })
+    }
+
+    /// Returns the last painted block under a window-relative point.
+    pub(crate) fn block_at_viewport_point(
+        &self,
+        x: i32,
+        y: i32,
+        viewport_height: usize,
+        scroll_y: i32,
+    ) -> Option<usize> {
+        if x < 0
+            || y < CONTENT_TOP
+            || usize::try_from(x).ok()? >= self.viewport_width
+            || usize::try_from(y).ok()? >= viewport_height
+        {
+            return None;
+        }
+
+        let document_y =
+            i32::try_from(i64::from(y) - i64::from(CONTENT_TOP) + i64::from(scroll_y)).ok()?;
+
+        self.block_rects()
+            .enumerate()
+            .filter_map(|(index, rect)| rect.contains(x, document_y).then_some(index))
+            .last()
     }
 }
 
@@ -343,5 +384,47 @@ mod tests {
         );
 
         assert_eq!(height, 20);
+    }
+
+    #[test]
+    fn hit_tests_scrolled_blocks_and_clips_toolbar() {
+        let layout = PageLayout {
+            viewport_width: 100,
+
+            blocks: vec![
+                BlockLayout {
+                    top: 0,
+                    width: 68,
+                    height: 10,
+                },
+                BlockLayout {
+                    top: 10,
+                    width: 30,
+                    height: 12,
+                },
+                BlockLayout {
+                    top: 10,
+                    width: 12,
+                    height: 4,
+                },
+            ],
+
+            content_height: 22,
+        };
+
+        assert_eq!(layout.block_at_viewport_point(16, 90, 130, 0), Some(0));
+
+        // The toolbar is outside page content.
+        assert_eq!(layout.block_at_viewport_point(16, 89, 130, 0), None);
+
+        // The last painted overlapping block wins.
+        assert_eq!(layout.block_at_viewport_point(16, 100, 130, 0), Some(2));
+        assert_eq!(layout.block_at_viewport_point(40, 100, 130, 0), Some(1));
+
+        // The same point after scrolling.
+        assert_eq!(layout.block_at_viewport_point(16, 90, 130, 10), Some(2));
+        assert_eq!(layout.block_at_viewport_point(46, 100, 130, 0), None);
+        assert_eq!(layout.block_at_viewport_point(16, 130, 130, 0), None);
+        assert_eq!(layout.block_at_viewport_point(100, 100, 130, 0), None);
     }
 }

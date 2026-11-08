@@ -12,7 +12,7 @@ use crate::{
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     javascript::{DocumentScriptSession, DocumentState},
-    styled_tree::StyledTree,
+    styled_tree::{SourcePath, StyledTree},
     url::Url,
 };
 use anyhow::Result;
@@ -27,6 +27,7 @@ pub(crate) struct Block {
     pub(crate) content: BlockContent,
     pub(crate) style: TextStyle,
     pub(crate) link: Option<String>,
+    pub(crate) sources: Vec<SourcePath>,
 }
 
 impl Block {
@@ -94,6 +95,53 @@ impl Page {
                     .find(|face| face.family.eq_ignore_ascii_case(family))
             })
             .map(|face| face.data.as_slice())
+    }
+
+    pub(crate) fn describe_block_sources(&self, index: usize) -> Option<String> {
+        use std::fmt::Write;
+
+        let block = self.blocks.get(index)?;
+
+        let kind = match &block.content {
+            BlockContent::Text(_) => "text",
+            BlockContent::Svg(_) => "svg",
+            BlockContent::Bitmap(_) => "image",
+        };
+
+        let mut output = format!("FreeDOM block #{index} ({kind}) - source contributors:\n");
+
+        if block.sources.is_empty() {
+            output.push_str("  no source recorded\n");
+        }
+
+        for path in block.sources.iter().take(32) {
+            match self.styled_tree.source_node(path) {
+                Some(HtmlNode::Element(element)) => {
+                    let id = html_attribute(element, "id");
+
+                    let _ = writeln!(
+                        output,
+                        "  <{}> id={id:?} path={:?}",
+                        element.name,
+                        path.indices()
+                    );
+                }
+
+                Some(HtmlNode::Text(_)) => {
+                    let _ = writeln!(output, "  text node path={:?}", path.indices());
+                }
+
+                _ => {
+                    let _ = writeln!(output, "  unavailable path={:?}", path.indices());
+                }
+            }
+        }
+
+        if block.sources.len() > 32 {
+            output.push_str("  ... output limit reached\n");
+        }
+
+        Some(output)
     }
 }
 
@@ -204,9 +252,12 @@ fn parse_dom_with_fetcher(
 
     let mut blocks = Vec::new();
     let mut current_text = String::new();
+    let mut trace = ExtractionTrace::default();
     let page_url = Url::parse(url).ok();
 
-    for child in &document.children {
+    for (index, child) in document.children.iter().enumerate() {
+        trace.path.push(index);
+
         extract_blocks(
             child,
             &rules,
@@ -216,10 +267,13 @@ fn parse_dom_with_fetcher(
             page_url.as_ref(),
             fetcher,
             &document_state,
+            &mut trace,
         );
+
+        trace.path.pop();
     }
 
-    flush(&mut blocks, &mut current_text, base_style);
+    flush(&mut blocks, &mut current_text, base_style, &mut trace);
 
     Page {
         url: url.to_owned(),
@@ -612,6 +666,42 @@ pub(crate) fn element_info(node: &HtmlNode) -> Option<ElementInfo> {
     })
 }
 
+#[derive(Default)]
+struct ExtractionTrace {
+    path: Vec<usize>,
+    pending: Vec<SourcePath>,
+}
+
+impl ExtractionTrace {
+    fn append_text(&mut self, current: &mut String, contents: &str, is_text_node: bool) {
+        let before = current.len();
+
+        append_collapsed(current, contents);
+
+        if current.len() == before {
+            return;
+        }
+
+        // Ordinary text is attributed to its containing element.
+        // Top-level text has no containing element, so keep its own path.
+        let owner = if is_text_node && self.path.len() > 1 {
+            &self.path[..self.path.len() - 1]
+        } else {
+            &self.path[..]
+        };
+
+        let source = SourcePath::from_indices(owner);
+
+        if self.pending.last() != Some(&source) {
+            self.pending.push(source);
+        }
+    }
+
+    fn current_source(&self) -> SourcePath {
+        SourcePath::from_indices(&self.path)
+    }
+}
+
 fn extract_blocks(
     node: &HtmlNode,
     rules: &[CssRule],
@@ -621,9 +711,10 @@ fn extract_blocks(
     page_url: Option<&Url>,
     fetcher: Option<&Fetcher>,
     document: &DocumentState,
+    trace: &mut ExtractionTrace,
 ) {
     if let HtmlNode::Text(contents) = node {
-        append_collapsed(current, contents);
+        trace.append_text(current, contents, true);
         return;
     }
 
@@ -643,7 +734,7 @@ fn extract_blocks(
     }
 
     if element.tag == "br" {
-        flush(blocks, current, inherited_style);
+        flush(blocks, current, inherited_style, trace);
         return;
     }
 
@@ -664,6 +755,7 @@ fn extract_blocks(
                 content,
                 style,
                 link: None,
+                sources: vec![trace.current_source()],
             });
         }
 
@@ -671,7 +763,7 @@ fn extract_blocks(
     }
 
     if element.tag == "svg" {
-        flush(blocks, current, inherited_style);
+        flush(blocks, current, inherited_style, trace);
 
         let parsed_svg = match page_url {
             Some(page_url) => parse_svg_element_at(dom_element, page_url),
@@ -683,6 +775,7 @@ fn extract_blocks(
                 content: BlockContent::Svg(svg),
                 style,
                 link: None,
+                sources: vec![trace.current_source()],
             });
         }
 
@@ -690,7 +783,7 @@ fn extract_blocks(
     }
 
     if element.tag == "a" {
-        flush(blocks, current, inherited_style);
+        flush(blocks, current, inherited_style, trace);
 
         let mut text = String::new();
 
@@ -715,6 +808,7 @@ fn extract_blocks(
                 content: BlockContent::Text(text),
                 style,
                 link: target,
+                sources: vec![trace.current_source()],
             });
         }
 
@@ -724,7 +818,7 @@ fn extract_blocks(
     let is_block = style.display == Display::Block;
 
     if is_block {
-        flush(blocks, current, inherited_style.clone());
+        flush(blocks, current, inherited_style.clone(), trace);
     }
 
     if let Some(contents) = element
@@ -732,16 +826,18 @@ fn extract_blocks(
         .as_deref()
         .and_then(|id| document.text_content_override(id))
     {
-        append_collapsed(current, contents);
+        trace.append_text(current, contents, false);
 
         if is_block {
-            flush(blocks, current, style);
+            flush(blocks, current, style, trace);
         }
 
         return;
     }
 
-    for child in &dom_element.children {
+    for (index, child) in dom_element.children.iter().enumerate() {
+        trace.path.push(index);
+
         extract_blocks(
             child,
             rules,
@@ -751,11 +847,14 @@ fn extract_blocks(
             page_url,
             fetcher,
             document,
+            trace,
         );
+
+        trace.path.pop();
     }
 
     if is_block {
-        flush(blocks, current, style);
+        flush(blocks, current, style, trace);
     }
 }
 
@@ -769,15 +868,23 @@ fn append_collapsed(target: &mut String, source: &str) {
     }
 }
 
-fn flush(blocks: &mut Vec<Block>, current: &mut String, style: TextStyle) {
+fn flush(
+    blocks: &mut Vec<Block>,
+    current: &mut String,
+    style: TextStyle,
+    trace: &mut ExtractionTrace,
+) {
     let text = current.trim().to_owned();
     current.clear();
+
+    let sources = std::mem::take(&mut trace.pending);
 
     if !text.is_empty() {
         blocks.push(Block {
             content: BlockContent::Text(text),
             style,
             link: None,
+            sources,
         });
     }
 }
@@ -1661,11 +1768,13 @@ mod tests {
                     content: BlockContent::Text("Hello".into()),
                     style: TextStyle::initial(),
                     link: None,
+                    sources: Vec::new(),
                 },
                 Block {
                     content: BlockContent::Bitmap(Surface::new(30, 12, Color::BLACK)),
                     style: TextStyle::initial(),
                     link: None,
+                    sources: Vec::new(),
                 },
             ],
 
@@ -1764,5 +1873,52 @@ mod tests {
         assert!(debug.contains("<p>"));
         assert!(debug.contains("text \"After\" source=script override"));
         assert!(!debug.contains("text \"Before\""));
+    }
+
+    #[test]
+    fn connects_rendered_blocks_to_source_contributors() {
+        let page = parse_html(
+            "https://example.test/",
+            r#"<p id="outer">One <span id="inner">two</span> three</p><a href="/x">Link</a><svg width="4" height="3"><rect width="4" height="3"/></svg>"#,
+        );
+
+        assert_eq!(page.blocks.len(), 3);
+        assert_eq!(page.blocks[0].text(), Some("One two three"));
+
+        let paths: Vec<_> = page.blocks[0]
+            .sources
+            .iter()
+            .map(|path| path.indices())
+            .collect();
+
+        assert_eq!(paths, [&[0][..], &[0, 1][..], &[0][..]]);
+        assert_eq!(page.blocks[1].sources[0].indices(), &[1]);
+        assert_eq!(page.blocks[2].sources[0].indices(), &[2]);
+
+        let description = page.describe_block_sources(0).unwrap();
+
+        assert!(description.contains("<p> id=Some(\"outer\")"));
+        assert!(description.contains("<span> id=Some(\"inner\")"));
+        assert!(page.describe_block_sources(2).unwrap().contains("<svg>"));
+    }
+
+    #[test]
+    fn script_text_override_and_top_level_text_keep_accurate_sources() {
+        let page = parse_html(
+            "https://example.test/",
+            r#"plain<p id="welcome">Before</p><script>document.getElementById("welcome").textContent = "After";</script>"#,
+        );
+
+        assert_eq!(page.blocks[0].text(), Some("plain"));
+        assert_eq!(page.blocks[0].sources[0].indices(), &[0]);
+
+        assert!(
+            page.describe_block_sources(0)
+                .unwrap()
+                .contains("text node")
+        );
+
+        assert_eq!(page.blocks[1].text(), Some("After"));
+        assert_eq!(page.blocks[1].sources[0].indices(), &[1]);
     }
 }

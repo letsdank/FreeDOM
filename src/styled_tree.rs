@@ -22,6 +22,10 @@ impl SourcePath {
     pub(crate) fn indices(&self) -> &[usize] {
         &self.0
     }
+
+    pub(crate) fn from_indices(indices: &[usize]) -> Self {
+        Self(indices.to_vec())
+    }
 }
 
 #[derive(Default)]
