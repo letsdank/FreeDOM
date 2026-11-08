@@ -125,6 +125,29 @@ pub struct HuffmanTables {
     pub ac: [Option<HuffmanTable>; 4],
 }
 
+impl HuffmanTables {
+    /// Applies one DHT payload; errors are relative to the payload.
+    ///
+    /// Existing tables not defined by this payload remain unchanged.
+    pub fn update_from_dht(&mut self, data: &[u8]) -> Result<(), JpegError> {
+        let parsed = parse_dht_segment(data)?;
+
+        for (destination, table) in self.dc.iter_mut().zip(parsed.dc) {
+            if table.is_some() {
+                *destination = table;
+            }
+        }
+
+        for (destination, table) in self.ac.iter_mut().zip(parsed.ac) {
+            if table.is_some() {
+                *destination = table;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Reads one DHT payload; error offsets are relative to the payload.
 ///
 /// Definitions with the same class and identifier replace earlier ones.
@@ -230,22 +253,10 @@ pub fn read_huffman_tables(input: &[u8]) -> Result<HuffmanTables, JpegError> {
             continue;
         }
 
-        let parsed = parse_dht_segment(segment.data).map_err(|mut error| {
+        tables.update_from_dht(segment.data).map_err(|mut error| {
             error.offset += segment.data_offset;
             error
         })?;
-
-        for (destination, table) in tables.dc.iter_mut().zip(parsed.dc) {
-            if table.is_some() {
-                *destination = table;
-            }
-        }
-
-        for (destination, table) in tables.ac.iter_mut().zip(parsed.ac) {
-            if table.is_some() {
-                *destination = table;
-            }
-        }
     }
 
     Ok(tables)
