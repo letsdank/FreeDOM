@@ -5,6 +5,7 @@ mod page;
 mod page_layout;
 mod performance;
 mod render;
+mod styled_tree;
 mod url;
 
 #[allow(dead_code)]
@@ -305,6 +306,12 @@ impl App {
                 if !event.repeat {
                     self.show_layout_boxes = !self.show_layout_boxes;
                     self.request_redraw();
+                }
+            }
+
+            Key::Named(NamedKey::F4) => {
+                if !event.repeat {
+                    eprintln!("{}", self.page.styled_tree.format_debug());
                 }
             }
 

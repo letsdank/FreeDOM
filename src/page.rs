@@ -12,6 +12,7 @@ use crate::{
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     javascript::{DocumentScriptSession, DocumentState},
+    styled_tree::StyledTree,
     url::Url,
 };
 use anyhow::Result;
@@ -68,6 +69,7 @@ pub(crate) struct Page {
     pub(crate) title: String,
     pub(crate) blocks: Vec<Block>,
     font_faces: Vec<LoadedFontFace>,
+    pub(crate) styled_tree: StyledTree,
 }
 
 impl Page {
@@ -95,9 +97,9 @@ impl Page {
     }
 }
 
-struct ElementInfo {
-    tag: String,
-    id: Option<String>,
+pub(crate) struct ElementInfo {
+    pub(crate) tag: String,
+    pub(crate) id: Option<String>,
     classes: Vec<String>,
     inline_style: Option<String>,
     href: Option<String>,
@@ -105,7 +107,7 @@ struct ElementInfo {
 }
 
 impl ElementInfo {
-    fn css_element(&self) -> CssElement<'_> {
+    pub(crate) fn css_element(&self) -> CssElement<'_> {
         CssElement {
             tag: &self.tag,
             id: self.id.as_deref(),
@@ -194,6 +196,7 @@ fn parse_dom_with_fetcher(
         .collect();
 
     let rules = build_author_rules(&stylesheets_texts);
+    let styled_tree = StyledTree::build(document, &rules, &document_state);
     let font_faces = fetcher
         .map(|fetcher| load_author_fonts(fetcher, stylesheets))
         .unwrap_or_default();
@@ -223,6 +226,7 @@ fn parse_dom_with_fetcher(
         title,
         blocks,
         font_faces,
+        styled_tree,
     }
 }
 
@@ -565,7 +569,7 @@ fn html_attribute<'a>(element: &'a HtmlElement, name: &str) -> Option<&'a str> {
         .map(|attribute| attribute.value.as_str())
 }
 
-fn element_info(node: &HtmlNode) -> Option<ElementInfo> {
+pub(crate) fn element_info(node: &HtmlNode) -> Option<ElementInfo> {
     let HtmlNode::Element(element) = node else {
         return None;
     };
@@ -1102,6 +1106,7 @@ mod tests {
                 font_style: FontStyle::Normal,
                 data: vec![1, 2, 3],
             }],
+            styled_tree: StyledTree::default(),
         };
 
         assert_eq!(
@@ -1665,6 +1670,7 @@ mod tests {
             ],
 
             font_faces: vec![],
+            styled_tree: StyledTree::default(),
         };
 
         let (width, height) = (100, 130);
@@ -1732,5 +1738,31 @@ mod tests {
         );
 
         assert_eq!(first, again);
+    }
+
+    #[test]
+    fn page_styled_snapshot_tracks_nesting_and_existing_text_override() {
+        let page = parse_html(
+            "https://example.test",
+            r#"
+                <div id="outer">
+                    <p id="welcome">Before</p>
+                </div>
+
+                <script>
+                    const heading = document.getElementById("welcome");
+                    heading.textContent = "After";
+                </script>
+            "#,
+        );
+
+        assert_eq!(page.blocks[0].text(), Some("After"));
+
+        let debug = page.styled_tree.format_debug();
+
+        assert!(debug.contains("<div>"));
+        assert!(debug.contains("<p>"));
+        assert!(debug.contains("text \"After\" source=script override"));
+        assert!(!debug.contains("text \"Before\""));
     }
 }
