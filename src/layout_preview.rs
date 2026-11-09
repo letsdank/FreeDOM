@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
-    css::TextStyle,
+    css::{Height, TextStyle},
     graphics::font::TrueTypeFont,
     page::Page,
     page_layout::{CONTENT_HORIZONTAL_PADDING, LayoutRect, measure_wrapped_text},
@@ -250,7 +250,7 @@ impl PreviewLayout {
 
                     // The root element's margins do not collapse with its children.
                     // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
-                    if is_root {
+                    if is_root && block.style.height == Height::Auto {
                         if let Some(group) = child_flow.trailing_margin.take() {
                             if group.value() < 0 {
                                 return Err(PreviewError::Margin(group.path));
@@ -263,7 +263,20 @@ impl PreviewLayout {
                         }
                     }
 
-                    let end = child_flow.end;
+                    let end = match block.style.height {
+                        Height::Auto => child_flow.end,
+
+                        Height::Pixels(height) => {
+                            // A fixed-height parent does not collapse its bottom margin
+                            // with the last child's bottom margin.
+                            child_flow.trailing_margin = None;
+
+                            start
+                                .checked_add(height)
+                                .ok_or(PreviewError::SizeOverflow)?
+                        }
+                    };
+
                     let height = end.checked_sub(start).ok_or(PreviewError::SizeOverflow)?;
 
                     if height < 0 || (height == 0 && !children.is_empty()) {
@@ -441,7 +454,9 @@ fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
             break;
         };
 
-        if matches!(&child.content, BlockContent::Flow(children) if children.is_empty()) {
+        if matches!(&child.content, BlockContent::Flow(children) if children.is_empty())
+            && !matches!(child.style.height, Height::Pixels(height) if height > 0)
+        {
             return Err(PreviewError::EmptyBlock(child.source.indices().to_vec()));
         }
 

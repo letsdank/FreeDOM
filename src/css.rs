@@ -42,6 +42,12 @@ pub(crate) enum FontStyle {
     Italic,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Height {
+    Auto,
+    Pixels(i32),
+}
+
 #[derive(Clone)]
 pub(crate) struct TextStyle {
     pub(crate) color: u32,
@@ -52,6 +58,7 @@ pub(crate) struct TextStyle {
     pub(crate) margin_before: i32,
     pub(crate) margin_after: i32,
     pub(crate) display: Display,
+    pub(crate) height: Height,
 }
 
 impl TextStyle {
@@ -65,6 +72,7 @@ impl TextStyle {
             margin_before: 0,
             margin_after: 0,
             display: Display::Inline,
+            height: Height::Auto,
         }
     }
 }
@@ -95,6 +103,7 @@ struct Declarations {
     display: Option<Display>,
     margin_before: Option<i32>,
     margin_after: Option<i32>,
+    height: Option<Height>,
 }
 
 pub(crate) struct CssRule {
@@ -482,6 +491,12 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "height" => {
+                if let Some(value) = parse_height(&declaration.value) {
+                    parsed.height = Some(value);
+                }
+            }
+
             _ => {}
         }
     }
@@ -598,6 +613,31 @@ fn parse_margin_length(value: &str) -> Option<i32> {
     Some(rounded as i32)
 }
 
+// CSS 2.2 section 10.5:
+// https://www.w3.org/TR/CSS22/visudet.html#the-height-property
+//
+// This subset accepts auto, non-negative integer px, and unitless zero.
+fn parse_height(value: &str) -> Option<Height> {
+    let value = value.trim().to_ascii_lowercase();
+
+    if value == "auto" {
+        return Some(Height::Auto);
+    }
+
+    let (number, has_unit) = match value.strip_suffix("px") {
+        Some(number) => (number, true),
+        None => (value.as_str(), false),
+    };
+
+    let number = number.parse::<i32>().ok()?;
+
+    if number < 0 || (!has_unit && number != 0) {
+        return None;
+    }
+
+    Some(Height::Pixels(number))
+}
+
 // CSS 2.2 section 8.3:
 // https://www.w3.org/TR/CSS22/box.html#margin-properties
 //
@@ -663,6 +703,7 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     style.display = Display::Inline;
     style.margin_before = 0;
     style.margin_after = 0;
+    style.height = Height::Auto;
 
     if tag == "a" {
         style.color = DEFAULT_LINK_COLOR;
@@ -784,6 +825,10 @@ fn apply_declarations(
 
     if let Some(margin_after) = declarations.margin_after {
         style.margin_after = margin_after;
+    }
+
+    if let Some(height) = declarations.height {
+        style.height = height;
     }
 
     if let Some(font_weight) = declarations.font_weight {
@@ -1514,5 +1559,61 @@ mod tests {
 
         assert_eq!(first_style.margin_after, 192);
         assert_eq!(second_style.margin_before, -192);
+    }
+
+    #[test]
+    fn parses_fixed_height_subset() {
+        for (value, expected) in [
+            ("20px", Some(Height::Pixels(20))),
+            (" 0PX ", Some(Height::Pixels(0))),
+            ("0", Some(Height::Pixels(0))),
+            ("auto", Some(Height::Auto)),
+            ("-1px", None),
+            ("-0.5px", None),
+            ("20", None),
+            ("20%", None),
+            ("0.5px", None),
+            ("2147483648px", None),
+        ] {
+            assert_eq!(parse_height(value), expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn cascades_height_and_resets_it_for_children() {
+        let rules = build_author_rules(&["div { height: 20px !important }".to_owned()]);
+
+        let element = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some("height: 10px"),
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(style.height, Height::Pixels(20));
+
+        let child = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let child_style = compute_style(&child, style, &[]);
+
+        assert_eq!(child_style.height, Height::Auto);
+
+        let reset = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some("height: 20px; height: auto"),
+        };
+
+        let reset_style = compute_style(&reset, TextStyle::initial(), &[]);
+
+        assert_eq!(reset_style.height, Height::Auto);
     }
 }
