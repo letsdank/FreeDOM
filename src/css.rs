@@ -43,7 +43,7 @@ pub(crate) enum FontStyle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Height {
+pub(crate) enum CssSize {
     Auto,
     Pixels(i32),
 }
@@ -58,7 +58,8 @@ pub(crate) struct TextStyle {
     pub(crate) margin_before: i32,
     pub(crate) margin_after: i32,
     pub(crate) display: Display,
-    pub(crate) height: Height,
+    pub(crate) width: CssSize,
+    pub(crate) height: CssSize,
 }
 
 impl TextStyle {
@@ -72,7 +73,8 @@ impl TextStyle {
             margin_before: 0,
             margin_after: 0,
             display: Display::Inline,
-            height: Height::Auto,
+            width: CssSize::Auto,
+            height: CssSize::Auto,
         }
     }
 }
@@ -103,7 +105,8 @@ struct Declarations {
     display: Option<Display>,
     margin_before: Option<i32>,
     margin_after: Option<i32>,
-    height: Option<Height>,
+    width: Option<CssSize>,
+    height: Option<CssSize>,
 }
 
 pub(crate) struct CssRule {
@@ -491,8 +494,14 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "width" => {
+                if let Some(value) = parse_size(&declaration.value) {
+                    parsed.width = Some(value);
+                }
+            }
+
             "height" => {
-                if let Some(value) = parse_height(&declaration.value) {
+                if let Some(value) = parse_size(&declaration.value) {
                     parsed.height = Some(value);
                 }
             }
@@ -613,15 +622,16 @@ fn parse_margin_length(value: &str) -> Option<i32> {
     Some(rounded as i32)
 }
 
-// CSS 2.2 section 10.5:
+// CSS 2.2 sections 10.2 and 10.5:
+// https://www.w3.org/TR/CSS22/visudet.html#the-width-property
 // https://www.w3.org/TR/CSS22/visudet.html#the-height-property
 //
 // This subset accepts auto, non-negative integer px, and unitless zero.
-fn parse_height(value: &str) -> Option<Height> {
+fn parse_size(value: &str) -> Option<CssSize> {
     let value = value.trim().to_ascii_lowercase();
 
     if value == "auto" {
-        return Some(Height::Auto);
+        return Some(CssSize::Auto);
     }
 
     let (number, has_unit) = match value.strip_suffix("px") {
@@ -635,7 +645,7 @@ fn parse_height(value: &str) -> Option<Height> {
         return None;
     }
 
-    Some(Height::Pixels(number))
+    Some(CssSize::Pixels(number))
 }
 
 // CSS 2.2 section 8.3:
@@ -703,7 +713,8 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     style.display = Display::Inline;
     style.margin_before = 0;
     style.margin_after = 0;
-    style.height = Height::Auto;
+    style.width = CssSize::Auto;
+    style.height = CssSize::Auto;
 
     if tag == "a" {
         style.color = DEFAULT_LINK_COLOR;
@@ -825,6 +836,10 @@ fn apply_declarations(
 
     if let Some(margin_after) = declarations.margin_after {
         style.margin_after = margin_after;
+    }
+
+    if let Some(width) = declarations.width {
+        style.width = width;
     }
 
     if let Some(height) = declarations.height {
@@ -1564,10 +1579,10 @@ mod tests {
     #[test]
     fn parses_fixed_height_subset() {
         for (value, expected) in [
-            ("20px", Some(Height::Pixels(20))),
-            (" 0PX ", Some(Height::Pixels(0))),
-            ("0", Some(Height::Pixels(0))),
-            ("auto", Some(Height::Auto)),
+            ("20px", Some(CssSize::Pixels(20))),
+            (" 0PX ", Some(CssSize::Pixels(0))),
+            ("0", Some(CssSize::Pixels(0))),
+            ("auto", Some(CssSize::Auto)),
             ("-1px", None),
             ("-0.5px", None),
             ("20", None),
@@ -1575,7 +1590,7 @@ mod tests {
             ("0.5px", None),
             ("2147483648px", None),
         ] {
-            assert_eq!(parse_height(value), expected, "{value}");
+            assert_eq!(parse_size(value), expected, "{value}");
         }
     }
 
@@ -1592,7 +1607,7 @@ mod tests {
 
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
-        assert_eq!(style.height, Height::Pixels(20));
+        assert_eq!(style.height, CssSize::Pixels(20));
 
         let child = Element {
             tag: "span",
@@ -1603,7 +1618,7 @@ mod tests {
 
         let child_style = compute_style(&child, style, &[]);
 
-        assert_eq!(child_style.height, Height::Auto);
+        assert_eq!(child_style.height, CssSize::Auto);
 
         let reset = Element {
             tag: "div",
@@ -1614,6 +1629,53 @@ mod tests {
 
         let reset_style = compute_style(&reset, TextStyle::initial(), &[]);
 
-        assert_eq!(reset_style.height, Height::Auto);
+        assert_eq!(reset_style.height, CssSize::Auto);
+    }
+
+    #[test]
+    fn cascades_width_and_resets_it_for_children() {
+        let rules = build_author_rules(&["div { width: 50px !important }".to_owned()]);
+
+        let element = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some("width: 10px"),
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(style.width, CssSize::Pixels(50));
+
+        let child = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let child_style = compute_style(&child, style, &[]);
+
+        assert_eq!(child_style.width, CssSize::Auto);
+
+        let reset = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some("width: 20px; width: auto"),
+        };
+
+        let reset_style = compute_style(&reset, TextStyle::initial(), &[]);
+
+        assert_eq!(reset_style.width, CssSize::Auto);
+
+        for (input, expected) in [
+            ("0", Some(CssSize::Pixels(0))),
+            ("20PX", Some(CssSize::Pixels(20))),
+            ("-1px", None),
+            ("20%", None),
+        ] {
+            assert_eq!(parse_size(input), expected, "{input}");
+        }
     }
 }

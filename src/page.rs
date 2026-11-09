@@ -2327,4 +2327,82 @@ mod tests {
 
         assert_eq!(rects, vec![(0, 10), (22, 0), (19, 10)]);
     }
+
+    #[test]
+    fn preview_uses_block_width_for_descendants_and_allows_overflow() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='width: 50px'>",
+                "<div style='height: 5px'></div>",
+                "<div style='width: 90px; height: 5px'></div>",
+                "</div>",
+                "<div style='height: 5px'></div>"
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let rects: Vec<_> = preview
+            .boxes
+            .iter()
+            .map(|item| (item.rect.width, item.rect.height))
+            .collect();
+
+        assert_eq!(rects, vec![(50, 10), (50, 5), (90, 5), (68, 5)]);
+    }
+
+    #[test]
+    fn preview_wraps_text_using_the_parent_width() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div style='width: 16px'><div>a b c</div></div>",
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let parent = preview.boxes[0].rect;
+        let child = preview.boxes[1].rect;
+
+        assert_eq!((parent.width, parent.height), (16, 30));
+        assert_eq!((child.width, child.height), (16, 30));
+    }
+
+    #[test]
+    fn preview_keeps_zero_width_and_positive_height() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div style='width: 0; height: 10px'></div>",
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+        let rect = preview.boxes[0].rect;
+
+        assert_eq!((rect.width, rect.height), (0, 10));
+    }
+
+    #[test]
+    fn preview_wpt_inspired_two_fixed_stripes() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div>",
+                "<div style='width: 50px; height: 20px; ",
+                "margin-bottom: 2in'></div>",
+                "<div style='width: 50px; height: 20px; ",
+                "margin-top: -2in'></div>",
+                "</div>",
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let rects: Vec<_> = preview
+            .boxes
+            .iter()
+            .map(|item| (item.rect.y, item.rect.width, item.rect.height))
+            .collect();
+
+        assert_eq!(rects, vec![(0, 68, 40), (0, 50, 20), (20, 50, 20)]);
+    }
 }

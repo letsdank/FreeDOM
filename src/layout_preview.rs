@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
-    css::{Height, TextStyle},
+    css::{CssSize, TextStyle},
     graphics::font::TrueTypeFont,
     page::Page,
     page_layout::{CONTENT_HORIZONTAL_PADDING, LayoutRect, measure_wrapped_text},
@@ -222,12 +222,17 @@ impl PreviewLayout {
 
                     let index = self.boxes.len();
 
+                    let block_width = match block.style.width {
+                        CssSize::Auto => width,
+                        CssSize::Pixels(value) => value,
+                    };
+
                     self.boxes.push(PreviewBox {
                         source: block.source.clone(),
                         rect: LayoutRect {
                             x: CONTENT_HORIZONTAL_PADDING as i32,
                             y: start,
-                            width,
+                            width: block_width,
                             height: 0,
                         },
                     });
@@ -243,14 +248,14 @@ impl PreviewLayout {
                         block.style,
                         page,
                         fallback,
-                        width,
+                        block_width,
                         start,
                         child_start,
                     )?;
 
                     // The root element's margins do not collapse with its children.
                     // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
-                    if is_root && block.style.height == Height::Auto {
+                    if is_root && block.style.height == CssSize::Auto {
                         if let Some(group) = child_flow.trailing_margin.take() {
                             if group.value() < 0 {
                                 return Err(PreviewError::Margin(group.path));
@@ -264,9 +269,9 @@ impl PreviewLayout {
                     }
 
                     let end = match block.style.height {
-                        Height::Auto => child_flow.end,
+                        CssSize::Auto => child_flow.end,
 
-                        Height::Pixels(height) => {
+                        CssSize::Pixels(height) => {
                             // A fixed-height parent does not collapse its bottom margin
                             // with the last child's bottom margin.
                             child_flow.trailing_margin = None;
@@ -455,7 +460,7 @@ fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
         };
 
         if matches!(&child.content, BlockContent::Flow(children) if children.is_empty())
-            && !matches!(child.style.height, Height::Pixels(height) if height > 0)
+            && !matches!(child.style.height, CssSize::Pixels(height) if height > 0)
         {
             return Err(PreviewError::EmptyBlock(child.source.indices().to_vec()));
         }
