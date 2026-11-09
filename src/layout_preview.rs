@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
-    css::{CssSize, TextStyle},
+    css::{BackgroundColor, CssSize, TextStyle},
     graphics::font::TrueTypeFont,
     page::Page,
     page_layout::{CONTENT_HORIZONTAL_PADDING, LayoutRect, measure_wrapped_text},
@@ -20,6 +20,7 @@ use crate::{
 pub(crate) struct PreviewBox {
     pub(crate) source: SourcePath,
     pub(crate) rect: LayoutRect,
+    pub(crate) background_color: BackgroundColor,
 }
 
 pub(crate) struct PreviewLayout {
@@ -235,6 +236,7 @@ impl PreviewLayout {
                             width: block_width,
                             height: 0,
                         },
+                        background_color: block.style.background_color,
                     });
 
                     let child_start = if is_root {

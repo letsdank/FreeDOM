@@ -3,8 +3,10 @@
 //! These are diagnostic rectangles, not yet CSS box-model boundaries.
 
 use crate::{
+    css::BackgroundColor,
     layout_preview::PreviewLayout,
     page_layout::{CONTENT_TOP, LayoutRect, PageLayout},
+    render::BACKGROUND,
 };
 
 const OUTLINE: u32 = 0x00_E8_3D_3D;
@@ -91,6 +93,67 @@ fn draw_outline_color(
     }
 }
 
+/// Paints backgrounds only; this is not the page renderer.
+pub(crate) fn paint_preview_backgrounds(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    layout: &PreviewLayout,
+    scroll_y: i32,
+) {
+    let Some(needed) = width.checked_mul(height) else {
+        return;
+    };
+
+    if pixels.len() < needed {
+        return;
+    }
+
+    let content_top = (CONTENT_TOP as usize).min(height);
+
+    pixels[content_top * width..needed].fill(BACKGROUND);
+
+    for item in &layout.boxes {
+        if let BackgroundColor::Opaque(color) = item.background_color {
+            fill_preview_rect(pixels, width, height, item.rect, scroll_y, color);
+        }
+    }
+}
+
+fn fill_preview_rect(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    rect: LayoutRect,
+    scroll_y: i32,
+    color: u32,
+) {
+    if rect.width <= 0 || rect.height <= 0 {
+        return;
+    }
+
+    let (Ok(viewport_width), Ok(viewport_height)) = (i64::try_from(width), i64::try_from(height))
+    else {
+        return;
+    };
+
+    let left = i64::from(rect.x);
+    let top = i64::from(CONTENT_TOP) + i64::from(rect.y) - i64::from(scroll_y);
+
+    let x_start = left.clamp(0, viewport_width) as usize;
+    let x_end = (left + i64::from(rect.width)).clamp(0, viewport_width) as usize;
+
+    let content_top = i64::from(CONTENT_TOP).min(viewport_height);
+
+    let y_start = top.clamp(content_top, viewport_height) as usize;
+    let y_end = (top + i64::from(rect.height)).clamp(content_top, viewport_height) as usize;
+
+    for y in y_start..y_end {
+        let row = y * width;
+        pixels[row + x_start..row + x_end].fill(color);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +219,70 @@ mod tests {
         );
 
         assert_eq!(pixels, vec![0; 10]);
+    }
+
+    #[test]
+    fn paints_preview_backgrounds_in_tree_order_and_clips_to_viewport() {
+        use crate::{layout_preview::PreviewBox, styled_tree::SourcePath};
+
+        let box_for = |rect, background_color| PreviewBox {
+            source: SourcePath::from_indices(&[]),
+            rect,
+            background_color,
+        };
+
+        let layout = PreviewLayout {
+            boxes: vec![
+                box_for(
+                    LayoutRect {
+                        x: 1,
+                        y: 0,
+                        width: 6,
+                        height: 8,
+                    },
+                    BackgroundColor::Opaque(0x00_FF_00_00),
+                ),
+                box_for(
+                    LayoutRect {
+                        x: 3,
+                        y: 2,
+                        width: 2,
+                        height: 3,
+                    },
+                    BackgroundColor::Opaque(0x00_00_00_FF),
+                ),
+                box_for(
+                    LayoutRect {
+                        x: 3,
+                        y: 2,
+                        width: 2,
+                        height: 3,
+                    },
+                    BackgroundColor::Transparent,
+                ),
+            ],
+        };
+
+        let (width, height) = (10, 100);
+        let mut pixels = vec![0x00_12_34_56; width * height];
+
+        paint_preview_backgrounds(&mut pixels, width, height, &layout, 1);
+
+        assert_eq!(pixels[89 * width + 1], 0x00_12_34_56);
+        assert_eq!(pixels[90 * width + 1], 0x00_FF_00_00);
+        assert_eq!(pixels[91 * width + 3], 0x00_00_00_FF);
+        assert_eq!(pixels[90 * width], BACKGROUND);
+        assert_eq!(pixels[97 * width + 1], BACKGROUND);
+    }
+
+    #[test]
+    fn preview_backgrounds_tolerate_invalid_and_small_buffers() {
+        let layout = PreviewLayout { boxes: Vec::new() };
+        let mut pixels = vec![7; 10];
+
+        paint_preview_backgrounds(&mut pixels, 10, 100, &layout, 0);
+        paint_preview_backgrounds(&mut pixels, usize::MAX, 2, &layout, 0);
+
+        assert_eq!(pixels, vec![7; 10]);
     }
 }

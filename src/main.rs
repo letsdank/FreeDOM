@@ -164,6 +164,7 @@ struct App {
     show_layout_boxes: bool,
     show_layout_preview: bool,
     preview_layout: Option<layout_preview::PreviewLayout>,
+    show_preview_backgrounds: bool,
 }
 
 impl App {
@@ -196,6 +197,7 @@ impl App {
             show_layout_boxes: false,
             show_layout_preview: false,
             preview_layout: None,
+            show_preview_backgrounds: false,
         }
     }
 
@@ -264,6 +266,10 @@ impl App {
     }
 
     fn open_link_at_cursor(&mut self) {
+        if self.show_preview_backgrounds {
+            return;
+        }
+
         let Some((x, y)) = self.cursor_position else {
             return;
         };
@@ -343,6 +349,14 @@ impl App {
                 }
             }
 
+            Key::Named(NamedKey::F10) => {
+                if !event.repeat {
+                    self.show_preview_backgrounds = !self.show_preview_backgrounds;
+
+                    self.request_redraw();
+                }
+            }
+
             _ => {
                 if let Some(text) = &event.text {
                     let text = text.to_string();
@@ -387,7 +401,9 @@ impl App {
             self.preview_layout = None;
         }
 
-        if self.show_layout_preview && self.preview_layout.is_none() {
+        if (self.show_layout_preview || self.show_preview_backgrounds)
+            && self.preview_layout.is_none()
+        {
             match layout_preview::PreviewLayout::build(
                 &self.page,
                 viewport_width,
@@ -401,6 +417,7 @@ impl App {
                 Err(error) => {
                     eprintln!("FreeDOM preview unavailable: {error}");
                     self.show_layout_preview = false;
+                    self.show_preview_backgrounds = false;
                 }
             }
         }
@@ -437,6 +454,18 @@ impl App {
             self.scroll_y,
             profiling,
         );
+
+        if self.show_preview_backgrounds {
+            if let Some(preview) = &self.preview_layout {
+                layout_debug::paint_preview_backgrounds(
+                    &mut buffer,
+                    width as usize,
+                    height as usize,
+                    preview,
+                    self.scroll_y,
+                );
+            }
+        }
 
         if self.show_layout_boxes {
             layout_debug::paint_layout_overlay(
@@ -484,6 +513,15 @@ impl App {
     }
 
     fn inspect_block_at_cursor(&self) {
+        if self.show_preview_backgrounds {
+            eprintln!(
+                "FreeDOM inspector: F8 inspects the old layout; \
+                 unavailable in background preview"
+            );
+
+            return;
+        }
+
         let (Some((x, y)), Some(layout), Some(window)) = (
             self.cursor_position,
             self.layout.as_ref(),

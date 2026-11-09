@@ -60,6 +60,7 @@ pub(crate) struct TextStyle {
     pub(crate) display: Display,
     pub(crate) width: CssSize,
     pub(crate) height: CssSize,
+    pub(crate) background_color: BackgroundColor,
 }
 
 impl TextStyle {
@@ -75,6 +76,7 @@ impl TextStyle {
             display: Display::Inline,
             width: CssSize::Auto,
             height: CssSize::Auto,
+            background_color: BackgroundColor::Transparent,
         }
     }
 }
@@ -107,6 +109,7 @@ struct Declarations {
     margin_after: Option<i32>,
     width: Option<CssSize>,
     height: Option<CssSize>,
+    background_color: Option<BackgroundColor>,
 }
 
 pub(crate) struct CssRule {
@@ -114,6 +117,12 @@ pub(crate) struct CssRule {
     specificity: Specificity,
     source_order: usize,
     declarations: Vec<CssDeclaration>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackgroundColor {
+    Transparent,
+    Opaque(u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -506,6 +515,12 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "background" | "background-color" => {
+                if let Some(value) = parse_background_color(&declaration.value) {
+                    parsed.background_color = Some(value);
+                }
+            }
+
             _ => {}
         }
     }
@@ -518,6 +533,16 @@ fn parse_text_color(value: &str) -> Option<TextColor> {
         "inherit" | "unset" | "currentcolor" => Some(TextColor::Inherit),
         "initial" => Some(TextColor::Initial),
         _ => parse_color(value).map(TextColor::Value),
+    }
+}
+
+// Only a solid opaque color or transparent is supported in this preview.
+// https://www.w3.org/TR/css-backgrounds-3/#background-color
+fn parse_background_color(value: &str) -> Option<BackgroundColor> {
+    if value.trim().eq_ignore_ascii_case("transparent") {
+        Some(BackgroundColor::Transparent)
+    } else {
+        parse_color(value).map(BackgroundColor::Opaque)
     }
 }
 
@@ -715,6 +740,7 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     style.margin_after = 0;
     style.width = CssSize::Auto;
     style.height = CssSize::Auto;
+    style.background_color = BackgroundColor::Transparent;
 
     if tag == "a" {
         style.color = DEFAULT_LINK_COLOR;
@@ -844,6 +870,10 @@ fn apply_declarations(
 
     if let Some(height) = declarations.height {
         style.height = height;
+    }
+
+    if let Some(background_color) = declarations.background_color {
+        style.background_color = background_color;
     }
 
     if let Some(font_weight) = declarations.font_weight {
@@ -1677,5 +1707,67 @@ mod tests {
         ] {
             assert_eq!(parse_size(input), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn cascades_background_color_without_inheriting_it() {
+        let rules = build_author_rules(&["div { background: orange !important }".to_owned()]);
+
+        let element = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some("background-color: blue"),
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(
+            style.background_color,
+            BackgroundColor::Opaque(0x00_FF_A5_00)
+        );
+
+        let child = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let child_style = compute_style(&child, style, &[]);
+
+        assert_eq!(child_style.background_color, BackgroundColor::Transparent);
+
+        let clear = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some("background: blue; background-color: transparent"),
+        };
+
+        let clear_style = compute_style(&clear, TextStyle::initial(), &[]);
+
+        assert_eq!(clear_style.background_color, BackgroundColor::Transparent);
+    }
+
+    #[test]
+    fn background_preview_supports_only_solid_colors_and_transparent() {
+        assert_eq!(
+            parse_background_color("#aBc"),
+            Some(BackgroundColor::Opaque(0x00_AA_BB_CC))
+        );
+
+        assert_eq!(
+            parse_background_color("rgb(0, 128, 0)"),
+            Some(BackgroundColor::Opaque(0x00_00_80_00))
+        );
+
+        assert_eq!(
+            parse_background_color("Transparent"),
+            Some(BackgroundColor::Transparent)
+        );
+
+        assert_eq!(parse_background_color("rgba(0, 0, 0, 0.5)"), None);
+        assert_eq!(parse_background_color("url(example.png)"), None);
     }
 }

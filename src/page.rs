@@ -2405,4 +2405,36 @@ mod tests {
 
         assert_eq!(rects, vec![(0, 68, 40), (0, 50, 20), (20, 50, 20)]);
     }
+
+    #[test]
+    fn preview_paints_backgrounds_from_cascaded_page_styles() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<style>",
+                "#a { background: blue }",
+                "#b { background-color: orange }",
+                "</style>",
+                "<div>",
+                "<div id='a' style='width: 50px; height: 20px; ",
+                "margin-bottom: 2in'></div>",
+                "<div id='b' style='width: 50px; height: 20px; ",
+                "margin-top: -2in'></div>",
+                "</div>"
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+        let mut pixels = vec![0; 100 * 140];
+
+        crate::layout_debug::paint_preview_backgrounds(&mut pixels, 100, 140, &preview, 0);
+
+        assert_eq!(pixels[90 * 100 + 16], 0x00_00_00_FF);
+        assert_eq!(pixels[109 * 100 + 65], 0x00_00_00_FF);
+
+        assert_eq!(pixels[110 * 100 + 16], 0x00_FF_A5_00);
+        assert_eq!(pixels[129 * 100 + 65], 0x00_FF_A5_00);
+
+        assert_eq!(pixels[130 * 100 + 16], crate::render::BACKGROUND);
+    }
 }

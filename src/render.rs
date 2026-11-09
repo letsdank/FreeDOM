@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BACKGROUND: u32 = 0x00_F7_F7_F7;
+pub(crate) const BACKGROUND: u32 = 0x00_F7_F7_F7;
 const TOOLBAR: u32 = 0x00_20_25_2B;
 const ADDRESS_BAR: u32 = 0x00_38_40_4A;
 const LIGHT_TEXT: u32 = 0x00_F4_F6_F8;

@@ -16,6 +16,7 @@ pub(super) fn parse_color(value: &str) -> Option<u32> {
         "yellow" => return Some(0x00_FF_FF_00),
         "gray" | "grey" => return Some(0x00_80_80_80),
         "purple" => return Some(0x00_80_00_80),
+        "orange" => return Some(0x00_FF_A5_00),
         _ => {}
     }
 
