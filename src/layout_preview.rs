@@ -35,6 +35,7 @@ pub(crate) enum PreviewError {
     InlineFont(Vec<usize>),
     WhiteSpace,
     SizeOverflow,
+    EmptyBlock(Vec<usize>),
 }
 
 impl std::fmt::Display for PreviewError {
@@ -47,8 +48,12 @@ impl std::fmt::Display for PreviewError {
             Self::Margin(path) => {
                 write!(
                     formatter,
-                    "margin-top or negative margin-bottom is not supported at {path:?}"
+                    "margin at a flow boundary is not supported at {path:?}"
                 )
+            }
+
+            Self::EmptyBlock(path) => {
+                write!(formatter, "empty block is not supported at {path:?}")
             }
 
             Self::Replaced(path) => {
@@ -118,11 +123,16 @@ impl PreviewLayout {
         top: i32,
     ) -> Result<i32, PreviewError> {
         let mut cursor = top;
+        let mut pending_margin: Option<(i32, Vec<usize>)> = None;
 
         for child in children {
             match child {
                 FlowChild::Block(block) => {
-                    if block.style.margin_before != 0 || block.style.margin_after < 0 {
+                    if let Some((bottom, _)) = pending_margin.take() {
+                        let gap = collapse_sibling_margins(bottom, block.style.margin_before);
+
+                        cursor = cursor.checked_add(gap).ok_or(PreviewError::SizeOverflow)?;
+                    } else if block.style.margin_before != 0 {
                         return Err(PreviewError::Margin(block.source.indices().to_vec()));
                     }
 
@@ -147,14 +157,17 @@ impl PreviewLayout {
                     });
 
                     let end = self.flow(children, block.style, page, fallback, width, cursor)?;
+                    let height = end.checked_sub(cursor).ok_or(PreviewError::SizeOverflow)?;
 
-                    self.boxes[index].rect.height =
-                        end.checked_sub(cursor).ok_or(PreviewError::SizeOverflow)?;
+                    if height <= 0 {
+                        return Err(PreviewError::EmptyBlock(block.source.indices().to_vec()));
+                    }
 
-                    // This is linear spacing, not CSS margin collapsing.
-                    cursor = end
-                        .checked_add(block.style.margin_after)
-                        .ok_or(PreviewError::SizeOverflow)?;
+                    self.boxes[index].rect.height = height;
+                    cursor = end;
+
+                    pending_margin =
+                        Some((block.style.margin_after, block.source.indices().to_vec()));
                 }
 
                 FlowChild::InlineRun { items, .. } => {
@@ -168,6 +181,16 @@ impl PreviewLayout {
 
                     if !has_content {
                         continue;
+                    }
+
+                    if let Some((bottom, path)) = pending_margin.take() {
+                        if bottom < 0 {
+                            return Err(PreviewError::Margin(path));
+                        }
+
+                        cursor = cursor
+                            .checked_add(bottom)
+                            .ok_or(PreviewError::SizeOverflow)?;
                     }
 
                     let page_font = page
@@ -194,6 +217,18 @@ impl PreviewLayout {
                         .ok_or(PreviewError::SizeOverflow)?;
                 }
             }
+        }
+
+        if let Some((bottom, path)) = pending_margin {
+            if bottom < 0 {
+                return Err(PreviewError::Margin(path));
+            }
+
+            // Parent/child collapsing is not implemented; preserve the old
+            // preview's treatment of a final positive bottom margin.
+            cursor = cursor
+                .checked_add(bottom)
+                .ok_or(PreviewError::SizeOverflow)?;
         }
 
         Ok(cursor)
@@ -225,6 +260,12 @@ impl PreviewLayout {
 
         output
     }
+}
+
+// CSS 2.2 section 8.3.1:
+// https://www.w3.org/TR/CSS22/box.html#collapsing-margins
+fn collapse_sibling_margins(first: i32, second: i32) -> i32 {
+    first.max(second).max(0) + first.min(second).min(0)
 }
 
 fn same_font(left: &TextStyle, right: &TextStyle) -> bool {
@@ -278,4 +319,17 @@ fn collect_text(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collapse_sibling_margins;
+
+    #[test]
+    fn collapses_signed_margins_without_overflow() {
+        assert_eq!(collapse_sibling_margins(8, 12), 12);
+        assert_eq!(collapse_sibling_margins(8, -3), 5);
+        assert_eq!(collapse_sibling_margins(-5, -3), -5);
+        assert_eq!(collapse_sibling_margins(i32::MAX, i32::MIN), -1);
+    }
 }

@@ -1987,6 +1987,8 @@ mod tests {
             "<div><img></div>",
             "<div><br></div>",
             "<div><span style='font-size: 32px'>text</span></div>",
+            "<div></div>",
+            "<div>first</div><div></div><div style='margin-top: 5px'>last</div>",
         ] {
             let page = parse_html("https://example.text", html);
 
@@ -2051,5 +2053,31 @@ mod tests {
                 crate::box_tree::BoxTreeError::BlockInsideInline(_)
             ))
         ));
+    }
+
+    #[test]
+    fn preview_collapses_adjacent_sibling_margins() {
+        for (bottom, top, expected_y) in [(8, 12, 22), (8, -3, 15), (-5, -3, 5), (0, -20, -10)] {
+            let html = format!(
+                "<div style='margin-bottom: {bottom}px'>A</div>\
+                 <div style='margin-top: {top}px'>B</div>"
+            );
+
+            let page = parse_html("https://example.test/", &html);
+            let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+            assert_eq!(preview.boxes.len(), 2);
+
+            let first = preview.boxes[0].rect;
+            let second = preview.boxes[1].rect;
+
+            assert_eq!((first.y, first.height), (0, 10));
+
+            assert_eq!(
+                (second.y, second.height),
+                (expected_y, 10),
+                "bottom={bottom}, top={top}"
+            );
+        }
     }
 }
