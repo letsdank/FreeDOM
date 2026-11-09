@@ -573,9 +573,14 @@ fn parse_font_style(value: &str) -> Option<FontStyle> {
 fn parse_margin_length(value: &str) -> Option<i32> {
     let value = value.trim().to_ascii_lowercase();
 
-    let (number, has_unit) = match value.strip_suffix("px") {
-        Some(number) => (number, true),
-        None => (value.as_str(), false),
+    // CSS absolute units: one CSS inch equals 96 CSS pixels.
+    // https://www.w3.org/TR/css-values-4/#absolute-lengths
+    let (number, scale, has_unit) = if let Some(number) = value.strip_suffix("px") {
+        (number, 1.0, true)
+    } else if let Some(number) = value.strip_suffix("in") {
+        (number, 96.0, true)
+    } else {
+        (value.as_str(), 1.0, false)
     };
 
     let number = number.parse::<f64>().ok()?;
@@ -584,9 +589,9 @@ fn parse_margin_length(value: &str) -> Option<i32> {
         return None;
     }
 
-    let rounded = number.round();
+    let rounded = (number * scale).round();
 
-    if rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
+    if !rounded.is_finite() || rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
         return None;
     }
 
@@ -596,7 +601,7 @@ fn parse_margin_length(value: &str) -> Option<i32> {
 // CSS 2.2 section 8.3:
 // https://www.w3.org/TR/CSS22/box.html#margin-properties
 //
-// Only px and unitless zero are supported. Every component is validated.
+// Only px, in and unitless zero are supported. Every component is validated.
 fn parse_vertical_margin_shorthand(value: &str) -> Option<(i32, i32)> {
     let components = value
         .split_ascii_whitespace()
@@ -1459,5 +1464,55 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &[]);
 
         assert_eq!((style.margin_before, style.margin_after), (2, 4));
+    }
+
+    #[test]
+    fn parses_absolute_inches_in_vertical_margins() {
+        for (input, expected) in [
+            ("2in", Some(192)),
+            ("-2in", Some(-192)),
+            ("0.5IN", Some(48)),
+            ("0", Some(0)),
+            ("2px", Some(2)),
+            ("2em", None),
+            ("2 in", None),
+            ("1e308in", None),
+        ] {
+            assert_eq!(parse_margin_length(input), expected, "{input}");
+        }
+
+        assert_eq!(
+            parse_vertical_margin_shorthand("1in 0 -0.5in"),
+            Some((96, -48))
+        );
+    }
+
+    #[test]
+    fn cascades_inches_in_vertical_margin_declarations() {
+        let rules = build_author_rules(&[concat!(
+            "#div1 { margin-bottom: 2in } ",
+            "#div2 { margin-top: -2in }"
+        )
+        .to_owned()]);
+
+        let first = Element {
+            tag: "div",
+            id: Some("div1"),
+            classes: &[],
+            inline_style: None,
+        };
+
+        let second = Element {
+            tag: "div",
+            id: Some("div2"),
+            classes: &[],
+            inline_style: None,
+        };
+
+        let first_style = compute_style(&first, TextStyle::initial(), &rules);
+        let second_style = compute_style(&second, TextStyle::initial(), &rules);
+
+        assert_eq!(first_style.margin_after, 192);
+        assert_eq!(second_style.margin_before, -192);
     }
 }
