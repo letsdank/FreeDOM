@@ -9,7 +9,7 @@
 use std::fmt::Write;
 
 use crate::{
-    box_tree::{BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
+    box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
     css::TextStyle,
     graphics::font::TrueTypeFont,
     page::Page,
@@ -56,6 +56,13 @@ impl PendingMargin {
 struct FlowResult {
     end: i32,
     trailing_margin: Option<PendingMargin>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlowStart {
+    Document,
+    Collapsed,
+    RootContent,
 }
 
 #[derive(Debug)]
@@ -143,7 +150,7 @@ impl PreviewLayout {
             fallback.as_ref(),
             width,
             0,
-            true,
+            FlowStart::Document,
         )?;
 
         if let Some(group) = flow.trailing_margin {
@@ -163,27 +170,47 @@ impl PreviewLayout {
         fallback: Option<&TrueTypeFont<'_>>,
         width: i32,
         top: i32,
-        document_flow: bool,
+        flow_start: FlowStart,
     ) -> Result<FlowResult, PreviewError> {
         let mut cursor = top;
         let mut pending_margin: Option<PendingMargin> = None;
+        let mut at_start = true;
 
         for child in children {
             match child {
                 FlowChild::Block(block) => {
                     let mut previous = pending_margin.take();
 
+                    let is_root = flow_start == FlowStart::Document && block.tag == "html";
+
+                    let leading = if is_root {
+                        PendingMargin::new(
+                            block.style.margin_before,
+                            block.source.indices().to_vec(),
+                        )
+                    } else {
+                        leading_margin(block)?
+                    };
+
                     let start = if let Some(group) = previous.as_mut() {
-                        group.add(block.style.margin_before);
+                        group.add(leading.positive);
+                        group.add(leading.negative);
 
                         cursor
                             .checked_add(group.value())
                             .ok_or(PreviewError::SizeOverflow)?
-                    } else if block.style.margin_before != 0 {
+                    } else if at_start && flow_start == FlowStart::Collapsed {
+                        cursor
+                    } else if at_start && flow_start == FlowStart::Document && leading.value() != 0
+                    {
                         return Err(PreviewError::Margin(block.source.indices().to_vec()));
                     } else {
                         cursor
+                            .checked_add(leading.value())
+                            .ok_or(PreviewError::SizeOverflow)?
                     };
+
+                    at_start = false;
 
                     if block.tag == "pre" {
                         return Err(PreviewError::WhiteSpace);
@@ -205,12 +232,25 @@ impl PreviewLayout {
                         },
                     });
 
-                    let mut child_flow =
-                        self.flow(children, block.style, page, fallback, width, start, false)?;
+                    let child_start = if is_root {
+                        FlowStart::RootContent
+                    } else {
+                        FlowStart::Collapsed
+                    };
+
+                    let mut child_flow = self.flow(
+                        children,
+                        block.style,
+                        page,
+                        fallback,
+                        width,
+                        start,
+                        child_start,
+                    )?;
 
                     // The root element's margins do not collapse with its children.
                     // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
-                    if document_flow && block.tag == "html" {
+                    if is_root {
                         if let Some(group) = child_flow.trailing_margin.take() {
                             if group.value() < 0 {
                                 return Err(PreviewError::Margin(group.path));
@@ -271,6 +311,8 @@ impl PreviewLayout {
                     if !has_content {
                         continue;
                     }
+
+                    at_start = false;
 
                     if let Some(group) = pending_margin.take() {
                         if group.has_empty {
@@ -356,6 +398,58 @@ impl PreviewLayout {
 // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
 fn collapse_sibling_margins(first: i32, second: i32) -> i32 {
     first.max(second).max(0) + first.min(second).min(0)
+}
+
+// CSS 2.2 section 8.3.1: first-child top margins can collapse
+// with the parent.
+// https://www.w3.org/TR/CSS22/box.html#collapsing-margins
+fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
+    let mut group = PendingMargin::new(block.style.margin_before, block.source.indices().to_vec());
+    let mut current = block;
+
+    loop {
+        let BlockContent::Flow(children) = &current.content else {
+            break;
+        };
+
+        let mut first_block = None;
+
+        for child in children {
+            match child {
+                FlowChild::Block(child) => {
+                    first_block = Some(child);
+                    break;
+                }
+
+                FlowChild::InlineRun { items, .. } => {
+                    let mut text = String::new();
+
+                    collect_text(items, current.style, &mut text)?;
+
+                    let has_content = text
+                        .chars()
+                        .any(|character| !matches!(character, ' ' | '\t' | '\n' | '\r' | '\x0c'));
+
+                    if has_content {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let Some(child) = first_block else {
+            break;
+        };
+
+        if matches!(&child.content, BlockContent::Flow(children) if children.is_empty()) {
+            return Err(PreviewError::EmptyBlock(child.source.indices().to_vec()));
+        }
+
+        group.add(child.style.margin_before);
+        current = child;
+    }
+
+    Ok(group)
 }
 
 fn same_font(left: &TextStyle, right: &TextStyle) -> bool {

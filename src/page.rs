@@ -2165,4 +2165,76 @@ mod tests {
         assert_eq!(preview.boxes[0].rect.height, 28);
         assert_eq!(preview.boxes[2].rect.y, 28);
     }
+
+    #[test]
+    fn preview_collapses_parent_and_first_child_top_margins() {
+        for (previous, parent, child, expected_y) in
+            [(6, 4, 8, 18), (6, 8, -3, 15), (-5, -2, -3, 5)]
+        {
+            let html = format!(
+                "<div style='margin-bottom: {previous}px'>A</div>\
+                 <div style='margin-top: {parent}px'>\
+                    <div style='margin-top: {child}px'>B</div>\
+                 </div>"
+            );
+
+            let page = parse_html("https://example.test/", &html);
+            let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+            assert_eq!(preview.boxes.len(), 3);
+
+            let parent_rect = preview.boxes[1].rect;
+            let child_rect = preview.boxes[2].rect;
+
+            assert_eq!((parent_rect.y, parent_rect.height), (expected_y, 10));
+            assert_eq!((child_rect.y, child_rect.height), (expected_y, 10));
+        }
+    }
+
+    #[test]
+    fn preview_root_html_does_not_collapse_with_child_top_margin() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<html><body>",
+                "<div style='margin-top: 5px'>A</div>",
+                "</body></html>",
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let rects: Vec<_> = preview
+            .boxes
+            .iter()
+            .map(|item| (item.rect.y, item.rect.height))
+            .collect();
+
+        assert_eq!(rects, vec![(0, 15), (5, 10), (5, 10)]);
+    }
+
+    #[test]
+    fn preview_does_not_collapse_child_top_past_inline_content() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div>intro<div style='margin-top: 8px'>A</div></div>",
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+        let parent = preview.boxes[0].rect;
+        let child = preview.boxes[1].rect;
+
+        assert_eq!((parent.y, parent.height), (0, 28));
+        assert_eq!(child.y, 18);
+    }
+
+    #[test]
+    fn preview_rejects_leading_empty_child() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div>A</div><div><div></div><div>B</div></div>",
+        );
+
+        assert!(crate::layout_preview::PreviewLayout::build(&page, 100, None).is_err());
+    }
 }
