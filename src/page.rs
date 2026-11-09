@@ -1982,7 +1982,7 @@ mod tests {
     #[test]
     fn preview_reports_unsupported_content() {
         for html in [
-            "<p>text</p>",
+            "<div style='margin-bottom: -5px'>text</div>",
             "<div><img></div>",
             "<div><br></div>",
             "<div><span style='font-size: 32px'>text</span></div>",
@@ -1994,5 +1994,61 @@ mod tests {
                 "{html}"
             );
         }
+    }
+
+    #[test]
+    fn previews_html_document_and_nonnegative_bottom_spacing() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<!doctype html>",
+                "<html>",
+                "<head><title>Title</title></head>",
+                "<body><p>A</p><p>B</p></body>",
+                "</html>",
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+        let rects: Vec<_> = preview.boxes.iter().map(|item| item.rect).collect();
+
+        // html, body, p, p
+        assert_eq!(rects.len(), 4);
+
+        assert_eq!((rects[2].y, rects[2].height), (0, 10));
+        assert_eq!((rects[3].y, rects[3].height), (20, 10));
+
+        // The preview currently includes the final child's bottom spacing.
+        assert_eq!(rects[1].height, 40);
+        assert_eq!(rects[0].height, 40);
+
+        let text_blocks: Vec<_> = page
+            .blocks
+            .iter()
+            .filter_map(|block| block.text())
+            .collect();
+
+        assert_eq!(text_blocks, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn html_display_can_be_overridden_by_author() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<html style='display: inline'>",
+                "<body><div>x</div></body>",
+                "</html>"
+            ),
+        );
+
+        let result = crate::layout_preview::PreviewLayout::build(&page, 100, None);
+
+        assert!(matches!(
+            result,
+            Err(crate::layout_preview::PreviewError::Tree(
+                crate::box_tree::BoxTreeError::BlockInsideInline(_)
+            ))
+        ));
     }
 }

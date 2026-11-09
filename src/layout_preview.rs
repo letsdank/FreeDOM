@@ -45,7 +45,7 @@ impl std::fmt::Display for PreviewError {
             }
 
             Self::Margin(path) => {
-                write!(formatter, "margins are not supported at {path:?}")
+                write!(formatter, "negative margins are not supported at {path:?}")
             }
 
             Self::Replaced(path) => {
@@ -119,7 +119,7 @@ impl PreviewLayout {
         for child in children {
             match child {
                 FlowChild::Block(block) => {
-                    if block.style.margin_after != 0 {
+                    if block.style.margin_after < 0 {
                         return Err(PreviewError::Margin(block.source.indices().to_vec()));
                     }
 
@@ -148,7 +148,10 @@ impl PreviewLayout {
                     self.boxes[index].rect.height =
                         end.checked_sub(cursor).ok_or(PreviewError::SizeOverflow)?;
 
-                    cursor = end;
+                    // This is linear spacing, not CSS margin collapsing.
+                    cursor = end
+                        .checked_add(block.style.margin_after)
+                        .ok_or(PreviewError::SizeOverflow)?;
                 }
 
                 FlowChild::InlineRun { items, .. } => {

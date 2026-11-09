@@ -613,7 +613,8 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
 
     if matches!(
         tag,
-        "body"
+        "html"
+            | "body"
             | "main"
             | "article"
             | "section"
