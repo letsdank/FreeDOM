@@ -1,7 +1,7 @@
 use crate::{
     css::{
         CssRule, Display, Element as CssElement, FontFaceRule, FontStyle, FontWeight, TextStyle,
-        build_author_rules, compute_style, parse_font_faces,
+        build_author_rules, compute_style_with_ancestors, parse_font_faces,
     },
     fetch::Fetcher,
     graphics::{
@@ -145,6 +145,7 @@ impl Page {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ElementInfo {
     pub(crate) tag: String,
     pub(crate) id: Option<String>,
@@ -670,6 +671,7 @@ pub(crate) fn element_info(node: &HtmlNode) -> Option<ElementInfo> {
 struct ExtractionTrace {
     path: Vec<usize>,
     pending: Vec<SourcePath>,
+    ancestors: Vec<ElementInfo>,
 }
 
 impl ExtractionTrace {
@@ -738,7 +740,18 @@ fn extract_blocks(
         return;
     }
 
-    let style = compute_style(&element.css_element(), inherited_style.clone(), rules);
+    let ancestors: Vec<_> = trace
+        .ancestors
+        .iter()
+        .map(ElementInfo::css_element)
+        .collect();
+
+    let style = compute_style_with_ancestors(
+        &element.css_element(),
+        inherited_style.clone(),
+        rules,
+        &ancestors,
+    );
 
     if style.display == Display::None {
         return;
@@ -835,6 +848,8 @@ fn extract_blocks(
         return;
     }
 
+    trace.ancestors.push(element);
+
     for (index, child) in dom_element.children.iter().enumerate() {
         trace.path.push(index);
 
@@ -852,6 +867,8 @@ fn extract_blocks(
 
         trace.path.pop();
     }
+
+    trace.ancestors.pop();
 
     if is_block {
         flush(blocks, current, style, trace);
@@ -2436,5 +2453,52 @@ mod tests {
         assert_eq!(pixels[129 * 100 + 65], 0x00_FF_A5_00);
 
         assert_eq!(pixels[130 * 100 + 16], crate::render::BACKGROUND);
+    }
+
+    #[test]
+    fn descendant_rules_reach_old_render_and_new_background_preview() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<style>",
+                "div div { color: red; background: blue; ",
+                "width: 50px; height: 20px }",
+                "</style>",
+                "<div><section><div>Inside</div></section></div>",
+                "<div>Outside</div>"
+            ),
+        );
+
+        let inside = page
+            .blocks
+            .iter()
+            .find(|block| block.text() == Some("Inside"))
+            .unwrap();
+
+        let outside = page
+            .blocks
+            .iter()
+            .find(|block| block.text() == Some("Outside"))
+            .unwrap();
+
+        assert_eq!(inside.style.color, 0x00_FF_00_00);
+        assert_ne!(outside.style.color, 0x00_FF_00_00);
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let rect = preview.boxes[2].rect;
+
+        assert_eq!((rect.width, rect.height), (50, 20));
+        assert_eq!(
+            preview.boxes[2].background_color,
+            crate::css::BackgroundColor::Opaque(0x00_00_00_FF)
+        );
+
+        let mut pixels = vec![0; 100 * 140];
+
+        crate::layout_debug::paint_preview_backgrounds(&mut pixels, 100, 140, &preview, 0);
+
+        assert_eq!(pixels[90 * 100 + 16], 0x00_00_00_FF);
+        assert_eq!(pixels[110 * 100 + 16], crate::render::BACKGROUND);
     }
 }

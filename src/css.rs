@@ -152,6 +152,7 @@ struct Selector {
     tag: Option<String>,
     id: Option<String>,
     classes: Vec<String>,
+    ancestors: Vec<Selector>,
 }
 
 pub(crate) fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
@@ -344,7 +345,7 @@ fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &m
 
         let selectors = syntax::split_top_level_commas(selector_text)
             .into_iter()
-            .map(|selector| parse_selector(selector.trim()))
+            .map(parse_selector)
             .collect::<Option<Vec<_>>>();
 
         let Some(selectors) = selectors else {
@@ -365,18 +366,58 @@ fn parse_stylesheet(source: &str, rules: &mut Vec<CascadeRule>, source_order: &m
 }
 
 fn parse_selector(input: &str) -> Option<(Selector, Specificity)> {
-    let input = input.trim();
+    let mut remaining = input.trim_start_matches(is_css_whitespace);
 
-    if input.is_empty() {
+    if remaining.is_empty() {
         return None;
     }
 
-    let mut selector = Selector::default();
     let mut specificity = Specificity::default();
+    let mut compounds = Vec::new();
+
+    loop {
+        let (compound, tail) = parse_compound_selector(remaining, &mut specificity)?;
+
+        compounds.push(compound);
+
+        if tail.is_empty() {
+            break;
+        }
+
+        if !tail.chars().next().is_some_and(is_css_whitespace) {
+            return None;
+        }
+
+        remaining = tail.trim_start_matches(is_css_whitespace);
+
+        if remaining.is_empty() {
+            break;
+        }
+    }
+
+    let mut selector = compounds.pop()?;
+    selector.ancestors = compounds;
+
+    Some((selector, specificity))
+}
+
+fn is_css_whitespace(character: char) -> bool {
+    matches!(character, ' ' | '\t' | '\n' | '\r' | '\x0c')
+}
+
+fn parse_compound_selector<'a>(
+    input: &'a str,
+    specificity: &mut Specificity,
+) -> Option<(Selector, &'a str)> {
+    let mut selector = Selector::default();
     let mut remaining = input;
     let mut saw_universal = false;
 
     while !remaining.is_empty() {
+        if remaining.chars().next().is_some_and(is_css_whitespace) {
+            break;
+        }
+
         match remaining.as_bytes()[0] {
             b'*' => {
                 if saw_universal
@@ -429,7 +470,7 @@ fn parse_selector(input: &str) -> Option<(Selector, Specificity)> {
         || selector.tag.is_some()
         || selector.id.is_some()
         || !selector.classes.is_empty())
-    .then_some((selector, specificity))
+    .then_some((selector, remaining))
 }
 
 fn take_css_identifier(input: &str) -> Option<(String, &str)> {
@@ -692,10 +733,21 @@ fn parse_vertical_margin_shorthand(value: &str) -> Option<(i32, i32)> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn compute_style(
     element: &Element<'_>,
     inherited_style: TextStyle,
     rules: &[CssRule],
+) -> TextStyle {
+    compute_style_with_ancestors(element, inherited_style, rules, &[])
+}
+
+/// Ancestors are ordered from the document root to the element's parent.
+pub(crate) fn compute_style_with_ancestors(
+    element: &Element<'_>,
+    inherited_style: TextStyle,
+    rules: &[CssRule],
+    ancestors: &[Element<'_>],
 ) -> TextStyle {
     let parent_font_size = inherited_style.font_size;
     let parent_color = inherited_style.color;
@@ -703,7 +755,7 @@ pub(crate) fn compute_style(
 
     let mut matching_rules: Vec<&CssRule> = rules
         .iter()
-        .filter(|rule| selector_matches(&rule.selector, element))
+        .filter(|rule| selector_matches_with_ancestors(&rule.selector, element, ancestors))
         .collect();
 
     matching_rules.sort_by_key(|rule| (rule.specificity, rule.source_order));
@@ -787,6 +839,31 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
 }
 
 fn selector_matches(selector: &Selector, element: &Element<'_>) -> bool {
+    selector_matches_with_ancestors(selector, element, &[])
+}
+
+// https://www.w3.org/TR/selectors-4/#descendant-combinators
+fn selector_matches_with_ancestors(
+    selector: &Selector,
+    element: &Element<'_>,
+    ancestors: &[Element<'_>],
+) -> bool {
+    if !compound_matches(selector, element) {
+        return false;
+    }
+
+    let mut candidates = ancestors.iter().rev();
+
+    for part in selector.ancestors.iter().rev() {
+        if !candidates.any(|ancestor| compound_matches(part, ancestor)) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn compound_matches(selector: &Selector, element: &Element<'_>) -> bool {
     let tag_matches = selector
         .tag
         .as_ref()
@@ -813,7 +890,7 @@ pub(crate) fn matching_declarations<'a>(
 ) -> Vec<&'a CssDeclaration> {
     let mut matching_rules: Vec<&CascadeRule> = rules
         .iter()
-        .filter(|rule| selector_matches(&rule.selector, element))
+        .filter(|rule| compound_matches(&rule.selector, element))
         .collect();
 
     matching_rules.sort_by_key(|rule| (rule.specificity, rule.source_order));
@@ -935,7 +1012,7 @@ mod tests {
             inline_style: None,
         };
 
-        assert!(selector_matches(&selector, &element));
+        assert!(compound_matches(&selector, &element));
     }
 
     #[test]
@@ -1769,5 +1846,124 @@ mod tests {
 
         assert_eq!(parse_background_color("rgba(0, 0, 0, 0.5)"), None);
         assert_eq!(parse_background_color("url(example.png)"), None);
+    }
+
+    #[test]
+    fn descendant_selector_matches_ancestors_in_order() {
+        let (selector, specificity) = parse_selector("#root .box span").unwrap();
+
+        assert_eq!(specificity, Specificity::new(1, 1, 1));
+
+        let classes = vec!["box".to_owned()];
+
+        let root = Element {
+            tag: "main",
+            id: Some("root"),
+            classes: &[],
+            inline_style: None,
+        };
+
+        let middle = Element {
+            tag: "div",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        let target = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        assert!(selector_matches_with_ancestors(
+            &selector,
+            &target,
+            &[root, middle]
+        ));
+
+        let root = Element {
+            tag: "main",
+            id: Some("root"),
+            classes: &[],
+            inline_style: None,
+        };
+
+        let middle = Element {
+            tag: "div",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        assert!(!selector_matches_with_ancestors(
+            &selector,
+            &target,
+            &[middle, root]
+        ));
+
+        let (repeat, _) = parse_selector(".box .box span").unwrap();
+
+        let middle = Element {
+            tag: "div",
+            id: None,
+            classes: &classes,
+            inline_style: None,
+        };
+
+        assert!(!selector_matches_with_ancestors(
+            &repeat,
+            &target,
+            &[middle]
+        ));
+    }
+
+    #[test]
+    fn descendant_selector_preserves_escapes_and_rejects_other_combinators() {
+        let (selector, specificity) = parse_selector(r".\31 23 span").unwrap();
+
+        assert_eq!(specificity, Specificity::new(0, 1, 1));
+        assert_eq!(selector.ancestors[0].classes, ["123"]);
+        assert_eq!(selector.tag.as_deref(), Some("span"));
+
+        let (selector, _) = parse_selector("#a\u{00a0}").unwrap();
+
+        for invalid in [
+            "div > span",
+            "div + span",
+            "div ~ span",
+            "div >",
+            "div span::before",
+        ] {
+            assert!(parse_selector(invalid).is_none(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn descendant_specificity_participates_in_the_cascade() {
+        let rules = build_author_rules(&["#root span { color: blue } \
+             .box span { color: red }"
+            .to_owned()]);
+
+        let classes = vec!["box".to_owned()];
+
+        let ancestors = [Element {
+            tag: "div",
+            id: Some("root"),
+            classes: &classes,
+            inline_style: None,
+        }];
+
+        let target = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let style = compute_style_with_ancestors(&target, TextStyle::initial(), &rules, &ancestors);
+
+        assert_eq!(style.color, 0x00_00_00_FF);
     }
 }

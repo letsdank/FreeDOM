@@ -8,10 +8,10 @@
 use std::fmt::Write;
 
 use crate::{
-    css::{CssRule, Display, TextStyle, compute_style},
+    css::{CssRule, Display, TextStyle, compute_style_with_ancestors},
     html::{Document, Node},
     javascript::DocumentState,
-    page::element_info,
+    page::{ElementInfo, element_info},
 };
 
 /// Child indexes from the document root, valid only for this source snapshot.
@@ -60,6 +60,7 @@ impl StyledTree {
             rules,
             js,
             &mut path,
+            &mut Vec::new(),
         );
 
         Self {
@@ -108,13 +109,14 @@ fn build_children(
     rules: &[CssRule],
     js: &DocumentState,
     path: &mut Vec<usize>,
+    ancestors: &mut Vec<ElementInfo>,
 ) -> Vec<StyledNode> {
     let mut result = Vec::new();
 
     for (index, node) in nodes.iter().enumerate() {
         path.push(index);
 
-        if let Some(styled) = build_node(node, inherited, rules, js, path) {
+        if let Some(styled) = build_node(node, inherited, rules, js, path, ancestors) {
             result.push(styled);
         }
 
@@ -130,6 +132,7 @@ fn build_node(
     rules: &[CssRule],
     js: &DocumentState,
     path: &mut Vec<usize>,
+    ancestors: &mut Vec<ElementInfo>,
 ) -> Option<StyledNode> {
     if let Node::Text(text) = node {
         return Some(StyledNode::Text {
@@ -151,7 +154,14 @@ fn build_node(
         return None;
     }
 
-    let style = compute_style(&info.css_element(), inherited.clone(), rules);
+    let ancestor_elements: Vec<_> = ancestors.iter().map(ElementInfo::css_element).collect();
+
+    let style = compute_style_with_ancestors(
+        &info.css_element(),
+        inherited.clone(),
+        rules,
+        &ancestor_elements,
+    );
 
     if style.display == Display::None {
         return None;
@@ -169,7 +179,13 @@ fn build_node(
             text: text.to_owned(),
         }]
     } else {
-        build_children(&element.children, &style, rules, js, path)
+        ancestors.push(info.clone());
+
+        let children = build_children(&element.children, &style, rules, js, path, ancestors);
+
+        ancestors.pop();
+
+        children
     };
 
     Some(StyledNode::Element {
