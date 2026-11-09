@@ -1983,6 +1983,7 @@ mod tests {
     fn preview_reports_unsupported_content() {
         for html in [
             "<div style='margin-bottom: -5px'>text</div>",
+            "<div style='margin-top: 5px'>text</div>",
             "<div><img></div>",
             "<div><br></div>",
             "<div><span style='font-size: 32px'>text</span></div>",

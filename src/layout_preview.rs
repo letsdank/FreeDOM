@@ -45,7 +45,10 @@ impl std::fmt::Display for PreviewError {
             }
 
             Self::Margin(path) => {
-                write!(formatter, "negative margins are not supported at {path:?}")
+                write!(
+                    formatter,
+                    "margin-top or negative margin-bottom is not supported at {path:?}"
+                )
             }
 
             Self::Replaced(path) => {
@@ -119,7 +122,7 @@ impl PreviewLayout {
         for child in children {
             match child {
                 FlowChild::Block(block) => {
-                    if block.style.margin_after < 0 {
+                    if block.style.margin_before != 0 || block.style.margin_after < 0 {
                         return Err(PreviewError::Margin(block.source.indices().to_vec()));
                     }
 

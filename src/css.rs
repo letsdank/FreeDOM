@@ -49,6 +49,7 @@ pub(crate) struct TextStyle {
     pub(crate) font_weight: FontWeight,
     pub(crate) font_style: FontStyle,
     pub(crate) font_family: Option<String>,
+    pub(crate) margin_before: i32,
     pub(crate) margin_after: i32,
     pub(crate) display: Display,
 }
@@ -61,6 +62,7 @@ impl TextStyle {
             font_weight: FontWeight::Normal,
             font_family: None,
             font_style: FontStyle::Normal,
+            margin_before: 0,
             margin_after: 0,
             display: Display::Inline,
         }
@@ -91,6 +93,7 @@ struct Declarations {
     font_family: Option<String>,
     font_style: Option<FontStyle>,
     display: Option<Display>,
+    margin_before: Option<i32>,
     margin_after: Option<i32>,
 }
 
@@ -460,9 +463,22 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
-            "margin-bottom" | "margin" => {
-                if let Some(value) = parse_length(&declaration.value) {
+            "margin-top" => {
+                if let Some(value) = parse_margin_length(&declaration.value) {
+                    parsed.margin_before = Some(value);
+                }
+            }
+
+            "margin-bottom" => {
+                if let Some(value) = parse_margin_length(&declaration.value) {
                     parsed.margin_after = Some(value);
+                }
+            }
+
+            "margin" => {
+                if let Some((top, bottom)) = parse_vertical_margin_shorthand(&declaration.value) {
+                    parsed.margin_before = Some(top);
+                    parsed.margin_after = Some(bottom);
                 }
             }
 
@@ -554,11 +570,46 @@ fn parse_font_style(value: &str) -> Option<FontStyle> {
     }
 }
 
-fn parse_length(value: &str) -> Option<i32> {
-    let value = value.split_whitespace().next()?.trim();
-    let value = value.trim_end_matches("px");
+fn parse_margin_length(value: &str) -> Option<i32> {
+    let value = value.trim().to_ascii_lowercase();
 
-    value.parse::<f32>().ok().map(|value| value.round() as i32)
+    let (number, has_unit) = match value.strip_suffix("px") {
+        Some(number) => (number, true),
+        None => (value.as_str(), false),
+    };
+
+    let number = number.parse::<f64>().ok()?;
+
+    if !number.is_finite() || (!has_unit && number != 0.0) {
+        return None;
+    }
+
+    let rounded = number.round();
+
+    if rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
+        return None;
+    }
+
+    Some(rounded as i32)
+}
+
+// CSS 2.2 section 8.3:
+// https://www.w3.org/TR/CSS22/box.html#margin-properties
+//
+// Only px and unitless zero are supported. Every component is validated.
+fn parse_vertical_margin_shorthand(value: &str) -> Option<(i32, i32)> {
+    let components = value
+        .split_ascii_whitespace()
+        .map(parse_margin_length)
+        .collect::<Option<Vec<_>>>()?;
+
+    match components.as_slice() {
+        [top] | [top, _] => Some((*top, *top)),
+
+        [top, _, bottom] | [top, _, bottom, _] => Some((*top, *bottom)),
+
+        _ => None,
+    }
 }
 
 pub(crate) fn compute_style(
@@ -605,6 +656,7 @@ pub(crate) fn compute_style(
 fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     let mut style = inherited_style;
     style.display = Display::Inline;
+    style.margin_before = 0;
     style.margin_after = 0;
 
     if tag == "a" {
@@ -719,6 +771,10 @@ fn apply_declarations(
 
     if let Some(display) = declarations.display {
         style.display = display;
+    }
+
+    if let Some(margin_before) = declarations.margin_before {
+        style.margin_before = margin_before;
     }
 
     if let Some(margin_after) = declarations.margin_after {
@@ -1324,5 +1380,84 @@ mod tests {
         let style = compute_style(&element, parent, &[]);
 
         assert_eq!(style.color, 0x00_FF_00_00);
+    }
+
+    #[test]
+    fn parses_vertical_margin_shorthand() {
+        assert_eq!(parse_vertical_margin_shorthand("1px"), Some((1, 1)));
+        assert_eq!(parse_vertical_margin_shorthand("1px 2px"), Some((1, 1)));
+        assert_eq!(parse_vertical_margin_shorthand("1px 2px 3px"), Some((1, 3)));
+
+        assert_eq!(
+            parse_vertical_margin_shorthand("-1px 2px 3px 4px"),
+            Some((-1, 3))
+        );
+
+        assert_eq!(parse_vertical_margin_shorthand("0 2PX"), Some((0, 0)));
+
+        for input in [
+            "",
+            "1px 2em",
+            "1px 2px 3px 4px 5px",
+            "3",
+            "NaNpx",
+            "1px 2px junk",
+        ] {
+            assert_eq!(parse_vertical_margin_shorthand(input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn cascades_vertical_margins_and_does_not_inherit_them() {
+        let stylesheets = vec![
+            "div { margin: 1px 2px 3px 4px; \
+             margin-top: 5px !important }"
+                .to_owned(),
+        ];
+
+        let rules = build_author_rules(&stylesheets);
+
+        let element = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some("margin: 6px 7px 8px; margin-bottom: 9px"),
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!((style.margin_before, style.margin_after), (5, 9));
+
+        let child = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let child_style = compute_style(&child, style, &[]);
+
+        assert_eq!(
+            (child_style.margin_before, child_style.margin_after),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn invalid_margin_shorthand_does_not_override_previous_values() {
+        let element = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some(
+                "margin: 2px 3px 4px; \
+                 margin: 8px nope; \
+                 margin-top: 1px 2px",
+            ),
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &[]);
+
+        assert_eq!((style.margin_before, style.margin_after), (2, 4));
     }
 }
