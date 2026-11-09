@@ -2022,8 +2022,8 @@ mod tests {
         assert_eq!((rects[2].y, rects[2].height), (0, 10));
         assert_eq!((rects[3].y, rects[3].height), (20, 10));
 
-        // The preview currently includes the final child's bottom spacing.
-        assert_eq!(rects[1].height, 40);
+        // The final paragraph's margin collapses with body, but not with html.
+        assert_eq!(rects[1].height, 30);
         assert_eq!(rects[0].height, 40);
 
         let text_blocks: Vec<_> = page
@@ -2118,5 +2118,51 @@ mod tests {
         let positions: Vec<_> = preview.boxes.iter().map(|item| item.rect.y).collect();
 
         assert_eq!(positions, vec![0, 10, 15]);
+    }
+
+    #[test]
+    fn preview_collapses_parent_and_last_child_bottom_margins() {
+        for (parent, child, next, expected_y) in [(4, 8, 3, 18), (8, -3, 12, 19), (-3, 8, 12, 19)] {
+            let html = format!(
+                "<div style='margin-bottom: {parent}px'>\
+                    <div style='margin-bottom: {child}px'>A</div>\
+                 </div>\
+                 <div style='margin-top: {next}px'>B</div>"
+            );
+
+            let page = parse_html("https://example.test/", &html);
+            let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+            let rects: Vec<_> = preview.boxes.iter().map(|item| item.rect).collect();
+
+            assert_eq!(rects.len(), 3);
+
+            assert_eq!((rects[0].y, rects[0].height), (0, 10));
+            assert_eq!((rects[1].y, rects[1].height), (0, 10));
+
+            assert_eq!(
+                rects[2].y, expected_y,
+                "parent={parent}, child={child}, next={next}"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_keeps_margin_before_following_inline_content_inside_parent() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div>",
+                "<div style='margin-bottom: 8px'>A</div>",
+                "tail",
+                "</div>",
+                "<div>B</div>",
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        assert_eq!(preview.boxes[0].rect.height, 28);
+        assert_eq!(preview.boxes[2].rect.y, 28);
     }
 }

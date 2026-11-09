@@ -53,6 +53,11 @@ impl PendingMargin {
     }
 }
 
+struct FlowResult {
+    end: i32,
+    trailing_margin: Option<PendingMargin>,
+}
+
 #[derive(Debug)]
 pub(crate) enum PreviewError {
     Tree(BoxTreeError),
@@ -131,14 +136,21 @@ impl PreviewLayout {
         let mut output = Self { boxes: Vec::new() };
         let root_style = TextStyle::initial();
 
-        output.flow(
+        let flow = output.flow(
             &tree.children,
             &root_style,
             page,
             fallback.as_ref(),
             width,
             0,
+            true,
         )?;
+
+        if let Some(group) = flow.trailing_margin {
+            if group.value() < 0 {
+                return Err(PreviewError::Margin(group.path));
+            }
+        }
 
         Ok(output)
     }
@@ -151,7 +163,8 @@ impl PreviewLayout {
         fallback: Option<&TrueTypeFont<'_>>,
         width: i32,
         top: i32,
-    ) -> Result<i32, PreviewError> {
+        document_flow: bool,
+    ) -> Result<FlowResult, PreviewError> {
         let mut cursor = top;
         let mut pending_margin: Option<PendingMargin> = None;
 
@@ -192,8 +205,25 @@ impl PreviewLayout {
                         },
                     });
 
-                    let end = self.flow(children, block.style, page, fallback, width, start)?;
+                    let mut child_flow =
+                        self.flow(children, block.style, page, fallback, width, start, false)?;
 
+                    // The root element's margins do not collapse with its children.
+                    // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
+                    if document_flow && block.tag == "html" {
+                        if let Some(group) = child_flow.trailing_margin.take() {
+                            if group.value() < 0 {
+                                return Err(PreviewError::Margin(group.path));
+                            }
+
+                            child_flow.end = child_flow
+                                .end
+                                .checked_add(group.value())
+                                .ok_or(PreviewError::SizeOverflow)?;
+                        }
+                    }
+
+                    let end = child_flow.end;
                     let height = end.checked_sub(start).ok_or(PreviewError::SizeOverflow)?;
 
                     if height < 0 || (height == 0 && !children.is_empty()) {
@@ -216,10 +246,17 @@ impl PreviewLayout {
                     self.boxes[index].rect.height = height;
                     cursor = end;
 
-                    pending_margin = Some(PendingMargin::new(
+                    let mut group = PendingMargin::new(
                         block.style.margin_after,
                         block.source.indices().to_vec(),
-                    ));
+                    );
+
+                    if let Some(child_margin) = child_flow.trailing_margin {
+                        group.add(child_margin.positive);
+                        group.add(child_margin.negative);
+                    }
+
+                    pending_margin = Some(group);
                 }
 
                 FlowChild::InlineRun { items, .. } => {
@@ -275,23 +312,16 @@ impl PreviewLayout {
             }
         }
 
-        if let Some(group) = pending_margin {
+        if let Some(group) = &pending_margin {
             if group.has_empty {
-                return Err(PreviewError::Margin(group.path));
+                return Err(PreviewError::Margin(group.path.clone()));
             }
-
-            if group.value() < 0 {
-                return Err(PreviewError::Margin(group.path));
-            }
-
-            // Parent/child collapsing is not implemented; preserve the old
-            // preview's treatment of a final positive bottom margin.
-            cursor = cursor
-                .checked_add(group.value())
-                .ok_or(PreviewError::SizeOverflow)?;
         }
 
-        Ok(cursor)
+        Ok(FlowResult {
+            end: cursor,
+            trailing_margin: pending_margin,
+        })
     }
 
     pub(crate) fn format_debug(&self) -> String {
