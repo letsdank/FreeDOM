@@ -1949,4 +1949,50 @@ mod tests {
 
         assert_eq!(after, before);
     }
+
+    #[test]
+    fn previews_nested_block_geometry_without_changing_page_layout() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div>start<div>child</div><div>child</div>end</div>",
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let rects: Vec<_> = preview
+            .boxes
+            .iter()
+            .map(|item| (item.source.indices().to_vec(), item.rect))
+            .collect();
+
+        assert_eq!(rects.len(), 3);
+
+        assert_eq!(rects[0].1.x, 16);
+        assert_eq!(rects[0].1.width, 68);
+        assert_eq!(rects[0].1.y, 0);
+        assert_eq!(rects[0].1.height, 40);
+
+        assert_eq!(rects[1].0, vec![0, 1]);
+        assert_eq!(rects[1].1.y, 10);
+
+        assert_eq!(rects[2].0, vec![0, 2]);
+        assert_eq!(rects[2].1.y, 20);
+    }
+
+    #[test]
+    fn preview_reports_unsupported_content() {
+        for html in [
+            "<p>text</p>",
+            "<div><img></div>",
+            "<div><br></div>",
+            "<div><span style='font-size: 32px'>text</span></div>",
+        ] {
+            let page = parse_html("https://example.text", html);
+
+            assert!(
+                crate::layout_preview::PreviewLayout::build(&page, 100, None).is_err(),
+                "{html}"
+            );
+        }
+    }
 }

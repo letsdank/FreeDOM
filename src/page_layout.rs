@@ -6,7 +6,7 @@ use crate::{
 
 pub(crate) const CONTENT_TOP: i32 = 90;
 
-const CONTENT_HORIZONTAL_PADDING: usize = 16;
+pub(crate) const CONTENT_HORIZONTAL_PADDING: usize = 16;
 
 pub(crate) struct PageLayout {
     viewport_width: usize,

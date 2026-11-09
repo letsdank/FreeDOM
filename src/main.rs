@@ -2,6 +2,7 @@ mod box_tree;
 mod css;
 mod fetch;
 mod layout_debug;
+mod layout_preview;
 mod page;
 mod page_layout;
 mod performance;
@@ -161,6 +162,8 @@ struct App {
     frame_profiler: FrameProfiler,
     glyph_raster_cache: GlyphRasterCache,
     show_layout_boxes: bool,
+    show_layout_preview: bool,
+    preview_layout: Option<layout_preview::PreviewLayout>,
 }
 
 impl App {
@@ -191,6 +194,8 @@ impl App {
             frame_profiler: FrameProfiler::from_environment(),
             glyph_raster_cache: GlyphRasterCache::new(),
             show_layout_boxes: false,
+            show_layout_preview: false,
+            preview_layout: None,
         }
     }
 
@@ -331,6 +336,13 @@ impl App {
                 }
             }
 
+            Key::Named(NamedKey::F9) => {
+                if !event.repeat {
+                    self.show_layout_preview = !self.show_layout_preview;
+                    self.request_redraw();
+                }
+            }
+
             _ => {
                 if let Some(text) = &event.text {
                     let text = text.to_string();
@@ -372,6 +384,25 @@ impl App {
                 self.vector_font_data.as_deref(),
             ));
             self.block_raster_cache.clear();
+            self.preview_layout = None;
+        }
+
+        if self.show_layout_preview && self.preview_layout.is_none() {
+            match layout_preview::PreviewLayout::build(
+                &self.page,
+                viewport_width,
+                self.vector_font_data.as_deref(),
+            ) {
+                Ok(preview) => {
+                    eprint!("{}", preview.format_debug());
+                    self.preview_layout = Some(preview);
+                }
+
+                Err(error) => {
+                    eprintln!("FreeDOM preview unavailable: {error}");
+                    self.show_layout_preview = false;
+                }
+            }
         }
 
         let layout = self.layout.as_ref().expect("page layout must exist");
@@ -415,6 +446,18 @@ impl App {
                 layout,
                 self.scroll_y,
             );
+        }
+
+        if self.show_layout_preview {
+            if let Some(preview) = &self.preview_layout {
+                layout_debug::paint_preview_overlay(
+                    &mut buffer,
+                    width as usize,
+                    height as usize,
+                    preview,
+                    self.scroll_y,
+                );
+            }
         }
 
         let paint_duration = paint_started.map(|started| started.elapsed());

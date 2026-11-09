@@ -2,9 +2,25 @@
 //!
 //! These are diagnostic rectangles, not yet CSS box-model boundaries.
 
-use crate::page_layout::{CONTENT_TOP, LayoutRect, PageLayout};
+use crate::{
+    layout_preview::PreviewLayout,
+    page_layout::{CONTENT_TOP, LayoutRect, PageLayout},
+};
 
 const OUTLINE: u32 = 0x00_E8_3D_3D;
+const PREVIEW_OUTLINE: u32 = 0x00_2B_85_E8;
+
+pub(crate) fn paint_preview_overlay(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    layout: &PreviewLayout,
+    scroll_y: i32,
+) {
+    for item in &layout.boxes {
+        draw_outline_color(pixels, width, height, item.rect, scroll_y, PREVIEW_OUTLINE);
+    }
+}
 
 pub(crate) fn paint_layout_overlay(
     pixels: &mut [u32],
@@ -19,6 +35,17 @@ pub(crate) fn paint_layout_overlay(
 }
 
 fn draw_outline(pixels: &mut [u32], width: usize, height: usize, rect: LayoutRect, scroll_y: i32) {
+    draw_outline_color(pixels, width, height, rect, scroll_y, OUTLINE);
+}
+
+fn draw_outline_color(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    rect: LayoutRect,
+    scroll_y: i32,
+    color: u32,
+) {
     if rect.width <= 0
         || rect.height <= 0
         || width
@@ -48,7 +75,7 @@ fn draw_outline(pixels: &mut [u32], width: usize, height: usize, rect: LayoutRec
         if y >= visible_top && y < viewport_height {
             let row = y as usize * width;
 
-            pixels[row + x_start..row + x_end].fill(OUTLINE);
+            pixels[row + x_start..row + x_end].fill(color);
         }
     }
 
@@ -58,7 +85,7 @@ fn draw_outline(pixels: &mut [u32], width: usize, height: usize, rect: LayoutRec
     for x in [left, right] {
         if x >= 0 && x < viewport_width {
             for y in y_start..y_end {
-                pixels[y * width + x as usize] = OUTLINE;
+                pixels[y * width + x as usize] = color;
             }
         }
     }
