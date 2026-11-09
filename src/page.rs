@@ -1988,7 +1988,8 @@ mod tests {
             "<div><br></div>",
             "<div><span style='font-size: 32px'>text</span></div>",
             "<div></div>",
-            "<div>first</div><div></div><div style='margin-top: 5px'>last</div>",
+            "<div>first</div><div></div>",
+            "<div>first</div><div></div>last",
         ] {
             let page = parse_html("https://example.text", html);
 
@@ -2079,5 +2080,43 @@ mod tests {
                 "bottom={bottom}, top={top}"
             );
         }
+    }
+
+    #[test]
+    fn preview_collapses_margins_through_empty_siblings() {
+        let html = concat!(
+            "<div style='margin-bottom: 8px'>A</div>",
+            "<div style='margin-top: 12px; margin-bottom: -3px'></div>",
+            "<div style='margin-top: 4px; margin-bottom: -7px'></div>",
+            "<div style='margin-top: 6px'>B</div>"
+        );
+
+        let page = parse_html("https://example.test/", html);
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let positions: Vec<_> = preview
+            .boxes
+            .iter()
+            .map(|item| (item.rect.y, item.rect.height))
+            .collect();
+
+        assert_eq!(positions, vec![(0, 10), (22, 0), (19, 0), (15, 10)]);
+    }
+
+    #[test]
+    fn preview_collapses_zero_margin_empty_sibling() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div>A</div>",
+                "<div></div>",
+                "<div style='margin-top: 5px'>B</div>",
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+        let positions: Vec<_> = preview.boxes.iter().map(|item| item.rect.y).collect();
+
+        assert_eq!(positions, vec![0, 10, 15]);
     }
 }

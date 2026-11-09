@@ -26,6 +26,33 @@ pub(crate) struct PreviewLayout {
     pub(crate) boxes: Vec<PreviewBox>,
 }
 
+struct PendingMargin {
+    positive: i32,
+    negative: i32,
+    path: Vec<usize>,
+    has_empty: bool,
+}
+
+impl PendingMargin {
+    fn new(value: i32, path: Vec<usize>) -> Self {
+        Self {
+            positive: value.max(0),
+            negative: value.min(0),
+            path,
+            has_empty: false,
+        }
+    }
+
+    fn add(&mut self, value: i32) {
+        self.positive = self.positive.max(value);
+        self.negative = self.negative.min(value);
+    }
+
+    fn value(&self) -> i32 {
+        collapse_sibling_margins(self.positive, self.negative)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum PreviewError {
     Tree(BoxTreeError),
@@ -53,7 +80,10 @@ impl std::fmt::Display for PreviewError {
             }
 
             Self::EmptyBlock(path) => {
-                write!(formatter, "empty block is not supported at {path:?}")
+                write!(
+                    formatter,
+                    "empty block at a flow boundary or with unsupported content at {path:?}"
+                )
             }
 
             Self::Replaced(path) => {
@@ -123,18 +153,24 @@ impl PreviewLayout {
         top: i32,
     ) -> Result<i32, PreviewError> {
         let mut cursor = top;
-        let mut pending_margin: Option<(i32, Vec<usize>)> = None;
+        let mut pending_margin: Option<PendingMargin> = None;
 
         for child in children {
             match child {
                 FlowChild::Block(block) => {
-                    if let Some((bottom, _)) = pending_margin.take() {
-                        let gap = collapse_sibling_margins(bottom, block.style.margin_before);
+                    let mut previous = pending_margin.take();
 
-                        cursor = cursor.checked_add(gap).ok_or(PreviewError::SizeOverflow)?;
+                    let start = if let Some(group) = previous.as_mut() {
+                        group.add(block.style.margin_before);
+
+                        cursor
+                            .checked_add(group.value())
+                            .ok_or(PreviewError::SizeOverflow)?
                     } else if block.style.margin_before != 0 {
                         return Err(PreviewError::Margin(block.source.indices().to_vec()));
-                    }
+                    } else {
+                        cursor
+                    };
 
                     if block.tag == "pre" {
                         return Err(PreviewError::WhiteSpace);
@@ -150,24 +186,40 @@ impl PreviewLayout {
                         source: block.source.clone(),
                         rect: LayoutRect {
                             x: CONTENT_HORIZONTAL_PADDING as i32,
-                            y: cursor,
+                            y: start,
                             width,
                             height: 0,
                         },
                     });
 
-                    let end = self.flow(children, block.style, page, fallback, width, cursor)?;
-                    let height = end.checked_sub(cursor).ok_or(PreviewError::SizeOverflow)?;
+                    let end = self.flow(children, block.style, page, fallback, width, start)?;
 
-                    if height <= 0 {
+                    let height = end.checked_sub(start).ok_or(PreviewError::SizeOverflow)?;
+
+                    if height < 0 || (height == 0 && !children.is_empty()) {
                         return Err(PreviewError::EmptyBlock(block.source.indices().to_vec()));
+                    }
+
+                    if height == 0 {
+                        let Some(mut group) = previous else {
+                            return Err(PreviewError::EmptyBlock(block.source.indices().to_vec()));
+                        };
+
+                        group.add(block.style.margin_after);
+                        group.has_empty = true;
+                        group.path = block.source.indices().to_vec();
+
+                        pending_margin = Some(group);
+                        continue;
                     }
 
                     self.boxes[index].rect.height = height;
                     cursor = end;
 
-                    pending_margin =
-                        Some((block.style.margin_after, block.source.indices().to_vec()));
+                    pending_margin = Some(PendingMargin::new(
+                        block.style.margin_after,
+                        block.source.indices().to_vec(),
+                    ));
                 }
 
                 FlowChild::InlineRun { items, .. } => {
@@ -183,13 +235,17 @@ impl PreviewLayout {
                         continue;
                     }
 
-                    if let Some((bottom, path)) = pending_margin.take() {
-                        if bottom < 0 {
-                            return Err(PreviewError::Margin(path));
+                    if let Some(group) = pending_margin.take() {
+                        if group.has_empty {
+                            return Err(PreviewError::EmptyBlock(group.path));
+                        }
+
+                        if group.value() < 0 {
+                            return Err(PreviewError::Margin(group.path));
                         }
 
                         cursor = cursor
-                            .checked_add(bottom)
+                            .checked_add(group.value())
                             .ok_or(PreviewError::SizeOverflow)?;
                     }
 
@@ -219,15 +275,19 @@ impl PreviewLayout {
             }
         }
 
-        if let Some((bottom, path)) = pending_margin {
-            if bottom < 0 {
-                return Err(PreviewError::Margin(path));
+        if let Some(group) = pending_margin {
+            if group.has_empty {
+                return Err(PreviewError::Margin(group.path));
+            }
+
+            if group.value() < 0 {
+                return Err(PreviewError::Margin(group.path));
             }
 
             // Parent/child collapsing is not implemented; preserve the old
             // preview's treatment of a final positive bottom margin.
             cursor = cursor
-                .checked_add(bottom)
+                .checked_add(group.value())
                 .ok_or(PreviewError::SizeOverflow)?;
         }
 
