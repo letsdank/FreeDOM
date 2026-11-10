@@ -10,6 +10,9 @@ mod render;
 mod styled_tree;
 mod url;
 
+#[cfg(test)]
+mod xml;
+
 #[allow(dead_code)]
 mod html;
 
