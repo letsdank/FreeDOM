@@ -18,7 +18,7 @@ enum Token<'a> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct XmlError {
+pub(crate) struct XmlError {
     offset: usize,
     message: &'static str,
 }
@@ -208,6 +208,111 @@ enum Node {
     Element(Element),
     Text(String),
     Comment(String),
+}
+
+#[derive(Debug)]
+pub(crate) enum XhtmlError {
+    Xml(XmlError),
+    InvalidRoot,
+    UnsupportedNamespace {
+        element: String,
+        namespace: Option<String>,
+    },
+}
+
+impl std::fmt::Display for XhtmlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Xml(error) => {
+                write!(
+                    formatter,
+                    "XML error at byte {}: {}",
+                    error.offset, error.message
+                )
+            }
+
+            Self::InvalidRoot => {
+                write!(formatter, "XHTML root must be html")
+            }
+
+            Self::UnsupportedNamespace { element, namespace } => {
+                write!(
+                    formatter,
+                    "unsupported namespace {namespace:?} on {element}"
+                )
+            }
+        }
+    }
+}
+
+const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+
+/// Converts documents whose elements use the XHTML default namespace.
+///
+/// XML names and attributes keep their original case. This adapter is
+/// intentionally limited and is currently used only by tests.
+pub(crate) fn parse_xhtml(source: &str) -> Result<crate::html::Document, XhtmlError> {
+    let document = parse(source).map_err(XhtmlError::Xml)?;
+
+    if document.root.name != "html" {
+        return Err(XhtmlError::InvalidRoot);
+    }
+
+    let root = convert_element(document.root, None)?;
+    let mut children = Vec::new();
+
+    if let Some(doctype) = document.doctype {
+        children.push(crate::html::Node::Doctype(doctype));
+    }
+
+    children.push(crate::html::Node::Element(root));
+
+    Ok(crate::html::Document { children })
+}
+
+fn convert_element(
+    element: Element,
+    inherited: Option<&str>,
+) -> Result<crate::html::Element, XhtmlError> {
+    let explicit = element
+        .attributes
+        .iter()
+        .find_map(|(name, value)| (name == "xmlns").then_some(value.as_str()));
+
+    let namespace = explicit.or(inherited);
+
+    if namespace != Some(XHTML_NAMESPACE) {
+        return Err(XhtmlError::UnsupportedNamespace {
+            element: element.name,
+            namespace: namespace.map(str::to_owned),
+        });
+    }
+
+    let mut children = Vec::new();
+
+    for child in element.children {
+        let child = match child {
+            Node::Element(child) => crate::html::Node::Element(convert_element(child, namespace)?),
+
+            Node::Text(text) => crate::html::Node::Text(text),
+
+            Node::Comment(text) => crate::html::Node::Comment(text),
+        };
+
+        children.push(child);
+    }
+
+    let attributes = element
+        .attributes
+        .into_iter()
+        .map(|(name, value)| crate::html::Attribute { name, value })
+        .collect();
+
+    Ok(crate::html::Element {
+        name: element.name,
+        attributes,
+        children,
+    })
 }
 
 const MAX_DEPTH: usize = 256;
@@ -736,5 +841,83 @@ mod tests {
                 assert!(style_text.contains("border-top: blue solid 20px"));
             }
         }
+    }
+
+    #[test]
+    fn xhtml_adapter_preserves_names_text_and_structure() {
+        let source = concat!(
+            "<!DOCTYPE html>",
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body>",
+            "<P Class='A'>x&amp;y<![CDATA[<z>]]></P>",
+            "<!-- hi -->",
+            "</body>",
+            "</html>",
+        );
+
+        let document = parse_xhtml(source).unwrap();
+
+        assert!(matches!(
+            &document.children[0],
+            crate::html::Node::Doctype(_)
+        ));
+
+        let html = document.first_element("html").unwrap();
+        assert_eq!(html.name, "html");
+
+        let body = document.first_element("body").unwrap();
+
+        let crate::html::Node::Element(p) = &body.children[0] else {
+            panic!("expected element");
+        };
+
+        assert_eq!(p.name, "P");
+        assert_eq!(p.attributes[0].name, "Class");
+
+        assert_eq!(
+            p.children,
+            vec![
+                crate::html::Node::Text("x&y".to_owned()),
+                crate::html::Node::Text("<z>".to_owned())
+            ]
+        );
+
+        assert!(matches!(&body.children[1], crate::html::Node::Comment(_)));
+    }
+
+    #[test]
+    fn xhtml_adapter_rejects_non_xhtml_namespaces_and_xml_errors() {
+        for source in [
+            "<html/>",
+            "<html xmlns='url:wrong'/>",
+            concat!(
+                "<html xmlns='http://www.w3.org/1999/xhtml'>",
+                "<x xmlns=''/>",
+                "</html>",
+            ),
+            concat!(
+                "<html xmlns='http://www.w3.org/1999/xhtml'>",
+                "<svg xmlns='http://www.w3.org/2000/svg'/>",
+                "</html>",
+            ),
+            concat!(
+                "<html xmlns='http://www.w3.org/1999/xhtml'>",
+                "<x:div/>",
+                "</html>",
+            ),
+            concat!("<html xmlns='http://www.w3.org/1999/xhtml'>", "<p></html>",),
+            "<body xmlns='http://www.w3.org/1999/xhtml'/>",
+        ] {
+            assert!(parse_xhtml(source).is_err(), "{source}");
+        }
+
+        assert!(
+            parse_xhtml(concat!(
+                "<html xmlns='http://www.w3.org/1999/xhtml'>",
+                "<body xmlns='http://www.w3.org/1999/xhtml'/>",
+                "</html>",
+            ))
+            .is_ok()
+        );
     }
 }

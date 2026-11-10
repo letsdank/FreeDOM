@@ -205,6 +205,17 @@ fn parse_html(url: &str, html: &str) -> Page {
     parse_dom(url, &document, &stylesheets)
 }
 
+#[cfg(test)]
+pub(crate) fn parse_xhtml_for_test(
+    url: &str,
+    source: &str,
+) -> Result<Page, crate::xml::XhtmlError> {
+    let document = crate::xml::parse_xhtml(source)?;
+    let stylesheets = collect_inline_stylesheets(&document);
+
+    Ok(parse_dom(url, &document, &stylesheets))
+}
+
 fn parse_dom(url: &str, document: &HtmlDocument, stylesheet_sources: &[String]) -> Page {
     let stylesheets: Vec<Stylesheet> = Url::parse(url)
         .map(|base_url| {
@@ -2594,5 +2605,71 @@ mod tests {
             crate::layout_preview::PreviewLayout::build(&page, 100, None),
             Err(crate::layout_preview::PreviewError::SizeOverflow)
         ));
+    }
+
+    #[test]
+    fn saved_xhtml_pair_has_matching_background_only_preview_not_a_wpt_result() {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/wpt/css/CSS2/margin-padding-clear");
+
+        let read =
+            |name: &str| std::fs::read_to_string(base.join(name)).expect("WPT fixture must exist");
+
+        let target = parse_xhtml_for_test(
+            "https://web-platform.test/css/CSS2/margin-padding-clear/margin-collapse-003.xht",
+            &read("margin-collapse-003.xht"),
+        )
+        .unwrap();
+
+        let reference = parse_xhtml_for_test(
+            "https://web-platform.test/css/CSS2/margin-padding-clear/margin-collapse-003-ref.xht",
+            &read("margin-collapse-003-ref.xht"),
+        )
+        .unwrap();
+
+        let (width, height) = (320, 200);
+
+        let target_layout =
+            crate::layout_preview::PreviewLayout::build(&target, width, None).unwrap();
+
+        let reference_layout =
+            crate::layout_preview::PreviewLayout::build(&reference, width, None).unwrap();
+
+        let mut actual = vec![0; width * height];
+        let mut expected = vec![0; width * height];
+
+        crate::layout_debug::paint_preview_backgrounds(
+            &mut actual,
+            width,
+            height,
+            &target_layout,
+            0,
+        );
+
+        crate::layout_debug::paint_preview_backgrounds(
+            &mut expected,
+            width,
+            height,
+            &reference_layout,
+            0,
+        );
+
+        let blue_pixels = actual
+            .iter()
+            .filter(|&&pixel| pixel == 0x00_00_00_FF)
+            .count();
+
+        let orange_pixels = actual
+            .iter()
+            .filter(|&&pixel| pixel == 0x00_FF_A5_00)
+            .count();
+
+        assert_eq!(blue_pixels, 50 * 20);
+        assert_eq!(orange_pixels, 50 * 20);
+
+        assert_eq!(
+            actual, expected,
+            "background-only diagnostic does not render text or run WPT"
+        );
     }
 }
