@@ -2501,4 +2501,98 @@ mod tests {
         assert_eq!(pixels[90 * 100 + 16], 0x00_00_00_FF);
         assert_eq!(pixels[110 * 100 + 16], crate::render::BACKGROUND);
     }
+
+    #[test]
+    fn preview_paints_vertical_border_reference_like_stripes() {
+        let target = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='width: 50px; ",
+                "border-top: blue solid 20px; ",
+                "border-bottom: orange solid 20px'></div>"
+            ),
+        );
+
+        let reference = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='width: 50px; height: 20px; ",
+                "background: blue'></div>",
+                "<div style='width: 50px; height: 20px; ",
+                "background: orange'></div>"
+            ),
+        );
+
+        let target_layout =
+            crate::layout_preview::PreviewLayout::build(&target, 100, None).unwrap();
+
+        let reference_layout =
+            crate::layout_preview::PreviewLayout::build(&reference, 100, None).unwrap();
+
+        assert_eq!(
+            (
+                target_layout.boxes[0].rect.width,
+                target_layout.boxes[0].rect.height
+            ),
+            (50, 40)
+        );
+
+        let mut actual = vec![0; 100 * 140];
+        let mut expected = vec![0; 100 * 140];
+
+        crate::layout_debug::paint_preview_backgrounds(&mut actual, 100, 140, &target_layout, 0);
+
+        crate::layout_debug::paint_preview_backgrounds(
+            &mut expected,
+            100,
+            140,
+            &reference_layout,
+            0,
+        );
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual[90 * 100 + 16], 0x00_00_00_FF);
+        assert_eq!(actual[110 * 100 + 16], 0x00_FF_A5_00);
+    }
+
+    #[test]
+    fn preview_borders_stop_parent_child_margin_collapsing() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='border-top: red solid 2px; ",
+                "border-bottom: blue solid 3px'>",
+                "<div style='height: 5px; margin-top: 8px; ",
+                "margin-bottom: 6px'></div>",
+                "</div>",
+                "<div style='height: 10px'></div>"
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let rects: Vec<_> = preview
+            .boxes
+            .iter()
+            .map(|item| (item.rect.y, item.rect.height))
+            .collect();
+
+        assert_eq!(rects, vec![(0, 24), (10, 5), (24, 10)]);
+    }
+
+    #[test]
+    fn preview_rejects_border_size_overflow() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='height: 2147483647px; ",
+                "border-top: red solid 1px'></div>"
+            ),
+        );
+
+        assert!(matches!(
+            crate::layout_preview::PreviewLayout::build(&page, 100, None),
+            Err(crate::layout_preview::PreviewError::SizeOverflow)
+        ));
+    }
 }

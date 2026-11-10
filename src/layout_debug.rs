@@ -117,6 +117,41 @@ pub(crate) fn paint_preview_backgrounds(
         if let BackgroundColor::Opaque(color) = item.background_color {
             fill_preview_rect(pixels, width, height, item.rect, scroll_y, color);
         }
+
+        if item.border_top.width > 0 {
+            let rect = LayoutRect {
+                height: item.border_top.width.min(item.rect.height),
+                ..item.rect
+            };
+
+            fill_preview_rect(pixels, width, height, rect, scroll_y, item.border_top.color);
+        }
+
+        if item.border_bottom.width > 0 {
+            let border_height = item.border_bottom.width.min(item.rect.height);
+
+            if let Some(y) = item
+                .rect
+                .y
+                .checked_add(item.rect.height)
+                .and_then(|value| value.checked_sub(border_height))
+            {
+                let rect = LayoutRect {
+                    y,
+                    height: border_height,
+                    ..item.rect
+                };
+
+                fill_preview_rect(
+                    pixels,
+                    width,
+                    height,
+                    rect,
+                    scroll_y,
+                    item.border_bottom.color,
+                );
+            }
+        }
     }
 }
 
@@ -229,6 +264,8 @@ mod tests {
             source: SourcePath::from_indices(&[]),
             rect,
             background_color,
+            border_top: crate::css::BorderEdge::default(),
+            border_bottom: crate::css::BorderEdge::default(),
         };
 
         let layout = PreviewLayout {

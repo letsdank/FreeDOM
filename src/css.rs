@@ -48,6 +48,12 @@ pub(crate) enum CssSize {
     Pixels(i32),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BorderEdge {
+    pub(crate) width: i32,
+    pub(crate) color: u32,
+}
+
 #[derive(Clone)]
 pub(crate) struct TextStyle {
     pub(crate) color: u32,
@@ -61,6 +67,8 @@ pub(crate) struct TextStyle {
     pub(crate) width: CssSize,
     pub(crate) height: CssSize,
     pub(crate) background_color: BackgroundColor,
+    pub(crate) border_top: BorderEdge,
+    pub(crate) border_bottom: BorderEdge,
 }
 
 impl TextStyle {
@@ -77,6 +85,8 @@ impl TextStyle {
             width: CssSize::Auto,
             height: CssSize::Auto,
             background_color: BackgroundColor::Transparent,
+            border_top: BorderEdge::default(),
+            border_bottom: BorderEdge::default(),
         }
     }
 }
@@ -110,6 +120,8 @@ struct Declarations {
     width: Option<CssSize>,
     height: Option<CssSize>,
     background_color: Option<BackgroundColor>,
+    border_top: Option<BorderEdge>,
+    border_bottom: Option<BorderEdge>,
 }
 
 pub(crate) struct CssRule {
@@ -562,6 +574,18 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "border-top" => {
+                if let Some(value) = parse_solid_border(&declaration.value) {
+                    parsed.border_top = Some(value);
+                }
+            }
+
+            "border-bottom" => {
+                if let Some(value) = parse_solid_border(&declaration.value) {
+                    parsed.border_bottom = Some(value);
+                }
+            }
+
             _ => {}
         }
     }
@@ -585,6 +609,49 @@ fn parse_background_color(value: &str) -> Option<BackgroundColor> {
     } else {
         parse_color(value).map(BackgroundColor::Opaque)
     }
+}
+
+// Partial border shorthand: solid, non-negative integer px, opaque color.
+// https://www.w3.org/TR/css-backgrounds-3/#the-border-shorthands
+fn parse_solid_border(value: &str) -> Option<BorderEdge> {
+    let value = value.trim().to_ascii_lowercase();
+
+    if value == "none" {
+        return Some(BorderEdge::default());
+    }
+
+    let mut width = None;
+    let mut color = None;
+    let mut solid = false;
+
+    for component in value.split_ascii_whitespace() {
+        if component == "solid" {
+            if solid {
+                return None;
+            }
+
+            solid = true;
+        } else if let Some(CssSize::Pixels(value)) = parse_size(component) {
+            if width.replace(value).is_some() {
+                return None;
+            }
+        } else if let Some(value) = parse_color(component) {
+            if color.replace(value).is_some() {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+
+    if !solid {
+        return None;
+    }
+
+    Some(BorderEdge {
+        width: width?,
+        color: color?,
+    })
 }
 
 fn parse_font_size(value: &str) -> Option<FontSize> {
@@ -793,6 +860,8 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     style.width = CssSize::Auto;
     style.height = CssSize::Auto;
     style.background_color = BackgroundColor::Transparent;
+    style.border_top = BorderEdge::default();
+    style.border_bottom = BorderEdge::default();
 
     if tag == "a" {
         style.color = DEFAULT_LINK_COLOR;
@@ -890,7 +959,7 @@ pub(crate) fn matching_declarations<'a>(
 ) -> Vec<&'a CssDeclaration> {
     let mut matching_rules: Vec<&CascadeRule> = rules
         .iter()
-        .filter(|rule| compound_matches(&rule.selector, element))
+        .filter(|rule| selector_matches(&rule.selector, element))
         .collect();
 
     matching_rules.sort_by_key(|rule| (rule.specificity, rule.source_order));
@@ -951,6 +1020,14 @@ fn apply_declarations(
 
     if let Some(background_color) = declarations.background_color {
         style.background_color = background_color;
+    }
+
+    if let Some(border) = declarations.border_top {
+        style.border_top = border;
+    }
+
+    if let Some(border) = declarations.border_bottom {
+        style.border_bottom = border;
     }
 
     if let Some(font_weight) = declarations.font_weight {
@@ -1929,6 +2006,8 @@ mod tests {
 
         let (selector, _) = parse_selector("#a\u{00a0}").unwrap();
 
+        assert_eq!(selector.id.as_deref(), Some("a\u{00a0}"));
+
         for invalid in [
             "div > span",
             "div + span",
@@ -1965,5 +2044,93 @@ mod tests {
         let style = compute_style_with_ancestors(&target, TextStyle::initial(), &rules, &ancestors);
 
         assert_eq!(style.color, 0x00_00_00_FF);
+    }
+
+    #[test]
+    fn parses_solid_browser_subset() {
+        let expected = Some(BorderEdge {
+            width: 20,
+            color: 0x00_00_00_FF,
+        });
+
+        assert_eq!(parse_solid_border("blue solid 20px"), expected);
+        assert_eq!(parse_solid_border("20px SOLID blue"), expected);
+        assert_eq!(parse_solid_border("none"), Some(BorderEdge::default()));
+
+        for value in [
+            "solid blue",
+            "20px blue",
+            "20px dashed blue",
+            "20px solid blue orange",
+            "-1px solid red",
+            "20px solid rgb(0, 0, 255)",
+        ] {
+            assert_eq!(parse_solid_border(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn cascades_borders_without_inheriting_them() {
+        let rules =
+            build_author_rules(&["div { border-top: blue solid 20px !important }".to_owned()]);
+
+        let parent = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some(
+                "border-top: orange solid 10px; \
+             border-bottom: orange solid 20px",
+            ),
+        };
+
+        let style = compute_style(&parent, TextStyle::initial(), &rules);
+
+        assert_eq!(
+            style.border_top,
+            BorderEdge {
+                width: 20,
+                color: 0x00_00_00_FF
+            }
+        );
+
+        assert_eq!(
+            style.border_bottom,
+            BorderEdge {
+                width: 20,
+                color: 0x00_FF_A5_00
+            }
+        );
+
+        let child = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let child_style = compute_style(&child, style, &[]);
+
+        assert_eq!(child_style.border_top, BorderEdge::default());
+        assert_eq!(child_style.border_bottom, BorderEdge::default());
+    }
+
+    #[test]
+    fn cascade_without_ancestors_does_not_match_descendant_selectors() {
+        let rules = build_cascade_rules(&["g rect { fill: red } rect { fill: blue }".to_owned()]);
+
+        let element = Element {
+            tag: "rect",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let values: Vec<_> = matching_declarations(&rules, &element)
+            .iter()
+            .map(|declaration| declaration.value.as_str())
+            .collect();
+
+        assert_eq!(values, ["blue"]);
     }
 }

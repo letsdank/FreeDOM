@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
-    css::{BackgroundColor, CssSize, TextStyle},
+    css::{BackgroundColor, BorderEdge, CssSize, TextStyle},
     graphics::font::TrueTypeFont,
     page::Page,
     page_layout::{CONTENT_HORIZONTAL_PADDING, LayoutRect, measure_wrapped_text},
@@ -21,6 +21,8 @@ pub(crate) struct PreviewBox {
     pub(crate) source: SourcePath,
     pub(crate) rect: LayoutRect,
     pub(crate) background_color: BackgroundColor,
+    pub(crate) border_top: BorderEdge,
+    pub(crate) border_bottom: BorderEdge,
 }
 
 pub(crate) struct PreviewLayout {
@@ -237,9 +239,11 @@ impl PreviewLayout {
                             height: 0,
                         },
                         background_color: block.style.background_color,
+                        border_top: block.style.border_top,
+                        border_bottom: block.style.border_bottom,
                     });
 
-                    let child_start = if is_root {
+                    let child_start = if is_root || block.style.border_top.width > 0 {
                         FlowStart::RootContent
                     } else {
                         FlowStart::Collapsed
@@ -251,13 +255,17 @@ impl PreviewLayout {
                         page,
                         fallback,
                         block_width,
-                        start,
+                        start
+                            .checked_add(block.style.border_top.width)
+                            .ok_or(PreviewError::SizeOverflow)?,
                         child_start,
                     )?;
 
                     // The root element's margins do not collapse with its children.
                     // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
-                    if is_root && block.style.height == CssSize::Auto {
+                    if (is_root || block.style.border_bottom.width > 0)
+                        && block.style.height == CssSize::Auto
+                    {
                         if let Some(group) = child_flow.trailing_margin.take() {
                             if group.value() < 0 {
                                 return Err(PreviewError::Margin(group.path));
@@ -279,10 +287,15 @@ impl PreviewLayout {
                             child_flow.trailing_margin = None;
 
                             start
-                                .checked_add(height)
+                                .checked_add(block.style.border_top.width)
+                                .and_then(|value| value.checked_add(height))
                                 .ok_or(PreviewError::SizeOverflow)?
                         }
                     };
+
+                    let end = end
+                        .checked_add(block.style.border_bottom.width)
+                        .ok_or(PreviewError::SizeOverflow)?;
 
                     let height = end.checked_sub(start).ok_or(PreviewError::SizeOverflow)?;
 
@@ -428,6 +441,10 @@ fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
     let mut current = block;
 
     loop {
+        if current.style.border_top.width > 0 {
+            break;
+        }
+
         let BlockContent::Flow(children) = &current.content else {
             break;
         };
@@ -463,6 +480,8 @@ fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
 
         if matches!(&child.content, BlockContent::Flow(children) if children.is_empty())
             && !matches!(child.style.height, CssSize::Pixels(height) if height > 0)
+            && child.style.border_top.width == 0
+            && child.style.border_bottom.width == 0
         {
             return Err(PreviewError::EmptyBlock(child.source.indices().to_vec()));
         }
