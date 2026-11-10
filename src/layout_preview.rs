@@ -27,6 +27,16 @@ pub(crate) struct PreviewBox {
 
 pub(crate) struct PreviewLayout {
     pub(crate) boxes: Vec<PreviewBox>,
+    pub(crate) display_list: Vec<PreviewCommand>,
+}
+
+pub(crate) enum PreviewCommand {
+    Block(usize),
+    Text {
+        rect: LayoutRect,
+        text: String,
+        style: TextStyle,
+    },
 }
 
 struct PendingMargin {
@@ -78,6 +88,7 @@ pub(crate) enum PreviewError {
     WhiteSpace,
     SizeOverflow,
     EmptyBlock(Vec<usize>),
+    InlineStyle(Vec<usize>),
 }
 
 impl std::fmt::Display for PreviewError {
@@ -123,6 +134,13 @@ impl std::fmt::Display for PreviewError {
             Self::SizeOverflow => {
                 write!(formatter, "preview geometry is too large")
             }
+
+            Self::InlineStyle(path) => {
+                write!(
+                    formatter,
+                    "inline color, background or border is not supported at {path:?}"
+                )
+            }
         }
     }
 }
@@ -143,7 +161,11 @@ impl PreviewLayout {
 
         let fallback = fallback_data.and_then(|data| TrueTypeFont::parse(data).ok());
 
-        let mut output = Self { boxes: Vec::new() };
+        let mut output = Self {
+            boxes: Vec::new(),
+            display_list: Vec::new(),
+        };
+
         let root_style = TextStyle::initial();
 
         let flow = output.flow(
@@ -242,6 +264,8 @@ impl PreviewLayout {
                         border_top: block.style.border_top,
                         border_bottom: block.style.border_bottom,
                     });
+
+                    self.display_list.push(PreviewCommand::Block(index));
 
                     let child_start = if is_root || block.style.border_top.width > 0 {
                         FlowStart::RootContent
@@ -379,6 +403,17 @@ impl PreviewLayout {
                         inherited.font_style,
                         font,
                     );
+
+                    self.display_list.push(PreviewCommand::Text {
+                        rect: LayoutRect {
+                            x: CONTENT_HORIZONTAL_PADDING as i32,
+                            y: cursor,
+                            width,
+                            height,
+                        },
+                        text,
+                        style: inherited.clone(),
+                    });
 
                     cursor = cursor
                         .checked_add(height)
@@ -528,6 +563,14 @@ fn collect_text(
             } => {
                 if !same_font(inherited, style) {
                     return Err(PreviewError::InlineFont(source.indices().to_vec()));
+                }
+
+                if style.color != inherited.color
+                    || style.background_color != BackgroundColor::Transparent
+                    || style.border_top.width != 0
+                    || style.border_bottom.width != 0
+                {
+                    return Err(PreviewError::InlineStyle(source.indices().to_vec()));
                 }
 
                 collect_text(children, style, output)?;

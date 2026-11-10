@@ -460,12 +460,15 @@ impl App {
 
         if self.show_preview_backgrounds {
             if let Some(preview) = &self.preview_layout {
-                layout_debug::paint_preview_backgrounds(
+                render::paint_preview_scene(
                     &mut buffer,
                     width as usize,
                     height as usize,
+                    &self.page,
                     preview,
+                    self.vector_font_data.as_deref(),
                     self.scroll_y,
+                    &mut self.glyph_raster_cache,
                 );
             }
         }

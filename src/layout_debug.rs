@@ -4,7 +4,7 @@
 
 use crate::{
     css::BackgroundColor,
-    layout_preview::PreviewLayout,
+    layout_preview::{PreviewBox, PreviewLayout},
     page_layout::{CONTENT_TOP, LayoutRect, PageLayout},
     render::BACKGROUND,
 };
@@ -101,56 +101,73 @@ pub(crate) fn paint_preview_backgrounds(
     layout: &PreviewLayout,
     scroll_y: i32,
 ) {
-    let Some(needed) = width.checked_mul(height) else {
-        return;
-    };
-
-    if pixels.len() < needed {
+    if !clear_preview_content(pixels, width, height) {
         return;
     }
 
-    let content_top = (CONTENT_TOP as usize).min(height);
+    for item in &layout.boxes {
+        paint_preview_box(pixels, width, height, item, scroll_y);
+    }
+}
 
+pub(crate) fn clear_preview_content(pixels: &mut [u32], width: usize, height: usize) -> bool {
+    let Some(needed) = width.checked_mul(height) else {
+        return false;
+    };
+
+    if pixels.len() < needed {
+        return false;
+    }
+
+    let content_top = (CONTENT_TOP as usize).min(height);
     pixels[content_top * width..needed].fill(BACKGROUND);
 
-    for item in &layout.boxes {
-        if let BackgroundColor::Opaque(color) = item.background_color {
-            fill_preview_rect(pixels, width, height, item.rect, scroll_y, color);
-        }
+    true
+}
 
-        if item.border_top.width > 0 {
+pub(crate) fn paint_preview_box(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    item: &PreviewBox,
+    scroll_y: i32,
+) {
+    if let BackgroundColor::Opaque(color) = item.background_color {
+        fill_preview_rect(pixels, width, height, item.rect, scroll_y, color);
+    }
+
+    if item.border_top.width > 0 {
+        let rect = LayoutRect {
+            height: item.border_top.width.min(item.rect.height),
+            ..item.rect
+        };
+
+        fill_preview_rect(pixels, width, height, rect, scroll_y, item.border_top.color);
+    }
+
+    if item.border_bottom.width > 0 {
+        let border_height = item.border_bottom.width.min(item.rect.height);
+
+        if let Some(y) = item
+            .rect
+            .y
+            .checked_add(item.rect.height)
+            .and_then(|value| value.checked_sub(border_height))
+        {
             let rect = LayoutRect {
-                height: item.border_top.width.min(item.rect.height),
+                y,
+                height: border_height,
                 ..item.rect
             };
 
-            fill_preview_rect(pixels, width, height, rect, scroll_y, item.border_top.color);
-        }
-
-        if item.border_bottom.width > 0 {
-            let border_height = item.border_bottom.width.min(item.rect.height);
-
-            if let Some(y) = item
-                .rect
-                .y
-                .checked_add(item.rect.height)
-                .and_then(|value| value.checked_sub(border_height))
-            {
-                let rect = LayoutRect {
-                    y,
-                    height: border_height,
-                    ..item.rect
-                };
-
-                fill_preview_rect(
-                    pixels,
-                    width,
-                    height,
-                    rect,
-                    scroll_y,
-                    item.border_bottom.color,
-                );
-            }
+            fill_preview_rect(
+                pixels,
+                width,
+                height,
+                rect,
+                scroll_y,
+                item.border_bottom.color,
+            );
         }
     }
 }
@@ -298,6 +315,7 @@ mod tests {
                     BackgroundColor::Transparent,
                 ),
             ],
+            display_list: Vec::new(),
         };
 
         let (width, height) = (10, 100);
@@ -314,7 +332,11 @@ mod tests {
 
     #[test]
     fn preview_backgrounds_tolerate_invalid_and_small_buffers() {
-        let layout = PreviewLayout { boxes: Vec::new() };
+        let layout = PreviewLayout {
+            boxes: Vec::new(),
+            display_list: Vec::new(),
+        };
+
         let mut pixels = vec![7; 10];
 
         paint_preview_backgrounds(&mut pixels, 10, 100, &layout, 0);

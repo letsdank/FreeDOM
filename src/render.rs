@@ -5,6 +5,8 @@ use crate::{
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
     },
+    layout_debug::{clear_preview_content, paint_preview_box},
+    layout_preview::{PreviewCommand, PreviewLayout},
     page::{BlockContent, Page},
     page_layout::{
         CONTENT_TOP, PageLayout, bitmap_block_size, svg_block_size, synthetic_bold_offset,
@@ -276,6 +278,87 @@ impl LinkRegion {
             width: self.width,
             height: self.height,
             target: self.target.clone(),
+        }
+    }
+}
+
+/// Paints an experimental preview, not a conforming CSS rendering.
+pub(crate) fn paint_preview_scene(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    page: &Page,
+    layout: &PreviewLayout,
+    fallback_data: Option<&[u8]>,
+    scroll_y: i32,
+    glyph_cache: &mut GlyphRasterCache,
+) {
+    if i32::try_from(width).is_err()
+        || i32::try_from(height).is_err()
+        || !clear_preview_content(pixels, width, height)
+    {
+        return;
+    }
+
+    let content_top = (CONTENT_TOP as usize).min(height);
+    let content_height = height - content_top;
+    let fallback = fallback_data.and_then(|data| TrueTypeFont::parse(data).ok());
+    let mut links = Vec::new();
+
+    for command in &layout.display_list {
+        match command {
+            PreviewCommand::Block(index) => {
+                if let Some(item) = layout.boxes.get(*index) {
+                    paint_preview_box(pixels, width, height, item, scroll_y);
+                }
+            }
+
+            PreviewCommand::Text { rect, text, style } => {
+                let relative_y = i64::from(rect.y) - i64::from(scroll_y);
+
+                if rect.height <= 0
+                    || relative_y >= content_height as i64
+                    || relative_y + i64::from(rect.height) <= 0
+                {
+                    continue;
+                }
+
+                let Ok(y) = i32::try_from(relative_y) else {
+                    continue;
+                };
+
+                let page_font = page
+                    .font_data_for(
+                        style.font_family.as_deref(),
+                        style.font_weight,
+                        style.font_style,
+                    )
+                    .and_then(|data| TrueTypeFont::parse(data).ok());
+
+                let font = page_font.as_ref().or(fallback.as_ref());
+
+                // Restrict text painting to the page content below the toolbar.
+                let content_pixels = &mut pixels[content_top * width..width * height];
+
+                draw_wrapped_text(
+                    content_pixels,
+                    width,
+                    content_height,
+                    rect.x,
+                    y,
+                    rect.x.saturating_add(rect.width),
+                    text,
+                    style.font_size,
+                    style.font_weight,
+                    style.font_style,
+                    style.color,
+                    None,
+                    font,
+                    0,
+                    &mut links,
+                    glyph_cache,
+                );
+            }
         }
     }
 }
@@ -609,17 +692,21 @@ fn draw_wrapped_text(
     for word in text.split_whitespace() {
         let word_width = text_word_width(vector_font, word, font_size, font_weight, font_style);
 
-        if x != left && x + metrics.character_width + word_width > right {
+        if x != left
+            && x.saturating_add(metrics.character_width)
+                .saturating_add(word_width)
+                > right
+        {
             x = left;
-            y += metrics.line_height;
+            y += y.saturating_add(metrics.line_height);
         }
 
         if x != left {
-            x += metrics.character_width;
+            x += x.saturating_add(metrics.character_width);
         }
 
         let word_x = x;
-        let is_visible = y + metrics.glyph_height > visible_top && y < height as i32;
+        let is_visible = y.saturating_add(metrics.glyph_height) > visible_top && y < height as i32;
 
         if is_visible {
             let rendered_with_vector_font = vector_font.is_some_and(|font| {
@@ -656,7 +743,7 @@ fn draw_wrapped_text(
                         pixels,
                         width,
                         height,
-                        word_x + 1,
+                        word_x.saturating_add(1),
                         y,
                         word,
                         metrics.bitmap_scale,
@@ -676,10 +763,10 @@ fn draw_wrapped_text(
             }
         }
 
-        x += word_width;
+        x += x.saturating_add(word_width);
     }
 
-    y + metrics.line_height
+    y.saturating_add(metrics.line_height)
 }
 
 fn split_subpixel_position(value: f32) -> Option<(i32, u8)> {
@@ -907,7 +994,7 @@ fn draw_text_line(
 ) {
     for character in text.chars() {
         draw_glyph(pixels, width, height, x, y, character, scale, color);
-        x += (8 * scale) as i32;
+        x = x.saturating_add((8 * scale) as i32);
     }
 }
 
@@ -934,8 +1021,8 @@ fn draw_glyph(
                     pixels,
                     width,
                     height,
-                    x + (column * scale) as i32,
-                    y + (row * scale) as i32,
+                    x.saturating_add((column * scale) as i32),
+                    y.saturating_add((row * scale) as i32),
                     scale as i32,
                     scale as i32,
                     color,
@@ -1005,8 +1092,8 @@ fn fill_rect(
 ) {
     let start_x = x.max(0) as usize;
     let start_y = y.max(0) as usize;
-    let end_x = (x + rect_width).min(width as i32).max(0) as usize;
-    let end_y = (y + rect_height).min(height as i32).max(0) as usize;
+    let end_x = x.saturating_add(rect_width).min(width as i32).max(0) as usize;
+    let end_y = y.saturating_add(rect_height).min(height as i32).max(0) as usize;
 
     for pixel_y in start_y..end_y {
         for pixel_x in start_x..end_x {

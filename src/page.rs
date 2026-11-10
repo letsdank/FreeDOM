@@ -2672,4 +2672,159 @@ mod tests {
             "background-only diagnostic does not render text or run WPT"
         );
     }
+
+    #[test]
+    fn preview_scene_paints_text_and_clips_it_below_toolbar() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div style='width:32px;height:20px;background:blue;color:white'>A</div>",
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let mut pixels = vec![0x00_12_34_56; 100 * 120];
+        let mut cache = crate::render::GlyphRasterCache::new();
+
+        crate::render::paint_preview_scene(
+            &mut pixels,
+            100,
+            120,
+            &page,
+            &preview,
+            None,
+            1,
+            &mut cache,
+        );
+
+        assert!(
+            pixels[..90 * 100]
+                .iter()
+                .all(|&pixel| pixel == 0x00_12_34_56)
+        );
+
+        assert!((90..98).any(|y| { (16..24).any(|x| pixels[y * 100 + x] == 0x00_FF_FF_FF) }));
+        assert_eq!(pixels[90 * 100 + 40], 0x00_00_00_FF);
+    }
+
+    #[test]
+    fn preview_scene_paints_later_background_over_earlier_text() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='width:32px;height:10px;",
+                "background:red;color:white'>A</div>",
+                "<div style='width:32px;height:10px;",
+                "margin-top:-10px;background:blue'></div>"
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        let mut pixels = vec![0; 100 * 110];
+        let mut cache = crate::render::GlyphRasterCache::new();
+
+        crate::render::paint_preview_scene(
+            &mut pixels,
+            100,
+            110,
+            &page,
+            &preview,
+            None,
+            0,
+            &mut cache,
+        );
+
+        assert!((90..98).all(|y| { (16..24).all(|x| pixels[y * 100 + x] == 0x00_00_00_FF) }))
+    }
+
+    #[test]
+    fn preview_rejects_inline_color_changes_instead_of_mispainting() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div>A<span style='color:red'>B</span></div>",
+        );
+
+        assert!(matches!(
+            crate::layout_preview::PreviewLayout::build(&page, 100, None),
+            Err(crate::layout_preview::PreviewError::InlineStyle(_))
+        ));
+    }
+
+    #[test]
+    fn saved_xhtml_pair_has_matching_experimental_scene_not_a_wpt_result() {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/wpt/css/CSS2/margin-padding-clear");
+
+        let read =
+            |name: &str| std::fs::read_to_string(base.join(name)).expect("WPT fixture must exist");
+
+        let target = parse_xhtml_for_test(
+            "https://web-platform.test/css/CSS2/margin-padding-clear/margin-collapse-003.xht",
+            &read("margin-collapse-003.xht"),
+        )
+        .unwrap();
+
+        let reference = parse_xhtml_for_test(
+            "https://web-platform.test/css/CSS2/margin-padding-clear/margin-collapse-003-ref.xht",
+            &read("margin-collapse-003-ref.xht"),
+        )
+        .unwrap();
+
+        let (width, height) = (320, 200);
+
+        let target_layout =
+            crate::layout_preview::PreviewLayout::build(&target, width, None).unwrap();
+
+        let reference_layout =
+            crate::layout_preview::PreviewLayout::build(&reference, width, None).unwrap();
+
+        let mut actual = vec![0; width * height];
+        let mut expected = vec![0; width * height];
+        let mut cache = crate::render::GlyphRasterCache::new();
+
+        crate::render::paint_preview_scene(
+            &mut actual,
+            width,
+            height,
+            &target,
+            &target_layout,
+            None,
+            0,
+            &mut cache,
+        );
+
+        crate::render::paint_preview_scene(
+            &mut expected,
+            width,
+            height,
+            &reference,
+            &reference_layout,
+            None,
+            0,
+            &mut cache,
+        );
+
+        assert!(
+            actual.iter().any(|&pixel| pixel == 0x00_18_1B_20),
+            "expected test pixels"
+        );
+
+        assert_eq!(
+            actual
+                .iter()
+                .filter(|&&pixel| pixel == 0x00_00_00_FF)
+                .count(),
+            50 * 20
+        );
+
+        assert_eq!(
+            actual
+                .iter()
+                .filter(|&&pixel| pixel == 0x00_FF_A5_00)
+                .count(),
+            50 * 20
+        );
+
+        assert_eq!(actual, expected, "experimental preview is not a WPT result");
+    }
 }
