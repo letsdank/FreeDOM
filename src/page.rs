@@ -2977,4 +2977,38 @@ mod tests {
         assert_eq!(pixels[185 * 100 + 16], 0x00_00_00_FF);
         assert_eq!(pixels[186 * 100 + 16], crate::render::BACKGROUND);
     }
+
+    #[test]
+    fn preview_rejects_nonzero_side_borders_until_implemented() {
+        for side in ["left", "right"] {
+            let html = format!("<div style='height:10px;border-{side}:2px solid red'></div>");
+
+            let page = parse_html("https://example.test/", &html);
+
+            assert!(
+                matches!(
+                    crate::layout_preview::PreviewLayout::build(&page, 100, None),
+                    Err(crate::layout_preview::PreviewError::SideBorder(_))
+                ),
+                "{side}"
+            );
+        }
+
+        let inline = parse_html(
+            "https://example.test/",
+            "<div>A<span style='border-left: 2px solid red'>B</span></div>",
+        );
+
+        assert!(matches!(
+            crate::layout_preview::PreviewLayout::build(&inline, 100, None),
+            Err(crate::layout_preview::PreviewError::InlineStyle(_))
+        ));
+
+        let no_border = parse_html(
+            "https://example.test/",
+            "<div style='height:10px;border-left:none'></div>",
+        );
+
+        assert!(crate::layout_preview::PreviewLayout::build(&no_border, 100, None).is_ok());
+    }
 }

@@ -72,6 +72,8 @@ pub(crate) struct TextStyle {
     pub(crate) background_color: BackgroundColor,
     pub(crate) border_top: BorderEdge,
     pub(crate) border_bottom: BorderEdge,
+    pub(crate) border_left: BorderEdge,
+    pub(crate) border_right: BorderEdge,
 }
 
 impl TextStyle {
@@ -92,6 +94,8 @@ impl TextStyle {
             background_color: BackgroundColor::Transparent,
             border_top: BorderEdge::default(),
             border_bottom: BorderEdge::default(),
+            border_left: BorderEdge::default(),
+            border_right: BorderEdge::default(),
         }
     }
 }
@@ -129,6 +133,8 @@ struct Declarations {
     background_color: Option<BackgroundColor>,
     border_top: Option<BorderEdge>,
     border_bottom: Option<BorderEdge>,
+    border_left: Option<BorderEdge>,
+    border_right: Option<BorderEdge>,
 }
 
 pub(crate) struct CssRule {
@@ -765,6 +771,18 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "border-left" => {
+                if let Some(value) = parse_solid_border(&declaration.value) {
+                    parsed.border_left = Some(value);
+                }
+            }
+
+            "border-right" => {
+                if let Some(value) = parse_solid_border(&declaration.value) {
+                    parsed.border_right = Some(value);
+                }
+            }
+
             _ => {}
         }
     }
@@ -1054,6 +1072,8 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     style.background_color = BackgroundColor::Transparent;
     style.border_top = BorderEdge::default();
     style.border_bottom = BorderEdge::default();
+    style.border_left = BorderEdge::default();
+    style.border_right = BorderEdge::default();
 
     if tag == "a" {
         style.color = DEFAULT_LINK_COLOR;
@@ -1228,6 +1248,14 @@ fn apply_declarations(
 
     if let Some(border) = declarations.border_bottom {
         style.border_bottom = border;
+    }
+
+    if let Some(border) = declarations.border_left {
+        style.border_left = border;
+    }
+
+    if let Some(border) = declarations.border_right {
+        style.border_right = border;
     }
 
     if let Some(font_weight) = declarations.font_weight {
@@ -2474,5 +2502,54 @@ mod tests {
                 color: 0
             })
         );
+    }
+
+    #[test]
+    fn cascades_side_borders_without_inheriting_them() {
+        let rules = build_author_rules(&[concat!(
+            "div { ",
+            "border-left: 2px solid red !important; ",
+            "border-right: 2px solid orange",
+            " }",
+        )
+        .to_owned()]);
+
+        let parent = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some(concat!(
+                "border-left: 3px solid blue; ",
+                "border-right: none; ",
+                "border-right: 9px dashed red",
+            )),
+        };
+
+        let style = compute_style(&parent, TextStyle::initial(), &rules);
+
+        assert_eq!(
+            style.border_left,
+            BorderEdge {
+                width: 2,
+                color: 0x00_FF_00_00
+            }
+        );
+
+        assert_eq!(style.border_right, BorderEdge::default());
+
+        let child = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+
+        let child_style = compute_style(&child, style, &[]);
+
+        assert_eq!(child_style.border_left, BorderEdge::default());
+        assert_eq!(child_style.border_right, BorderEdge::default());
+
+        // Parsing support alone must not enable the preview audit.
+        assert!(audit_preview_declarations("border-left: 2px solid red").is_err());
     }
 }

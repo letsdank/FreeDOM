@@ -89,6 +89,7 @@ pub(crate) enum PreviewError {
     SizeOverflow,
     EmptyBlock(Vec<usize>),
     InlineStyle(Vec<usize>),
+    SideBorder(Vec<usize>),
 }
 
 impl std::fmt::Display for PreviewError {
@@ -139,6 +140,13 @@ impl std::fmt::Display for PreviewError {
                 write!(
                     formatter,
                     "inline color, background, border or horizontal margin is not supported at {path:?}"
+                )
+            }
+
+            Self::SideBorder(path) => {
+                write!(
+                    formatter,
+                    "left and right borders are not supported at {path:?}"
                 )
             }
         }
@@ -206,6 +214,10 @@ impl PreviewLayout {
         for child in children {
             match child {
                 FlowChild::Block(block) => {
+                    if block.style.border_left.width != 0 || block.style.border_right.width != 0 {
+                        return Err(PreviewError::SideBorder(block.source.indices().to_vec()));
+                    }
+
                     let mut previous = pending_margin.take();
 
                     let is_root = flow_start == FlowStart::Document && block.tag == "html";
@@ -588,6 +600,8 @@ fn collect_text(
                     || style.background_color != BackgroundColor::Transparent
                     || style.border_top.width != 0
                     || style.border_bottom.width != 0
+                    || style.border_left.width != 0
+                    || style.border_right.width != 0
                     || style.margin_left != 0
                     || style.margin_right != 0
                 {
