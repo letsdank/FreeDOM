@@ -698,11 +698,11 @@ fn draw_wrapped_text(
                 > right
         {
             x = left;
-            y += y.saturating_add(metrics.line_height);
+            y = y.saturating_add(metrics.line_height);
         }
 
         if x != left {
-            x += x.saturating_add(metrics.character_width);
+            x = x.saturating_add(metrics.character_width);
         }
 
         let word_x = x;
@@ -763,7 +763,7 @@ fn draw_wrapped_text(
             }
         }
 
-        x += x.saturating_add(word_width);
+        x = x.saturating_add(word_width);
     }
 
     y.saturating_add(metrics.line_height)
@@ -1099,5 +1099,86 @@ fn fill_rect(
         for pixel_x in start_x..end_x {
             pixels[pixel_y * width + pixel_x] = color;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::page_layout::measure_wrapped_text;
+
+    #[test]
+    fn wrapped_text_advances_once_per_word_and_line() {
+        let text = "a a a a a a";
+        let mut pixels = vec![0; 64 * 30];
+        let mut regions = Vec::new();
+        let mut cache = GlyphRasterCache::new();
+
+        let end_y = draw_wrapped_text(
+            &mut pixels,
+            64,
+            30,
+            0,
+            0,
+            64,
+            text,
+            16.0,
+            FontWeight::Normal,
+            FontStyle::Normal,
+            0,
+            Some("/link"),
+            None,
+            0,
+            &mut regions,
+            &mut cache,
+        );
+
+        let positions: Vec<_> = regions.iter().map(|region| (region.x, region.y)).collect();
+
+        assert_eq!(
+            positions,
+            vec![(0, 0), (16, 0), (32, 0), (48, 0), (0, 10), (16, 10)]
+        );
+
+        assert_eq!(
+            end_y,
+            measure_wrapped_text(text, 64, 16.0, FontWeight::Normal, FontStyle::Normal, None)
+        );
+
+        assert_eq!(end_y, 20);
+    }
+
+    #[test]
+    fn long_wrapped_text_does_not_overflow() {
+        let text = "a ".repeat(4096);
+        let mut pixels = vec![0; 8 * 10];
+        let mut regions = Vec::new();
+        let mut cache = GlyphRasterCache::new();
+
+        let end_y = draw_wrapped_text(
+            &mut pixels,
+            8,
+            10,
+            0,
+            0,
+            8,
+            &text,
+            16.0,
+            FontWeight::Normal,
+            FontStyle::Normal,
+            0,
+            None,
+            None,
+            0,
+            &mut regions,
+            &mut cache,
+        );
+
+        assert_eq!(end_y, 40_960);
+
+        assert_eq!(
+            end_y,
+            measure_wrapped_text(&text, 8, 16.0, FontWeight::Normal, FontStyle::Normal, None),
+        );
     }
 }
