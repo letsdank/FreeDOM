@@ -40,6 +40,47 @@ struct BatchEntry {
     result: BatchResult,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct BatchSummary {
+    matched: usize,
+    mismatched: usize,
+    unsupported: usize,
+    errors: usize,
+    no_reference: usize,
+}
+
+impl BatchSummary {
+    fn from_entries(entries: &[BatchEntry]) -> Self {
+        let mut summary = Self::default();
+
+        for entry in entries {
+            match &entry.result {
+                BatchResult::Compared(PreviewResult::Match) => {
+                    summary.matched += 1;
+                }
+
+                BatchResult::Compared(PreviewResult::Mismatch { .. }) => {
+                    summary.mismatched += 1;
+                }
+
+                BatchResult::Compared(PreviewResult::Unsupported { .. }) => {
+                    summary.unsupported += 1;
+                }
+
+                BatchResult::Compared(PreviewResult::Error(_)) => {
+                    summary.errors += 1;
+                }
+
+                BatchResult::NoReference => {
+                    summary.no_reference += 1;
+                }
+            }
+        }
+
+        summary
+    }
+}
+
 /// Finds a single same-directory XHTML reference.
 ///
 /// URL forms requiring resolution or decoding are not supported yet.
@@ -115,20 +156,34 @@ fn reference_name(source: &str) -> Result<Option<String>, String> {
     Ok(reference)
 }
 
-/// Scans one directory without recursive WPT discovery.
+/// Scans XHTML files recursively without following directory symlinks.
 fn run_directory(
     directory: &Path,
     width: usize,
     height: usize,
 ) -> std::io::Result<Vec<BatchEntry>> {
+    if !std::fs::symlink_metadata(directory)?.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "root must be a non-symlink directory",
+        ));
+    }
+
     let mut paths = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
 
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
+    while let Some(current) = pending.pop() {
+        for entry in std::fs::read_dir(current)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
 
-        if entry.file_type()?.is_file() && entry.path().extension().is_some_and(|ext| ext == "xht")
-        {
-            paths.push(entry.path());
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file()
+                && entry.path().extension().is_some_and(|ext| ext == "xht")
+            {
+                paths.push(entry.path());
+            }
         }
     }
 
@@ -439,5 +494,64 @@ mod tests {
             .expect("reference fixture missing");
 
         assert_eq!(reference.result, BatchResult::NoReference);
+    }
+
+    #[test]
+    fn summaries_each_diagnostic_outcome() {
+        let results = vec![
+            BatchResult::Compared(PreviewResult::Match),
+            BatchResult::Compared(PreviewResult::Mismatch {
+                different_pixels: 3,
+                max_channel_difference: 20,
+            }),
+            BatchResult::Compared(PreviewResult::Unsupported {
+                document: "test",
+                reason: "unsupported".into(),
+            }),
+            BatchResult::Compared(PreviewResult::Error("error".into())),
+            BatchResult::NoReference,
+        ];
+
+        let entries: Vec<_> = results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| BatchEntry {
+                path: PathBuf::from(index.to_string()),
+                result,
+            })
+            .collect();
+
+        assert_eq!(
+            BatchSummary::from_entries(&entries),
+            BatchSummary {
+                matched: 1,
+                mismatched: 1,
+                unsupported: 1,
+                errors: 1,
+                no_reference: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn scans_saved_css2_tree_and_prints_preview_summary() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/wpt/css/CSS2");
+
+        let entries = run_directory(&directory, 320, 200).expect("cannot scan fixture tree");
+
+        for entry in &entries {
+            println!("preview only: {}: {:?}", entry.path.display(), entry.result);
+        }
+
+        let summary = BatchSummary::from_entries(&entries);
+
+        println!("experimental preview summary (not WPT): {summary:?}");
+
+        assert!(entries.iter().any(|entry| {
+            entry
+                .path
+                .ends_with("margin-padding-clear/margin-collapse-003.xht")
+                && entry.result == BatchResult::Compared(PreviewResult::Match)
+        }));
     }
 }
