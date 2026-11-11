@@ -561,7 +561,19 @@ pub(crate) fn audit_preview_stylesheet(source: &str) -> Result<(), String> {
             return Err("nested CSS rules are unsupported".into());
         }
 
-        let unsupported_selector = syntax::split_top_level_commas(selectors)
+        let selector_list = syntax::split_top_level_commas(selectors);
+
+        // An empty item invalidates an ordinary selector list; the rule is ignored.
+        // https://www.w3.org/TR/selectors-4/#invalid
+        if selector_list.len() > 1
+            && selector_list
+                .iter()
+                .any(|item| item.trim_matches(is_css_whitespace).is_empty())
+        {
+            continue;
+        }
+
+        let unsupported_selector = selector_list
             .into_iter()
             .any(|selector| parse_selector(selector).is_none());
 
@@ -2250,5 +2262,26 @@ mod tests {
 
             assert_eq!(style.color, expected, "{tag}");
         }
+    }
+
+    #[test]
+    fn audit_ignores_rules_with_empty_selector_list_items() {
+        for source in [
+            "body,,div { color: red }",
+            ",div { color: red }",
+            "div, { padding: 10px } p { color: green }",
+            "div, /* comment */ ,p { color: red }",
+        ] {
+            assert_eq!(audit_preview_stylesheet(source), Ok(()), "{source}");
+        }
+
+        // Valid selector syntax that the current matcher cannot handle.
+        assert!(audit_preview_stylesheet("div:hover, p { color: red }").is_err());
+
+        // An unsupported declaration in a valid rule must not be ignored.
+        assert!(audit_preview_stylesheet("div, p { padding: 10px }").is_err());
+
+        // A non-breaking space is not CSS whitespace.
+        assert!(audit_preview_stylesheet("div,\u{00a0},p { padding: 10px }").is_err());
     }
 }

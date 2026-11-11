@@ -734,6 +734,11 @@ mod tests {
         println!("experimental preview summary (not WPT): {summary:?}");
 
         assert!(entries.iter().any(|entry| {
+            entry.path.ends_with("syntax/bad-selector-001.xht")
+                && entry.result == BatchResult::Compared(PreviewResult::Match)
+        }));
+
+        assert!(entries.iter().any(|entry| {
             entry
                 .path
                 .ends_with("margin-padding-clear/margin-collapse-003.xht")
@@ -903,15 +908,24 @@ mod tests {
     }
 
     #[test]
-    fn invalid_selector_list_is_conservatively_unsupported() {
-        let source = with_head("<style>body,,div { color: red }</style>");
+    fn invalid_selector_list_is_ignored_in_preview() {
+        let source = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<head><style>body,,div { color: red }</style></head>",
+            "<body><div>Filler Text</div></body>",
+            "</html>",
+        );
 
-        assert!(matches!(
-            compare_xhtml_preview(&source, BLUE, 320, 200),
-            PreviewResult::Unsupported {
-                document: "test",
-                ..
-            }
-        ));
+        let reference = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<head></head>",
+            "<body><div>Filler Text</div></body>",
+            "</html>",
+        );
+
+        assert_eq!(
+            compare_xhtml_preview(source, reference, 320, 200),
+            PreviewResult::Match
+        );
     }
 }
