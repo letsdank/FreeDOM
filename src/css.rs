@@ -514,10 +514,21 @@ pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
 
             "margin-top" => parsed.margin_before.is_some(),
             "margin-bottom" => parsed.margin_after.is_some(),
+
+            "margin-left" => {
+                parsed.margin_left.is_some()
+                    && preview_horizontal_margin_supported(&declaration.value)
+            }
+
+            "margin-right" => {
+                parsed.margin_right.is_some()
+                    && preview_horizontal_margin_supported(&declaration.value)
+            }
+
             "margin" => {
                 parsed.margin_before.is_some()
                     && parsed.margin_after.is_some()
-                    && preview_margin_has_zero_horizontal(&declaration.value)
+                    && preview_margin_has_supported_horizontal(&declaration.value)
             }
 
             "width" => parsed.width.is_some(),
@@ -542,38 +553,43 @@ pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The preview handles vertical margins but not horizontal margins.
+/// The preview stores horizontal margins as whole CSS pixels.
 #[cfg(test)]
-fn preview_margin_has_zero_horizontal(value: &str) -> bool {
-    fn is_exact_zero(value: &str) -> bool {
-        if parse_margin_length(value).is_none() {
-            return false;
-        }
-
-        let lower = value.to_ascii_lowercase();
-
-        let number = lower
-            .strip_suffix("px")
-            .or_else(|| lower.strip_suffix("in"))
-            .unwrap_or(&lower);
-
-        let mantissa = number
-            .split('e')
-            .next()
-            .unwrap_or("")
-            .trim_start_matches(['+', '-']);
-
-        mantissa.contains('0') && mantissa.bytes().all(|byte| matches!(byte, b'0' | b'.'))
+fn preview_horizontal_margin_supported(value: &str) -> bool {
+    if parse_margin_length(value).is_none() {
+        return false;
     }
 
+    let lower = value.trim().to_ascii_lowercase();
+
+    let number = lower
+        .strip_suffix("px")
+        .or_else(|| lower.strip_suffix("in"))
+        .unwrap_or(&lower);
+
+    let unsigned = number.trim_start_matches(['+', '-']);
+    let mantissa = unsigned.split('e').next().unwrap_or("");
+
+    let exact_zero =
+        mantissa.contains('0') && mantissa.bytes().all(|byte| matches!(byte, b'0' | b'.'));
+
+    let integer = !unsigned.is_empty() && unsigned.bytes().all(|byte| byte.is_ascii_digit());
+
+    exact_zero || integer
+}
+
+#[cfg(test)]
+fn preview_margin_has_supported_horizontal(value: &str) -> bool {
     let components: Vec<_> = value.split_ascii_whitespace().collect();
 
     match components.as_slice() {
-        [all] => is_exact_zero(all),
+        [all] => preview_horizontal_margin_supported(all),
 
-        [_, horizontal] | [_, horizontal, _] => is_exact_zero(horizontal),
+        [_, horizontal] | [_, horizontal, _] => preview_horizontal_margin_supported(horizontal),
 
-        [_, right, _, left] => is_exact_zero(right) && is_exact_zero(left),
+        [_, right, _, left] => {
+            preview_horizontal_margin_supported(right) && preview_horizontal_margin_supported(left)
+        }
 
         _ => false,
     }
@@ -2368,25 +2384,33 @@ mod tests {
 
     #[test]
     fn preview_audits_horizontal_margin_shorthand() {
-        for value in ["0", "-0px", "0e2px", "5px 0", "5px 0 8px", "5px 0 8px -0in"] {
+        for value in [
+            "0",
+            "-0px",
+            "0e2px",
+            "5px",
+            "0 20px",
+            "5px -1px 8px",
+            "0 0 0 1px",
+            "5px 0 8px -0in",
+        ] {
             assert!(
                 audit_preview_declarations(&format!("margin: {value}")).is_ok(),
                 "{value}"
             );
+        }
 
-            for value in [
-                "5px",
-                "0 20px",
-                "5px -1px 8px",
-                "0 0 0 1px",
-                "0 0.001px",
-                "0 1e-9999px",
-            ] {
-                assert!(
-                    audit_preview_declarations(&format!("margin: {value}")).is_err(),
-                    "{value}"
-                );
-            }
+        for value in ["0 0.001px", "0 1e-9999px", "0 0.5in", "0 auto", "0 50%"] {
+            assert!(
+                audit_preview_declarations(&format!("margin: {value}")).is_err(),
+                "{value}"
+            );
+        }
+
+        for property in ["margin-left", "margin-right"] {
+            assert!(audit_preview_declarations(&format!("{property}: -20px")).is_ok());
+            assert!(audit_preview_declarations(&format!("{property}: 0.1px")).is_err());
+            assert!(audit_preview_declarations(&format!("{property}: auto")).is_err());
         }
     }
 

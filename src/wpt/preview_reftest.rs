@@ -949,21 +949,53 @@ mod tests {
             "</html>",
         );
 
-        for (source, expected, document) in
-            [(test, reference, "test"), (reference, test, "reference")]
-        {
-            assert!(matches!(
+        for (source, expected) in [(test, reference), (reference, test)] {
+            assert_eq!(
                 compare_xhtml_preview(source, expected, 320, 200),
-                PreviewResult::Unsupported {
-                    document: actual,
-                    ..
-                } if actual == document
-            ));
+                PreviewResult::Mismatch {
+                    different_pixels: 800,
+                    max_channel_difference: 247,
+                }
+            );
         }
 
         assert_eq!(
             compare_xhtml_preview(reference, reference, 320, 200),
             PreviewResult::Match
         );
+
+        let equivalent = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body>",
+            "<div style='width:20px;height:20px;",
+            "margin-left:20px;margin-right:20px;",
+            "background:blue'></div>",
+            "</body>",
+            "</html>",
+        );
+
+        assert_eq!(
+            compare_xhtml_preview(test, equivalent, 320, 200),
+            PreviewResult::Match
+        );
+    }
+
+    #[test]
+    fn horizontal_inline_margins_stay_unsupported() {
+        let test = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body>",
+            "<div>A<span style='margin-left:5px'>B</span></div>",
+            "</body>",
+            "</html>",
+        );
+
+        assert!(matches!(
+            compare_xhtml_preview(test, BLUE, 320, 200),
+            PreviewResult::Unsupported {
+                document: "test",
+                ..
+            }
+        ));
     }
 }
