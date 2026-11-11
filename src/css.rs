@@ -790,7 +790,7 @@ fn parse_background_color(value: &str) -> Option<BackgroundColor> {
     }
 }
 
-// Partial border shorthand: solid, non-negative integer px, opaque color.
+// Partial border shorthand: solid, non-negative integer px/in, opaque color.
 // https://www.w3.org/TR/css-backgrounds-3/#the-border-shorthands
 fn parse_solid_border(value: &str) -> Option<BorderEdge> {
     let value = value.trim().to_ascii_lowercase();
@@ -938,7 +938,10 @@ fn parse_margin_length(value: &str) -> Option<i32> {
 // https://www.w3.org/TR/CSS22/visudet.html#the-width-property
 // https://www.w3.org/TR/CSS22/visudet.html#the-height-property
 //
-// This subset accepts auto, non-negative integer px, and unitless zero.
+// One CSS inch equals 96 CSS pixels:
+// https://www.w3.org/TR/css-values-4/#absolute-lengths
+//
+// This subset accepts auto, non-negative integer px/in, and unitless zero.
 fn parse_size(value: &str) -> Option<CssSize> {
     let value = value.trim().to_ascii_lowercase();
 
@@ -946,9 +949,12 @@ fn parse_size(value: &str) -> Option<CssSize> {
         return Some(CssSize::Auto);
     }
 
-    let (number, has_unit) = match value.strip_suffix("px") {
-        Some(number) => (number, true),
-        None => (value.as_str(), false),
+    let (number, scale, has_unit) = if let Some(number) = value.strip_suffix("px") {
+        (number, 1, true)
+    } else if let Some(number) = value.strip_suffix("in") {
+        (number, 96, true)
+    } else {
+        (value.as_str(), 1, false)
     };
 
     let number = number.parse::<i32>().ok()?;
@@ -957,7 +963,7 @@ fn parse_size(value: &str) -> Option<CssSize> {
         return None;
     }
 
-    Some(CssSize::Pixels(number))
+    number.checked_mul(scale).map(CssSize::Pixels)
 }
 
 // CSS 2.2 section 8.3:
@@ -1971,6 +1977,12 @@ mod tests {
             ("20%", None),
             ("0.5px", None),
             ("2147483648px", None),
+            ("1in", Some(CssSize::Pixels(96))),
+            ("2IN", Some(CssSize::Pixels(192))),
+            ("0in", Some(CssSize::Pixels(0))),
+            ("-1in", None),
+            ("0.5in", None),
+            ("22369622in", None),
         ] {
             assert_eq!(parse_size(value), expected, "{value}");
         }
@@ -2446,6 +2458,21 @@ mod tests {
                 style.margin_left
             ),
             (5, 12, 5, -7)
+        );
+    }
+
+    #[test]
+    fn audit_accepts_integer_inches_but_rejects_fractional_and_left_border() {
+        assert!(audit_preview_declarations("width: 2in; height: 1in").is_ok());
+        assert!(audit_preview_declarations("height: 0.5in").is_err());
+        assert!(audit_preview_declarations("border-left: 2px solid black").is_err());
+
+        assert_eq!(
+            parse_solid_border("1in solid black"),
+            Some(BorderEdge {
+                width: 96,
+                color: 0
+            })
         );
     }
 }

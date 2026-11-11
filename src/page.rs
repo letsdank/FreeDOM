@@ -2948,4 +2948,33 @@ mod tests {
             Err(crate::layout_preview::PreviewError::InlineStyle(_))
         ));
     }
+
+    #[test]
+    fn preview_renders_one_inch_height_as_96_pixels() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div style='height:1in;width:20px;background:blue'></div>",
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        assert_eq!(preview.boxes[0].rect.height, 96);
+
+        let mut pixels = vec![0; 100 * 200];
+        let mut cache = crate::render::GlyphRasterCache::new();
+
+        crate::render::paint_preview_scene(
+            &mut pixels,
+            100,
+            200,
+            &page,
+            &preview,
+            None,
+            0,
+            &mut cache,
+        );
+
+        assert_eq!(pixels[185 * 100 + 16], 0x00_00_00_FF);
+        assert_eq!(pixels[186 * 100 + 16], crate::render::BACKGROUND);
+    }
 }
