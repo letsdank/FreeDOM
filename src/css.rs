@@ -490,6 +490,94 @@ fn take_css_identifier(input: &str) -> Option<(String, &str)> {
     consume_identifier(input)
 }
 
+/// A conservative check of CSS parser support, not a conformance guarantee.
+#[cfg(test)]
+pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
+    for declaration in parse_declaration_list(source) {
+        let parsed = parse_text_declarations(std::slice::from_ref(&declaration));
+
+        let supported = match declaration.name.as_str() {
+            "color" => parsed.color.is_some(),
+
+            "font-size" => parsed.font_size.is_some(),
+            "font-weight" => parsed.font_weight.is_some(),
+            "font-family" => parsed.font_family.is_some(),
+            "font-style" => parsed.font_style.is_some(),
+
+            "display" => parsed.display.is_some(),
+
+            "margin-top" => parsed.margin_before.is_some(),
+            "margin-bottom" => parsed.margin_after.is_some(),
+            "margin" => parsed.margin_before.is_some() && parsed.margin_after.is_some(),
+
+            "width" => parsed.width.is_some(),
+            "height" => parsed.height.is_some(),
+
+            "background" | "background-color" => parsed.background_color.is_some(),
+
+            "border-top" => parsed.border_top.is_some(),
+            "border-bottom" => parsed.border_bottom.is_some(),
+
+            _ => false,
+        };
+
+        if !supported {
+            return Err(format!(
+                "unsupported CSS declaration: {}: {}",
+                declaration.name, declaration.value
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Checks only a restricted subset of stylesheet syntax.
+#[cfg(test)]
+pub(crate) fn audit_preview_stylesheet(source: &str) -> Result<(), String> {
+    let source = remove_css_comments(&preprocess_input(source));
+
+    if source
+        .chars()
+        .any(|character| matches!(character, '@' | '\'' | '"' | '\\' | '(' | ')' | '[' | ']'))
+    {
+        return Err("unsupported CSS stylesheet syntax".into());
+    }
+
+    let mut parts = source.split('}').peekable();
+
+    while let Some(rule) = parts.next() {
+        if parts.peek().is_none() {
+            return if rule.trim().is_empty() {
+                Ok(())
+            } else {
+                Err("unclosed CSS rule".into())
+            };
+        }
+
+        let (selectors, declarations) = rule.split_once('{').ok_or("invalid CSS rule")?;
+
+        if declarations.contains('{') {
+            return Err("nested CSS rules are unsupported".into());
+        }
+
+        let unsupported_selector = syntax::split_top_level_commas(selectors)
+            .into_iter()
+            .any(|selector| parse_selector(selector).is_none());
+
+        if unsupported_selector {
+            return Err(format!(
+                "unsupported or invalid CSS selector: {}",
+                selectors.trim()
+            ));
+        }
+
+        audit_preview_declarations(declarations)?;
+    }
+
+    Ok(())
+}
+
 fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
     let mut parsed = Declarations::default();
 

@@ -344,6 +344,79 @@ fn resolve_reference(root: &Path, test: &Path, href: &str) -> Result<PathBuf, Pr
     Ok(reference)
 }
 
+fn audit_document(source: &str) -> Result<(), String> {
+    let document = crate::xml::parse_xhtml(source).map_err(|error| error.to_string())?;
+
+    fn visit(nodes: &[crate::html::Node]) -> Result<(), String> {
+        for node in nodes {
+            let crate::html::Node::Element(element) = node else {
+                continue;
+            };
+
+            let attribute = |name: &str| {
+                element
+                    .attributes
+                    .iter()
+                    .find(|item| item.name == name)
+                    .map(|item| item.value.as_str())
+            };
+
+            if element.name == "script" {
+                return Err("scripts are not supported by the preview audit".into());
+            }
+
+            if element.name == "link"
+                && attribute("rel")
+                    .unwrap_or("")
+                    .split_ascii_whitespace()
+                    .any(|part| part.eq_ignore_ascii_case("stylesheet"))
+            {
+                return Err("external stylesheets are not supported by the preview audit".into());
+            }
+
+            if let Some(style) = attribute("style") {
+                crate::css::audit_preview_declarations(style)?;
+            }
+
+            if element.name == "style" {
+                let unsupported_media = attribute("media")
+                    .is_some_and(|value| !value.trim().eq_ignore_ascii_case("all"));
+
+                let unsupported_type = attribute("type")
+                    .is_some_and(|value| !value.trim().eq_ignore_ascii_case("text/css"));
+
+                if unsupported_media || unsupported_type {
+                    return Err("unsupported style media or type".into());
+                }
+
+                let mut source = String::new();
+
+                for child in &element.children {
+                    match child {
+                        crate::html::Node::Text(text) => {
+                            source.push_str(text);
+                        }
+
+                        crate::html::Node::Comment(_) => {}
+
+                        _ => {
+                            return Err("unsupported content in style element".into());
+                        }
+                    }
+                }
+
+                crate::css::audit_preview_stylesheet(&source)?;
+            } else {
+                visit(&element.children)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    visit(&document.children)
+}
+
 fn compare_xhtml_preview(
     test_source: &str,
     reference_source: &str,
@@ -362,6 +435,13 @@ fn compare_xhtml_preview(
     let mut images = Vec::with_capacity(2);
 
     for (label, source) in [("test", test_source), ("reference", reference_source)] {
+        if let Err(reason) = audit_document(source) {
+            return PreviewResult::Unsupported {
+                document: label,
+                reason,
+            };
+        }
+
         let page = match parse_xhtml_for_test("https://example.test/", source) {
             Ok(page) => page,
 
@@ -756,6 +836,82 @@ mod tests {
         assert!(matches!(
             resolve_reference(&root, &test, "reference.xht"),
             Err(PreviewResult::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_unhandled_css_without_false_matches() {
+        for css in [
+            "div { padding: 20px }",
+            "div { width: 50% }",
+            "div:hover { color: red }",
+            "@media all { div { color: red } }",
+        ] {
+            let source = format!(
+                concat!(
+                    "<html xmlns='http://www.w3.org/1999/xhtml'>",
+                    "<head><style>{}</style></head>",
+                    "<body><div>A</div></body>",
+                    "</html>"
+                ),
+                css
+            );
+
+            for (test, reference, document) in [
+                (source.as_str(), BLUE, "test"),
+                (BLUE, source.as_str(), "reference"),
+            ] {
+                assert!(
+                    matches!(
+                        compare_xhtml_preview(test, reference, 320, 200),
+                        PreviewResult::Unsupported {
+                            document: actual,
+                            ..
+                        } if actual == document
+                    ),
+                    "{css}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_external_styles_scripts_and_inline_unknown_properties() {
+        for head in [
+            "<link rel='stylesheet' href='style.css'/>",
+            "<script src='test.js'/>",
+            "<style media='print'>div { color: red }</style>",
+        ] {
+            assert!(audit_document(&with_head(head)).is_err(), "{head}");
+        }
+
+        let source = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body>",
+            "<div style='padding: 5px'>A</div>",
+            "</body>",
+            "</html>",
+        );
+
+        assert!(matches!(
+            compare_xhtml_preview(source, BLUE, 320, 200),
+            PreviewResult::Unsupported {
+                document: "test",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn invalid_selector_list_is_conservatively_unsupported() {
+        let source = with_head("<style>body,,div { color: red }</style>");
+
+        assert!(matches!(
+            compare_xhtml_preview(&source, BLUE, 320, 200),
+            PreviewResult::Unsupported {
+                document: "test",
+                ..
+            }
         ));
     }
 }
