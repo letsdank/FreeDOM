@@ -17,7 +17,8 @@ pub(crate) use self::input::preprocess_input;
 use self::specificity::Specificity;
 pub(crate) use self::syntax::parse_declaration_list;
 
-const DEFAULT_TEXT_COLOR: u32 = 0x00_18_1B_20;
+// Temporary light-theme CanvasText until system colors are implemented.
+const DEFAULT_TEXT_COLOR: u32 = 0x00_00_00_00;
 const DEFAULT_LINK_COLOR: u32 = 0x00_00_00_EE;
 
 // https://www.w3.org/TR/css-fonts-4/#font-size-prop
@@ -2132,5 +2133,34 @@ mod tests {
             .collect();
 
         assert_eq!(values, ["blue"]);
+    }
+
+    #[test]
+    fn light_theme_default_text_color_is_black() {
+        assert_eq!(TextStyle::initial().color, 0x00_00_00_00);
+    }
+
+    #[test]
+    fn type_selector_beats_later_universal_selector() {
+        let rules = build_author_rules(&[
+            "div { color: green } * { color: red } p { color: black }".to_owned(),
+        ]);
+
+        for (tag, expected) in [
+            ("div", 0x00_00_80_00),
+            ("p", 0x00_00_00_00),
+            ("span", 0x00_FF_00_00),
+        ] {
+            let element = Element {
+                tag,
+                id: None,
+                classes: &[],
+                inline_style: None,
+            };
+
+            let style = compute_style(&element, TextStyle::initial(), &rules);
+
+            assert_eq!(style.color, expected, "{tag}");
+        }
     }
 }

@@ -2805,7 +2805,9 @@ mod tests {
         );
 
         assert!(
-            actual.iter().any(|&pixel| pixel == 0x00_18_1B_20),
+            actual[crate::page_layout::CONTENT_TOP as usize * width..]
+                .iter()
+                .any(|&pixel| pixel == 0x00_00_00_00),
             "expected test pixels"
         );
 

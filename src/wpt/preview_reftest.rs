@@ -659,6 +659,11 @@ mod tests {
                 .ends_with("margin-padding-clear/margin-collapse-003.xht")
                 && entry.result == BatchResult::Compared(PreviewResult::Match)
         }));
+
+        assert!(entries.iter().any(|entry| {
+            entry.path.ends_with("cascade/specificity-007.xht")
+                && entry.result == BatchResult::Compared(PreviewResult::Match)
+        }));
     }
 
     #[test]
