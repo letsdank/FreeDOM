@@ -8,6 +8,7 @@ use crate::{
     page::parse_xhtml_for_test,
     page_layout::CONTENT_TOP,
     render::{GlyphRasterCache, paint_preview_scene},
+    url::Url,
 };
 use std::path::{Path, PathBuf};
 
@@ -81,9 +82,9 @@ impl BatchSummary {
     }
 }
 
-/// Finds a single same-directory XHTML reference.
+/// Finds a single XHTML reference.
 ///
-/// URL forms requiring resolution or decoding are not supported yet.
+/// URL forms requiring percent-decoding or a query are not supported yet.
 fn reference_name(source: &str) -> Result<Option<String>, String> {
     let document = crate::xml::parse_xhtml(source).map_err(|error| error.to_string())?;
 
@@ -136,15 +137,7 @@ fn reference_name(source: &str) -> Result<Option<String>, String> {
 
         let href = attribute("href").ok_or("match link is missing href")?;
 
-        let supported_name = !href.is_empty()
-            && href != "."
-            && href != ".."
-            && href.ends_with(".xht")
-            && href
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
-
-        if !supported_name {
+        if !is_supported_reference_href(href) {
             return Err(format!("unsupported reference URL: {href}"));
         }
 
@@ -158,6 +151,7 @@ fn reference_name(source: &str) -> Result<Option<String>, String> {
 
 /// Scans XHTML files recursively without following directory symlinks.
 fn run_directory(
+    root: &Path,
     directory: &Path,
     width: usize,
     height: usize,
@@ -169,8 +163,18 @@ fn run_directory(
         ));
     }
 
+    let root = root.canonicalize()?;
+    let directory = directory.canonicalize()?;
+
+    if !directory.starts_with(&root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "directory is outside WPT root",
+        ));
+    }
+
     let mut paths = Vec::new();
-    let mut pending = vec![directory.to_path_buf()];
+    let mut pending = vec![directory];
 
     while let Some(current) = pending.pop() {
         for entry in std::fs::read_dir(current)? {
@@ -192,14 +196,14 @@ fn run_directory(
     Ok(paths
         .into_iter()
         .map(|path| {
-            let result = run_file(&path, width, height);
+            let result = run_file(&root, &path, width, height);
 
             BatchEntry { path, result }
         })
         .collect())
 }
 
-fn run_file(path: &Path, width: usize, height: usize) -> BatchResult {
+fn run_file(root: &Path, path: &Path, width: usize, height: usize) -> BatchResult {
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
 
@@ -224,7 +228,10 @@ fn run_file(path: &Path, width: usize, height: usize) -> BatchResult {
         }
     };
 
-    let reference_path = path.with_file_name(name);
+    let reference_path = match resolve_reference(root, path, &name) {
+        Ok(path) => path,
+        Err(result) => return BatchResult::Compared(result),
+    };
 
     let reference = match std::fs::read_to_string(&reference_path) {
         Ok(source) => source,
@@ -238,6 +245,103 @@ fn run_file(path: &Path, width: usize, height: usize) -> BatchResult {
     };
 
     BatchResult::Compared(compare_xhtml_preview(&source, &reference, width, height))
+}
+
+fn is_supported_reference_href(href: &str) -> bool {
+    !href.is_empty()
+        && !href.starts_with("//")
+        && href.ends_with(".xht")
+        && href
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/'))
+}
+
+fn resolve_reference_url(test_relative: &Path, href: &str) -> Result<PathBuf, String> {
+    if !is_supported_reference_href(href) {
+        return Err(format!("unsupported reference URL: {href}"));
+    }
+
+    let mut components = Vec::new();
+
+    for component in test_relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err("invalid test path".into());
+        };
+
+        let name = name.to_str().ok_or("non-UTF-8 test path")?;
+
+        if !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err("unsupported test path".into());
+        }
+
+        components.push(name);
+    }
+
+    if components.is_empty() {
+        return Err("empty test path".into());
+    }
+
+    const ORIGIN: &str = "https://wpt.invalid/";
+
+    let base = Url::parse(&format!("{ORIGIN}{}", components.join("/")))
+        .map_err(|error| error.to_string())?;
+
+    let joined = base
+        .join(href)
+        .map_err(|error| error.to_string())?
+        .to_string();
+
+    let relative = joined
+        .strip_prefix(ORIGIN)
+        .ok_or("reference has a different origin")?;
+
+    let result = PathBuf::from(relative);
+
+    if !result
+        .components()
+        .all(|part| matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err("invalid resolved reference path".into());
+    }
+
+    Ok(result)
+}
+
+fn resolve_reference(root: &Path, test: &Path, href: &str) -> Result<PathBuf, PreviewResult> {
+    let relative = test
+        .strip_prefix(root)
+        .map_err(|_| PreviewResult::Error("test is outside WPT root".into()))?;
+
+    let relative =
+        resolve_reference_url(relative, href).map_err(|reason| PreviewResult::Unsupported {
+            document: "test",
+            reason,
+        })?;
+
+    let candidate = root.join(relative);
+
+    let reference = candidate.canonicalize().map_err(|error| {
+        PreviewResult::Error(format!("cannot resolve {}: {error}", candidate.display()))
+    })?;
+
+    if !reference.starts_with(root) {
+        return Err(PreviewResult::Unsupported {
+            document: "test",
+            reason: "reference is outside WPT root".into(),
+        });
+    }
+
+    if reference == test {
+        return Err(PreviewResult::Unsupported {
+            document: "test",
+            reason: "test cannot reference itself".into(),
+        });
+    }
+
+    Ok(reference)
 }
 
 fn compare_xhtml_preview(
@@ -445,7 +549,6 @@ mod tests {
     #[test]
     fn refuses_unsupported_reference_metadata() {
         for head in [
-            "<link rel='match' href='../ref.xht'/>",
             "<link rel='match' href='ref.xht?x'/>",
             "<link rel='mismatch' href='ref.xht'/>",
             "<meta name='fuzzy' content='0-1;0-3'/>",
@@ -464,8 +567,10 @@ mod tests {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("testdata/wpt/css/CSS2/margin-padding-clear");
 
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/wpt");
+
         let entries =
-            run_directory(&directory, 320, 200).expect("cannot read WPT fixture directory");
+            run_directory(&root, &directory, 320, 200).expect("cannot read WPT fixture directory");
 
         for entry in &entries {
             println!("preview only: {}: {:?}", entry.path.display(), entry.result);
@@ -536,8 +641,9 @@ mod tests {
     #[test]
     fn scans_saved_css2_tree_and_prints_preview_summary() {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/wpt/css/CSS2");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/wpt");
 
-        let entries = run_directory(&directory, 320, 200).expect("cannot scan fixture tree");
+        let entries = run_directory(&root, &directory, 320, 200).expect("cannot scan fixture tree");
 
         for entry in &entries {
             println!("preview only: {}: {:?}", entry.path.display(), entry.result);
@@ -553,5 +659,98 @@ mod tests {
                 .ends_with("margin-padding-clear/margin-collapse-003.xht")
                 && entry.result == BatchResult::Compared(PreviewResult::Match)
         }));
+    }
+
+    #[test]
+    fn resolves_supported_reference_urls() {
+        let test = Path::new("css/CSS2/cascade/test.xth");
+
+        assert_eq!(
+            resolve_reference_url(test, "../reference/a.xht").unwrap(),
+            PathBuf::from("css/CSS2/reference/a.xht")
+        );
+
+        assert_eq!(
+            resolve_reference_url(test, "/css/ref.xht").unwrap(),
+            PathBuf::from("css/ref.xht")
+        );
+
+        assert_eq!(
+            resolve_reference_url(test, "local.xht").unwrap(),
+            PathBuf::from("css/CSS2/cascade/local.xht")
+        );
+
+        for href in [
+            "//other.example/a.xht",
+            "https://other/a.xht",
+            "a.xht?q",
+            "a%2fx.xht",
+            "a\\b.xht",
+        ] {
+            assert!(resolve_reference_url(test, href).is_err(), "{href}");
+        }
+    }
+
+    #[test]
+    fn refuses_self_reference_and_missing_reference() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/wpt")
+            .canonicalize()
+            .unwrap();
+
+        let test = root.join("css/CSS2/margin-padding-clear/margin-collapse-003.xht");
+
+        assert!(matches!(
+            resolve_reference(&root, &test, "margin-collapse-003.xht"),
+            Err(PreviewResult::Unsupported { .. })
+        ));
+
+        assert!(matches!(
+            resolve_reference(&root, &test, "missing-ref.xht"),
+            Err(PreviewResult::Error(_))
+        ));
+
+        assert!(resolve_reference(&root, &test, "margin-collapse-003-ref.xht").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_reference_symlink_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        struct TempDir(PathBuf);
+
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        let path =
+            std::env::temp_dir().join(format!("freedom-reftest-{}-{unique}", std::process::id(),));
+
+        std::fs::create_dir(&path).unwrap();
+        let temp = TempDir(path);
+
+        let root = temp.0.join("wpt");
+        std::fs::create_dir(&root).unwrap();
+
+        let outside = temp.0.join("outside.xht");
+        std::fs::write(&outside, "outside").unwrap();
+
+        symlink(&outside, root.join("reference.xht")).unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let test = root.join("test.xht");
+
+        assert!(matches!(
+            resolve_reference(&root, &test, "reference.xht"),
+            Err(PreviewResult::Unsupported { .. })
+        ));
     }
 }
