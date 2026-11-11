@@ -508,7 +508,11 @@ pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
 
             "margin-top" => parsed.margin_before.is_some(),
             "margin-bottom" => parsed.margin_after.is_some(),
-            "margin" => parsed.margin_before.is_some() && parsed.margin_after.is_some(),
+            "margin" => {
+                parsed.margin_before.is_some()
+                    && parsed.margin_after.is_some()
+                    && preview_margin_has_zero_horizontal(&declaration.value)
+            }
 
             "width" => parsed.width.is_some(),
             "height" => parsed.height.is_some(),
@@ -530,6 +534,43 @@ pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// The preview handles vertical margins but not horizontal margins.
+#[cfg(test)]
+fn preview_margin_has_zero_horizontal(value: &str) -> bool {
+    fn is_exact_zero(value: &str) -> bool {
+        if parse_margin_length(value).is_none() {
+            return false;
+        }
+
+        let lower = value.to_ascii_lowercase();
+
+        let number = lower
+            .strip_suffix("px")
+            .or_else(|| lower.strip_suffix("in"))
+            .unwrap_or(&lower);
+
+        let mantissa = number
+            .split('e')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches(['+', '-']);
+
+        mantissa.contains('0') && mantissa.bytes().all(|byte| matches!(byte, b'0' | b'.'))
+    }
+
+    let components: Vec<_> = value.split_ascii_whitespace().collect();
+
+    match components.as_slice() {
+        [all] => is_exact_zero(all),
+
+        [_, horizontal] | [_, horizontal, _] => is_exact_zero(horizontal),
+
+        [_, right, _, left] => is_exact_zero(right) && is_exact_zero(left),
+
+        _ => false,
+    }
 }
 
 /// Checks only a restricted subset of stylesheet syntax.
@@ -2283,5 +2324,29 @@ mod tests {
 
         // A non-breaking space is not CSS whitespace.
         assert!(audit_preview_stylesheet("div,\u{00a0},p { padding: 10px }").is_err());
+    }
+
+    #[test]
+    fn preview_audits_horizontal_margin_shorthand() {
+        for value in ["0", "-0px", "0e2px", "5px 0", "5px 0 8px", "5px 0 8px -0in"] {
+            assert!(
+                audit_preview_declarations(&format!("margin: {value}")).is_ok(),
+                "{value}"
+            );
+
+            for value in [
+                "5px",
+                "0 20px",
+                "5px -1px 8px",
+                "0 0 0 1px",
+                "0 0.001px",
+                "0 1e-9999px",
+            ] {
+                assert!(
+                    audit_preview_declarations(&format!("margin: {value}")).is_err(),
+                    "{value}"
+                );
+            }
+        }
     }
 }

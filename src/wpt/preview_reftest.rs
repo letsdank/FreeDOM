@@ -928,4 +928,42 @@ mod tests {
             PreviewResult::Match
         );
     }
+
+    #[test]
+    fn rejects_hidden_horizontal_margins_on_both_sides() {
+        let test = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body>",
+            "<div style='width:20px;height:20px;",
+            "margin:0 20px;background:blue'></div>",
+            "</body>",
+            "</html>",
+        );
+
+        let reference = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body>",
+            "<div style='width:20px;height:20px;",
+            "margin:0;background:blue'></div>",
+            "</body>",
+            "</html>",
+        );
+
+        for (source, expected, document) in
+            [(test, reference, "test"), (reference, test, "reference")]
+        {
+            assert!(matches!(
+                compare_xhtml_preview(source, expected, 320, 200),
+                PreviewResult::Unsupported {
+                    document: actual,
+                    ..
+                } if actual == document
+            ));
+        }
+
+        assert_eq!(
+            compare_xhtml_preview(reference, reference, 320, 200),
+            PreviewResult::Match
+        );
+    }
 }
