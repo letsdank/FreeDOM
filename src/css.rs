@@ -64,6 +64,8 @@ pub(crate) struct TextStyle {
     pub(crate) font_family: Option<String>,
     pub(crate) margin_before: i32,
     pub(crate) margin_after: i32,
+    pub(crate) margin_left: i32,
+    pub(crate) margin_right: i32,
     pub(crate) display: Display,
     pub(crate) width: CssSize,
     pub(crate) height: CssSize,
@@ -82,6 +84,8 @@ impl TextStyle {
             font_style: FontStyle::Normal,
             margin_before: 0,
             margin_after: 0,
+            margin_left: 0,
+            margin_right: 0,
             display: Display::Inline,
             width: CssSize::Auto,
             height: CssSize::Auto,
@@ -118,6 +122,8 @@ struct Declarations {
     display: Option<Display>,
     margin_before: Option<i32>,
     margin_after: Option<i32>,
+    margin_left: Option<i32>,
+    margin_right: Option<i32>,
     width: Option<CssSize>,
     height: Option<CssSize>,
     background_color: Option<BackgroundColor>,
@@ -691,10 +697,25 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "margin-left" => {
+                if let Some(value) = parse_margin_length(&declaration.value) {
+                    parsed.margin_left = Some(value);
+                }
+            }
+
+            "margin-right" => {
+                if let Some(value) = parse_margin_length(&declaration.value) {
+                    parsed.margin_right = Some(value);
+                }
+            }
+
             "margin" => {
-                if let Some((top, bottom)) = parse_vertical_margin_shorthand(&declaration.value) {
+                if let Some((top, right, bottom, left)) = parse_margin_shorthand(&declaration.value)
+                {
                     parsed.margin_before = Some(top);
+                    parsed.margin_right = Some(right);
                     parsed.margin_after = Some(bottom);
+                    parsed.margin_left = Some(left);
                 }
             }
 
@@ -927,16 +948,21 @@ fn parse_size(value: &str) -> Option<CssSize> {
 // https://www.w3.org/TR/CSS22/box.html#margin-properties
 //
 // Only px, in and unitless zero are supported. Every component is validated.
-fn parse_vertical_margin_shorthand(value: &str) -> Option<(i32, i32)> {
+// The returned order is top, right, bottom, left.
+fn parse_margin_shorthand(value: &str) -> Option<(i32, i32, i32, i32)> {
     let components = value
         .split_ascii_whitespace()
         .map(parse_margin_length)
         .collect::<Option<Vec<_>>>()?;
 
     match components.as_slice() {
-        [top] | [top, _] => Some((*top, *top)),
+        [all] => Some((*all, *all, *all, *all)),
 
-        [top, _, bottom] | [top, _, bottom, _] => Some((*top, *bottom)),
+        [top, horizontal] => Some((*top, *horizontal, *top, *horizontal)),
+
+        [top, horizontal, bottom] => Some((*top, *horizontal, *bottom, *horizontal)),
+
+        [top, right, bottom, left] => Some((*top, *right, *bottom, *left)),
 
         _ => None,
     }
@@ -999,6 +1025,8 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     style.display = Display::Inline;
     style.margin_before = 0;
     style.margin_after = 0;
+    style.margin_left = 0;
+    style.margin_right = 0;
     style.width = CssSize::Auto;
     style.height = CssSize::Auto;
     style.background_color = BackgroundColor::Transparent;
@@ -1150,6 +1178,14 @@ fn apply_declarations(
 
     if let Some(margin_after) = declarations.margin_after {
         style.margin_after = margin_after;
+    }
+
+    if let Some(margin_left) = declarations.margin_left {
+        style.margin_left = margin_left;
+    }
+
+    if let Some(margin_right) = declarations.margin_right {
+        style.margin_right = margin_right;
     }
 
     if let Some(width) = declarations.width {
@@ -1774,17 +1810,17 @@ mod tests {
     }
 
     #[test]
-    fn parses_vertical_margin_shorthand() {
-        assert_eq!(parse_vertical_margin_shorthand("1px"), Some((1, 1)));
-        assert_eq!(parse_vertical_margin_shorthand("1px 2px"), Some((1, 1)));
-        assert_eq!(parse_vertical_margin_shorthand("1px 2px 3px"), Some((1, 3)));
+    fn parses_margin_shorthand() {
+        assert_eq!(parse_margin_shorthand("1px"), Some((1, 1, 1, 1)));
+        assert_eq!(parse_margin_shorthand("1px 2px"), Some((1, 2, 1, 2)));
+        assert_eq!(parse_margin_shorthand("1px 2px 3px"), Some((1, 2, 3, 2)));
 
         assert_eq!(
-            parse_vertical_margin_shorthand("-1px 2px 3px 4px"),
-            Some((-1, 3))
+            parse_margin_shorthand("-1px 2px 3px 4px"),
+            Some((-1, 2, 3, 4))
         );
 
-        assert_eq!(parse_vertical_margin_shorthand("0 2PX"), Some((0, 0)));
+        assert_eq!(parse_margin_shorthand("0 2PX"), Some((0, 2, 0, 2)));
 
         for input in [
             "",
@@ -1794,7 +1830,7 @@ mod tests {
             "NaNpx",
             "1px 2px junk",
         ] {
-            assert_eq!(parse_vertical_margin_shorthand(input), None, "{input}");
+            assert_eq!(parse_margin_shorthand(input), None, "{input}");
         }
     }
 
@@ -1818,6 +1854,7 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
         assert_eq!((style.margin_before, style.margin_after), (5, 9));
+        assert_eq!((style.margin_left, style.margin_right), (7, 7));
 
         let child = Element {
             tag: "span",
@@ -1832,6 +1869,8 @@ mod tests {
             (child_style.margin_before, child_style.margin_after),
             (0, 0)
         );
+
+        assert_eq!((child_style.margin_left, child_style.margin_right), (0, 0));
     }
 
     #[test]
@@ -1850,6 +1889,7 @@ mod tests {
         let style = compute_style(&element, TextStyle::initial(), &[]);
 
         assert_eq!((style.margin_before, style.margin_after), (2, 4));
+        assert_eq!((style.margin_left, style.margin_right), (3, 3));
     }
 
     #[test]
@@ -1868,8 +1908,8 @@ mod tests {
         }
 
         assert_eq!(
-            parse_vertical_margin_shorthand("1in 0 -0.5in"),
-            Some((96, -48))
+            parse_margin_shorthand("1in 0 -0.5in"),
+            Some((96, 0, -48, 0))
         );
     }
 
@@ -2348,5 +2388,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn cascades_horizontal_longhands_and_shorthand() {
+        let rules = build_author_rules(&[concat!(
+            "div { ",
+            "margin: 1px 2px 3px 4px; ",
+            "margin-right: 12px !important",
+            " }",
+        )
+        .to_owned()]);
+
+        let element = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some(concat!(
+                "margin: 5px 6px; ",
+                "margin-left: -7px; ",
+                "margin-left: auto; ",
+                "margin-right: 8px"
+            )),
+        };
+
+        let style = compute_style(&element, TextStyle::initial(), &rules);
+
+        assert_eq!(
+            (
+                style.margin_before,
+                style.margin_right,
+                style.margin_after,
+                style.margin_left
+            ),
+            (5, 12, 5, -7)
+        );
     }
 }
