@@ -2829,4 +2829,123 @@ mod tests {
 
         assert_eq!(actual, expected, "experimental preview is not a WPT result");
     }
+
+    #[test]
+    fn preview_positions_nested_horizontal_margins_and_text() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='width:60px;margin-left:10px'>",
+                "<div style='margin-left:8px;margin-right:12px'>",
+                "text",
+                "</div>",
+                "</div>",
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        assert_eq!(
+            (preview.boxes[0].rect.x, preview.boxes[0].rect.width),
+            (26, 60)
+        );
+
+        assert_eq!(
+            (preview.boxes[1].rect.x, preview.boxes[1].rect.width),
+            (34, 40)
+        );
+
+        let rect = preview
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                crate::layout_preview::PreviewCommand::Text { rect, .. } => Some(rect),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!((rect.x, rect.width), (34, 40));
+    }
+
+    #[test]
+    fn preview_paints_background_at_nested_horizontal_position() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='width:60px;margin-left:10px'>",
+                "<div style='height:10px;margin-left:8px;",
+                "margin-right:12px;background:blue'></div>",
+                "</div>"
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 132, None).unwrap();
+
+        let mut pixels = vec![0; 132 * 110];
+        let mut cache = crate::render::GlyphRasterCache::new();
+
+        crate::render::paint_preview_scene(
+            &mut pixels,
+            132,
+            110,
+            &page,
+            &preview,
+            None,
+            0,
+            &mut cache,
+        );
+
+        assert_eq!(pixels[90 * 132 + 33], crate::render::BACKGROUND);
+        assert_eq!(pixels[90 * 132 + 34], 0x00_00_00_FF);
+        assert_eq!(pixels[90 * 132 + 73], 0x00_00_00_FF);
+        assert_eq!(pixels[90 * 132 + 74], crate::render::BACKGROUND);
+    }
+
+    #[test]
+    fn preview_handles_negative_and_overconstrained_horizontal_margins() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='height:10px;margin-left:-10px;",
+                "margin-right:-5px'></div>",
+                "<div style='height:10px;margin-left:50px;",
+                "margin-right:50px'></div>"
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        assert_eq!(
+            (preview.boxes[0].rect.x, preview.boxes[0].rect.width),
+            (6, 83)
+        );
+
+        assert_eq!(
+            (preview.boxes[1].rect.x, preview.boxes[1].rect.width),
+            (66, 0)
+        );
+    }
+
+    #[test]
+    fn preview_rejects_horizontal_overflow_and_inline_margins() {
+        let overflow = parse_html(
+            "https://example.test/",
+            "<div style='height:10px;margin-left:2147483647px'></div>",
+        );
+
+        assert!(matches!(
+            crate::layout_preview::PreviewLayout::build(&overflow, 100, None),
+            Err(crate::layout_preview::PreviewError::SizeOverflow)
+        ));
+
+        let inline = parse_html(
+            "https://example.test/",
+            "<div>A<span style='margin-left:5px'>B</span></div>",
+        );
+
+        assert!(matches!(
+            crate::layout_preview::PreviewLayout::build(&inline, 100, None),
+            Err(crate::layout_preview::PreviewError::InlineStyle(_))
+        ));
+    }
 }

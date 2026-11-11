@@ -138,7 +138,7 @@ impl std::fmt::Display for PreviewError {
             Self::InlineStyle(path) => {
                 write!(
                     formatter,
-                    "inline color, background or border is not supported at {path:?}"
+                    "inline color, background, border or horizontal margin is not supported at {path:?}"
                 )
             }
         }
@@ -173,6 +173,7 @@ impl PreviewLayout {
             &root_style,
             page,
             fallback.as_ref(),
+            CONTENT_HORIZONTAL_PADDING as i32,
             width,
             0,
             FlowStart::Document,
@@ -193,6 +194,7 @@ impl PreviewLayout {
         inherited: &TextStyle,
         page: &Page,
         fallback: Option<&TrueTypeFont<'_>>,
+        left: i32,
         width: i32,
         top: i32,
         flow_start: FlowStart,
@@ -247,15 +249,31 @@ impl PreviewLayout {
 
                     let index = self.boxes.len();
 
+                    let block_left = left
+                        .checked_add(block.style.margin_left)
+                        .ok_or(PreviewError::SizeOverflow)?;
+
                     let block_width = match block.style.width {
-                        CssSize::Auto => width,
+                        CssSize::Auto => {
+                            let available = i64::from(width)
+                                - i64::from(block.style.margin_left)
+                                - i64::from(block.style.margin_right);
+
+                            i32::try_from(available.max(0))
+                                .map_err(|_| PreviewError::SizeOverflow)?
+                        }
+
                         CssSize::Pixels(value) => value,
                     };
+
+                    block_left
+                        .checked_add(block_width)
+                        .ok_or(PreviewError::SizeOverflow)?;
 
                     self.boxes.push(PreviewBox {
                         source: block.source.clone(),
                         rect: LayoutRect {
-                            x: CONTENT_HORIZONTAL_PADDING as i32,
+                            x: block_left,
                             y: start,
                             width: block_width,
                             height: 0,
@@ -278,6 +296,7 @@ impl PreviewLayout {
                         block.style,
                         page,
                         fallback,
+                        block_left,
                         block_width,
                         start
                             .checked_add(block.style.border_top.width)
@@ -406,7 +425,7 @@ impl PreviewLayout {
 
                     self.display_list.push(PreviewCommand::Text {
                         rect: LayoutRect {
-                            x: CONTENT_HORIZONTAL_PADDING as i32,
+                            x: left,
                             y: cursor,
                             width,
                             height,
@@ -569,6 +588,8 @@ fn collect_text(
                     || style.background_color != BackgroundColor::Transparent
                     || style.border_top.width != 0
                     || style.border_bottom.width != 0
+                    || style.margin_left != 0
+                    || style.margin_right != 0
                 {
                     return Err(PreviewError::InlineStyle(source.indices().to_vec()));
                 }
