@@ -53,6 +53,50 @@ pub(crate) struct TextMetrics {
     pub(crate) line_height: i32,
 }
 
+/// Shared word-wrapping state used by measurement and painting.
+pub(crate) struct TextWrap {
+    left: i32,
+    right: i32,
+    x: i32,
+}
+
+pub(crate) struct WordPlacement {
+    pub(crate) x: i32,
+    pub(crate) wrapped: bool,
+}
+
+impl TextWrap {
+    pub(crate) fn new(left: i32, right: i32) -> Self {
+        Self {
+            left,
+            right,
+            x: left,
+        }
+    }
+
+    pub(crate) fn place_word(&mut self, space_width: i32, word_width: i32) -> WordPlacement {
+        let wrapped = self.x != self.left
+            && self
+                .x
+                .saturating_add(space_width)
+                .saturating_add(word_width)
+                > self.right;
+
+        if wrapped {
+            self.x = self.left;
+        }
+
+        if self.x != self.left {
+            self.x = self.x.saturating_add(space_width);
+        }
+
+        let x = self.x;
+        self.x = self.x.saturating_add(word_width);
+
+        WordPlacement { x, wrapped }
+    }
+}
+
 impl PageLayout {
     pub(crate) fn build(
         page: &Page,
@@ -225,27 +269,15 @@ pub(crate) fn measure_wrapped_text(
     vector_font: Option<&TrueTypeFont<'_>>,
 ) -> i32 {
     let metrics = text_metrics(vector_font, font_size);
-    let mut line_width = 0_i32;
+    let mut wrap = TextWrap::new(0, available_width);
     let mut line_count = 1_i32;
 
     for word in text.split_whitespace() {
         let word_width = text_word_width(vector_font, word, font_size, font_weight, font_style);
 
-        if line_width != 0
-            && line_width
-                .saturating_add(metrics.character_width)
-                .saturating_add(word_width)
-                > available_width
-        {
-            line_width = 0;
+        if wrap.place_word(metrics.character_width, word_width).wrapped {
             line_count = line_count.saturating_add(1);
         }
-
-        if line_width != 0 {
-            line_width = line_width.saturating_add(metrics.character_width);
-        }
-
-        line_width = line_width.saturating_add(word_width);
     }
 
     line_count.saturating_mul(metrics.line_height)
@@ -426,5 +458,38 @@ mod tests {
         assert_eq!(layout.block_at_viewport_point(46, 100, 130, 0), None);
         assert_eq!(layout.block_at_viewport_point(16, 130, 130, 0), None);
         assert_eq!(layout.block_at_viewport_point(100, 100, 130, 0), None);
+    }
+
+    #[test]
+    fn positions_words_using_each_space_width() {
+        let mut wrap = TextWrap::new(10, 40);
+
+        let first = wrap.place_word(99, 10);
+        assert_eq!((first.x, first.wrapped), (10, false));
+
+        let second = wrap.place_word(3, 10);
+        assert_eq!((second.x, second.wrapped), (23, false));
+
+        let third = wrap.place_word(8, 2);
+        assert_eq!((third.x, third.wrapped), (10, true));
+    }
+
+    #[test]
+    fn wraps_whole_words_and_saturates_coordinates() {
+        let mut wrap = TextWrap::new(0, 10);
+
+        let first = wrap.place_word(2, 15);
+        assert_eq!((first.x, first.wrapped), (0, false));
+
+        let second = wrap.place_word(2, 3);
+        assert_eq!((second.x, second.wrapped), (0, true));
+
+        let mut wrap = TextWrap::new(i32::MAX - 3, i32::MAX);
+
+        let first = wrap.place_word(1, 10);
+        assert_eq!(first.x, i32::MAX - 3);
+
+        let second = wrap.place_word(1, 2);
+        assert_eq!((second.x, second.wrapped), (i32::MAX, false));
     }
 }

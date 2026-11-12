@@ -9,8 +9,8 @@ use crate::{
     layout_preview::{PreviewCommand, PreviewLayout},
     page::{BlockContent, Page},
     page_layout::{
-        CONTENT_TOP, PageLayout, bitmap_block_size, svg_block_size, synthetic_bold_offset,
-        synthetic_italic_shear, text_metrics, text_word_width,
+        CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, svg_block_size,
+        synthetic_bold_offset, synthetic_italic_shear, text_metrics, text_word_width,
     },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -687,25 +687,17 @@ fn draw_wrapped_text(
     }
 
     let metrics = text_metrics(vector_font, font_size);
-    let mut x = left;
+    let mut wrap = TextWrap::new(left, right);
 
     for word in text.split_whitespace() {
         let word_width = text_word_width(vector_font, word, font_size, font_weight, font_style);
+        let placement = wrap.place_word(metrics.character_width, word_width);
 
-        if x != left
-            && x.saturating_add(metrics.character_width)
-                .saturating_add(word_width)
-                > right
-        {
-            x = left;
+        if placement.wrapped {
             y = y.saturating_add(metrics.line_height);
         }
 
-        if x != left {
-            x = x.saturating_add(metrics.character_width);
-        }
-
-        let word_x = x;
+        let word_x = placement.x;
         let is_visible = y.saturating_add(metrics.glyph_height) > visible_top && y < height as i32;
 
         if is_visible {
@@ -762,8 +754,6 @@ fn draw_wrapped_text(
                 });
             }
         }
-
-        x = x.saturating_add(word_width);
     }
 
     y.saturating_add(metrics.line_height)
