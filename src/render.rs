@@ -6,7 +6,7 @@ use crate::{
         raster::{Color as RasterColor, Surface as RasterSurface},
     },
     layout_debug::{clear_preview_content, paint_preview_box},
-    layout_preview::{PreviewCommand, PreviewLayout},
+    layout_preview::{PreviewCommand, PreviewFonts, PreviewLayout},
     page::{BlockContent, Page},
     page_layout::{
         CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, svg_block_size,
@@ -332,21 +332,18 @@ pub(crate) fn paint_preview_scene(
                     continue;
                 };
 
-                let page_font = page
-                    .font_data_for(
-                        style.font_family.as_deref(),
-                        style.font_weight,
-                        style.font_style,
-                    )
-                    .and_then(|data| TrueTypeFont::parse(data).ok());
-
-                let font = page_font.as_ref().or(fallback.as_ref());
+                let fonts = PreviewFonts::from_styles(
+                    page,
+                    std::iter::once(style).chain(runs.iter().map(|run| &run.style)),
+                );
 
                 // Restrict text painting to the page content below the toolbar.
                 let content_pixels = &mut pixels[content_top * width..width * height];
 
                 let mut paint_text =
                     |x: i32, y: i32, text: &str, run_style: &crate::css::TextStyle| {
+                        let font = fonts.get(run_style).or(fallback.as_ref());
+
                         draw_wrapped_text(
                             content_pixels,
                             width,

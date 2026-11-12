@@ -633,17 +633,22 @@ struct InlineWord<'a> {
     parts: Vec<InlineWordPart<'a>>,
 }
 
-struct PreviewFonts<'style, 'font> {
+pub(crate) struct PreviewFonts<'style, 'font> {
     entries: Vec<(&'style TextStyle, Option<TrueTypeFont<'font>>)>,
 }
 
 impl<'style, 'font> PreviewFonts<'style, 'font> {
     fn new(page: &'font Page, fragments: &[InlineTextFragment<'style>]) -> Self {
+        Self::from_styles(page, fragments.iter().map(|fragment| fragment.style))
+    }
+
+    pub(crate) fn from_styles(
+        page: &'font Page,
+        styles: impl IntoIterator<Item = &'style TextStyle>,
+    ) -> Self {
         let mut entries: Vec<(&TextStyle, Option<TrueTypeFont<'font>>)> = Vec::new();
 
-        for fragment in fragments {
-            let style = fragment.style;
-
+        for style in styles {
             if entries
                 .iter()
                 .any(|(existing, _)| same_font(existing, style))
@@ -665,7 +670,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         Self { entries }
     }
 
-    fn get(&self, style: &TextStyle) -> Option<&TrueTypeFont<'font>> {
+    pub(crate) fn get(&self, style: &TextStyle) -> Option<&TrueTypeFont<'font>> {
         self.entries
             .iter()
             .find(|(existing, _)| same_font(existing, style))

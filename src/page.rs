@@ -3210,4 +3210,84 @@ mod tests {
         assert!(pixels[90 * 120..].contains(&0x00_FF_00_00));
         assert!(pixels[90 * 120..].contains(&0x00_00_00_FF));
     }
+
+    #[test]
+    fn preview_uses_the_font_saved_in_each_run() {
+        use crate::graphics::font::normalize_font_container;
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let mut page = parse_html("https://example.test/", "<div>ߊ<span>ߊ</span> ߊ</div>");
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2"
+        );
+
+        let font =
+            normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
+                .unwrap();
+
+        page.font_faces.push(LoadedFontFace {
+            family: "Nko Test".to_owned(),
+            font_weight: FontWeight::Normal,
+            font_style: FontStyle::Normal,
+            data: font,
+        });
+
+        let mut layout = PreviewLayout::build(&page, 120, None).unwrap();
+
+        let runs = layout
+            .display_list
+            .iter_mut()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } if !runs.is_empty() => Some(runs),
+                _ => None,
+            })
+            .expect("positioned text runs");
+
+        assert_eq!(runs.len(), 2);
+
+        // Change the display list directly: mixed fonts are still rejected by layout.
+        runs[0].style.font_family = Some("Nko Test".to_owned());
+
+        let mut actual = vec![0; 120 * 120];
+
+        paint_preview_scene(
+            &mut actual,
+            120,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        let runs = layout
+            .display_list
+            .iter_mut()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } if !runs.is_empty() => Some(runs),
+                _ => None,
+            })
+            .unwrap();
+
+        runs[0].style.font_family = None;
+
+        let mut expected = vec![0; 120 * 120];
+
+        paint_preview_scene(
+            &mut expected,
+            120,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_ne!(actual, expected, "the saved run font must affect rendering");
+    }
 }
