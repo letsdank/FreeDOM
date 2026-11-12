@@ -1110,4 +1110,78 @@ mod tests {
             } if different_pixels > 0
         ));
     }
+
+    #[test]
+    fn saved_margin_left_007_detects_border_and_text_changes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/wpt")
+            .canonicalize()
+            .expect("WPT root must exist");
+
+        let test_path = root.join("css/CSS2/margin-padding-clear/margin-left-007.xht");
+        let reference_path = root.join("css/CSS2/margin-padding-clear/margin-left-007-ref.xht");
+
+        let test = std::fs::read_to_string(&test_path).expect("WPT test must exist");
+        let reference = std::fs::read_to_string(&reference_path).expect("WPT reference must exist");
+
+        assert_eq!(
+            reference_name(&test).unwrap().as_deref(),
+            Some("margin-left-007-ref.xht")
+        );
+
+        // Run the unmodified pair through the saved-file preview path.
+        let original = run_file(&root, &test_path, 320, 200);
+
+        println!("Original WPT pair, preview only: {original:?}");
+
+        assert_eq!(original, BatchResult::Compared(PreviewResult::Match));
+
+        // Moving the black border should expose a different image.
+        let margin = "margin-left: -98px;";
+        assert_eq!(test.matches(margin).count(), 1);
+
+        let wrong_margin = test.replacen(margin, "margin-left: -97px;", 1);
+        let margin_result = compare_xhtml_preview(&wrong_margin, &reference, 320, 200);
+
+        println!("Altered margin, preview only: {margin_result:?}");
+
+        assert!(matches!(
+            margin_result,
+            PreviewResult::Mismatch {
+                different_pixels,
+                ..
+            } if different_pixels > 0
+        ));
+
+        // Changing the text should also change the image.
+        let text = "<strong>no red</strong>";
+        assert_eq!(test.matches(text).count(), 1);
+
+        let wrong_text = test.replacen(text, "<strong>no blue</strong>", 1);
+        let text_result = compare_xhtml_preview(&wrong_text, &reference, 320, 200);
+
+        println!("Altered text, preview only: {text_result:?}");
+
+        assert!(matches!(
+            text_result,
+            PreviewResult::Mismatch {
+                different_pixels,
+                ..
+            } if different_pixels > 0
+        ));
+
+        // Removing bold should affect the rendered text.
+        let without_bold = test.replacen(text, "no red", 1);
+        let weight_result = compare_xhtml_preview(&without_bold, &reference, 320, 200);
+
+        println!("Remove bold, preview only: {weight_result:?}");
+
+        assert!(matches!(
+            weight_result,
+            PreviewResult::Mismatch {
+                different_pixels,
+                ..
+            } if different_pixels > 0
+        ));
+    }
 }
