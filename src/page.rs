@@ -3614,4 +3614,118 @@ mod tests {
         assert_eq!(actual, expected);
         assert_ne!(wrong_color, expected);
     }
+
+    #[test]
+    fn preview_paints_bitmap_weight_between_words_and_wraps() {
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let page = parse_html("https://example.test/", "<div>A <strong>B</strong> C</div>");
+        let layout = PreviewLayout::build(&page, 64, None).unwrap();
+
+        let runs = layout
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } if !runs.is_empty() => Some(runs),
+                _ => None,
+            })
+            .expect("positioned runs expected");
+
+        assert_eq!(
+            runs.iter().map(|run| run.text.as_str()).collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
+
+        assert_eq!(runs[0].style.font_weight, FontWeight::Normal);
+        assert_eq!(runs[1].style.font_weight, FontWeight::Bold);
+
+        assert_eq!((runs[0].x, runs[0].y), (0, 0));
+        assert_eq!((runs[1].x, runs[1].y), (16, 0));
+        assert_eq!((runs[2].x, runs[2].y), (0, 10));
+
+        let mut pixels = vec![0; 64 * 120];
+
+        paint_preview_scene(
+            &mut pixels,
+            64,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert!((90..100).any(|y| { (32..41).any(|x| pixels[y * 64 + x] == 0x00_00_00_00) }));
+        assert!((100..110).any(|y| { (16..24).any(|x| pixels[y * 64 + x] == 0x00_00_00_00) }));
+
+        let plain = parse_html("https://example.test/", "<div>A B C</div>");
+        let plain_layout = PreviewLayout::build(&plain, 64, None).unwrap();
+        let mut plain_pixels = vec![0; 64 * 120];
+
+        paint_preview_scene(
+            &mut plain_pixels,
+            64,
+            120,
+            &plain,
+            &plain_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert!(
+            (90..100).any(|y| { (32..41).any(|x| pixels[y * 64 + x] != plain_pixels[y * 64 + x]) }),
+            "bold bitmap must differ from normal"
+        );
+    }
+
+    #[test]
+    fn preview_rejects_mixed_weight_inside_word_or_with_vector_font() {
+        use crate::graphics::font::normalize_font_container;
+        use crate::layout_preview::{PreviewError, PreviewLayout};
+
+        let inside = parse_html("https://example.test/", "<div>A<strong>B</strong></div>");
+
+        assert!(matches!(
+            PreviewLayout::build(&inside, 120, None),
+            Err(PreviewError::InlineFont(_))
+        ));
+
+        let between = parse_html("https://example.test/", "<div>A <strong>B</strong></div>");
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2"
+        );
+
+        let font =
+            normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
+                .unwrap();
+
+        assert!(matches!(
+            PreviewLayout::build(&between, 120, Some(&font)),
+            Err(PreviewError::InlineFont(_))
+        ));
+    }
+
+    #[test]
+    fn preview_paints_only_bold_word_as_a_positioned_run() {
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+
+        let page = parse_html("https://example.test/", "<div><strong>A</strong></div>");
+        let layout = PreviewLayout::build(&page, 120, None).unwrap();
+
+        let run = layout
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } => runs.first(),
+                _ => None,
+            })
+            .expect("bold run expected");
+
+        assert_eq!(run.style.font_weight, FontWeight::Bold);
+    }
 }

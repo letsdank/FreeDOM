@@ -455,6 +455,24 @@ impl PreviewLayout {
                     collect_styled_fragments(items, inherited, None, &mut fragments)?;
 
                     let fonts = PreviewFonts::new(page, &fragments);
+                    let changed_weight = fragments
+                        .iter()
+                        .find(|fragment| fragment.style.font_weight != inherited.font_weight);
+
+                    if let Some(fragment) = changed_weight {
+                        let has_vector_font = fragments
+                            .iter()
+                            .any(|item| fonts.get(item.style).or(fallback).is_some());
+
+                        if has_vector_font {
+                            let path = fragment
+                                .style_source
+                                .map_or_else(Vec::new, |path| path.indices().to_vec());
+
+                            return Err(PreviewError::InlineFont(path));
+                        }
+                    }
+
                     let font = fonts.get(inherited).or(fallback);
                     let words = split_styled_words(&fragments);
 
@@ -467,9 +485,10 @@ impl PreviewLayout {
                     let mut runs = Vec::new();
                     let mut pending_runs = Vec::new();
                     let use_positioned_runs = fragments.len() > 1
-                        || fragments
-                            .iter()
-                            .any(|fragment| fragment.style.color != inherited.color);
+                        || fragments.iter().any(|fragment| {
+                            fragment.style.color != inherited.color
+                                || !same_font(inherited, fragment.style)
+                        });
 
                     for word in &words {
                         let measured = fonts.measure_word(word, fallback);
@@ -637,8 +656,11 @@ fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
 }
 
 fn same_font(left: &TextStyle, right: &TextStyle) -> bool {
+    same_font_except_weight(left, right) && left.font_weight == right.font_weight
+}
+
+fn same_font_except_weight(left: &TextStyle, right: &TextStyle) -> bool {
     left.font_size.to_bits() == right.font_size.to_bits()
-        && left.font_weight == right.font_weight
         && left.font_style == right.font_style
         && left.font_family == right.font_family
 }
@@ -1009,7 +1031,7 @@ fn collect_text(
 
     collect_styled_fragments(items, inherited, None, &mut fragments)?;
 
-    let mut word_color = None;
+    let mut word_style: Option<&TextStyle> = None;
 
     for fragment in &fragments {
         let source_path = || {
@@ -1018,19 +1040,23 @@ fn collect_text(
                 .map_or_else(Vec::new, |path| path.indices().to_vec())
         };
 
-        if !same_font(inherited, fragment.style) {
+        if !same_font_except_weight(inherited, fragment.style) {
             return Err(PreviewError::InlineFont(source_path()));
         }
 
         for character in fragment.text.chars() {
             if matches!(character, ' ' | '\t' | '\n' | '\r' | '\x0c') {
-                word_color = None;
-            } else if let Some(color) = word_color {
-                if color != fragment.style.color {
+                word_style = None;
+            } else if let Some(style) = word_style {
+                if style.font_weight != fragment.style.font_weight {
+                    return Err(PreviewError::InlineFont(source_path()));
+                }
+
+                if style.color != fragment.style.color {
                     return Err(PreviewError::InlineStyle(source_path()));
                 }
             } else {
-                word_color = Some(fragment.style.color);
+                word_style = Some(fragment.style);
             }
         }
     }
@@ -1041,7 +1067,7 @@ fn collect_text(
         }
 
         for part in word.parts {
-            debug_assert!(same_font(inherited, part.style));
+            debug_assert!(same_font_except_weight(inherited, part.style));
             output.push_str(part.text);
         }
     }

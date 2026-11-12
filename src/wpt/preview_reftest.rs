@@ -1052,7 +1052,7 @@ mod tests {
 
         let mixed_fonts = concat!(
             "<html xmlns='http://www.w3.org/1999/xhtml'>",
-            "<body><p>no <strong>red</strong></p></body>",
+            "<body><p>n<strong>o</strong> red</p></body>",
             "</html>",
         );
 
