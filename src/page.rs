@@ -3682,17 +3682,11 @@ mod tests {
     }
 
     #[test]
-    fn preview_rejects_mixed_weight_inside_word_or_with_vector_font() {
+    fn preview_rejects_mixed_weight_with_vector_font() {
         use crate::graphics::font::normalize_font_container;
         use crate::layout_preview::{PreviewError, PreviewLayout};
 
         let inside = parse_html("https://example.test/", "<div>A<strong>B</strong></div>");
-
-        assert!(matches!(
-            PreviewLayout::build(&inside, 120, None),
-            Err(PreviewError::InlineFont(_))
-        ));
-
         let between = parse_html("https://example.test/", "<div>A <strong>B</strong></div>");
 
         let path = concat!(
@@ -3703,6 +3697,11 @@ mod tests {
         let font =
             normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
                 .unwrap();
+
+        assert!(matches!(
+            PreviewLayout::build(&inside, 120, Some(&font)),
+            Err(PreviewError::InlineFont(_))
+        ));
 
         assert!(matches!(
             PreviewLayout::build(&between, 120, Some(&font)),
@@ -3727,5 +3726,51 @@ mod tests {
             .expect("bold run expected");
 
         assert_eq!(run.style.font_weight, FontWeight::Bold);
+    }
+
+    #[test]
+    fn preview_bitmap_bold_run_does_not_add_gap_before_punctuation() {
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let page = parse_html("https://example.test/", "<div><strong>A</strong>. B</div>");
+        let layout = PreviewLayout::build(&page, 57, None).unwrap();
+
+        let runs = layout
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } if !runs.is_empty() => Some(runs),
+                _ => None,
+            })
+            .expect("positioned runs expected");
+
+        assert_eq!(
+            runs.iter()
+                .map(|run| (run.text.as_str(), run.x, run.y))
+                .collect::<Vec<_>>(),
+            vec![("A", 0, 0), (".", 8, 0), ("B", 0, 10)]
+        );
+
+        assert_eq!(runs[0].style.font_weight, FontWeight::Bold);
+        assert_eq!(runs[1].style.font_weight, FontWeight::Normal);
+
+        let mut pixels = vec![0; 57 * 120];
+
+        paint_preview_scene(
+            &mut pixels,
+            57,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert!(
+            (90..100).any(|y| { (24..32).any(|x| pixels[y * 57 + x] == 0x00_00_00_00) }),
+            "period must be painted at the unshifted advance"
+        );
     }
 }

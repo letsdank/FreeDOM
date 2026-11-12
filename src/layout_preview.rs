@@ -15,7 +15,8 @@ use crate::{
     },
     page::Page,
     page_layout::{
-        CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, text_metrics, text_word_width,
+        CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, bitmap_text_advance, text_metrics,
+        text_word_width,
     },
     styled_tree::SourcePath,
 };
@@ -808,13 +809,21 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         measure_styled_word(word, |text, style| {
             let font = self.get(style).or(fallback);
 
-            text_word_width(
+            let width = text_word_width(
                 font,
                 text,
                 style.font_size,
                 style.font_weight,
                 style.font_style,
-            )
+            );
+
+            let advance = if font.is_none() {
+                bitmap_text_advance(text, style.font_size)
+            } else {
+                width
+            };
+
+            (width, advance)
         })
     }
 
@@ -840,8 +849,10 @@ struct MeasuredWord<'a> {
 impl MeasuredWord<'_> {
     fn width(&self) -> i32 {
         self.runs
-            .last()
-            .map_or(0, |run| run.x.saturating_add(run.width))
+            .iter()
+            .map(|run| run.x.saturating_add(run.width))
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -849,7 +860,7 @@ impl MeasuredWord<'_> {
 // that element boundaries do not change kerning within a word.
 fn measure_styled_word<'a>(
     word: &InlineWord<'a>,
-    mut measure: impl FnMut(&str, &TextStyle) -> i32,
+    mut measure: impl FnMut(&str, &TextStyle) -> (i32, i32),
 ) -> MeasuredWord<'a> {
     let mut runs = Vec::new();
     let mut index = 0;
@@ -877,7 +888,7 @@ fn measure_styled_word<'a>(
             )
         };
 
-        let width = measure(text.as_ref(), style);
+        let (width, advance) = measure(text.as_ref(), style);
 
         runs.push(MeasuredRun {
             x,
@@ -886,7 +897,7 @@ fn measure_styled_word<'a>(
             style,
         });
 
-        x = x.saturating_add(width);
+        x = x.saturating_add(advance);
     }
 
     MeasuredWord { runs }
@@ -1048,10 +1059,6 @@ fn collect_text(
             if matches!(character, ' ' | '\t' | '\n' | '\r' | '\x0c') {
                 word_style = None;
             } else if let Some(style) = word_style {
-                if style.font_weight != fragment.style.font_weight {
-                    return Err(PreviewError::InlineFont(source_path()));
-                }
-
                 if style.color != fragment.style.color {
                     return Err(PreviewError::InlineStyle(source_path()));
                 }
@@ -1077,7 +1084,7 @@ fn collect_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewError, collapse_sibling_margins, collect_styled_fragments, collect_text};
+    use super::{collapse_sibling_margins, collect_styled_fragments, collect_text};
 
     use crate::{
         box_tree::InlineItem,
@@ -1146,10 +1153,8 @@ mod tests {
 
         let mut text = String::new();
 
-        assert!(matches!(
-            collect_text(&items, &normal, &mut text),
-            Err(PreviewError::InlineFont(_))
-        ));
+        collect_text(&items, &normal, &mut text).unwrap();
+        assert_eq!(text, "hello world");
     }
 
     #[test]
@@ -1350,9 +1355,9 @@ mod tests {
             calls.push((text.to_owned(), style.font_weight));
 
             if style.font_weight == FontWeight::Bold {
-                20
+                (20, 20)
             } else {
-                21
+                (21, 21)
             }
         });
 
@@ -1407,7 +1412,7 @@ mod tests {
             ],
         };
 
-        let measured = measure_styled_word(&word, |_, _| i32::MAX);
+        let measured = measure_styled_word(&word, |_, _| (i32::MAX, i32::MAX));
 
         assert_eq!(measured.runs[1].x, i32::MAX);
         assert_eq!(measured.width(), i32::MAX);
@@ -1831,5 +1836,40 @@ mod tests {
                 &unaligned[y * width + 116..y * width + 180]
             );
         }
+    }
+
+    #[test]
+    fn word_width_includes_earlier_run_overhang() {
+        use super::{InlineWord, InlineWordPart, measure_styled_word};
+
+        let normal = TextStyle::initial();
+
+        let mut bold = normal.clone();
+        bold.font_weight = FontWeight::Bold;
+
+        let word = InlineWord {
+            space_before: None,
+            parts: vec![
+                InlineWordPart {
+                    text: "A",
+                    style: &bold,
+                },
+                InlineWordPart {
+                    text: ".",
+                    style: &normal,
+                },
+            ],
+        };
+
+        let measured = measure_styled_word(&word, |_, style| {
+            if style.font_weight == FontWeight::Bold {
+                (30, 10)
+            } else {
+                (2, 2)
+            }
+        });
+
+        assert_eq!((measured.runs[1].x, measured.runs[1].width), (10, 2));
+        assert_eq!(measured.width(), 30);
     }
 }

@@ -297,11 +297,19 @@ pub(crate) fn text_word_width(
     vector_font
         .and_then(|font| vector_text_width(font, text, font_size, font_weight, font_style))
         .unwrap_or_else(|| {
-            i32::try_from(text.chars().count())
-                .unwrap_or(i32::MAX)
-                .saturating_mul(if font_size >= 24.0 { 16 } else { 8 })
+            bitmap_text_advance(text, font_size)
                 .saturating_add(i32::from(font_weight == FontWeight::Bold))
         })
+}
+
+pub(crate) fn bitmap_text_advance(text: &str, font_size: f32) -> i32 {
+    if font_size == 0.0 {
+        return 0;
+    }
+
+    i32::try_from(text.chars().count())
+        .unwrap_or(i32::MAX)
+        .saturating_mul(if font_size >= 24.0 { 16 } else { 8 })
 }
 
 pub(crate) fn svg_block_size(svg: &SvgDocument, available_width: usize) -> (usize, usize) {
