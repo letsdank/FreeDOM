@@ -544,6 +544,8 @@ pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
 
             "border-top" => parsed.border_top.is_some(),
             "border-bottom" => parsed.border_bottom.is_some(),
+            "border-left" => parsed.border_left.is_some(),
+            "border-right" => parsed.border_right.is_some(),
 
             _ => false,
         };
@@ -1112,6 +1114,12 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
         }
 
         "p" | "li" | "pre" => style.margin_after = 10,
+
+        // Approximation of the user-agent bolder style with two weight levels.
+        // https://html.spec.whatwg.org/multipage/rendering.html#phrasing-content-3
+        "strong" | "b" => {
+            style.font_weight = FontWeight::Bold;
+        }
 
         _ => {}
     }
@@ -2490,10 +2498,12 @@ mod tests {
     }
 
     #[test]
-    fn audit_accepts_integer_inches_but_rejects_fractional_and_left_border() {
+    fn audit_accepts_integer_inches_and_rejects_unsupported_values() {
         assert!(audit_preview_declarations("width: 2in; height: 1in").is_ok());
         assert!(audit_preview_declarations("height: 0.5in").is_err());
-        assert!(audit_preview_declarations("border-left: 2px solid black").is_err());
+        assert!(audit_preview_declarations("border-left: 2px solid black").is_ok());
+        assert!(audit_preview_declarations("border-right: 2px solid blue").is_ok());
+        assert!(audit_preview_declarations("border-left: 2px dashed black").is_err());
 
         assert_eq!(
             parse_solid_border("1in solid black"),
@@ -2549,7 +2559,27 @@ mod tests {
         assert_eq!(child_style.border_left, BorderEdge::default());
         assert_eq!(child_style.border_right, BorderEdge::default());
 
-        // Parsing support alone must not enable the preview audit.
-        assert!(audit_preview_declarations("border-left: 2px solid red").is_err());
+        assert!(audit_preview_declarations("border-left: 2px solid red").is_ok());
+    }
+
+    #[test]
+    fn strong_and_b_have_bold_default_that_author_css_can_override() {
+        for tag in ["strong", "b"] {
+            let element = Element {
+                tag,
+                id: None,
+                classes: &[],
+                inline_style: None,
+            };
+
+            let default_style = compute_style(&element, TextStyle::initial(), &[]);
+
+            assert_eq!(default_style.font_weight, FontWeight::Bold);
+
+            let rules = build_author_rules(&[format!("{tag} {{ font-weight: normal }}")]);
+            let overridden = compute_style(&element, TextStyle::initial(), &rules);
+
+            assert_eq!(overridden.font_weight, FontWeight::Normal);
+        }
     }
 }

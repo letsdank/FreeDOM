@@ -998,4 +998,72 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn compares_nested_negative_margin_and_side_border() {
+        let source = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<head><style>",
+            "div { height: 1in } ",
+            "#wrapper { border-left: 2px solid red } ",
+            "#div1 { margin-left: 96px } ",
+            "#div2 { border-left: 2px solid black; margin-left: -98px }",
+            "</style></head>",
+            "<body>",
+            "<div id='wrapper'>",
+            "<div id='div1'><div id='div2'></div></div>",
+            "</div>",
+            "</body></html>",
+        );
+
+        let reference = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body>",
+            "<div style='height:1in;border-left:2px solid black'></div>",
+            "</body></html>",
+        );
+
+        assert_eq!(
+            compare_xhtml_preview(source, reference, 320, 240),
+            PreviewResult::Match
+        );
+
+        let shifted = source.replace("-98px", "-97px");
+
+        assert_eq!(
+            compare_xhtml_preview(&shifted, source, 320, 240),
+            PreviewResult::Mismatch {
+                different_pixels: 192,
+                max_channel_difference: 255,
+            }
+        );
+    }
+
+    #[test]
+    fn mixed_borders_and_inline_fonts_remain_unsupported() {
+        let mixed_borders = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body>",
+            "<div style='height:10px;",
+            "border-left: 2px solid red;",
+            "border-top:2px solid blue'></div>",
+            "</body></html>",
+        );
+
+        let mixed_fonts = concat!(
+            "<html xmlns='http://www.w3.org/1999/xhtml'>",
+            "<body><p>no <strong>red</strong></p></body>",
+            "</html>",
+        );
+
+        for source in [mixed_borders, mixed_fonts] {
+            assert!(matches!(
+                compare_xhtml_preview(source, BLUE, 320, 200),
+                PreviewResult::Unsupported {
+                    document: "test",
+                    ..
+                }
+            ));
+        }
+    }
 }
