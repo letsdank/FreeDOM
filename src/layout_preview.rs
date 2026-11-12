@@ -9,7 +9,7 @@
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
     css::{BackgroundColor, BorderEdge, CssSize, TextStyle},
-    graphics::font::TrueTypeFont,
+    graphics::font::{TrueTypeFont, render::split_subpixel_position},
     page::Page,
     page_layout::{
         CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, text_metrics, text_word_width,
@@ -666,7 +666,8 @@ impl PreviewLineMetrics {
 
         let above = font
             .and_then(|font| font.line_metrics(font_size))
-            .map(|metrics| metrics.ascent.round() as i32)
+            .and_then(|metrics| split_subpixel_position(metrics.ascent))
+            .map(|(base, _phase)| base)
             .unwrap_or(metrics.glyph_height)
             .clamp(0, height);
 
@@ -1524,5 +1525,43 @@ mod tests {
 
         assert_eq!(runs[0].style.font_size, 16.0);
         assert_eq!(runs[1].style.font_size, 32.0);
+    }
+
+    #[test]
+    fn preview_vector_baseline_matches_rasterizer_integer_coordinate() {
+        use super::PreviewLineMetrics;
+        use crate::graphics::font::{
+            TrueTypeFont, normalize_font_container, render::split_subpixel_position,
+        };
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2",
+        );
+
+        let data =
+            normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
+                .unwrap();
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        let mut saw_fractional_phase = false;
+        let mut saw_round_mismatch = false;
+
+        for size in 1..=128 {
+            let size = size as f32;
+            let metrics = font.line_metrics(size).unwrap();
+
+            let (base, phase) = split_subpixel_position(metrics.ascent).unwrap();
+
+            let preview = PreviewLineMetrics::from_font(Some(&font), size);
+
+            assert_eq!(preview.above_baseline, base, "size={size}",);
+
+            saw_fractional_phase |= phase != 0;
+            saw_round_mismatch |= metrics.ascent.round() as i32 != base;
+        }
+
+        assert!(saw_fractional_phase);
+        assert!(saw_round_mismatch);
     }
 }

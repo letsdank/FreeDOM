@@ -1,7 +1,10 @@
 use crate::{
     css::{FontStyle, FontWeight},
     graphics::{
-        font::{TextOutline, TrueTypeFont, normalize_font_container, rasterize_text_outline},
+        font::{
+            TextOutline, TrueTypeFont, normalize_font_container, rasterize_text_outline,
+            render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
+        },
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
     },
@@ -41,7 +44,6 @@ const MAX_BLOCK_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RASTER_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GLYPH_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RASTER_GLYPH_BYTES: usize = 4 * 1024 * 1024;
-const GLYPH_SUBPIXEL_STEPS: i32 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct GlyphRasterKey {
@@ -774,29 +776,6 @@ fn draw_wrapped_text(
     }
 
     y.saturating_add(metrics.line_height)
-}
-
-fn split_subpixel_position(value: f32) -> Option<(i32, u8)> {
-    if !value.is_finite() {
-        return None;
-    }
-
-    let floor = value.floor();
-
-    if floor < i32::MIN as f32 || floor > i32::MAX as f32 {
-        return None;
-    }
-
-    let mut base = floor as i32;
-    let mut phase = ((value - floor) * GLYPH_SUBPIXEL_STEPS as f32).round() as i32;
-    phase = phase.clamp(0, GLYPH_SUBPIXEL_STEPS);
-
-    if phase == GLYPH_SUBPIXEL_STEPS {
-        base = base.saturating_add(1);
-        phase = 0;
-    }
-
-    Some((base, phase as u8))
 }
 
 #[allow(clippy::too_many_arguments)]
