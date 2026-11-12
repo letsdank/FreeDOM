@@ -3290,4 +3290,140 @@ mod tests {
 
         assert_ne!(actual, expected, "the saved run font must affect rendering");
     }
+
+    #[test]
+    fn preview_paints_vector_and_bitmap_runs_with_fractional_baseline() {
+        use crate::graphics::font::{
+            TrueTypeFont, normalize_font_container,
+            render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
+        };
+        use crate::layout_preview::{PreviewCommand, PreviewLayout, PreviewTextRun};
+        use crate::page_layout::{CONTENT_TOP, LayoutRect, text_metrics};
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2"
+        );
+
+        let data =
+            normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
+                .unwrap();
+
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        // Find a size where the vector baseline has a fractional phase.
+        let (vector_size, vector_base, phase) = (32..=64)
+            .find_map(|size| {
+                let ascent = font.line_metrics(size as f32)?.ascent;
+                let (base, phase) = split_subpixel_position(ascent)?;
+
+                (phase != 0).then_some((size as f32, base, phase))
+            })
+            .expect("fixture must have a fractional baseline");
+
+        let bitmap = text_metrics(None, 16.0);
+        let baseline = vector_base.max(bitmap.glyph_height);
+
+        let vector_y = baseline - vector_base;
+        let bitmap_y = baseline - bitmap.glyph_height;
+
+        // The integer parts agree, but the vector phase is still nonzero.
+        assert_eq!(vector_y + vector_base, bitmap_y + bitmap.glyph_height);
+
+        assert!(phase > 0 && i32::from(phase) < GLYPH_SUBPIXEL_STEPS);
+
+        let mut page = parse_html("https://example.test/", "<div></div>");
+
+        page.font_faces.push(LoadedFontFace {
+            family: "Nko Test".into(),
+            font_weight: FontWeight::Normal,
+            font_style: FontStyle::Normal,
+            data,
+        });
+
+        let mut vector_style = crate::css::TextStyle::initial();
+        vector_style.font_family = Some("Nko Test".into());
+        vector_style.font_size = vector_size;
+        vector_style.color = 0x00_FF_00_00;
+
+        let mut bitmap_style = crate::css::TextStyle::initial();
+        bitmap_style.color = 0x00_00_00_FF;
+
+        // Construct the display list directly: layout still rejects mixed fonts.
+        let layout = PreviewLayout {
+            boxes: vec![],
+            display_list: vec![PreviewCommand::Text {
+                rect: LayoutRect {
+                    x: 16,
+                    y: 0,
+                    width: 200,
+                    height: 100,
+                },
+                text: String::new(),
+                style: bitmap_style.clone(),
+                runs: vec![
+                    PreviewTextRun {
+                        x: 0,
+                        y: vector_y,
+                        text: "ߊ".into(),
+                        style: vector_style,
+                    },
+                    PreviewTextRun {
+                        x: 90,
+                        y: bitmap_y,
+                        text: "A".into(),
+                        style: bitmap_style,
+                    },
+                ],
+            }],
+        };
+
+        let (width, height) = (240, 220);
+        let mut pixels = vec![0; width * height];
+
+        paint_preview_scene(
+            &mut pixels,
+            width,
+            height,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        let content = &pixels[CONTENT_TOP as usize * width..];
+
+        assert!(
+            content.iter().any(|&pixel| {
+                let red = (pixel >> 16) & 0xff;
+                let green = (pixel >> 8) & 0xff;
+                red > green
+            }),
+            "vector glyph must be painted red"
+        );
+
+        assert!(
+            content.iter().any(|&pixel| {
+                let blue = pixel & 0xff;
+                let green = (pixel >> 8) & 0xff;
+                blue > green
+            }),
+            "bitmap glyph must be painted blue"
+        );
+    }
+
+    #[test]
+    fn preview_rejects_mixed_inline_font_sizes() {
+        let page = parse_html(
+            "https://example.test/",
+            "<div>A<span style='font-size:32px'>B</span></div>",
+        );
+
+        assert!(matches!(
+            crate::layout_preview::PreviewLayout::build(&page, 120, None),
+            Err(crate::layout_preview::PreviewError::InlineFont(_))
+        ));
+    }
 }
