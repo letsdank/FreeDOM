@@ -3553,4 +3553,65 @@ mod tests {
         assert!((90..100).any(|y| { (16..24).any(|x| pixels[y * 48 + x] == 0x00_00_00_00) }));
         assert!((100..110).any(|y| { (16..24).any(|x| pixels[y * 48 + x] == 0x00_FF_00_00) }));
     }
+
+    #[test]
+    fn preview_inline_color_matches_independent_bitmap_reference() {
+        use crate::layout_preview::PreviewLayout;
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        const WIDTH: usize = 64;
+        const HEIGHT: usize = 120;
+
+        const TOOLBAR: u32 = 0x00_12_34_56;
+        const BACKGROUND: u32 = 0x00_F7_F7_F7;
+        const BLACK: u32 = 0x00_00_00_00;
+        const RED: u32 = 0x00_FF_00_00;
+
+        // Fixed reference masks for the current 8x8 bitmap fallback.
+        const A: [u8; 8] = [0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00];
+        const B: [u8; 8] = [0x3F, 0x66, 0x66, 0x3E, 0x66, 0x66, 0x3F, 0x00];
+        const C: [u8; 8] = [0x3C, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3C, 0x00];
+
+        let render = |html: &str| {
+            let page = parse_html("https://example.test/", html);
+            let layout = PreviewLayout::build(&page, WIDTH, None).unwrap();
+
+            let mut pixels = vec![TOOLBAR; WIDTH * HEIGHT];
+
+            paint_preview_scene(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &page,
+                &layout,
+                None,
+                0,
+                &mut GlyphRasterCache::new(),
+            );
+
+            pixels
+        };
+
+        let actual = render("<div>A <span style='color:red'>B</span> C</div>");
+        let wrong_color = render("<div>A <span style='color:blue'>B</span> C</div>");
+
+        let mut expected = vec![TOOLBAR; WIDTH * HEIGHT];
+        expected[90 * WIDTH..].fill(BACKGROUND);
+
+        // At this viewport width, C wraps onto the second line.
+        let glyphs = [(16, 90, A, BLACK), (32, 90, B, RED), (16, 100, C, BLACK)];
+
+        for (x, y, rows, color) in glyphs {
+            for (dy, bits) in rows.into_iter().enumerate() {
+                for dx in 0..8 {
+                    if bits & (1_u8 << dx) != 0 {
+                        expected[(y + dy) * WIDTH + x + dx] = color;
+                    }
+                }
+            }
+        }
+
+        assert_eq!(actual, expected);
+        assert_ne!(wrong_color, expected);
+    }
 }
