@@ -9,7 +9,10 @@
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
     css::{BackgroundColor, BorderEdge, CssSize, TextStyle},
-    graphics::font::{TrueTypeFont, render::split_subpixel_position},
+    graphics::font::{
+        TrueTypeFont,
+        render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
+    },
     page::Page,
     page_layout::{
         CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, text_metrics, text_word_width,
@@ -493,7 +496,7 @@ impl PreviewLayout {
                             if use_positioned_runs {
                                 pending_runs.push(PendingPreviewRun {
                                     x: placement.x.saturating_add(run.x),
-                                    above_baseline: run_metrics.above_baseline,
+                                    above_subpixels: run_metrics.above_subpixels,
                                     text: run.text.into_owned(),
                                     style: run.style.clone(),
                                 });
@@ -653,11 +656,11 @@ struct InlineWord<'a> {
     parts: Vec<InlineWordPart<'a>>,
 }
 
-// Preview-only integer approximation; this is not CSS baseline alignment.
+// Preview-only quantized approximation; this is not CSS baseline alignment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PreviewLineMetrics {
-    above_baseline: i32,
-    below_baseline: i32,
+    above_subpixels: i64,
+    below_subpixels: i64,
 }
 
 impl PreviewLineMetrics {
@@ -665,32 +668,38 @@ impl PreviewLineMetrics {
         let metrics = text_metrics(font, font_size);
         let height = metrics.line_height.max(0);
 
+        let steps = i64::from(GLYPH_SUBPIXEL_STEPS);
+        let height_subpixels = i64::from(height) * steps;
+
         let above = font
             .and_then(|font| font.line_metrics(font_size))
             .and_then(|metrics| split_subpixel_position(metrics.ascent))
-            .map(|(base, _phase)| base)
-            .unwrap_or(metrics.glyph_height)
-            .clamp(0, height);
+            .map(|(base, phase)| i64::from(base) * steps + i64::from(phase))
+            .unwrap_or(i64::from(metrics.glyph_height) * steps)
+            .clamp(0, height_subpixels);
 
         Self {
-            above_baseline: above,
-            below_baseline: height - above,
+            above_subpixels: above,
+            below_subpixels: height_subpixels - above,
         }
     }
 
     fn include(&mut self, other: Self) {
-        self.above_baseline = self.above_baseline.max(other.above_baseline);
-        self.below_baseline = self.below_baseline.max(other.below_baseline);
+        self.above_subpixels = self.above_subpixels.max(other.above_subpixels);
+        self.below_subpixels = self.below_subpixels.max(other.below_subpixels);
     }
 
     fn height(self) -> i32 {
-        self.above_baseline.saturating_add(self.below_baseline)
+        let steps = i64::from(GLYPH_SUBPIXEL_STEPS);
+        let height = (self.above_subpixels + self.below_subpixels + steps - 1) / steps;
+
+        i32::try_from(height).unwrap_or(i32::MAX)
     }
 }
 
 struct PendingPreviewRun {
     x: i32,
-    above_baseline: i32,
+    above_subpixels: i64,
     text: String,
     style: TextStyle,
 }
@@ -701,13 +710,21 @@ fn finish_preview_line(
     metrics: PreviewLineMetrics,
     line_top: i32,
 ) {
+    let steps = i64::from(GLYPH_SUBPIXEL_STEPS);
+
     for run in pending.drain(..) {
-        let baseline_offset = metrics.above_baseline.saturating_sub(run.above_baseline);
+        let offset = metrics
+            .above_subpixels
+            .saturating_sub(run.above_subpixels)
+            .max(0);
+
+        let whole = i32::try_from(offset / steps).unwrap_or(i32::MAX);
+        let fraction = (offset % steps) as f32 / GLYPH_SUBPIXEL_STEPS as f32;
 
         output.push(PreviewTextRun {
             x: run.x,
-            y: line_top.saturating_add(baseline_offset),
-            offset_y: 0.0,
+            y: line_top.saturating_add(whole),
+            offset_y: fraction,
             text: run.text,
             style: run.style,
         });
@@ -1424,8 +1441,8 @@ mod tests {
         assert_eq!(
             line,
             PreviewLineMetrics {
-                above_baseline: 8,
-                below_baseline: 2
+                above_subpixels: 64,
+                below_subpixels: 16
             }
         );
 
@@ -1434,14 +1451,14 @@ mod tests {
         assert_eq!(
             line,
             PreviewLineMetrics {
-                above_baseline: 16,
-                below_baseline: 4,
+                above_subpixels: 128,
+                below_subpixels: 32,
             }
         );
 
         line.include(PreviewLineMetrics {
-            above_baseline: 5,
-            below_baseline: 12,
+            above_subpixels: 40,
+            below_subpixels: 96,
         });
 
         assert_eq!(line.height(), 28);
@@ -1491,13 +1508,13 @@ mod tests {
         let mut pending = vec![
             PendingPreviewRun {
                 x: 4,
-                above_baseline: small_metrics.above_baseline,
+                above_subpixels: small_metrics.above_subpixels,
                 text: "small".into(),
                 style: small,
             },
             PendingPreviewRun {
                 x: 40,
-                above_baseline: large_metrics.above_baseline,
+                above_subpixels: large_metrics.above_subpixels,
                 text: "large".into(),
                 style: large,
             },
@@ -1521,8 +1538,8 @@ mod tests {
         );
 
         assert_eq!(
-            runs[0].y + small_metrics.above_baseline,
-            runs[1].y + line_metrics.above_baseline
+            i64::from(runs[0].y) * 8 + small_metrics.above_subpixels,
+            i64::from(runs[1].y) * 8 + line_metrics.above_subpixels
         );
 
         assert_eq!(runs[0].style.font_size, 16.0);
@@ -1557,7 +1574,11 @@ mod tests {
 
             let preview = PreviewLineMetrics::from_font(Some(&font), size);
 
-            assert_eq!(preview.above_baseline, base, "size={size}",);
+            assert_eq!(
+                preview.above_subpixels,
+                i64::from(base) * 8 + i64::from(phase),
+                "size={size}",
+            );
 
             saw_fractional_phase |= phase != 0;
             saw_round_mismatch |= metrics.ascent.round() as i32 != base;
@@ -1565,5 +1586,51 @@ mod tests {
 
         assert!(saw_fractional_phase);
         assert!(saw_round_mismatch);
+    }
+
+    #[test]
+    fn aligns_preview_runs_with_fractional_baselines() {
+        use super::{PendingPreviewRun, PreviewLineMetrics, finish_preview_line};
+
+        let style = TextStyle::initial();
+
+        let mut line = PreviewLineMetrics {
+            above_subpixels: 85,
+            below_subpixels: 11,
+        };
+
+        line.include(PreviewLineMetrics {
+            above_subpixels: 98,
+            below_subpixels: 6,
+        });
+
+        let mut pending = vec![
+            PendingPreviewRun {
+                x: 0,
+                above_subpixels: 85,
+                text: "a".into(),
+                style: style.clone(),
+            },
+            PendingPreviewRun {
+                x: 20,
+                above_subpixels: 98,
+                text: "b".into(),
+                style,
+            },
+        ];
+
+        let mut runs = Vec::new();
+
+        finish_preview_line(&mut pending, &mut runs, line, 10);
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[0].y, runs[0].offset_y), (11, 0.625));
+        assert_eq!((runs[1].y, runs[1].offset_y), (10, 0.0));
+
+        let first_baseline = i64::from(runs[0].y) * 8 + (runs[0].offset_y * 8.0) as i64 + 85;
+        let second_baseline = i64::from(runs[1].y) * 8 + (runs[1].offset_y * 8.0) as i64 + 98;
+
+        assert_eq!(first_baseline, second_baseline);
+        assert_eq!(line.height(), 14);
     }
 }
