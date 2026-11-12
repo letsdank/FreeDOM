@@ -453,10 +453,12 @@ impl PreviewLayout {
                     let fonts = PreviewFonts::new(page, &fragments);
                     let font = fonts.get(inherited).or(fallback);
                     let words = split_styled_words(&fragments);
-                    let metrics = text_metrics(font, inherited.font_size);
+
+                    let base_metrics = PreviewLineMetrics::from_font(font, inherited.font_size);
 
                     let mut wrap = TextWrap::new(0, width);
-                    let mut line_count = 1_i32;
+                    let mut line_metrics = base_metrics;
+                    let mut line_top = 0_i32;
                     let mut runs = Vec::new();
                     let use_positioned_runs = fragments.len() > 1;
 
@@ -466,16 +468,24 @@ impl PreviewLayout {
                         let placement = wrap.place_word(space_width, measured.width());
 
                         if placement.wrapped {
-                            line_count = line_count.saturating_add(1);
+                            line_top = line_top.saturating_add(line_metrics.height());
+                            line_metrics = base_metrics;
+                        }
+
+                        for run in &measured.runs {
+                            let run_font = fonts.get(run.style).or(fallback);
+
+                            line_metrics.include(PreviewLineMetrics::from_font(
+                                run_font,
+                                run.style.font_size,
+                            ));
                         }
 
                         if use_positioned_runs {
                             for run in measured.runs {
                                 runs.push(PreviewTextRun {
                                     x: placement.x.saturating_add(run.x),
-                                    y: line_count
-                                        .saturating_sub(1)
-                                        .saturating_mul(metrics.line_height),
+                                    y: line_top,
                                     text: run.text.into_owned(),
                                     style: run.style.clone(),
                                 });
@@ -483,7 +493,7 @@ impl PreviewLayout {
                         }
                     }
 
-                    let height = line_count.saturating_mul(metrics.line_height);
+                    let height = line_top.saturating_add(line_metrics.height());
 
                     self.display_list.push(PreviewCommand::Text {
                         rect: LayoutRect {
@@ -631,6 +641,40 @@ struct InlineWordPart<'a> {
 struct InlineWord<'a> {
     space_before: Option<&'a TextStyle>,
     parts: Vec<InlineWordPart<'a>>,
+}
+
+// Preview-only integer approximation; this is not CSS baseline alignment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreviewLineMetrics {
+    above_baseline: i32,
+    below_baseline: i32,
+}
+
+impl PreviewLineMetrics {
+    fn from_font(font: Option<&TrueTypeFont<'_>>, font_size: f32) -> Self {
+        let metrics = text_metrics(font, font_size);
+        let height = metrics.line_height.max(0);
+
+        let above = font
+            .and_then(|font| font.line_metrics(font_size))
+            .map(|metrics| metrics.ascent.round() as i32)
+            .unwrap_or(metrics.glyph_height)
+            .clamp(0, height);
+
+        Self {
+            above_baseline: above,
+            below_baseline: height - above,
+        }
+    }
+
+    fn include(&mut self, other: Self) {
+        self.above_baseline = self.above_baseline.max(other.above_baseline);
+        self.below_baseline = self.below_baseline.max(other.below_baseline);
+    }
+
+    fn height(self) -> i32 {
+        self.above_baseline.saturating_add(self.below_baseline)
+    }
 }
 
 pub(crate) struct PreviewFonts<'style, 'font> {
@@ -1332,5 +1376,63 @@ mod tests {
         assert_eq!(fonts.space_width(&words[0], None), 0);
         assert_eq!(fonts.space_width(&words[1], None), 16);
         assert_eq!(fonts.measure_word(&words[1], None).width(), 8);
+    }
+
+    #[test]
+    fn preview_line_metrics_merge_above_and_below_baseline() {
+        use super::PreviewLineMetrics;
+
+        let mut line = PreviewLineMetrics::from_font(None, 16.0);
+
+        assert_eq!(
+            line,
+            PreviewLineMetrics {
+                above_baseline: 8,
+                below_baseline: 2
+            }
+        );
+
+        line.include(PreviewLineMetrics::from_font(None, 32.0));
+
+        assert_eq!(
+            line,
+            PreviewLineMetrics {
+                above_baseline: 16,
+                below_baseline: 4,
+            }
+        );
+
+        line.include(PreviewLineMetrics {
+            above_baseline: 5,
+            below_baseline: 12,
+        });
+
+        assert_eq!(line.height(), 28);
+        assert_eq!(PreviewLineMetrics::from_font(None, 0.0).height(), 0);
+    }
+
+    #[test]
+    fn preview_line_height_preserves_the_existing_vector_font_height() {
+        use super::PreviewLineMetrics;
+        use crate::graphics::font::{TrueTypeFont, normalize_font_container};
+        use crate::page_layout::text_metrics;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2",
+        );
+
+        let data =
+            normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
+                .unwrap();
+
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        for size in [0.0, 12.0, 16.0, 32.0, 64.0] {
+            let preview = PreviewLineMetrics::from_font(Some(&font), size);
+            let existing = text_metrics(Some(&font), size);
+
+            assert_eq!(preview.height(), existing.line_height, "size={size}");
+        }
     }
 }
