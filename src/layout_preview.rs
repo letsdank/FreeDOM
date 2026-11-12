@@ -593,6 +593,86 @@ struct InlineTextFragment<'a> {
     style_source: Option<&'a SourcePath>,
 }
 
+struct InlineWordPart<'a> {
+    text: &'a str,
+    style: &'a TextStyle,
+}
+
+struct InlineWord<'a> {
+    space_before: Option<&'a TextStyle>,
+    parts: Vec<InlineWordPart<'a>>,
+}
+
+// A partial white-space: normal model for the experimental preview.
+// https://www.w3.org/TR/css-text-3/#white-space-processing
+fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Vec<InlineWord<'a>> {
+    let mut words = Vec::new();
+    let mut in_word = false;
+    let mut pending_space = None;
+
+    for fragment in fragments {
+        let mut start = 0;
+
+        for (index, character) in fragment.text.char_indices() {
+            if matches!(character, ' ' | '\t' | '\n' | '\r' | '\x0c') {
+                if start < index {
+                    push_word_part(
+                        &mut words,
+                        &mut in_word,
+                        &mut pending_space,
+                        &fragment.text[start..index],
+                        fragment.style,
+                    );
+                }
+
+                if in_word {
+                    in_word = false;
+                    pending_space = Some(fragment.style);
+                }
+
+                start = index + character.len_utf8();
+            }
+        }
+
+        if start < fragment.text.len() {
+            push_word_part(
+                &mut words,
+                &mut in_word,
+                &mut pending_space,
+                &fragment.text[start..],
+                fragment.style,
+            );
+        }
+    }
+
+    words
+}
+
+fn push_word_part<'a>(
+    words: &mut Vec<InlineWord<'a>>,
+    in_word: &mut bool,
+    pending_space: &mut Option<&'a TextStyle>,
+    text: &'a str,
+    style: &'a TextStyle,
+) {
+    let part = InlineWordPart { text, style };
+
+    if *in_word {
+        words
+            .last_mut()
+            .expect("current word exists")
+            .parts
+            .push(part);
+    } else {
+        words.push(InlineWord {
+            space_before: pending_space.take(),
+            parts: vec![part],
+        });
+
+        *in_word = true;
+    }
+}
+
 fn collect_styled_fragments<'a>(
     items: &'a [InlineItem<'_>],
     inherited: &'a TextStyle,
@@ -662,7 +742,7 @@ fn collect_text(
 
     collect_styled_fragments(items, inherited, None, &mut fragments)?;
 
-    for fragment in fragments {
+    for fragment in &fragments {
         let source_path = || {
             fragment
                 .style_source
@@ -676,8 +756,17 @@ fn collect_text(
         if inherited.color != fragment.style.color {
             return Err(PreviewError::InlineStyle(source_path()));
         }
+    }
 
-        output.push_str(fragment.text);
+    for word in split_styled_words(&fragments) {
+        if word.space_before.is_some() {
+            output.push(' ');
+        }
+
+        for part in word.parts {
+            debug_assert!(same_font(inherited, part.style));
+            output.push_str(part.text);
+        }
     }
 
     Ok(())
@@ -819,5 +908,109 @@ mod tests {
         );
 
         assert_eq!(fragments[2].style_source.unwrap().indices(), &[1]);
+    }
+
+    #[test]
+    fn splits_words_across_styled_fragments() {
+        use super::{InlineTextFragment, split_styled_words};
+
+        let normal = TextStyle::initial();
+
+        let mut bold = normal.clone();
+        bold.font_weight = FontWeight::Bold;
+
+        let fragments = vec![
+            InlineTextFragment {
+                text: "  hel",
+                style: &normal,
+                style_source: None,
+            },
+            InlineTextFragment {
+                text: "lo \t",
+                style: &bold,
+                style_source: None,
+            },
+            InlineTextFragment {
+                text: "\nмир  ",
+                style: &normal,
+                style_source: None,
+            },
+        ];
+
+        let words = split_styled_words(&fragments);
+
+        assert_eq!(words.len(), 2);
+        assert!(words[0].space_before.is_none());
+
+        assert_eq!(
+            words[0]
+                .parts
+                .iter()
+                .map(|part| part.text)
+                .collect::<Vec<_>>(),
+            vec!["hel", "lo"]
+        );
+
+        assert_eq!(words[0].parts[0].style.font_weight, FontWeight::Normal);
+        assert_eq!(words[0].parts[1].style.font_weight, FontWeight::Bold);
+
+        assert_eq!(words[1].parts[0].text, "мир");
+        assert_eq!(words[1].space_before.unwrap().font_weight, FontWeight::Bold);
+    }
+
+    #[test]
+    fn collapses_whitespace_across_fragments() {
+        use super::{InlineTextFragment, split_styled_words};
+
+        let normal = TextStyle::initial();
+
+        let fragments = vec![
+            InlineTextFragment {
+                text: " \t",
+                style: &normal,
+                style_source: None,
+            },
+            InlineTextFragment {
+                text: "one",
+                style: &normal,
+                style_source: None,
+            },
+            InlineTextFragment {
+                text: "\n",
+                style: &normal,
+                style_source: None,
+            },
+            InlineTextFragment {
+                text: "\t two \r",
+                style: &normal,
+                style_source: None,
+            },
+        ];
+
+        let words = split_styled_words(&fragments);
+
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].parts[0].text, "one");
+        assert!(words[0].space_before.is_none());
+        assert_eq!(words[1].parts[0].text, "two");
+        assert!(words[1].space_before.is_some());
+
+        let items = vec![InlineItem::Text {
+            source: None,
+            text: "  one\n\t two \r",
+        }];
+
+        let mut text = String::new();
+        collect_text(&items, &normal, &mut text).unwrap();
+
+        assert_eq!(text, "one two");
+
+        let whitespace_only = [InlineTextFragment {
+            text: " \t\n",
+            style: &normal,
+            style_source: None,
+        }];
+
+        assert!(split_styled_words(&whitespace_only).is_empty());
     }
 }
