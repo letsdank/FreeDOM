@@ -313,7 +313,12 @@ pub(crate) fn paint_preview_scene(
                 }
             }
 
-            PreviewCommand::Text { rect, text, style } => {
+            PreviewCommand::Text {
+                rect,
+                text,
+                style,
+                runs,
+            } => {
                 let relative_y = i64::from(rect.y) - i64::from(scroll_y);
 
                 if rect.height <= 0
@@ -340,24 +345,38 @@ pub(crate) fn paint_preview_scene(
                 // Restrict text painting to the page content below the toolbar.
                 let content_pixels = &mut pixels[content_top * width..width * height];
 
-                draw_wrapped_text(
-                    content_pixels,
-                    width,
-                    content_height,
-                    rect.x,
-                    y,
-                    rect.x.saturating_add(rect.width),
-                    text,
-                    style.font_size,
-                    style.font_weight,
-                    style.font_style,
-                    style.color,
-                    None,
-                    font,
-                    0,
-                    &mut links,
-                    glyph_cache,
-                );
+                let mut paint_text = |x: i32, y: i32, text: &str| {
+                    draw_wrapped_text(
+                        content_pixels,
+                        width,
+                        content_height,
+                        x,
+                        y,
+                        rect.x.saturating_add(rect.width),
+                        text,
+                        style.font_size,
+                        style.font_weight,
+                        style.font_style,
+                        style.color,
+                        None,
+                        font,
+                        0,
+                        &mut links,
+                        glyph_cache,
+                    );
+                };
+
+                if runs.is_empty() {
+                    paint_text(rect.x, y, text);
+                } else {
+                    for run in runs {
+                        let run_y = relative_y + i64::from(run.y);
+
+                        if let Ok(run_y) = i32::try_from(run_y) {
+                            paint_text(rect.x.saturating_add(run.x), run_y, &run.text);
+                        }
+                    }
+                }
             }
         }
     }

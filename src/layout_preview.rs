@@ -39,7 +39,14 @@ pub(crate) enum PreviewCommand {
         rect: LayoutRect,
         text: String,
         style: TextStyle,
+        runs: Vec<PreviewTextRun>,
     },
+}
+
+pub(crate) struct PreviewTextRun {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) text: String,
 }
 
 struct PendingMargin {
@@ -449,13 +456,26 @@ impl PreviewLayout {
 
                     let mut wrap = TextWrap::new(0, width);
                     let mut line_count = 1_i32;
+                    let mut runs = Vec::new();
+                    let use_positioned_runs = fragments.len() > 1;
 
                     for word in &words {
                         let measured = fonts.measure_word(word, fallback);
                         let space_width = fonts.space_width(word, fallback);
+                        let placement = wrap.place_word(space_width, measured.width());
 
-                        if wrap.place_word(space_width, measured.width()).wrapped {
+                        if placement.wrapped {
                             line_count = line_count.saturating_add(1);
+                        }
+
+                        if use_positioned_runs {
+                            runs.push(PreviewTextRun {
+                                x: placement.x,
+                                y: line_count
+                                    .saturating_sub(1)
+                                    .saturating_mul(metrics.line_height),
+                                text: word.parts.iter().map(|part| part.text).collect(),
+                            });
                         }
                     }
 
@@ -470,6 +490,7 @@ impl PreviewLayout {
                         },
                         text,
                         style: inherited.clone(),
+                        runs,
                     });
 
                     cursor = cursor

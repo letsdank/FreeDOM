@@ -3104,4 +3104,68 @@ mod tests {
             Err(crate::layout_preview::PreviewError::SizeOverflow)
         ));
     }
+
+    #[test]
+    fn preview_positioned_words_match_unfragmented_text() {
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let plain = parse_html("https://example.test/", "<div>hello world long</div>");
+
+        let split = parse_html(
+            "https://example.test/",
+            "<div>hel<span>lo</span> world long</div>",
+        );
+
+        let width = 100;
+        let height = 150;
+
+        let plain_layout = PreviewLayout::build(&plain, width, None).unwrap();
+        let split_layout = PreviewLayout::build(&split, width, None).unwrap();
+
+        let runs = split_layout
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } if !runs.is_empty() => Some(runs),
+                _ => None,
+            })
+            .expect("split text must use positioned runs");
+
+        assert_eq!(
+            runs.iter().map(|run| run.text.as_str()).collect::<Vec<_>>(),
+            vec!["hello", "world", "long"]
+        );
+
+        assert!(runs[1].y > runs[0].y);
+
+        for scroll in [0, 6] {
+            let mut actual = vec![0; width * height];
+            let mut expected = vec![0; width * height];
+
+            paint_preview_scene(
+                &mut actual,
+                width,
+                height,
+                &split,
+                &split_layout,
+                None,
+                scroll,
+                &mut GlyphRasterCache::new(),
+            );
+
+            paint_preview_scene(
+                &mut expected,
+                width,
+                height,
+                &plain,
+                &plain_layout,
+                None,
+                scroll,
+                &mut GlyphRasterCache::new(),
+            );
+
+            assert_eq!(actual, expected, "scroll={scroll}");
+        }
+    }
 }
