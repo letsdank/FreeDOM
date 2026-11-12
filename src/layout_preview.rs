@@ -587,10 +587,17 @@ fn same_font(left: &TextStyle, right: &TextStyle) -> bool {
         && left.font_family == right.font_family
 }
 
-fn collect_text(
-    items: &[InlineItem<'_>],
-    inherited: &TextStyle,
-    output: &mut String,
+struct InlineTextFragment<'a> {
+    text: &'a str,
+    style: &'a TextStyle,
+    style_source: Option<&'a SourcePath>,
+}
+
+fn collect_styled_fragments<'a>(
+    items: &'a [InlineItem<'_>],
+    inherited: &'a TextStyle,
+    style_source: Option<&'a SourcePath>,
+    output: &mut Vec<InlineTextFragment<'a>>,
 ) -> Result<(), PreviewError> {
     for item in items {
         match item {
@@ -604,7 +611,13 @@ fn collect_text(
                     return Err(PreviewError::WhiteSpace);
                 }
 
-                output.push_str(text);
+                if !text.is_empty() {
+                    output.push(InlineTextFragment {
+                        text,
+                        style: inherited,
+                        style_source,
+                    });
+                }
             }
 
             InlineItem::Element {
@@ -613,12 +626,7 @@ fn collect_text(
                 children,
                 ..
             } => {
-                if !same_font(inherited, style) {
-                    return Err(PreviewError::InlineFont(source.indices().to_vec()));
-                }
-
-                if style.color != inherited.color
-                    || style.background_color != BackgroundColor::Transparent
+                if style.background_color != BackgroundColor::Transparent
                     || style.border_top.width != 0
                     || style.border_bottom.width != 0
                     || style.border_left.width != 0
@@ -629,7 +637,7 @@ fn collect_text(
                     return Err(PreviewError::InlineStyle(source.indices().to_vec()));
                 }
 
-                collect_text(children, style, output)?;
+                collect_styled_fragments(children, style, Some(source), output)?;
             }
 
             InlineItem::Replaced { source, .. } => {
@@ -645,9 +653,45 @@ fn collect_text(
     Ok(())
 }
 
+fn collect_text(
+    items: &[InlineItem<'_>],
+    inherited: &TextStyle,
+    output: &mut String,
+) -> Result<(), PreviewError> {
+    let mut fragments = Vec::new();
+
+    collect_styled_fragments(items, inherited, None, &mut fragments)?;
+
+    for fragment in fragments {
+        let source_path = || {
+            fragment
+                .style_source
+                .map_or_else(Vec::new, |path| path.indices().to_vec())
+        };
+
+        if !same_font(inherited, fragment.style) {
+            return Err(PreviewError::InlineFont(source_path()));
+        }
+
+        if inherited.color != fragment.style.color {
+            return Err(PreviewError::InlineStyle(source_path()));
+        }
+
+        output.push_str(fragment.text);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::collapse_sibling_margins;
+    use super::{PreviewError, collapse_sibling_margins, collect_styled_fragments, collect_text};
+
+    use crate::{
+        box_tree::InlineItem,
+        css::{FontWeight, TextStyle},
+        styled_tree::SourcePath,
+    };
 
     #[test]
     fn collapses_signed_margins_without_overflow() {
@@ -655,5 +699,125 @@ mod tests {
         assert_eq!(collapse_sibling_margins(8, -3), 5);
         assert_eq!(collapse_sibling_margins(-5, -3), -5);
         assert_eq!(collapse_sibling_margins(i32::MAX, i32::MIN), -1);
+    }
+
+    #[test]
+    fn collects_styled_fragments_without_inserting_or_trimming_whitespace() {
+        let normal = TextStyle::initial();
+
+        let mut bold = normal.clone();
+        bold.font_weight = FontWeight::Bold;
+
+        let path = SourcePath::from_indices(&[1, 2]);
+
+        let items = vec![
+            InlineItem::Text {
+                source: None,
+                text: "  hel",
+            },
+            InlineItem::Element {
+                source: &path,
+                tag: "strong",
+                style: &bold,
+                children: vec![InlineItem::Text {
+                    source: None,
+                    text: "lo ",
+                }],
+            },
+            InlineItem::Text {
+                source: None,
+                text: " world\n",
+            },
+        ];
+
+        let mut fragments = Vec::new();
+
+        collect_styled_fragments(&items, &normal, None, &mut fragments).unwrap();
+
+        assert_eq!(
+            fragments
+                .iter()
+                .map(|fragment| fragment.text)
+                .collect::<Vec<_>>(),
+            vec!["  hel", "lo ", " world\n"]
+        );
+
+        assert_eq!(
+            fragments
+                .iter()
+                .map(|fragment| fragment.style.font_weight)
+                .collect::<Vec<_>>(),
+            vec![FontWeight::Normal, FontWeight::Bold, FontWeight::Normal,]
+        );
+
+        assert_eq!(fragments[1].style_source.unwrap().indices(), &[1, 2]);
+
+        let mut text = String::new();
+
+        assert!(matches!(
+            collect_text(&items, &normal, &mut text),
+            Err(PreviewError::InlineFont(_))
+        ));
+    }
+
+    #[test]
+    fn nested_inline_styles_restore_parent_and_keep_whitespace() {
+        let normal = TextStyle::initial();
+
+        let mut bold = normal.clone();
+        bold.font_weight = FontWeight::Bold;
+
+        let mut colored = bold.clone();
+        colored.color = 0x00_FF_00_00;
+
+        let strong = SourcePath::from_indices(&[1]);
+        let span = SourcePath::from_indices(&[1, 0]);
+
+        let items = vec![InlineItem::Element {
+            source: &strong,
+            tag: "strong",
+            style: &bold,
+            children: vec![
+                InlineItem::Text {
+                    source: None,
+                    text: "A ",
+                },
+                InlineItem::Element {
+                    source: &span,
+                    tag: "span",
+                    style: &colored,
+                    children: vec![InlineItem::Text {
+                        source: None,
+                        text: "B",
+                    }],
+                },
+                InlineItem::Text {
+                    source: None,
+                    text: " C",
+                },
+            ],
+        }];
+
+        let mut fragments = Vec::new();
+
+        collect_styled_fragments(&items, &normal, None, &mut fragments).unwrap();
+
+        assert_eq!(
+            fragments
+                .iter()
+                .map(|fragment| fragment.text)
+                .collect::<String>(),
+            "A B C"
+        );
+
+        assert_eq!(
+            fragments
+                .iter()
+                .map(|fragment| fragment.style.color)
+                .collect::<Vec<_>>(),
+            vec![normal.color, colored.color, normal.color]
+        );
+
+        assert_eq!(fragments[2].style_source.unwrap().indices(), &[1]);
     }
 }
