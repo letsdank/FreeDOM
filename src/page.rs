@@ -3460,4 +3460,97 @@ mod tests {
             Err(crate::layout_preview::PreviewError::InlineFont(_))
         ));
     }
+
+    #[test]
+    fn preview_paints_inline_color_changes_between_words() {
+        use crate::layout_preview::PreviewLayout;
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let page = parse_html(
+            "https://example.test/",
+            "<div>A<span style='color:red'> \tB</span> C</div>",
+        );
+
+        let layout = PreviewLayout::build(&page, 120, None).unwrap();
+        let mut pixels = vec![0; 120 * 120];
+
+        paint_preview_scene(
+            &mut pixels,
+            120,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        let contains = |left: usize, color: u32| {
+            (90..100).any(|y| (left..left + 8).any(|x| pixels[y * 120 + x] == color))
+        };
+
+        assert!(contains(16, 0x00_00_00_00));
+        assert!(contains(32, 0x00_FF_00_00));
+        assert!(contains(48, 0x00_00_00_00));
+    }
+
+    #[test]
+    fn preview_paints_single_inline_word_with_different_color() {
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let page = parse_html(
+            "https://example.test/",
+            "<div><span style='color:red'>A</span></div>",
+        );
+
+        let layout = PreviewLayout::build(&page, 120, None).unwrap();
+
+        assert!(layout.display_list.iter().any(|command| {
+            matches!(command, PreviewCommand::Text { runs, .. } if !runs.is_empty())
+        }));
+
+        let mut pixels = vec![0; 120 * 120];
+
+        paint_preview_scene(
+            &mut pixels,
+            120,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert!((90..100).any(|y| { (16..24).any(|x| pixels[y * 120 + x] == 0x00_FF_00_00) }));
+    }
+
+    #[test]
+    fn preview_keeps_inline_color_when_word_wraps() {
+        use crate::layout_preview::PreviewLayout;
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let page = parse_html(
+            "https://example.test/",
+            "<div>A <span style='color:red'>B</span></div>",
+        );
+
+        let layout = PreviewLayout::build(&page, 48, None).unwrap();
+        let mut pixels = vec![0; 48 * 120];
+
+        paint_preview_scene(
+            &mut pixels,
+            48,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert!((90..100).any(|y| { (16..24).any(|x| pixels[y * 48 + x] == 0x00_00_00_00) }));
+        assert!((100..110).any(|y| { (16..24).any(|x| pixels[y * 48 + x] == 0x00_FF_00_00) }));
+    }
 }

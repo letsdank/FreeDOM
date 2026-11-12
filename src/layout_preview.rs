@@ -466,7 +466,10 @@ impl PreviewLayout {
 
                     let mut runs = Vec::new();
                     let mut pending_runs = Vec::new();
-                    let use_positioned_runs = fragments.len() > 1;
+                    let use_positioned_runs = fragments.len() > 1
+                        || fragments
+                            .iter()
+                            .any(|fragment| fragment.style.color != inherited.color);
 
                     for word in &words {
                         let measured = fonts.measure_word(word, fallback);
@@ -1006,6 +1009,8 @@ fn collect_text(
 
     collect_styled_fragments(items, inherited, None, &mut fragments)?;
 
+    let mut word_color = None;
+
     for fragment in &fragments {
         let source_path = || {
             fragment
@@ -1017,8 +1022,16 @@ fn collect_text(
             return Err(PreviewError::InlineFont(source_path()));
         }
 
-        if inherited.color != fragment.style.color {
-            return Err(PreviewError::InlineStyle(source_path()));
+        for character in fragment.text.chars() {
+            if matches!(character, ' ' | '\t' | '\n' | '\r' | '\x0c') {
+                word_color = None;
+            } else if let Some(color) = word_color {
+                if color != fragment.style.color {
+                    return Err(PreviewError::InlineStyle(source_path()));
+                }
+            } else {
+                word_color = Some(fragment.style.color);
+            }
         }
     }
 
