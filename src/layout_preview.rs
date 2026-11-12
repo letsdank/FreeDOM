@@ -438,40 +438,23 @@ impl PreviewLayout {
                             .ok_or(PreviewError::SizeOverflow)?;
                     }
 
-                    let page_font = page
-                        .font_data_for(
-                            inherited.font_family.as_deref(),
-                            inherited.font_weight,
-                            inherited.font_style,
-                        )
-                        .and_then(|data| TrueTypeFont::parse(data).ok());
-
-                    let font = page_font.as_ref().or(fallback);
-
                     let mut fragments = Vec::new();
 
                     collect_styled_fragments(items, inherited, None, &mut fragments)?;
 
+                    let fonts = PreviewFonts::new(page, &fragments);
+                    let font = fonts.get(inherited).or(fallback);
                     let words = split_styled_words(&fragments);
                     let metrics = text_metrics(font, inherited.font_size);
+
                     let mut wrap = TextWrap::new(0, width);
                     let mut line_count = 1_i32;
 
                     for word in &words {
-                        let measured = measure_styled_word(word, |part, style| {
-                            text_word_width(
-                                font,
-                                part,
-                                style.font_size,
-                                style.font_weight,
-                                style.font_style,
-                            )
-                        });
+                        let measured = fonts.measure_word(word, fallback);
+                        let space_width = fonts.space_width(word, fallback);
 
-                        if wrap
-                            .place_word(metrics.character_width, measured.width())
-                            .wrapped
-                        {
+                        if wrap.place_word(space_width, measured.width()).wrapped {
                             line_count = line_count.saturating_add(1);
                         }
                     }
@@ -623,6 +606,71 @@ struct InlineWordPart<'a> {
 struct InlineWord<'a> {
     space_before: Option<&'a TextStyle>,
     parts: Vec<InlineWordPart<'a>>,
+}
+
+struct PreviewFonts<'style, 'font> {
+    entries: Vec<(&'style TextStyle, Option<TrueTypeFont<'font>>)>,
+}
+
+impl<'style, 'font> PreviewFonts<'style, 'font> {
+    fn new(page: &'font Page, fragments: &[InlineTextFragment<'style>]) -> Self {
+        let mut entries: Vec<(&TextStyle, Option<TrueTypeFont<'font>>)> = Vec::new();
+
+        for fragment in fragments {
+            let style = fragment.style;
+
+            if entries
+                .iter()
+                .any(|(existing, _)| same_font(existing, style))
+            {
+                continue;
+            }
+
+            let font = page
+                .font_data_for(
+                    style.font_family.as_deref(),
+                    style.font_weight,
+                    style.font_style,
+                )
+                .and_then(|data| TrueTypeFont::parse(data).ok());
+
+            entries.push((style, font));
+        }
+
+        Self { entries }
+    }
+
+    fn get(&self, style: &TextStyle) -> Option<&TrueTypeFont<'font>> {
+        self.entries
+            .iter()
+            .find(|(existing, _)| same_font(existing, style))
+            .and_then(|(_, font)| font.as_ref())
+    }
+
+    fn measure_word(
+        &self,
+        word: &InlineWord<'_>,
+        fallback: Option<&TrueTypeFont<'_>>,
+    ) -> MeasuredWord {
+        measure_styled_word(word, |text, style| {
+            let font = self.get(style).or(fallback);
+
+            text_word_width(
+                font,
+                text,
+                style.font_size,
+                style.font_weight,
+                style.font_style,
+            )
+        })
+    }
+
+    fn space_width(&self, word: &InlineWord<'_>, fallback: Option<&TrueTypeFont<'_>>) -> i32 {
+        word.space_before.map_or(0, |style| {
+            let font = self.get(style).or(fallback);
+            text_metrics(font, style.font_size).character_width
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1190,5 +1238,63 @@ mod tests {
 
         assert_eq!(measured.runs[1].x, i32::MAX);
         assert_eq!(measured.width(), i32::MAX);
+    }
+
+    #[test]
+    fn measures_words_and_spaces_using_their_styles() {
+        use super::{InlineTextFragment, PreviewFonts, split_styled_words};
+
+        let page = crate::page::parse_xhtml_for_test(
+            "https://example.org/",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><head/><body/></html>",
+        )
+        .unwrap();
+
+        let normal = TextStyle::initial();
+
+        let mut same_font_other_color = normal.clone();
+        same_font_other_color.color = 0x00_FF_00_00;
+
+        let mut bold = normal.clone();
+        bold.font_size = 32.0;
+        bold.font_weight = FontWeight::Bold;
+
+        let fragments = vec![
+            InlineTextFragment {
+                text: "a",
+                style: &normal,
+                style_source: None,
+            },
+            InlineTextFragment {
+                text: "b ",
+                style: &bold,
+                style_source: None,
+            },
+            InlineTextFragment {
+                text: "c",
+                style: &same_font_other_color,
+                style_source: None,
+            },
+        ];
+
+        let fonts = PreviewFonts::new(&page, &fragments);
+
+        // Color does not require a separate font.
+        assert_eq!(fonts.entries.len(), 2);
+
+        let words = split_styled_words(&fragments);
+        assert_eq!(words.len(), 2);
+
+        // Without loaded fonts, measurement uses the bitmap fallback.
+        let first = fonts.measure_word(&words[0], None);
+
+        assert_eq!(first.runs[0].width, 8);
+        assert_eq!(first.runs[1].x, 8);
+        assert_eq!(first.runs[1].width, 17);
+        assert_eq!(first.width(), 25);
+
+        assert_eq!(fonts.space_width(&words[0], None), 0);
+        assert_eq!(fonts.space_width(&words[1], None), 16);
+        assert_eq!(fonts.measure_word(&words[1], None).width(), 8);
     }
 }
