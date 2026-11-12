@@ -1633,4 +1633,164 @@ mod tests {
         assert_eq!(first_baseline, second_baseline);
         assert_eq!(line.height(), 14);
     }
+
+    #[test]
+    fn preview_fractional_baseline_reaches_vector_pixels() {
+        use super::{
+            PendingPreviewRun, PreviewCommand, PreviewLayout, PreviewLineMetrics,
+            finish_preview_line,
+        };
+        use crate::graphics::font::{TrueTypeFont, normalize_font_container};
+        use crate::page_layout::LayoutRect;
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2",
+        );
+
+        let data =
+            normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
+                .unwrap();
+
+        let font = TrueTypeFont::parse(&data).unwrap();
+        let small_metrics = PreviewLineMetrics::from_font(Some(&font), 24.0);
+
+        // Find a second size that requires a half-pixel adjustment.
+        let (large_size, large_metrics) = (25..=64)
+            .find_map(|size| {
+                let metrics = PreviewLineMetrics::from_font(Some(&font), size as f32);
+                let difference = metrics.above_subpixels - small_metrics.above_subpixels;
+
+                (difference > 0 && difference % 8 == 4).then_some((size as f32, metrics))
+            })
+            .expect("fixture must produce a half-pixel baseline difference");
+
+        let mut line = small_metrics;
+        line.include(large_metrics);
+
+        let mut small = TextStyle::initial();
+        small.font_size = 24.0;
+        small.color = 0x00_FF_00_00;
+
+        let mut large = small.clone();
+        large.font_size = large_size;
+        large.color = 0x00_00_00_FF;
+
+        let mut pending = vec![
+            PendingPreviewRun {
+                x: 0,
+                above_subpixels: small_metrics.above_subpixels,
+                text: "ߊ".into(),
+                style: small.clone(),
+            },
+            PendingPreviewRun {
+                x: 100,
+                above_subpixels: large_metrics.above_subpixels,
+                text: "ߊ".into(),
+                style: large,
+            },
+        ];
+
+        let mut runs = Vec::new();
+        finish_preview_line(&mut pending, &mut runs, line, 0);
+
+        assert_eq!(runs[0].offset_y, 0.5);
+        assert_eq!(runs[1].offset_y, 0.0);
+
+        let baseline0 = i64::from(runs[0].y) * 8
+            + (runs[0].offset_y * 8.0) as i64
+            + small_metrics.above_subpixels;
+
+        let baseline1 = i64::from(runs[1].y) * 8
+            + (runs[1].offset_y * 8.0) as i64
+            + large_metrics.above_subpixels;
+
+        assert_eq!(baseline0, baseline1);
+
+        let page = crate::page::parse_xhtml_for_test(
+            "https://example.org/",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><head/><body/></html>",
+        )
+        .unwrap();
+
+        let mut layout = PreviewLayout {
+            boxes: vec![],
+            display_list: vec![PreviewCommand::Text {
+                rect: LayoutRect {
+                    x: 16,
+                    y: 0,
+                    width: 220,
+                    height: line.height(),
+                },
+                text: String::new(),
+                style: small,
+                runs,
+            }],
+        };
+
+        let (width, height) = (256, 220);
+        let mut aligned = vec![0; width * height];
+
+        paint_preview_scene(
+            &mut aligned,
+            width,
+            height,
+            &page,
+            &layout,
+            Some(&data),
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert!(
+            aligned.iter().any(|&pixel| {
+                let red = (pixel >> 16) & 0xff;
+                let green = (pixel >> 8) & 0xff;
+                red > green
+            }),
+            "first vector glyph must be visible"
+        );
+
+        assert!(
+            aligned.iter().any(|&pixel| {
+                let blue = pixel & 0xff;
+                let green = (pixel >> 8) & 0xff;
+                blue > green
+            }),
+            "second vector glyph must be visible"
+        );
+
+        let PreviewCommand::Text { runs, .. } = &mut layout.display_list[0] else {
+            panic!("text command expected");
+        };
+
+        runs[0].offset_y = 0.0;
+
+        let mut unaligned = vec![0; width * height];
+
+        paint_preview_scene(
+            &mut unaligned,
+            width,
+            height,
+            &page,
+            &layout,
+            Some(&data),
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_ne!(
+            aligned, unaligned,
+            "fractional alignment should change rasterization"
+        );
+
+        // The second glyph must not change when only the first run moves.
+        for y in 90..height {
+            assert_eq!(
+                &aligned[y * width + 116..y * width + 180],
+                &unaligned[y * width + 116..y * width + 180]
+            );
+        }
+    }
 }
