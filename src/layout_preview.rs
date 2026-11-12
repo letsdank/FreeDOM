@@ -47,6 +47,7 @@ pub(crate) struct PreviewTextRun {
     pub(crate) x: i32,
     pub(crate) y: i32,
     pub(crate) text: String,
+    pub(crate) style: TextStyle,
 }
 
 struct PendingMargin {
@@ -469,13 +470,16 @@ impl PreviewLayout {
                         }
 
                         if use_positioned_runs {
-                            runs.push(PreviewTextRun {
-                                x: placement.x,
-                                y: line_count
-                                    .saturating_sub(1)
-                                    .saturating_mul(metrics.line_height),
-                                text: word.parts.iter().map(|part| part.text).collect(),
-                            });
+                            for run in measured.runs {
+                                runs.push(PreviewTextRun {
+                                    x: placement.x.saturating_add(run.x),
+                                    y: line_count
+                                        .saturating_sub(1)
+                                        .saturating_mul(metrics.line_height),
+                                    text: run.text.into_owned(),
+                                    style: run.style.clone(),
+                                });
+                            }
                         }
                     }
 
@@ -668,11 +672,11 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             .and_then(|(_, font)| font.as_ref())
     }
 
-    fn measure_word(
+    fn measure_word<'a>(
         &self,
-        word: &InlineWord<'_>,
+        word: &InlineWord<'a>,
         fallback: Option<&TrueTypeFont<'_>>,
-    ) -> MeasuredWord {
+    ) -> MeasuredWord<'a> {
         measure_styled_word(word, |text, style| {
             let font = self.get(style).or(fallback);
 
@@ -694,17 +698,18 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct MeasuredRun {
+struct MeasuredRun<'a> {
     x: i32,
     width: i32,
+    text: std::borrow::Cow<'a, str>,
+    style: &'a TextStyle,
 }
 
-struct MeasuredWord {
-    runs: Vec<MeasuredRun>,
+struct MeasuredWord<'a> {
+    runs: Vec<MeasuredRun<'a>>,
 }
 
-impl MeasuredWord {
+impl MeasuredWord<'_> {
     fn width(&self) -> i32 {
         self.runs
             .last()
@@ -714,10 +719,10 @@ impl MeasuredWord {
 
 // Adjacent fragments with the same font and color are measured together so
 // that element boundaries do not change kerning within a word.
-fn measure_styled_word(
-    word: &InlineWord<'_>,
+fn measure_styled_word<'a>(
+    word: &InlineWord<'a>,
     mut measure: impl FnMut(&str, &TextStyle) -> i32,
-) -> MeasuredWord {
+) -> MeasuredWord<'a> {
     let mut runs = Vec::new();
     let mut index = 0;
     let mut x = 0_i32;
@@ -746,7 +751,13 @@ fn measure_styled_word(
 
         let width = measure(text.as_ref(), style);
 
-        runs.push(MeasuredRun { x, width });
+        runs.push(MeasuredRun {
+            x,
+            width,
+            text,
+            style,
+        });
+
         x = x.saturating_add(width);
     }
 
@@ -1166,7 +1177,7 @@ mod tests {
 
     #[test]
     fn measures_styled_runs_with_offsets_and_combines_equal_styles() {
-        use super::{InlineWord, InlineWordPart, MeasuredRun, measure_styled_word};
+        use super::{InlineWord, InlineWordPart, measure_styled_word};
 
         let normal = TextStyle::initial();
 
@@ -1211,14 +1222,13 @@ mod tests {
             ]
         );
 
-        assert_eq!(
-            measured.runs,
-            vec![
-                MeasuredRun { x: 0, width: 21 },
-                MeasuredRun { x: 21, width: 20 }
-            ]
-        );
-
+        assert_eq!(measured.runs.len(), 2);
+        assert_eq!((measured.runs[0].x, measured.runs[0].width), (0, 21));
+        assert_eq!((measured.runs[1].x, measured.runs[1].width), (21, 20));
+        assert_eq!(measured.runs[0].text, "hel");
+        assert_eq!(measured.runs[1].text, "lo");
+        assert_eq!(measured.runs[0].style.font_weight, FontWeight::Normal);
+        assert_eq!(measured.runs[1].style.font_weight, FontWeight::Bold);
         assert_eq!(measured.width(), 41);
     }
 

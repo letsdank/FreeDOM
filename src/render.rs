@@ -345,35 +345,36 @@ pub(crate) fn paint_preview_scene(
                 // Restrict text painting to the page content below the toolbar.
                 let content_pixels = &mut pixels[content_top * width..width * height];
 
-                let mut paint_text = |x: i32, y: i32, text: &str| {
-                    draw_wrapped_text(
-                        content_pixels,
-                        width,
-                        content_height,
-                        x,
-                        y,
-                        rect.x.saturating_add(rect.width),
-                        text,
-                        style.font_size,
-                        style.font_weight,
-                        style.font_style,
-                        style.color,
-                        None,
-                        font,
-                        0,
-                        &mut links,
-                        glyph_cache,
-                    );
-                };
+                let mut paint_text =
+                    |x: i32, y: i32, text: &str, run_style: &crate::css::TextStyle| {
+                        draw_wrapped_text(
+                            content_pixels,
+                            width,
+                            content_height,
+                            x,
+                            y,
+                            rect.x.saturating_add(rect.width),
+                            text,
+                            run_style.font_size,
+                            run_style.font_weight,
+                            run_style.font_style,
+                            run_style.color,
+                            None,
+                            font,
+                            0,
+                            &mut links,
+                            glyph_cache,
+                        );
+                    };
 
                 if runs.is_empty() {
-                    paint_text(rect.x, y, text);
+                    paint_text(rect.x, y, text, style);
                 } else {
                     for run in runs {
                         let run_y = relative_y + i64::from(run.y);
 
                         if let Ok(run_y) = i32::try_from(run_y) {
-                            paint_text(rect.x.saturating_add(run.x), run_y, &run.text);
+                            paint_text(rect.x.saturating_add(run.x), run_y, &run.text, &run.style);
                         }
                     }
                 }

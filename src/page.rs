@@ -3168,4 +3168,46 @@ mod tests {
             assert_eq!(actual, expected, "scroll={scroll}");
         }
     }
+
+    #[test]
+    fn preview_paints_saved_run_colors() {
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let page = parse_html("https://example.test/", "<div>A<span>B</span> C</div>");
+
+        let mut layout = PreviewLayout::build(&page, 120, None).unwrap();
+
+        let runs = layout
+            .display_list
+            .iter_mut()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } if !runs.is_empty() => Some(runs),
+                _ => None,
+            })
+            .expect("positioned text runs");
+
+        assert_eq!(runs.len(), 2);
+
+        // Mixed styles are not accepted by layout yet. Change the display list
+        // directly to verify that the painter reads each saved color.
+        runs[0].style.color = 0x00_FF_00_00;
+        runs[1].style.color = 0x00_00_00_FF;
+
+        let mut pixels = vec![0; 120 * 120];
+
+        paint_preview_scene(
+            &mut pixels,
+            120,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert!(pixels[90 * 120..].contains(&0x00_FF_00_00));
+        assert!(pixels[90 * 120..].contains(&0x00_00_00_FF));
+    }
 }
