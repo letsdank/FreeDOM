@@ -459,7 +459,9 @@ impl PreviewLayout {
                     let mut wrap = TextWrap::new(0, width);
                     let mut line_metrics = base_metrics;
                     let mut line_top = 0_i32;
+
                     let mut runs = Vec::new();
+                    let mut pending_runs = Vec::new();
                     let use_positioned_runs = fragments.len() > 1;
 
                     for word in &words {
@@ -468,30 +470,37 @@ impl PreviewLayout {
                         let placement = wrap.place_word(space_width, measured.width());
 
                         if placement.wrapped {
+                            finish_preview_line(
+                                &mut pending_runs,
+                                &mut runs,
+                                line_metrics,
+                                line_top,
+                            );
+
                             line_top = line_top.saturating_add(line_metrics.height());
                             line_metrics = base_metrics;
                         }
 
-                        for run in &measured.runs {
+                        for run in measured.runs {
                             let run_font = fonts.get(run.style).or(fallback);
 
-                            line_metrics.include(PreviewLineMetrics::from_font(
-                                run_font,
-                                run.style.font_size,
-                            ));
-                        }
+                            let run_metrics =
+                                PreviewLineMetrics::from_font(run_font, run.style.font_size);
 
-                        if use_positioned_runs {
-                            for run in measured.runs {
-                                runs.push(PreviewTextRun {
+                            line_metrics.include(run_metrics);
+
+                            if use_positioned_runs {
+                                pending_runs.push(PendingPreviewRun {
                                     x: placement.x.saturating_add(run.x),
-                                    y: line_top,
+                                    above_baseline: run_metrics.above_baseline,
                                     text: run.text.into_owned(),
                                     style: run.style.clone(),
                                 });
                             }
                         }
                     }
+
+                    finish_preview_line(&mut pending_runs, &mut runs, line_metrics, line_top);
 
                     let height = line_top.saturating_add(line_metrics.height());
 
@@ -674,6 +683,31 @@ impl PreviewLineMetrics {
 
     fn height(self) -> i32 {
         self.above_baseline.saturating_add(self.below_baseline)
+    }
+}
+
+struct PendingPreviewRun {
+    x: i32,
+    above_baseline: i32,
+    text: String,
+    style: TextStyle,
+}
+
+fn finish_preview_line(
+    pending: &mut Vec<PendingPreviewRun>,
+    output: &mut Vec<PreviewTextRun>,
+    metrics: PreviewLineMetrics,
+    line_top: i32,
+) {
+    for run in pending.drain(..) {
+        let baseline_offset = metrics.above_baseline.saturating_sub(run.above_baseline);
+
+        output.push(PreviewTextRun {
+            x: run.x,
+            y: line_top.saturating_add(baseline_offset),
+            text: run.text,
+            style: run.style,
+        });
     }
 }
 
@@ -1434,5 +1468,61 @@ mod tests {
 
             assert_eq!(preview.height(), existing.line_height, "size={size}");
         }
+    }
+
+    #[test]
+    fn aligns_preview_runs_after_all_line_metrics_are_known() {
+        use super::{PendingPreviewRun, PreviewLineMetrics, finish_preview_line};
+
+        let small = TextStyle::initial();
+
+        let mut large = small.clone();
+        large.font_size = 32.0;
+
+        let small_metrics = PreviewLineMetrics::from_font(None, small.font_size);
+        let large_metrics = PreviewLineMetrics::from_font(None, large.font_size);
+
+        let mut line_metrics = small_metrics;
+        line_metrics.include(large_metrics);
+
+        let mut pending = vec![
+            PendingPreviewRun {
+                x: 4,
+                above_baseline: small_metrics.above_baseline,
+                text: "small".into(),
+                style: small,
+            },
+            PendingPreviewRun {
+                x: 40,
+                above_baseline: large_metrics.above_baseline,
+                text: "large".into(),
+                style: large,
+            },
+        ];
+
+        let mut runs = Vec::new();
+
+        finish_preview_line(&mut pending, &mut runs, line_metrics, 20);
+
+        assert!(pending.is_empty());
+        assert_eq!(runs.len(), 2);
+
+        assert_eq!(
+            (runs[0].x, runs[0].y, runs[0].text.as_str()),
+            (4, 28, "small")
+        );
+
+        assert_eq!(
+            (runs[1].x, runs[1].y, runs[1].text.as_str()),
+            (40, 20, "large")
+        );
+
+        assert_eq!(
+            runs[0].y + small_metrics.above_baseline,
+            runs[1].y + line_metrics.above_baseline
+        );
+
+        assert_eq!(runs[0].style.font_size, 16.0);
+        assert_eq!(runs[1].style.font_size, 32.0);
     }
 }
