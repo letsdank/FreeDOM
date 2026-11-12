@@ -23,6 +23,8 @@ pub(crate) struct PreviewBox {
     pub(crate) background_color: BackgroundColor,
     pub(crate) border_top: BorderEdge,
     pub(crate) border_bottom: BorderEdge,
+    pub(crate) border_left: BorderEdge,
+    pub(crate) border_right: BorderEdge,
 }
 
 pub(crate) struct PreviewLayout {
@@ -146,7 +148,7 @@ impl std::fmt::Display for PreviewError {
             Self::SideBorder(path) => {
                 write!(
                     formatter,
-                    "left and right borders are not supported at {path:?}"
+                    "side borders combined with top or bottom borders are not supported at {path:?}"
                 )
             }
         }
@@ -214,7 +216,10 @@ impl PreviewLayout {
         for child in children {
             match child {
                 FlowChild::Block(block) => {
-                    if block.style.border_left.width != 0 || block.style.border_right.width != 0 {
+                    if (block.style.border_left.width != 0 || block.style.border_right.width != 0)
+                        && (block.style.border_top.width != 0
+                            || block.style.border_bottom.width != 0)
+                    {
                         return Err(PreviewError::SideBorder(block.source.indices().to_vec()));
                     }
 
@@ -265,11 +270,13 @@ impl PreviewLayout {
                         .checked_add(block.style.margin_left)
                         .ok_or(PreviewError::SizeOverflow)?;
 
-                    let block_width = match block.style.width {
+                    let content_width = match block.style.width {
                         CssSize::Auto => {
                             let available = i64::from(width)
                                 - i64::from(block.style.margin_left)
-                                - i64::from(block.style.margin_right);
+                                - i64::from(block.style.margin_right)
+                                - i64::from(block.style.border_left.width)
+                                - i64::from(block.style.border_right.width);
 
                             i32::try_from(available.max(0))
                                 .map_err(|_| PreviewError::SizeOverflow)?
@@ -277,6 +284,18 @@ impl PreviewLayout {
 
                         CssSize::Pixels(value) => value,
                     };
+
+                    let content_left = block_left
+                        .checked_add(block.style.border_left.width)
+                        .ok_or(PreviewError::SizeOverflow)?;
+
+                    let block_width = block
+                        .style
+                        .border_left
+                        .width
+                        .checked_add(content_width)
+                        .and_then(|value| value.checked_add(block.style.border_right.width))
+                        .ok_or(PreviewError::SizeOverflow)?;
 
                     block_left
                         .checked_add(block_width)
@@ -293,6 +312,8 @@ impl PreviewLayout {
                         background_color: block.style.background_color,
                         border_top: block.style.border_top,
                         border_bottom: block.style.border_bottom,
+                        border_left: block.style.border_left,
+                        border_right: block.style.border_right,
                     });
 
                     self.display_list.push(PreviewCommand::Block(index));
@@ -308,8 +329,8 @@ impl PreviewLayout {
                         block.style,
                         page,
                         fallback,
-                        block_left,
-                        block_width,
+                        content_left,
+                        content_width,
                         start
                             .checked_add(block.style.border_top.width)
                             .ok_or(PreviewError::SizeOverflow)?,

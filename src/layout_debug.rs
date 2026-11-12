@@ -136,6 +136,48 @@ pub(crate) fn paint_preview_box(
         fill_preview_rect(pixels, width, height, item.rect, scroll_y, color);
     }
 
+    if item.border_left.width > 0 {
+        let rect = LayoutRect {
+            width: item.border_left.width.min(item.rect.width),
+            ..item.rect
+        };
+
+        fill_preview_rect(
+            pixels,
+            width,
+            height,
+            rect,
+            scroll_y,
+            item.border_left.color,
+        );
+    }
+
+    if item.border_right.width > 0 {
+        let border_width = item.border_right.width.min(item.rect.width);
+
+        if let Some(x) = item
+            .rect
+            .x
+            .checked_add(item.rect.width)
+            .and_then(|value| value.checked_sub(border_width))
+        {
+            let rect = LayoutRect {
+                x,
+                width: border_width,
+                ..item.rect
+            };
+
+            fill_preview_rect(
+                pixels,
+                width,
+                height,
+                rect,
+                scroll_y,
+                item.border_right.color,
+            );
+        }
+    }
+
     if item.border_top.width > 0 {
         let rect = LayoutRect {
             height: item.border_top.width.min(item.rect.height),
@@ -283,6 +325,8 @@ mod tests {
             background_color,
             border_top: crate::css::BorderEdge::default(),
             border_bottom: crate::css::BorderEdge::default(),
+            border_left: crate::css::BorderEdge::default(),
+            border_right: crate::css::BorderEdge::default(),
         };
 
         let layout = PreviewLayout {

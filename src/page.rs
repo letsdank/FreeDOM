@@ -2979,24 +2979,24 @@ mod tests {
     }
 
     #[test]
-    fn preview_rejects_nonzero_side_borders_until_implemented() {
-        for side in ["left", "right"] {
-            let html = format!("<div style='height:10px;border-{side}:2px solid red'></div>");
+    fn preview_rejects_mixed_side_and_vertical_borders() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='height:10px;",
+                "border-left:2px solid red;",
+                "border-top:2px solid blue'></div>",
+            ),
+        );
 
-            let page = parse_html("https://example.test/", &html);
-
-            assert!(
-                matches!(
-                    crate::layout_preview::PreviewLayout::build(&page, 100, None),
-                    Err(crate::layout_preview::PreviewError::SideBorder(_))
-                ),
-                "{side}"
-            );
-        }
+        assert!(matches!(
+            crate::layout_preview::PreviewLayout::build(&page, 100, None),
+            Err(crate::layout_preview::PreviewError::SideBorder(_))
+        ));
 
         let inline = parse_html(
             "https://example.test/",
-            "<div>A<span style='border-left: 2px solid red'>B</span></div>",
+            "<div>A<span style='border-left:2px solid red'>B</span></div>",
         );
 
         assert!(matches!(
@@ -3010,5 +3010,98 @@ mod tests {
         );
 
         assert!(crate::layout_preview::PreviewLayout::build(&no_border, 100, None).is_ok());
+    }
+
+    #[test]
+    fn preview_positions_and_paints_side_borders() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='width:20px;margin-left:5px;",
+                "border-left:2px solid red;",
+                "border-right:3px solid blue'>",
+                "<div style='height:10px;background:green'></div>",
+                "</div>"
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        assert_eq!(
+            (preview.boxes[0].rect.x, preview.boxes[0].rect.width),
+            (21, 25)
+        );
+
+        assert_eq!(
+            (preview.boxes[1].rect.x, preview.boxes[1].rect.width),
+            (23, 20)
+        );
+
+        let mut pixels = vec![0; 100 * 110];
+        let mut cache = crate::render::GlyphRasterCache::new();
+
+        crate::render::paint_preview_scene(
+            &mut pixels,
+            100,
+            110,
+            &page,
+            &preview,
+            None,
+            0,
+            &mut cache,
+        );
+
+        let row = 90 * 100;
+
+        assert_eq!(pixels[row + 20], crate::render::BACKGROUND);
+        assert_eq!(pixels[row + 21], 0x00_FF_00_00);
+        assert_eq!(pixels[row + 22], 0x00_FF_00_00);
+        assert_eq!(pixels[row + 23], 0x00_00_80_00);
+        assert_eq!(pixels[row + 42], 0x00_00_80_00);
+        assert_eq!(pixels[row + 43], 0x00_00_00_FF);
+        assert_eq!(pixels[row + 45], 0x00_00_00_FF);
+        assert_eq!(pixels[row + 46], crate::render::BACKGROUND);
+    }
+
+    #[test]
+    fn preview_subtracts_side_borders_from_auto_content_width() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='margin-left:3px;margin-right:5px;",
+                "border-left:2px solid red;",
+                "border-right:4px solid blue'>",
+                "<div style='height:10px'></div>",
+                "</div>"
+            ),
+        );
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+
+        assert_eq!(
+            (preview.boxes[0].rect.x, preview.boxes[0].rect.width),
+            (19, 60)
+        );
+
+        assert_eq!(
+            (preview.boxes[1].rect.x, preview.boxes[1].rect.width),
+            (21, 54)
+        );
+    }
+
+    #[test]
+    fn preview_rejects_side_border_geometry_overflow() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='height:10px;",
+                "border-left:2147483647px solid red'></div>",
+            ),
+        );
+
+        assert!(matches!(
+            crate::layout_preview::PreviewLayout::build(&page, 100, None),
+            Err(crate::layout_preview::PreviewError::SizeOverflow)
+        ));
     }
 }
