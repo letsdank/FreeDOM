@@ -344,7 +344,11 @@ pub(crate) fn paint_preview_scene(
                 let content_pixels = &mut pixels[content_top * width..width * height];
 
                 let mut paint_text =
-                    |x: i32, y: i32, text: &str, run_style: &crate::css::TextStyle| {
+                    |x: i32,
+                     y: i32,
+                     offset_y: f32,
+                     text: &str,
+                     run_style: &crate::css::TextStyle| {
                         let font = fonts.get(run_style).or(fallback.as_ref());
 
                         draw_wrapped_text(
@@ -353,6 +357,7 @@ pub(crate) fn paint_preview_scene(
                             content_height,
                             x,
                             y,
+                            offset_y,
                             rect.x.saturating_add(rect.width),
                             text,
                             run_style.font_size,
@@ -368,13 +373,19 @@ pub(crate) fn paint_preview_scene(
                     };
 
                 if runs.is_empty() {
-                    paint_text(rect.x, y, text, style);
+                    paint_text(rect.x, y, 0.0, text, style);
                 } else {
                     for run in runs {
                         let run_y = relative_y + i64::from(run.y);
 
                         if let Ok(run_y) = i32::try_from(run_y) {
-                            paint_text(rect.x.saturating_add(run.x), run_y, &run.text, &run.style);
+                            paint_text(
+                                rect.x.saturating_add(run.x),
+                                run_y,
+                                run.offset_y,
+                                &run.text,
+                                &run.style,
+                            );
                         }
                     }
                 }
@@ -455,6 +466,7 @@ fn cache_text_block<'cache>(
                 cache_height,
                 0,
                 0,
+                0.0,
                 cache_width as i32,
                 text,
                 block.style.font_size,
@@ -638,6 +650,7 @@ pub(crate) fn paint(
                         height,
                         16,
                         y,
+                        0.0,
                         width as i32 - 16,
                         text,
                         block.style.font_size,
@@ -690,6 +703,7 @@ fn draw_wrapped_text(
     height: usize,
     left: i32,
     mut y: i32,
+    offset_y: f32,
     right: i32,
     text: &str,
     font_size: f32,
@@ -718,7 +732,13 @@ fn draw_wrapped_text(
         }
 
         let word_x = placement.x;
-        let is_visible = y.saturating_add(metrics.glyph_height) > visible_top && y < height as i32;
+        let visibility_padding = if offset_y == 0.0 { 0 } else { 1 };
+
+        let is_visible = y
+            .saturating_add(metrics.glyph_height)
+            .saturating_add(visibility_padding)
+            > visible_top
+            && y.saturating_sub(visibility_padding) < height as i32;
 
         if is_visible {
             let rendered_with_vector_font = vector_font.is_some_and(|font| {
@@ -728,7 +748,7 @@ fn draw_wrapped_text(
                     height,
                     word_x,
                     y,
-                    0.0,
+                    offset_y,
                     word,
                     font_size,
                     font_weight,
@@ -1111,6 +1131,7 @@ mod tests {
             30,
             0,
             0,
+            0.0,
             64,
             text,
             16.0,
@@ -1152,6 +1173,7 @@ mod tests {
             10,
             0,
             0,
+            0.0,
             8,
             &text,
             16.0,

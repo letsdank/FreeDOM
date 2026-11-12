@@ -46,6 +46,7 @@ pub(crate) enum PreviewCommand {
 pub(crate) struct PreviewTextRun {
     pub(crate) x: i32,
     pub(crate) y: i32,
+    pub(crate) offset_y: f32,
     pub(crate) text: String,
     pub(crate) style: TextStyle,
 }
@@ -706,6 +707,7 @@ fn finish_preview_line(
         output.push(PreviewTextRun {
             x: run.x,
             y: line_top.saturating_add(baseline_offset),
+            offset_y: 0.0,
             text: run.text,
             style: run.style,
         });

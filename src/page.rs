@@ -3351,7 +3351,7 @@ mod tests {
         bitmap_style.color = 0x00_00_00_FF;
 
         // Construct the display list directly: layout still rejects mixed fonts.
-        let layout = PreviewLayout {
+        let mut layout = PreviewLayout {
             boxes: vec![],
             display_list: vec![PreviewCommand::Text {
                 rect: LayoutRect {
@@ -3366,12 +3366,14 @@ mod tests {
                     PreviewTextRun {
                         x: 0,
                         y: vector_y,
+                        offset_y: 0.0,
                         text: "ߊ".into(),
                         style: vector_style,
                     },
                     PreviewTextRun {
                         x: 90,
                         y: bitmap_y,
+                        offset_y: 0.0,
                         text: "A".into(),
                         style: bitmap_style,
                     },
@@ -3412,6 +3414,38 @@ mod tests {
             }),
             "bitmap glyph must be painted blue"
         );
+
+        let PreviewCommand::Text { runs, .. } = &mut layout.display_list[0] else {
+            panic!("expected text command");
+        };
+
+        runs[0].offset_y = 0.5;
+
+        let mut shifted = vec![0; width * height];
+
+        paint_preview_scene(
+            &mut shifted,
+            width,
+            height,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_ne!(
+            pixels, shifted,
+            "vector run must use its vertical subpixel offset"
+        );
+
+        // The bitmap glyph remains unchanged.
+        for y in CONTENT_TOP as usize..height {
+            assert_eq!(
+                &pixels[y * width + 106..y * width + 114],
+                &shifted[y * width + 106..y * width + 114]
+            );
+        }
     }
 
     #[test]
