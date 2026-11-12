@@ -54,6 +54,7 @@ struct GlyphRasterKey {
     italic: bool,
     color: u32,
     phase_x: u8,
+    phase_y: u8,
 }
 
 struct CachedGlyph {
@@ -727,6 +728,7 @@ fn draw_wrapped_text(
                     height,
                     word_x,
                     y,
+                    0.0,
                     word,
                     font_size,
                     font_weight,
@@ -876,6 +878,7 @@ fn draw_vector_text_line(
     height: usize,
     x: i32,
     y: i32,
+    offset_y: f32,
     text: &str,
     font_size: f32,
     font_weight: FontWeight,
@@ -895,11 +898,12 @@ fn draw_vector_text_line(
     }
 
     let scale = font_size / units_per_em;
-    let Some((baseline_y, baseline_phase)) = split_subpixel_position(line_metrics.ascent) else {
+    let Some((baseline_y, phase_y)) = split_subpixel_position(line_metrics.ascent + offset_y)
+    else {
         return false;
     };
 
-    let baseline_phase = f32::from(baseline_phase) / GLYPH_SUBPIXEL_STEPS as f32;
+    let baseline_phase = f32::from(phase_y) / GLYPH_SUBPIXEL_STEPS as f32;
     let mut pen_x = 0.0;
     let mut previous_glyph = None;
 
@@ -925,6 +929,7 @@ fn draw_vector_text_line(
             italic: font_style == FontStyle::Italic,
             color,
             phase_x,
+            phase_y,
         };
 
         let phase_x = f32::from(phase_x) / GLYPH_SUBPIXEL_STEPS as f32;
@@ -1166,5 +1171,65 @@ mod tests {
             end_y,
             measure_wrapped_text(&text, 8, 16.0, FontWeight::Normal, FontStyle::Normal, None),
         );
+    }
+
+    #[test]
+    fn glyph_cache_distinguishes_vertical_subpixel_phases() {
+        use crate::graphics::font::normalize_font_container;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2"
+        );
+
+        let data =
+            normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
+                .unwrap();
+
+        let font = TrueTypeFont::parse(&data).unwrap();
+
+        let render = |offset_y: f32, cache: &mut GlyphRasterCache| {
+            let mut pixels = vec![0x00_FF_FF_FF; 80 * 80];
+
+            assert!(draw_vector_text_line(
+                &mut pixels,
+                80,
+                80,
+                10,
+                10,
+                offset_y,
+                "ߊ",
+                32.0,
+                FontWeight::Normal,
+                FontStyle::Normal,
+                0x00_00_00_00,
+                &font,
+                cache,
+            ));
+
+            pixels
+        };
+
+        let mut cache = GlyphRasterCache::new();
+
+        let at_zero = render(0.0, &mut cache);
+        let at_half = render(0.5, &mut cache);
+
+        assert_eq!(cache.entries.len(), 2);
+        assert_ne!(at_zero, at_half);
+
+        // Repeated draws must reuse the correct cached glyph.
+        assert_eq!(at_half, render(0.5, &mut cache));
+        assert_eq!(at_zero, render(0.0, &mut cache));
+        assert_eq!(cache.entries.len(), 2);
+
+        // A fresh cache must produce the same result.
+        assert_eq!(at_half, render(0.5, &mut GlyphRasterCache::new()));
+
+        // A whole-pixel shift reuses the same phase and moves the image down.
+        let at_one = render(1.0, &mut cache);
+
+        assert_eq!(&at_one[80..], &at_zero[..79 * 80]);
+        assert_eq!(cache.entries.len(), 2);
     }
 }
