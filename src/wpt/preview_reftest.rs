@@ -1066,4 +1066,48 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn compares_inline_color_variant_against_saved_wpt_reference() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/wpt/css/CSS2/reference/filler-text-below-green.xht");
+
+        let reference = std::fs::read_to_string(path).expect("WPT reference must exist");
+
+        let original = "<p class=\"green\">Filler Text</p>";
+
+        // Fail explicitly if the saved fixture changes.
+        assert_eq!(reference.matches(original).count(), 1);
+
+        // This is a local diagnostic variant, not an original WPT test.
+        let test = reference.replacen(
+            original,
+            "<p><span style=\"color: green\">Filler Text</span></p>",
+            1,
+        );
+
+        let wrong_color = reference.replacen(
+            original,
+            "<p><span style=\"color: red\">Filler Text</span></p>",
+            1,
+        );
+
+        let result = compare_xhtml_preview(&test, &reference, 320, 200);
+
+        println!("Local inline-color preview: {result:?}");
+
+        assert_eq!(result, PreviewResult::Match);
+
+        let negative_control = compare_xhtml_preview(&wrong_color, &reference, 320, 200);
+
+        println!("Wrong-color control: {negative_control:?}");
+
+        assert!(matches!(
+            negative_control,
+            PreviewResult::Mismatch {
+                different_pixels,
+                ..
+            } if different_pixels > 0
+        ));
+    }
 }
