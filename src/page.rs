@@ -127,6 +127,27 @@ impl Page {
         }
     }
 
+    pub(crate) fn synthetic_font_style(
+        &self,
+        style: &TextStyle,
+        has_valid_page_font: bool,
+    ) -> FontStyle {
+        if has_valid_page_font
+            && style.font_style == FontStyle::Italic
+            && self
+                .font_face_for(
+                    style.font_family.as_deref(),
+                    style.font_weight,
+                    style.font_style,
+                )
+                .is_some_and(|face| face.font_style == FontStyle::Italic)
+        {
+            FontStyle::Normal
+        } else {
+            style.font_style
+        }
+    }
+
     pub(crate) fn describe_block_sources(&self, index: usize) -> Option<String> {
         use std::fmt::Write;
 
@@ -3843,7 +3864,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_synthesizes_bold_only_when_face_is_missing() {
+    fn preview_synthesizes_font_style_only_when_face_is_missing() {
         use crate::graphics::font::normalize_font_container;
         use crate::layout_preview::PreviewLayout;
         use crate::render::{GlyphRasterCache, paint_preview_scene};
@@ -3895,5 +3916,27 @@ mod tests {
         let synthetic_bold = paint(&page);
 
         assert_ne!(actual_bold, synthetic_bold);
+
+        let mut page = parse_html(
+            "https://example.test/",
+            "<div style='font-family:test;font-size:32px;font-style:italic'>ߊ</div>",
+        );
+
+        for font_style in [FontStyle::Normal, FontStyle::Italic] {
+            page.font_faces.push(LoadedFontFace {
+                family: "test".into(),
+                font_weight: FontWeight::Normal,
+                font_style,
+                data: data.clone(),
+            });
+        }
+
+        let actual_italic = paint(&page);
+
+        page.font_faces.pop();
+
+        let synthetic_italic = paint(&page);
+
+        assert_ne!(actual_italic, synthetic_italic);
     }
 }

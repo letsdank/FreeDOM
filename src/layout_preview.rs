@@ -842,7 +842,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
                 text,
                 style.font_size,
                 self.synthetic_weight(style),
-                style.font_style,
+                self.synthetic_style(style),
             );
 
             let advance = if font.is_none() {
@@ -876,7 +876,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
                 text,
                 style.font_size,
                 self.synthetic_weight(style),
-                style.font_style,
+                self.synthetic_style(style),
             );
 
             (width, 0)
@@ -927,6 +927,11 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
     pub(crate) fn synthetic_weight(&self, style: &TextStyle) -> crate::css::FontWeight {
         self.page
             .synthetic_font_weight(style, self.get(style).is_some())
+    }
+
+    pub(crate) fn synthetic_style(&self, style: &TextStyle) -> crate::css::FontStyle {
+        self.page
+            .synthetic_font_style(style, self.get(style).is_some())
     }
 }
 

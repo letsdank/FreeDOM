@@ -148,7 +148,7 @@ impl PageLayout {
                         text_width,
                         block.style.font_size,
                         page.synthetic_font_weight(&block.style, page_font.is_some()),
-                        block.style.font_style,
+                        page.synthetic_font_style(&block.style, page_font.is_some()),
                         font,
                     );
 
