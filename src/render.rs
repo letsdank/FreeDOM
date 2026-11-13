@@ -363,6 +363,7 @@ pub(crate) fn paint_preview_scene(
                             rect.x.saturating_add(rect.width),
                             text,
                             run_style.font_size,
+                            fonts.synthetic_weight(run_style),
                             run_style.font_weight,
                             run_style.font_style,
                             run_style.color,
@@ -474,6 +475,7 @@ fn cache_text_block<'cache>(
                 cache_width as i32,
                 text,
                 block.style.font_size,
+                page.synthetic_font_weight(&block.style, page_font.is_some()),
                 block.style.font_weight,
                 block.style.font_style,
                 block.style.color,
@@ -659,6 +661,7 @@ pub(crate) fn paint(
                         width as i32 - 16,
                         text,
                         block.style.font_size,
+                        page.synthetic_font_weight(&block.style, page_font.is_some()),
                         block.style.font_weight,
                         block.style.font_style,
                         block.style.color,
@@ -714,6 +717,7 @@ fn draw_wrapped_text(
     text: &str,
     font_size: f32,
     font_weight: FontWeight,
+    fallback_weight: FontWeight,
     font_style: FontStyle,
     color: u32,
     link_target: Option<&str>,
@@ -778,7 +782,7 @@ fn draw_wrapped_text(
                     color,
                 );
 
-                if font_weight == FontWeight::Bold {
+                if fallback_weight == FontWeight::Bold {
                     draw_text_line(
                         pixels,
                         width,
@@ -1145,6 +1149,7 @@ mod tests {
             text,
             16.0,
             FontWeight::Normal,
+            FontWeight::Normal,
             FontStyle::Normal,
             0,
             Some("/link"),
@@ -1187,6 +1192,7 @@ mod tests {
             8,
             &text,
             16.0,
+            FontWeight::Normal,
             FontWeight::Normal,
             FontStyle::Normal,
             0,

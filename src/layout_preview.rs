@@ -775,6 +775,7 @@ fn finish_preview_line(
 }
 
 pub(crate) struct PreviewFonts<'style, 'font> {
+    page: &'font Page,
     entries: Vec<(&'style TextStyle, Option<TrueTypeFont<'font>>)>,
 }
 
@@ -808,7 +809,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             entries.push((style, font));
         }
 
-        Self { entries }
+        Self { page, entries }
     }
 
     pub(crate) fn get(&self, style: &TextStyle) -> Option<&TrueTypeFont<'font>> {
@@ -840,7 +841,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
                 font,
                 text,
                 style.font_size,
-                style.font_weight,
+                self.synthetic_weight(style),
                 style.font_style,
             );
 
@@ -874,7 +875,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
                 Some(font),
                 text,
                 style.font_size,
-                style.font_weight,
+                self.synthetic_weight(style),
                 style.font_style,
             );
 
@@ -921,6 +922,11 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             let font = self.get(style).or(fallback);
             text_metrics(font, style.font_size).character_width
         })
+    }
+
+    pub(crate) fn synthetic_weight(&self, style: &TextStyle) -> crate::css::FontWeight {
+        self.page
+            .synthetic_font_weight(style, self.get(style).is_some())
     }
 }
 

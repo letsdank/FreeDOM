@@ -80,6 +80,16 @@ impl Page {
         font_weight: FontWeight,
         font_style: FontStyle,
     ) -> Option<&[u8]> {
+        self.font_face_for(family, font_weight, font_style)
+            .map(|face| face.data.as_slice())
+    }
+
+    fn font_face_for(
+        &self,
+        family: Option<&str>,
+        font_weight: FontWeight,
+        font_style: FontStyle,
+    ) -> Option<&LoadedFontFace> {
         let family = family?;
 
         self.font_faces
@@ -94,7 +104,27 @@ impl Page {
                     .iter()
                     .find(|face| face.family.eq_ignore_ascii_case(family))
             })
-            .map(|face| face.data.as_slice())
+    }
+
+    pub(crate) fn synthetic_font_weight(
+        &self,
+        style: &TextStyle,
+        has_valid_page_font: bool,
+    ) -> FontWeight {
+        if has_valid_page_font
+            && style.font_weight == FontWeight::Bold
+            && self
+                .font_face_for(
+                    style.font_family.as_deref(),
+                    style.font_weight,
+                    style.font_style,
+                )
+                .is_some_and(|face| face.font_weight == FontWeight::Bold)
+        {
+            FontWeight::Normal
+        } else {
+            style.font_weight
+        }
     }
 
     pub(crate) fn describe_block_sources(&self, index: usize) -> Option<String> {
@@ -3810,5 +3840,60 @@ mod tests {
         );
 
         assert_ne!(pixels, fallback_pixels);
+    }
+
+    #[test]
+    fn preview_synthesizes_bold_only_when_face_is_missing() {
+        use crate::graphics::font::normalize_font_container;
+        use crate::layout_preview::PreviewLayout;
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2"
+        );
+
+        let data = normalize_font_container(std::fs::read(path).expect("font fixture must exist"))
+            .unwrap();
+
+        let mut page = parse_html(
+            "https://example.test/",
+            "<div style='font-family:test;font-size:32px;font-weight:bold'>ߊ</div>",
+        );
+
+        for weight in [FontWeight::Normal, FontWeight::Bold] {
+            page.font_faces.push(LoadedFontFace {
+                family: "test".into(),
+                font_weight: weight,
+                font_style: FontStyle::Normal,
+                data: data.clone(),
+            });
+        }
+
+        let paint = |page: &Page| {
+            let layout = PreviewLayout::build(page, 120, None).unwrap();
+            let mut pixels = vec![0; 120 * 160];
+
+            paint_preview_scene(
+                &mut pixels,
+                120,
+                160,
+                page,
+                &layout,
+                None,
+                0,
+                &mut GlyphRasterCache::new(),
+            );
+
+            pixels
+        };
+
+        let actual_bold = paint(&page);
+
+        page.font_faces.pop();
+
+        let synthetic_bold = paint(&page);
+
+        assert_ne!(actual_bold, synthetic_bold);
     }
 }
