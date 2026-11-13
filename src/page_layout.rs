@@ -1,6 +1,7 @@
 use crate::{
     css::{FontStyle, FontWeight},
     graphics::{font::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
+    layout_preview::{PositionedTextRun, layout_text_block},
     page::{BlockContent, Page, ResolvedFont},
 };
 
@@ -18,6 +19,7 @@ struct BlockLayout {
     top: i32,
     width: i32,
     height: i32,
+    text_runs: Option<Vec<PositionedTextRun>>,
 }
 
 /// Geometry of a current layout block in document coordinates.
@@ -113,13 +115,14 @@ impl PageLayout {
         let mut top = 0_i32;
 
         for block in &page.blocks {
-            let (block_width, height) = match &block.content {
+            let (block_width, height, text_runs) = match &block.content {
                 BlockContent::Svg(svg) => {
                     let (width, height) = svg_block_size(svg, available_width);
 
                     (
                         i32::try_from(width).unwrap_or(i32::MAX),
                         i32::try_from(height).unwrap_or(i32::MAX),
+                        None,
                     )
                 }
 
@@ -129,36 +132,53 @@ impl PageLayout {
                     (
                         i32::try_from(width).unwrap_or(i32::MAX),
                         i32::try_from(height).unwrap_or(i32::MAX),
+                        None,
                     )
                 }
 
                 BlockContent::Text(text) => {
-                    let page_fonts = page.vector_fonts_for_style(&block.style);
-                    let page_font = page_fonts.first().map(|entry| &entry.font);
-                    let font = page_font.or(fallback_font.as_ref());
-
-                    let font_stack = if page_fonts.len() > 1 {
-                        page_fonts.as_slice()
+                    let styled = if block.link.is_none() {
+                        layout_text_block(
+                            page,
+                            text,
+                            &block.style,
+                            text_width,
+                            fallback_font.as_ref(),
+                        )
                     } else {
-                        &[]
+                        None
                     };
 
-                    let (weight, font_style) = page_fonts
-                        .first()
-                        .map(|entry| entry.synthesis)
-                        .unwrap_or((block.style.font_weight, block.style.font_style));
+                    if let Some((height, runs)) = styled {
+                        (text_width, height, Some(runs))
+                    } else {
+                        let page_fonts = page.vector_fonts_for_style(&block.style);
+                        let page_font = page_fonts.first().map(|entry| &entry.font);
+                        let font = page_font.or(fallback_font.as_ref());
 
-                    let height = measure_wrapped_text(
-                        &text.text,
-                        text_width,
-                        block.style.font_size,
-                        weight,
-                        font_style,
-                        font,
-                        &font_stack,
-                    );
+                        let font_stack = if page_fonts.len() > 1 {
+                            page_fonts.as_slice()
+                        } else {
+                            &[]
+                        };
 
-                    (text_width, height)
+                        let (weight, font_style) = page_fonts
+                            .first()
+                            .map(|entry| entry.synthesis)
+                            .unwrap_or((block.style.font_weight, block.style.font_style));
+
+                        let height = measure_wrapped_text(
+                            &text.text,
+                            text_width,
+                            block.style.font_size,
+                            weight,
+                            font_style,
+                            font,
+                            &font_stack,
+                        );
+
+                        (text_width, height, None)
+                    }
                 }
             };
 
@@ -166,6 +186,7 @@ impl PageLayout {
                 top,
                 width: block_width,
                 height,
+                text_runs,
             });
 
             top = top
@@ -228,6 +249,10 @@ impl PageLayout {
             .enumerate()
             .filter_map(|(index, rect)| rect.contains(x, document_y).then_some(index))
             .last()
+    }
+
+    pub(crate) fn block_text_runs(&self, index: usize) -> Option<&[PositionedTextRun]> {
+        self.blocks.get(index)?.text_runs.as_deref()
     }
 }
 
@@ -513,16 +538,19 @@ mod tests {
                     top: 0,
                     width: 68,
                     height: 10,
+                    text_runs: None,
                 },
                 BlockLayout {
                     top: 10,
                     width: 30,
                     height: 12,
+                    text_runs: None,
                 },
                 BlockLayout {
                     top: 10,
                     width: 12,
                     height: 4,
+                    text_runs: None,
                 },
             ],
 

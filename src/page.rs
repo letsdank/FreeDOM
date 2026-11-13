@@ -3406,7 +3406,7 @@ mod tests {
             TrueTypeFont, normalize_font_container,
             render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
         };
-        use crate::layout_preview::{PreviewCommand, PreviewLayout, PreviewTextRun};
+        use crate::layout_preview::{PositionedTextRun, PreviewCommand, PreviewLayout};
         use crate::page_layout::{CONTENT_TOP, LayoutRect, text_metrics};
         use crate::render::{GlyphRasterCache, paint_preview_scene};
 
@@ -3472,7 +3472,7 @@ mod tests {
                 text: String::new(),
                 style: bitmap_style.clone(),
                 runs: vec![
-                    PreviewTextRun {
+                    PositionedTextRun {
                         x: 0,
                         offset_x: 0.0,
                         y: vector_y,
@@ -3480,7 +3480,7 @@ mod tests {
                         text: "ߊ".into(),
                         style: vector_style,
                     },
-                    PreviewTextRun {
+                    PositionedTextRun {
                         x: 90,
                         offset_x: 0.0,
                         y: bitmap_y,

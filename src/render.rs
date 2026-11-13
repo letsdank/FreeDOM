@@ -9,7 +9,7 @@ use crate::{
         raster::{Color as RasterColor, Surface as RasterSurface},
     },
     layout_debug::{clear_preview_content, paint_preview_box},
-    layout_preview::{PreviewCommand, PreviewFonts, PreviewLayout},
+    layout_preview::{InlineFonts, PositionedTextRun, PreviewCommand, PreviewLayout},
     page::{BlockContent, Page, ResolvedFont},
     page_layout::{
         CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, stack_ascent, stack_text_metrics,
@@ -335,7 +335,7 @@ pub(crate) fn paint_preview_scene(
                     continue;
                 };
 
-                let fonts = PreviewFonts::from_styles(
+                let fonts = InlineFonts::from_styles(
                     page,
                     std::iter::once(style).chain(runs.iter().map(|run| &run.style)),
                 );
@@ -450,6 +450,30 @@ fn cache_text_block<'cache>(
 
     let content_width = viewport_width.saturating_sub(32).max(1);
     let block_height = usize::try_from(layout.block_height(index).max(0)).unwrap_or(0);
+
+    if let Some(runs) = layout.block_text_runs(index) {
+        return text_cache.get_or_render(
+            index,
+            content_width,
+            block_height,
+            |pixels, width, height, links| {
+                draw_positioned_text(
+                    pixels,
+                    width,
+                    height,
+                    0,
+                    0,
+                    width as i32,
+                    runs,
+                    page,
+                    fallback_font,
+                    0,
+                    links,
+                    glyph_raster_cache,
+                );
+            },
+        );
+    }
 
     let page_fonts = page.vector_fonts_for_style(&block.style);
     let page_font = page_fonts.first().map(|entry| &entry.font);
@@ -647,6 +671,21 @@ pub(crate) fn paint(
                 ) {
                     cached.blit_to(pixels, width, height, 16, y);
                     cached.append_link_regions(&mut link_regions, 16, y);
+                } else if let Some(runs) = layout.block_text_runs(index) {
+                    draw_positioned_text(
+                        pixels,
+                        width,
+                        height,
+                        16,
+                        y,
+                        width as i32 - 16,
+                        runs,
+                        page,
+                        fallback_font.as_ref(),
+                        CONTENT_TOP,
+                        &mut link_regions,
+                        glyph_raster_cache,
+                    );
                 } else {
                     let page_fonts = page.vector_fonts_for_style(&block.style);
                     let page_font = page_fonts.first().map(|entry| &entry.font);
@@ -716,6 +755,51 @@ pub(crate) fn paint(
             .content_height()
             .saturating_sub(content_viewport_height)
             .max(0),
+    }
+}
+
+fn draw_positioned_text(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    left: i32,
+    top: i32,
+    right: i32,
+    runs: &[PositionedTextRun],
+    page: &Page,
+    fallback: Option<&TrueTypeFont<'_>>,
+    visible_top: i32,
+    links: &mut Vec<LinkRegion>,
+    glyph_cache: &mut GlyphRasterCache,
+) {
+    let fonts = InlineFonts::from_styles(page, runs.iter().map(|run| &run.style));
+
+    for run in runs {
+        let style = &run.style;
+        let font = fonts.get(style).or(fallback);
+
+        draw_wrapped_text(
+            pixels,
+            width,
+            height,
+            left.saturating_add(run.x),
+            run.offset_x,
+            top.saturating_add(run.y),
+            run.offset_y,
+            right,
+            &run.text,
+            style.font_size,
+            fonts.synthetic_weight(style),
+            style.font_weight,
+            fonts.synthetic_style(style),
+            style.color,
+            None,
+            font,
+            fonts.stack(style),
+            visible_top,
+            links,
+            glyph_cache,
+        );
     }
 }
 
@@ -1329,5 +1413,51 @@ mod tests {
         }
 
         assert_eq!(cache.entries.len(), 3);
+    }
+
+    #[test]
+    fn styled_text_without_block_cache_matches_cached_rendering() {
+        let page = crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            concat!(
+                "<html xmlns='http://www.w3.org/1999/xhtml'>",
+                "<body><div>A <span style='color:red'>B</span> ",
+                "<strong>C</strong></div></body></html>"
+            ),
+        )
+        .unwrap();
+
+        let layout = PageLayout::build(&page, 64, None);
+        assert!(layout.block_text_runs(0).is_some());
+
+        let draw = |cache: &mut BlockRasterCache| {
+            let mut pixels = vec![0; 64 * 130];
+
+            paint(
+                &mut pixels,
+                64,
+                130,
+                &page,
+                &layout,
+                "",
+                "",
+                None,
+                cache,
+                &mut GlyphRasterCache::new(),
+                0,
+                false,
+            );
+
+            pixels
+        };
+
+        let cached = draw(&mut BlockRasterCache::new());
+
+        let mut disabled = BlockRasterCache::new();
+        disabled.entries.push(BlockRasterCacheEntry::Uncacheable);
+
+        let direct = draw(&mut disabled);
+
+        assert_eq!(cached, direct);
     }
 }

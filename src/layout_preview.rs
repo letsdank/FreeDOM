@@ -13,7 +13,7 @@ use crate::{
         TrueTypeFont,
         render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
     },
-    page::{Page, ResolvedFont},
+    page::{Page, ResolvedFont, TextBlock},
     page_layout::{
         CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, bitmap_text_advance, stack_ascent,
         stack_text_metrics, stack_word_width, text_metrics,
@@ -43,11 +43,11 @@ pub(crate) enum PreviewCommand {
         rect: LayoutRect,
         text: String,
         style: TextStyle,
-        runs: Vec<PreviewTextRun>,
+        runs: Vec<PositionedTextRun>,
     },
 }
 
-pub(crate) struct PreviewTextRun {
+pub(crate) struct PositionedTextRun {
     pub(crate) x: i32,
     pub(crate) offset_x: f32,
     pub(crate) y: i32,
@@ -456,7 +456,7 @@ impl PreviewLayout {
 
                     collect_styled_fragments(items, inherited, None, &mut fragments)?;
 
-                    let fonts = PreviewFonts::new(page, &fragments);
+                    let fonts = InlineFonts::new(page, &fragments);
                     let words = split_styled_words(&fragments);
 
                     let changed_weight = fragments
@@ -490,68 +490,20 @@ impl PreviewLayout {
                         }
                     }
 
-                    let font = fonts.get(inherited).or(fallback);
-                    let base_stack = fonts.stack(inherited);
-
-                    let base_metrics =
-                        PreviewLineMetrics::from_stack(font, &base_stack, inherited.font_size);
-
-                    let mut wrap = TextWrap::new(0, width);
-                    let mut line_metrics = base_metrics;
-                    let mut line_top = 0_i32;
-
-                    let mut runs = Vec::new();
-                    let mut pending_runs = Vec::new();
                     let use_positioned_runs = fragments.len() > 1
                         || fragments.iter().any(|fragment| {
                             fragment.style.color != inherited.color
                                 || !same_font(inherited, fragment.style)
                         });
 
-                    for word in &words {
-                        let measured = fonts.measure_word(word, fallback);
-                        let space_width = fonts.space_width(word, fallback);
-                        let placement = wrap.place_word(space_width, measured.width());
-
-                        if placement.wrapped {
-                            finish_preview_line(
-                                &mut pending_runs,
-                                &mut runs,
-                                line_metrics,
-                                line_top,
-                            );
-
-                            line_top = line_top.saturating_add(line_metrics.height());
-                            line_metrics = base_metrics;
-                        }
-
-                        for run in measured.runs {
-                            let run_font = fonts.get(run.style).or(fallback);
-                            let run_stack = fonts.stack(run.style);
-
-                            let run_metrics = PreviewLineMetrics::from_stack(
-                                run_font,
-                                &run_stack,
-                                run.style.font_size,
-                            );
-
-                            line_metrics.include(run_metrics);
-
-                            if use_positioned_runs {
-                                pending_runs.push(PendingPreviewRun {
-                                    x: placement.x.saturating_add(run.x),
-                                    offset_x: run.offset_x,
-                                    above_subpixels: run_metrics.above_subpixels,
-                                    text: run.text.into_owned(),
-                                    style: run.style.clone(),
-                                });
-                            }
-                        }
-                    }
-
-                    finish_preview_line(&mut pending_runs, &mut runs, line_metrics, line_top);
-
-                    let height = line_top.saturating_add(line_metrics.height());
+                    let (height, runs) = layout_inline_words(
+                        &fonts,
+                        &words,
+                        inherited,
+                        width,
+                        fallback,
+                        use_positioned_runs,
+                    );
 
                     self.display_list.push(PreviewCommand::Text {
                         rect: LayoutRect {
@@ -704,6 +656,157 @@ struct InlineWord<'a> {
     parts: Vec<InlineWordPart<'a>>,
 }
 
+// Uses the same partial inline model as the preview, without claiming full CSS layout.
+pub(crate) fn layout_text_block(
+    page: &Page,
+    block: &TextBlock,
+    inherited: &TextStyle,
+    width: i32,
+    fallback: Option<&TrueTypeFont<'_>>,
+) -> Option<(i32, Vec<PositionedTextRun>)> {
+    // Keep the legacy behavior for non-CSS Unicode whitespace.
+    if block
+        .text
+        .chars()
+        .any(|ch| ch.is_whitespace() && !matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'))
+    {
+        return None;
+    }
+
+    if block.runs.is_empty() {
+        return None;
+    }
+
+    let mut end = 0;
+    let mut fragments = Vec::with_capacity(block.runs.len());
+
+    for run in &block.runs {
+        if run.range.start != end || !same_font_except_weight(inherited, &run.style) {
+            return None;
+        }
+
+        let text = block.text.get(run.range.clone())?;
+        end = run.range.end;
+
+        fragments.push(InlineTextFragment {
+            text,
+            style: &run.style,
+            style_source: None,
+        });
+    }
+
+    if end != block.text.len()
+        || !fragments.iter().any(|fragment| {
+            fragment.style.color != inherited.color
+                || fragment.style.font_weight != inherited.font_weight
+        })
+    {
+        return None;
+    }
+
+    let words = split_styled_words(&fragments);
+
+    // Color changes inside a word need more precise glyph positioning.
+    if words.is_empty()
+        || words.iter().any(|word| {
+            word.parts.first().is_some_and(|first| {
+                word.parts
+                    .iter()
+                    .any(|part| part.style.color != first.style.color)
+            })
+        })
+    {
+        return None;
+    }
+
+    let fonts = InlineFonts::from_styles(
+        page,
+        std::iter::once(inherited).chain(fragments.iter().map(|fragment| fragment.style)),
+    );
+
+    let has_vector = fragments
+        .iter()
+        .any(|fragment| fonts.get(fragment.style).or(fallback).is_some());
+
+    let has_bitmap = fragments
+        .iter()
+        .any(|fragment| fonts.get(fragment.style).or(fallback).is_none());
+
+    if has_vector && has_bitmap {
+        return None;
+    }
+
+    if has_vector
+        && words.iter().any(|word| {
+            word.parts.first().is_some_and(|first| {
+                word.parts
+                    .iter()
+                    .any(|part| part.style.font_weight != first.style.font_weight)
+                    && fonts.measure_vector_word(word, fallback).is_none()
+            })
+        })
+    {
+        return None;
+    }
+
+    Some(layout_inline_words(
+        &fonts, &words, inherited, width, fallback, true,
+    ))
+}
+
+fn layout_inline_words(
+    fonts: &InlineFonts<'_, '_>,
+    words: &[InlineWord<'_>],
+    inherited: &TextStyle,
+    width: i32,
+    fallback: Option<&TrueTypeFont<'_>>,
+    positioned: bool,
+) -> (i32, Vec<PositionedTextRun>) {
+    let primary = fonts.get(inherited).or(fallback);
+
+    let base = PreviewLineMetrics::from_stack(primary, fonts.stack(inherited), inherited.font_size);
+
+    let mut wrap = TextWrap::new(0, width);
+    let mut metrics = base;
+    let mut line_top = 0_i32;
+    let mut output = Vec::new();
+    let mut pending = Vec::new();
+
+    for word in words {
+        let measured = fonts.measure_word(word, fallback);
+        let placement = wrap.place_word(fonts.space_width(word, fallback), measured.width());
+
+        if placement.wrapped {
+            finish_preview_line(&mut pending, &mut output, metrics, line_top);
+            line_top = line_top.saturating_add(metrics.height());
+            metrics = base;
+        }
+
+        for run in measured.runs {
+            let font = fonts.get(run.style).or(fallback);
+
+            let run_metrics =
+                PreviewLineMetrics::from_stack(font, fonts.stack(run.style), run.style.font_size);
+
+            metrics.include(run_metrics);
+
+            if positioned {
+                pending.push(PendingPreviewRun {
+                    x: placement.x.saturating_add(run.x),
+                    offset_x: run.offset_x,
+                    above_subpixels: run_metrics.above_subpixels,
+                    text: run.text.into_owned(),
+                    style: run.style.clone(),
+                });
+            }
+        }
+    }
+
+    finish_preview_line(&mut pending, &mut output, metrics, line_top);
+
+    (line_top.saturating_add(metrics.height()), output)
+}
+
 // Preview-only quantized approximation; this is not CSS baseline alignment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PreviewLineMetrics {
@@ -767,7 +870,7 @@ struct PendingPreviewRun {
 
 fn finish_preview_line(
     pending: &mut Vec<PendingPreviewRun>,
-    output: &mut Vec<PreviewTextRun>,
+    output: &mut Vec<PositionedTextRun>,
     metrics: PreviewLineMetrics,
     line_top: i32,
 ) {
@@ -782,7 +885,7 @@ fn finish_preview_line(
         let whole = i32::try_from(offset / steps).unwrap_or(i32::MAX);
         let fraction = (offset % steps) as f32 / GLYPH_SUBPIXEL_STEPS as f32;
 
-        output.push(PreviewTextRun {
+        output.push(PositionedTextRun {
             x: run.x,
             offset_x: run.offset_x,
             y: line_top.saturating_add(whole),
@@ -793,11 +896,11 @@ fn finish_preview_line(
     }
 }
 
-pub(crate) struct PreviewFonts<'style, 'font> {
+pub(crate) struct InlineFonts<'style, 'font> {
     entries: Vec<(&'style TextStyle, Vec<ResolvedFont<'font>>)>,
 }
 
-impl<'style, 'font> PreviewFonts<'style, 'font> {
+impl<'style, 'font> InlineFonts<'style, 'font> {
     fn new(page: &'font Page, fragments: &[InlineTextFragment<'style>]) -> Self {
         Self::from_styles(page, fragments.iter().map(|fragment| fragment.style))
     }
@@ -1583,7 +1686,7 @@ mod tests {
 
     #[test]
     fn measures_words_and_spaces_using_their_styles() {
-        use super::{InlineTextFragment, PreviewFonts, split_styled_words};
+        use super::{InlineFonts, InlineTextFragment, split_styled_words};
 
         let page = crate::page::parse_xhtml_for_test(
             "https://example.org/",
@@ -1618,7 +1721,7 @@ mod tests {
             },
         ];
 
-        let fonts = PreviewFonts::new(&page, &fragments);
+        let fonts = InlineFonts::new(&page, &fragments);
 
         // Color does not require a separate font.
         assert_eq!(fonts.entries.len(), 2);
