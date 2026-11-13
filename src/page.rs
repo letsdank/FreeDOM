@@ -217,6 +217,23 @@ impl Page {
 
         Some(output)
     }
+
+    pub(crate) fn vector_fonts_for_style<'a>(
+        &'a self,
+        style: &TextStyle,
+    ) -> Vec<crate::graphics::font::TrueTypeFont<'a>> {
+        let limit =
+            if style.font_weight == FontWeight::Normal && style.font_style == FontStyle::Normal {
+                usize::MAX
+            } else {
+                1
+            };
+
+        self.font_data_for_families(style)
+            .take(limit)
+            .filter_map(|data| crate::graphics::font::TrueTypeFont::parse(data).ok())
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -4086,5 +4103,93 @@ mod tests {
         );
 
         assert_eq!(paint(&fallback), paint(&direct));
+    }
+
+    #[test]
+    fn page_renders_missing_glyph_from_next_family() {
+        use crate::graphics::font::normalize_font_container;
+        use crate::page_layout::PageLayout;
+        use crate::render::{BlockRasterCache, GlyphRasterCache, paint};
+
+        let read = |path: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+
+            normalize_font_container(std::fs::read(path).expect("font fixture must exist")).unwrap()
+        };
+
+        let a = read("testdata/fonts/noto/nko-hmtx.woff2");
+        let b = read("testdata/wpt/fonts/noto/NotoSansMongolian-regular.woff2");
+
+        let mut page = parse_html(
+            "https://example.test/",
+            "<div style='font-family:A,B;font-size:32px'>ߊᠠ</div>",
+        );
+
+        for (family, data) in [("A", a), ("B", b)] {
+            page.font_faces.push(LoadedFontFace {
+                family: family.into(),
+                font_weight: FontWeight::Normal,
+                font_style: FontStyle::Normal,
+                data,
+            });
+        }
+
+        let fonts = page.vector_fonts_for_style(&page.blocks[0].style);
+
+        assert_eq!(fonts.len(), 2);
+        assert_eq!(fonts[0].glyph_id('ᠠ'), 0);
+        assert_ne!(fonts[1].glyph_id('ᠠ'), 0);
+
+        let font_refs: Vec<_> = fonts.iter().collect();
+
+        let expected = crate::graphics::font::layout::visit_positioned_glyphs(
+            &font_refs,
+            "ߊᠠ",
+            32.0,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            crate::page_layout::stack_word_width(
+                Some(&fonts[0]),
+                &font_refs,
+                "ߊᠠ",
+                32.0,
+                FontWeight::Normal,
+                FontStyle::Normal,
+            ),
+            expected.ceil() as i32,
+        );
+
+        let draw = |page: &Page| {
+            let layout = PageLayout::build(page, 120, None);
+            let mut pixels = vec![0; 120 * 200];
+
+            paint(
+                &mut pixels,
+                120,
+                200,
+                page,
+                &layout,
+                "",
+                "",
+                None,
+                &mut BlockRasterCache::new(),
+                &mut GlyphRasterCache::new(),
+                0,
+                false,
+            );
+
+            pixels
+        };
+
+        let fallback = draw(&page);
+
+        page.font_faces.pop();
+
+        let missing = draw(&page);
+
+        assert_ne!(fallback, missing);
     }
 }

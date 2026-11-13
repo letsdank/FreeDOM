@@ -12,8 +12,8 @@ use crate::{
     layout_preview::{PreviewCommand, PreviewFonts, PreviewLayout},
     page::{BlockContent, Page},
     page_layout::{
-        CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, svg_block_size,
-        synthetic_bold_offset, synthetic_italic_shear, text_metrics, text_word_width,
+        CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, stack_ascent, stack_text_metrics,
+        stack_word_width, svg_block_size, synthetic_bold_offset, synthetic_italic_shear,
     },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -369,6 +369,7 @@ pub(crate) fn paint_preview_scene(
                             run_style.color,
                             None,
                             font,
+                            &[],
                             0,
                             &mut links,
                             glyph_cache,
@@ -449,11 +450,15 @@ fn cache_text_block<'cache>(
     let content_width = viewport_width.saturating_sub(32).max(1);
     let block_height = usize::try_from(layout.block_height(index).max(0)).unwrap_or(0);
 
-    let page_font = page
-        .font_data_for_style(&block.style)
-        .and_then(|data| TrueTypeFont::parse(data).ok());
+    let page_fonts = page.vector_fonts_for_style(&block.style);
+    let page_font = page_fonts.first();
+    let vector_font = page_font.or(fallback_font);
 
-    let vector_font = page_font.as_ref().or(fallback_font);
+    let font_stack: Vec<_> = if page_fonts.len() > 1 {
+        page_fonts.iter().collect()
+    } else {
+        Vec::new()
+    };
 
     text_cache.get_or_render(
         index,
@@ -477,6 +482,7 @@ fn cache_text_block<'cache>(
                 block.style.color,
                 block.link.as_deref(),
                 vector_font,
+                &font_stack,
                 0,
                 cache_links,
                 glyph_raster_cache,
@@ -636,11 +642,15 @@ pub(crate) fn paint(
                     cached.blit_to(pixels, width, height, 16, y);
                     cached.append_link_regions(&mut link_regions, 16, y);
                 } else {
-                    let page_font = page
-                        .font_data_for_style(&block.style)
-                        .and_then(|data| TrueTypeFont::parse(data).ok());
+                    let page_fonts = page.vector_fonts_for_style(&block.style);
+                    let page_font = page_fonts.first();
+                    let vector_font = page_font.or(fallback_font.as_ref());
 
-                    let vector_font = page_font.as_ref().or(fallback_font.as_ref());
+                    let font_stack: Vec<_> = if page_fonts.len() > 1 {
+                        page_fonts.iter().collect()
+                    } else {
+                        Vec::new()
+                    };
 
                     draw_wrapped_text(
                         pixels,
@@ -659,6 +669,7 @@ pub(crate) fn paint(
                         block.style.color,
                         block.link.as_deref(),
                         vector_font,
+                        &font_stack,
                         CONTENT_TOP,
                         &mut link_regions,
                         glyph_raster_cache,
@@ -714,6 +725,7 @@ fn draw_wrapped_text(
     color: u32,
     link_target: Option<&str>,
     vector_font: Option<&TrueTypeFont<'_>>,
+    font_stack: &[&TrueTypeFont<'_>],
     visible_top: i32,
     link_regions: &mut Vec<LinkRegion>,
     glyph_raster_cache: &mut GlyphRasterCache,
@@ -722,11 +734,19 @@ fn draw_wrapped_text(
         return y;
     }
 
-    let metrics = text_metrics(vector_font, font_size);
+    let metrics = stack_text_metrics(vector_font, font_stack, font_size);
     let mut wrap = TextWrap::new(left, right);
 
     for word in text.split_whitespace() {
-        let word_width = text_word_width(vector_font, word, font_size, font_weight, font_style);
+        let word_width = stack_word_width(
+            vector_font,
+            font_stack,
+            word,
+            font_size,
+            font_weight,
+            font_style,
+        );
+
         let placement = wrap.place_word(metrics.character_width, word_width);
 
         if placement.wrapped {
@@ -758,6 +778,7 @@ fn draw_wrapped_text(
                     font_style,
                     color,
                     font,
+                    font_stack,
                     glyph_raster_cache,
                 )
             });
@@ -909,24 +930,32 @@ fn draw_vector_text_line(
     font_style: FontStyle,
     color: u32,
     font: &TrueTypeFont<'_>,
+    font_stack: &[&TrueTypeFont<'_>],
     glyph_raster_cache: &mut GlyphRasterCache,
 ) -> bool {
     let Some(line_metrics) = font.line_metrics(font_size) else {
         return false;
     };
 
-    let Some((baseline_y, phase_y)) = split_subpixel_position(line_metrics.ascent + offset_y)
-    else {
+    let ascent = stack_ascent(font_stack, font_size).unwrap_or(line_metrics.ascent);
+
+    let Some((baseline_y, phase_y)) = split_subpixel_position(ascent + offset_y) else {
         return false;
     };
 
     let baseline_phase = f32::from(phase_y) / GLYPH_SUBPIXEL_STEPS as f32;
+    let single_font = [font];
 
     let result = crate::graphics::font::layout::visit_positioned_glyphs(
-        &[font],
+        if font_stack.is_empty() {
+            &single_font
+        } else {
+            font_stack
+        },
         text,
         font_size,
-        |_, glyph_id, pen_x| {
+        |index, glyph_id, pen_x| {
+            let font = font_stack.get(index).copied().unwrap_or(font);
             let invalid = || crate::graphics::font::sfnt::FontError {
                 offset: 0,
                 message: "cannot rasterize vector glyph".to_owned(),
@@ -1136,6 +1165,7 @@ mod tests {
             0,
             Some("/link"),
             None,
+            &[],
             0,
             &mut regions,
             &mut cache,
@@ -1150,7 +1180,15 @@ mod tests {
 
         assert_eq!(
             end_y,
-            measure_wrapped_text(text, 64, 16.0, FontWeight::Normal, FontStyle::Normal, None)
+            measure_wrapped_text(
+                text,
+                64,
+                16.0,
+                FontWeight::Normal,
+                FontStyle::Normal,
+                None,
+                &[],
+            )
         );
 
         assert_eq!(end_y, 20);
@@ -1180,6 +1218,7 @@ mod tests {
             0,
             None,
             None,
+            &[],
             0,
             &mut regions,
             &mut cache,
@@ -1189,7 +1228,15 @@ mod tests {
 
         assert_eq!(
             end_y,
-            measure_wrapped_text(&text, 8, 16.0, FontWeight::Normal, FontStyle::Normal, None),
+            measure_wrapped_text(
+                &text,
+                8,
+                16.0,
+                FontWeight::Normal,
+                FontStyle::Normal,
+                None,
+                &[],
+            ),
         );
     }
 
@@ -1225,6 +1272,7 @@ mod tests {
                 FontStyle::Normal,
                 0x00_00_00_00,
                 &font,
+                &[],
                 cache,
             ));
 

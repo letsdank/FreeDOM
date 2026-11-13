@@ -133,11 +133,15 @@ impl PageLayout {
                 }
 
                 BlockContent::Text(text) => {
-                    let page_font = page
-                        .font_data_for_style(&block.style)
-                        .and_then(|data| TrueTypeFont::parse(data).ok());
+                    let page_fonts = page.vector_fonts_for_style(&block.style);
+                    let page_font = page_fonts.first();
+                    let font = page_font.or(fallback_font.as_ref());
 
-                    let font = page_font.as_ref().or(fallback_font.as_ref());
+                    let font_stack: Vec<_> = if page_fonts.len() > 1 {
+                        page_fonts.iter().collect()
+                    } else {
+                        Vec::new()
+                    };
 
                     let height = measure_wrapped_text(
                         text,
@@ -146,6 +150,7 @@ impl PageLayout {
                         page.synthetic_font_weight(&block.style, page_font.is_some()),
                         page.synthetic_font_style(&block.style, page_font.is_some()),
                         font,
+                        &font_stack,
                     );
 
                     (text_width, height)
@@ -263,13 +268,21 @@ pub(crate) fn measure_wrapped_text(
     font_weight: FontWeight,
     font_style: FontStyle,
     vector_font: Option<&TrueTypeFont<'_>>,
+    font_stack: &[&TrueTypeFont<'_>],
 ) -> i32 {
-    let metrics = text_metrics(vector_font, font_size);
+    let metrics = stack_text_metrics(vector_font, font_stack, font_size);
     let mut wrap = TextWrap::new(0, available_width);
     let mut line_count = 1_i32;
 
     for word in text.split_whitespace() {
-        let word_width = text_word_width(vector_font, word, font_size, font_weight, font_style);
+        let word_width = stack_word_width(
+            vector_font,
+            font_stack,
+            word,
+            font_size,
+            font_weight,
+            font_style,
+        );
 
         if wrap.place_word(metrics.character_width, word_width).wrapped {
             line_count = line_count.saturating_add(1);
@@ -277,6 +290,58 @@ pub(crate) fn measure_wrapped_text(
     }
 
     line_count.saturating_mul(metrics.line_height)
+}
+
+pub(crate) fn stack_ascent(font_stack: &[&TrueTypeFont<'_>], font_size: f32) -> Option<f32> {
+    font_stack
+        .iter()
+        .filter_map(|font| font.line_metrics(font_size))
+        .map(|metrics| metrics.ascent)
+        .reduce(f32::max)
+}
+
+pub(crate) fn stack_text_metrics(
+    font: Option<&TrueTypeFont<'_>>,
+    stack: &[&TrueTypeFont<'_>],
+    size: f32,
+) -> TextMetrics {
+    let mut metrics = text_metrics(font, size);
+
+    if let Some(ascent) = stack_ascent(stack, size) {
+        let below = stack
+            .iter()
+            .filter_map(|font| font.line_metrics(size))
+            .map(|metrics| (metrics.line_height - metrics.ascent).max(0.0))
+            .fold(0.0_f32, f32::max);
+
+        let height = (ascent + below).ceil().max(0.0) as i32;
+
+        metrics.line_height = metrics.line_height.max(height);
+        metrics.glyph_height = metrics.glyph_height.max(height);
+    }
+
+    metrics
+}
+
+pub(crate) fn stack_word_width(
+    font: Option<&TrueTypeFont<'_>>,
+    stack: &[&TrueTypeFont<'_>],
+    text: &str,
+    size: f32,
+    weight: FontWeight,
+    style: FontStyle,
+) -> i32 {
+    if !stack.is_empty() && size > 0.0 {
+        if let Ok(advance) =
+            crate::graphics::font::layout::visit_positioned_glyphs(stack, text, size, |_, _, _| {
+                Ok(())
+            })
+        {
+            return advance.ceil().max(1.0) as i32;
+        }
+    }
+
+    text_word_width(font, text, size, weight, style)
 }
 
 pub(crate) fn text_word_width(
@@ -417,6 +482,7 @@ mod tests {
             FontWeight::Normal,
             FontStyle::Normal,
             None,
+            &[],
         );
 
         assert_eq!(height, 20);
