@@ -223,17 +223,45 @@ impl Page {
         &'a self,
         style: &TextStyle,
     ) -> Vec<crate::graphics::font::TrueTypeFont<'a>> {
-        let limit =
-            if style.font_weight == FontWeight::Normal && style.font_style == FontStyle::Normal {
-                usize::MAX
-            } else {
-                1
-            };
+        if style.font_weight == FontWeight::Normal && style.font_style == FontStyle::Normal {
+            return self
+                .font_data_for_families(style)
+                .filter_map(|data| crate::graphics::font::TrueTypeFont::parse(data).ok())
+                .collect();
+        }
 
-        self.font_data_for_families(style)
-            .take(limit)
-            .filter_map(|data| crate::graphics::font::TrueTypeFont::parse(data).ok())
-            .collect()
+        let mut faces = self.font_faces_for_style(style);
+
+        let Some(first) = faces.next() else {
+            return Vec::new();
+        };
+
+        let Ok(font) = crate::graphics::font::TrueTypeFont::parse(&first.data) else {
+            return Vec::new();
+        };
+
+        let synthesis = |face: &LoadedFontFace| {
+            (
+                style.font_weight == FontWeight::Bold && face.font_weight != FontWeight::Bold,
+                style.font_style == FontStyle::Italic && face.font_style != FontStyle::Italic,
+            )
+        };
+
+        let first_synthesis = synthesis(first);
+        let mut fonts = vec![font];
+
+        for face in faces {
+            if let Ok(font) = crate::graphics::font::TrueTypeFont::parse(&face.data) {
+                if synthesis(face) != first_synthesis {
+                    fonts.truncate(1);
+                    break;
+                }
+
+                fonts.push(font);
+            }
+        }
+
+        fonts
     }
 }
 
@@ -4234,6 +4262,65 @@ mod tests {
         );
 
         assert_eq!(&fallback[90 * 120..], &split_pixels[90 * 120..]);
+
+        let mut styled = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='font-family:A,B;font-size:32px;",
+                "font-weight:bold;font-style:italic'>ߊᠠ</div>"
+            ),
+        );
+
+        for face in &page.font_faces {
+            styled.font_faces.push(LoadedFontFace {
+                family: face.family.clone(),
+                font_weight: face.font_weight,
+                font_style: face.font_style,
+                data: face.data.clone(),
+            });
+        }
+
+        assert_eq!(
+            styled.vector_fonts_for_style(&styled.blocks[0].style).len(),
+            2
+        );
+
+        let synthetic = draw(&styled);
+
+        let preview = crate::layout_preview::PreviewLayout::build(&styled, 120, None).unwrap();
+        let mut styled_preview = vec![0; 120 * 200];
+
+        crate::render::paint_preview_scene(
+            &mut styled_preview,
+            120,
+            200,
+            &styled,
+            &preview,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_eq!(&synthetic[90 * 120..], &styled_preview[90 * 120..]);
+
+        styled.font_faces.pop();
+
+        let missing_synthetic = draw(&styled);
+
+        assert_ne!(synthetic, missing_synthetic);
+
+        // The files would require different synthesis settings.
+        styled.font_faces.push(LoadedFontFace {
+            family: "B".into(),
+            font_weight: FontWeight::Bold,
+            font_style: FontStyle::Italic,
+            data: page.font_faces[1].data.clone(),
+        });
+
+        assert_eq!(
+            styled.vector_fonts_for_style(&styled.blocks[0].style).len(),
+            1
+        );
 
         page.font_faces.pop();
 

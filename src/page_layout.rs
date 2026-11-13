@@ -337,7 +337,15 @@ pub(crate) fn stack_word_width(
                 Ok(())
             })
         {
-            return advance.ceil().max(1.0) as i32;
+            let extra = stack
+                .iter()
+                .map(|font| {
+                    synthetic_bold_offset(size, weight)
+                        + synthetic_italic_overhang(font, size, style)
+                })
+                .fold(0.0_f32, f32::max);
+
+            return (advance + extra).ceil().max(1.0) as i32;
         }
     }
 
