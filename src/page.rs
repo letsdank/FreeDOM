@@ -3608,11 +3608,14 @@ mod tests {
     }
 
     #[test]
-    fn preview_handles_separate_vector_words_with_mixed_weight() {
-        use crate::graphics::font::normalize_font_container;
-        use crate::layout_preview::{PreviewError, PreviewLayout};
+    fn preview_handles_vector_words_with_mixed_weight() {
+        use crate::graphics::font::{
+            TrueTypeFont, normalize_font_container,
+            render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
+        };
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
 
-        let inside = parse_html("https://example.test/", "<div>A<strong>B</strong></div>");
+        let inside = parse_html("https://example.test/", "<div>ߊ<strong>ߊ</strong></div>");
         let between = parse_html("https://example.test/", "<div>ߊ <strong>ߊ</strong></div>");
 
         let path = concat!(
@@ -3624,10 +3627,33 @@ mod tests {
             normalize_font_container(std::fs::read(path).expect("Nko font fixture must exist"))
                 .unwrap();
 
-        assert!(matches!(
-            PreviewLayout::build(&inside, 120, Some(&font)),
-            Err(PreviewError::InlineFont(_))
-        ));
+        let layout = PreviewLayout::build(&inside, 120, Some(&font)).unwrap();
+
+        let runs = layout
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } if runs.len() == 2 => Some(runs),
+                _ => None,
+            })
+            .expect("two positioned runs expected");
+
+        let face = TrueTypeFont::parse(&font).unwrap();
+        let size = runs[0].style.font_size;
+        let advance = face.text_advance_width("ߊ", size).unwrap();
+        let glyph = face.glyph_id('ߊ');
+
+        let kern =
+            f32::from(face.kerning(glyph, glyph)) * size / f32::from(face.head().units_per_em);
+
+        let (base, phase) = split_subpixel_position(advance + kern).unwrap();
+
+        assert_eq!(runs[1].x, base);
+        assert_eq!(
+            runs[1].offset_x,
+            f32::from(phase) / GLYPH_SUBPIXEL_STEPS as f32
+        );
+        assert_ne!(phase, 0);
 
         assert!(PreviewLayout::build(&between, 120, Some(&font)).is_ok());
     }

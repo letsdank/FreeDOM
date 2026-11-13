@@ -472,18 +472,16 @@ impl PreviewLayout {
                             .iter()
                             .any(|item| fonts.get(item.style).or(fallback).is_none());
 
-                        let mixed_weight_word = words.iter().any(|word| {
+                        let unsupported_word = words.iter().any(|word| {
                             word.parts.first().is_some_and(|first| {
                                 word.parts
                                     .iter()
                                     .any(|part| part.style.font_weight != first.style.font_weight)
+                                    && fonts.measure_vector_word(word, fallback).is_none()
                             })
                         });
 
-                        // Within a word, a font change requires fractional advances
-                        // and kerning across runs. Mixed bitmap/vector baselines are
-                        // also not positioned precisely yet.
-                        if has_vector_font && (mixed_weight_word || has_bitmap_font) {
+                        if has_vector_font && (unsupported_word || has_bitmap_font) {
                             let path = fragment
                                 .style_source
                                 .map_or_else(Vec::new, |path| path.indices().to_vec());
@@ -535,6 +533,7 @@ impl PreviewLayout {
                             if use_positioned_runs {
                                 pending_runs.push(PendingPreviewRun {
                                     x: placement.x.saturating_add(run.x),
+                                    offset_x: run.offset_x,
                                     above_subpixels: run_metrics.above_subpixels,
                                     text: run.text.into_owned(),
                                     style: run.style.clone(),
@@ -741,6 +740,7 @@ impl PreviewLineMetrics {
 
 struct PendingPreviewRun {
     x: i32,
+    offset_x: f32,
     above_subpixels: i64,
     text: String,
     style: TextStyle,
@@ -765,7 +765,7 @@ fn finish_preview_line(
 
         output.push(PreviewTextRun {
             x: run.x,
-            offset_x: 0.0,
+            offset_x: run.offset_x,
             y: line_top.saturating_add(whole),
             offset_y: fraction,
             text: run.text,
@@ -823,6 +823,16 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         word: &InlineWord<'a>,
         fallback: Option<&TrueTypeFont<'_>>,
     ) -> MeasuredWord<'a> {
+        if word.parts.first().is_some_and(|first| {
+            word.parts
+                .iter()
+                .any(|part| part.style.font_weight != first.style.font_weight)
+        }) {
+            if let Some(measured) = self.measure_vector_word(word, fallback) {
+                return measured;
+            }
+        }
+
         measure_styled_word(word, |text, style| {
             let font = self.get(style).or(fallback);
 
@@ -844,6 +854,60 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         })
     }
 
+    fn measure_vector_word<'a>(
+        &self,
+        word: &InlineWord<'a>,
+        fallback: Option<&TrueTypeFont<'_>>,
+    ) -> Option<MeasuredWord<'a>> {
+        let first = word.parts.first()?;
+        let font = self.get(first.style).or(fallback)?;
+
+        if word.parts.iter().any(|part| {
+            self.get(part.style)
+                .or(fallback)
+                .is_none_or(|other| other.glyph_cache_key() != font.glyph_cache_key())
+        }) {
+            return None;
+        }
+
+        let mut measured = measure_styled_word(word, |text, style| {
+            let width = text_word_width(
+                Some(font),
+                text,
+                style.font_size,
+                style.font_weight,
+                style.font_style,
+            );
+
+            (width, 0)
+        });
+
+        let scale = first.style.font_size / f32::from(font.head().units_per_em);
+        let mut pen = 0.0_f32;
+        let mut previous = None;
+
+        for run in &mut measured.runs {
+            let first_glyph = font.glyph_id(run.text.chars().next()?);
+
+            if let Some(left) = previous {
+                pen += f32::from(font.kerning(left, first_glyph)) * scale;
+            }
+
+            let (x, phase) = split_subpixel_position(pen)?;
+
+            run.x = x;
+            run.offset_x = f32::from(phase) / GLYPH_SUBPIXEL_STEPS as f32;
+
+            pen += font
+                .text_advance_width(&run.text, run.style.font_size)
+                .ok()?;
+
+            previous = run.text.chars().last().map(|c| font.glyph_id(c));
+        }
+
+        Some(measured)
+    }
+
     fn space_width(&self, word: &InlineWord<'_>, fallback: Option<&TrueTypeFont<'_>>) -> i32 {
         word.space_before.map_or(0, |style| {
             let font = self.get(style).or(fallback);
@@ -854,6 +918,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
 
 struct MeasuredRun<'a> {
     x: i32,
+    offset_x: f32,
     width: i32,
     text: std::borrow::Cow<'a, str>,
     style: &'a TextStyle,
@@ -867,7 +932,11 @@ impl MeasuredWord<'_> {
     fn width(&self) -> i32 {
         self.runs
             .iter()
-            .map(|run| run.x.saturating_add(run.width))
+            .map(|run| {
+                run.x
+                    .saturating_add(run.width)
+                    .saturating_add(i32::from(run.offset_x > 0.0))
+            })
             .max()
             .unwrap_or(0)
     }
@@ -909,6 +978,7 @@ fn measure_styled_word<'a>(
 
         runs.push(MeasuredRun {
             x,
+            offset_x: 0.0,
             width,
             text,
             style,
@@ -1569,12 +1639,14 @@ mod tests {
         let mut pending = vec![
             PendingPreviewRun {
                 x: 4,
+                offset_x: 0.0,
                 above_subpixels: small_metrics.above_subpixels,
                 text: "small".into(),
                 style: small,
             },
             PendingPreviewRun {
                 x: 40,
+                offset_x: 0.0,
                 above_subpixels: large_metrics.above_subpixels,
                 text: "large".into(),
                 style: large,
@@ -1668,12 +1740,14 @@ mod tests {
         let mut pending = vec![
             PendingPreviewRun {
                 x: 0,
+                offset_x: 0.0,
                 above_subpixels: 85,
                 text: "a".into(),
                 style: style.clone(),
             },
             PendingPreviewRun {
                 x: 20,
+                offset_x: 0.0,
                 above_subpixels: 98,
                 text: "b".into(),
                 style,
@@ -1741,12 +1815,14 @@ mod tests {
         let mut pending = vec![
             PendingPreviewRun {
                 x: 0,
+                offset_x: 0.0,
                 above_subpixels: small_metrics.above_subpixels,
                 text: "ߊ".into(),
                 style: small.clone(),
             },
             PendingPreviewRun {
                 x: 100,
+                offset_x: 0.0,
                 above_subpixels: large_metrics.above_subpixels,
                 text: "ߊ".into(),
                 style: large,
