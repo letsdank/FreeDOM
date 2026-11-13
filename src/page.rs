@@ -2239,93 +2239,62 @@ mod tests {
     }
 
     #[test]
-    fn preview_positions_empty_fixed_height_blocks_with_collapsed_margins() {
-        let page = parse_html(
-            "https://example.test/",
-            concat!(
-                "<div style='height: 20px; margin-bottom: 2in'></div>",
-                "<div style='height: 20px; margin-top: -2in'></div>"
+    fn preview_fixed_height_and_margin_cases() {
+        let cases: &[(&str, &str, &[(i32, i32)])] = &[
+            (
+                "collapsed sibling margins",
+                concat!(
+                    "<div style='height: 20px; margin-bottom: 2in'></div>",
+                    "<div style='height: 20px; margin-top: -2in'></div>",
+                ),
+                &[(0, 20), (20, 20)],
             ),
-        );
-
-        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
-
-        let rects: Vec<_> = preview
-            .boxes
-            .iter()
-            .map(|item| (item.rect.y, item.rect.height))
-            .collect();
-
-        assert_eq!(rects, vec![(0, 20), (20, 20)]);
-    }
-
-    #[test]
-    fn preview_fixed_height_prevents_last_child_bottom_margin_escaping() {
-        let page = parse_html(
-            "https://example.test/",
-            concat!(
-                "<div style='height: 20px'>",
-                "<div style='height: 5px; margin-bottom: 8px'></div>",
-                "</div>",
-                "<div style='height: 10px; margin-top: 3px'></div>"
+            (
+                "child margin stays inside fixed height",
+                concat!(
+                    "<div style='height: 20px'>",
+                    "<div style='height: 5px; margin-bottom: 8px'></div>",
+                    "</div>",
+                    "<div style='height: 10px; margin-top: 3px'></div>"
+                ),
+                &[(0, 20), (0, 5), (23, 10)],
             ),
-        );
-
-        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
-
-        let rects: Vec<_> = preview
-            .boxes
-            .iter()
-            .map(|item| (item.rect.y, item.rect.height))
-            .collect();
-
-        assert_eq!(rects, vec![(0, 20), (0, 5), (23, 10)]);
-    }
-
-    #[test]
-    fn preview_fixed_height_may_have_overflowing_content() {
-        let page = parse_html(
-            "https://example.test/",
-            concat!(
-                "<div style='height: 5px'>",
-                "<div style='height: 20px'></div>",
-                "</div>",
-                "<div style='height: 10px'></div>"
+            (
+                "content overflows fixed height",
+                concat!(
+                    "<div style='height: 5px'>",
+                    "<div style='height: 20px'></div>",
+                    "</div>",
+                    "<div style='height: 10px'></div>"
+                ),
+                &[(0, 5), (0, 20), (5, 10)],
             ),
-        );
-
-        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
-
-        let rects: Vec<_> = preview
-            .boxes
-            .iter()
-            .map(|item| (item.rect.y, item.rect.height))
-            .collect();
-
-        assert_eq!(rects, vec![(0, 5), (0, 20), (5, 10)]);
-    }
-
-    #[test]
-    fn preview_zero_height_empty_block_remains_collapsible() {
-        let page = parse_html(
-            "https://example.test/",
-            concat!(
-                "<div style='height: 10px; margin-bottom: 8px'></div>",
-                "<div style='height: 0; margin-top: 12px; ",
-                "margin-bottom: -3px'></div>",
-                "<div style='height: 10px; margin-top: 6px'></div>",
+            (
+                "zero height remains collapsible",
+                concat!(
+                    "<div style='height: 10px; margin-bottom: 8px'></div>",
+                    "<div style='height: 0; margin-top: 12px; ",
+                    "margin-bottom: -3px'></div>",
+                    "<div style='height: 10px; margin-top: 6px'></div>"
+                ),
+                &[(0, 10), (22, 0), (19, 10)],
             ),
-        );
+        ];
 
-        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+        for &(name, html, expected) in cases {
+            let page = parse_html("https://example.test/", html);
 
-        let rects: Vec<_> = preview
-            .boxes
-            .iter()
-            .map(|item| (item.rect.y, item.rect.height))
-            .collect();
+            let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
 
-        assert_eq!(rects, vec![(0, 10), (22, 0), (19, 10)]);
+            let rects: Vec<_> = preview
+                .boxes
+                .iter()
+                .map(|item| (item.rect.y, item.rect.height))
+                .collect();
+
+            assert_eq!(rects.as_slice(), expected, "{name}");
+        }
     }
 
     #[test]
