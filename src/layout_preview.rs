@@ -859,18 +859,17 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         word: &InlineWord<'a>,
         fallback: Option<&TrueTypeFont<'_>>,
     ) -> Option<MeasuredWord<'a>> {
-        let first = word.parts.first()?;
-        let font = self.get(first.style).or(fallback)?;
-
-        if word.parts.iter().any(|part| {
-            self.get(part.style)
-                .or(fallback)
-                .is_none_or(|other| other.glyph_cache_key() != font.glyph_cache_key())
-        }) {
+        if word
+            .parts
+            .iter()
+            .any(|part| self.get(part.style).or(fallback).is_none())
+        {
             return None;
         }
 
         let mut measured = measure_styled_word(word, |text, style| {
+            let font = self.get(style).or(fallback).expect("font checked above");
+
             let width = text_word_width(
                 Some(font),
                 text,
@@ -882,15 +881,20 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             (width, 0)
         });
 
-        let scale = first.style.font_size / f32::from(font.head().units_per_em);
         let mut pen = 0.0_f32;
-        let mut previous = None;
+        let mut previous: Option<(usize, u16)> = None;
 
         for run in &mut measured.runs {
+            let font = self.get(run.style).or(fallback)?;
+            let identity = font.glyph_cache_key();
             let first_glyph = font.glyph_id(run.text.chars().next()?);
 
-            if let Some(left) = previous {
-                pen += f32::from(font.kerning(left, first_glyph)) * scale;
+            if let Some((previous_font, left)) = previous {
+                if previous_font == identity {
+                    let scale = run.style.font_size / f32::from(font.head().units_per_em);
+
+                    pen += f32::from(font.kerning(left, first_glyph)) * scale;
+                }
             }
 
             let (x, phase) = split_subpixel_position(pen)?;
@@ -902,7 +906,11 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
                 .text_advance_width(&run.text, run.style.font_size)
                 .ok()?;
 
-            previous = run.text.chars().last().map(|c| font.glyph_id(c));
+            previous = run
+                .text
+                .chars()
+                .last()
+                .map(|character| (identity, font.glyph_id(character)));
         }
 
         Some(measured)

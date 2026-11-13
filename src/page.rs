@@ -3722,4 +3722,93 @@ mod tests {
             "period must be painted at the unshifted advance"
         );
     }
+
+    #[test]
+    fn preview_positions_a_word_using_two_vector_faces() {
+        use crate::graphics::font::{
+            TrueTypeFont, normalize_font_container,
+            render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
+        };
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let read = |name: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+
+            normalize_font_container(std::fs::read(path).expect("font fixture must exist")).unwrap()
+        };
+
+        let regular = read("testdata/fonts/noto/nko-hmtx.woff2");
+        let other = read("testdata/wpt/fonts/noto/NotoSansMongolian-regular.woff2");
+
+        let mut page = parse_html(
+            "https://example.test/",
+            "<div style='font-family:test;font-size:32px'>ߊ<strong>ᠠ</strong></div>",
+        );
+
+        page.font_faces.push(LoadedFontFace {
+            family: "test".into(),
+            font_weight: FontWeight::Normal,
+            font_style: FontStyle::Normal,
+            data: regular,
+        });
+
+        page.font_faces.push(LoadedFontFace {
+            family: "test".into(),
+            font_weight: FontWeight::Bold,
+            font_style: FontStyle::Normal,
+            data: other,
+        });
+
+        let layout = PreviewLayout::build(&page, 120, None).unwrap();
+
+        let runs = layout
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                PreviewCommand::Text { runs, .. } if runs.len() == 2 => Some(runs),
+                _ => None,
+            })
+            .expect("two positioned runs expected");
+
+        let font = TrueTypeFont::parse(&page.font_faces[0].data).unwrap();
+        let advance = font.text_advance_width("ߊ", 32.0).unwrap();
+        let (x, phase) = split_subpixel_position(advance).unwrap();
+
+        assert_eq!(
+            (runs[1].x, runs[1].offset_x),
+            (x, f32::from(phase) / GLYPH_SUBPIXEL_STEPS as f32)
+        );
+
+        let mut pixels = vec![0; 120 * 160];
+
+        paint_preview_scene(
+            &mut pixels,
+            120,
+            160,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        page.font_faces.pop();
+
+        let fallback_layout = PreviewLayout::build(&page, 120, None).unwrap();
+        let mut fallback_pixels = vec![0; 120 * 160];
+
+        paint_preview_scene(
+            &mut fallback_pixels,
+            120,
+            160,
+            &page,
+            &fallback_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_ne!(pixels, fallback_pixels);
+    }
 }
