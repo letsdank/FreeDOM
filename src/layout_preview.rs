@@ -706,16 +706,7 @@ pub(crate) fn layout_text_block(
 
     let words = split_styled_words(&fragments);
 
-    // Color changes inside a word need more precise glyph positioning.
-    if words.is_empty()
-        || words.iter().any(|word| {
-            word.parts.first().is_some_and(|first| {
-                word.parts
-                    .iter()
-                    .any(|part| part.style.color != first.style.color)
-            })
-        })
-    {
+    if words.is_empty() {
         return None;
     }
 
@@ -739,10 +730,10 @@ pub(crate) fn layout_text_block(
     if has_vector
         && words.iter().any(|word| {
             word.parts.first().is_some_and(|first| {
-                word.parts
-                    .iter()
-                    .any(|part| part.style.font_weight != first.style.font_weight)
-                    && fonts.measure_vector_word(word, fallback).is_none()
+                word.parts.iter().any(|part| {
+                    part.style.font_weight != first.style.font_weight
+                        || part.style.color != first.style.color
+                }) && fonts.measure_vector_word(word, fallback).is_none()
             })
         })
     {
@@ -949,9 +940,10 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
         fallback: Option<&TrueTypeFont<'_>>,
     ) -> MeasuredWord<'a> {
         if word.parts.first().is_some_and(|first| {
-            word.parts
-                .iter()
-                .any(|part| part.style.font_weight != first.style.font_weight)
+            word.parts.iter().any(|part| {
+                part.style.font_weight != first.style.font_weight
+                    || part.style.color != first.style.color
+            })
         }) {
             if let Some(measured) = self.measure_vector_word(word, fallback) {
                 return measured;

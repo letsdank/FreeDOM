@@ -4574,4 +4574,108 @@ mod tests {
         assert_eq!(text.runs.len(), 1);
         assert_eq!(&text.text[text.runs[0].range.clone()], "link");
     }
+
+    #[test]
+    fn page_keeps_color_and_kerning_inside_word() {
+        use crate::graphics::font::{
+            TrueTypeFont, normalize_font_container,
+            render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
+        };
+        use crate::page_layout::PageLayout;
+        use crate::render::{BlockRasterCache, GlyphRasterCache, paint};
+
+        let page = parse_html(
+            "https://example.test/",
+            "<div>ߊ<span style='color:red'>ߊ</span></div>",
+        );
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2"
+        );
+
+        let data = normalize_font_container(std::fs::read(path).unwrap()).unwrap();
+        let font = TrueTypeFont::parse(&data).unwrap();
+        let layout = PageLayout::build(&page, 120, Some(&data));
+
+        let runs = layout
+            .block_text_runs(0)
+            .expect("styled text runs expected");
+
+        assert_eq!(runs.len(), 2);
+
+        let size = runs[0].style.font_size;
+        let glyph = font.glyph_id('ߊ');
+        let advance = font.text_advance_width("ߊ", size).unwrap();
+
+        let kern =
+            f32::from(font.kerning(glyph, glyph)) * size / f32::from(font.head().units_per_em);
+
+        let (x, phase) = split_subpixel_position(advance + kern).unwrap();
+
+        assert_eq!(
+            (runs[1].x, runs[1].offset_x),
+            (x, f32::from(phase) / GLYPH_SUBPIXEL_STEPS as f32)
+        );
+
+        assert_eq!(runs[1].style.color, 0x00ff0000);
+
+        let mut pixels = vec![0; 120 * 150];
+
+        paint(
+            &mut pixels,
+            120,
+            150,
+            &page,
+            &layout,
+            "",
+            "",
+            Some(&data),
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+
+        assert!(
+            pixels[90 * 120..]
+                .iter()
+                .any(|pixel| *pixel & 0x00ff0000 != 0 && *pixel & 0x0000ff00 == 0)
+        );
+
+        let bitmap = parse_html(
+            "https://example.test/",
+            "<div>A<span style='color:red'>B</span> C</div>",
+        );
+
+        let layout = PageLayout::build(&bitmap, 48, None);
+        let runs = layout.block_text_runs(0).unwrap();
+
+        assert_eq!(
+            runs.iter().map(|run| run.text.as_str()).collect::<Vec<_>>(),
+            ["A", "B", "C"]
+        );
+
+        assert_eq!((runs[0].y, runs[1].y), (0, 0));
+        assert!(runs[2].y > runs[1].y);
+
+        let mut pixels = vec![0; 48 * 130];
+
+        paint(
+            &mut pixels,
+            48,
+            130,
+            &bitmap,
+            &layout,
+            "",
+            "",
+            None,
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+
+        assert!(pixels[90 * 48..].contains(&0x00ff0000));
+    }
 }
