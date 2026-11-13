@@ -149,7 +149,7 @@ impl PageLayout {
                         .unwrap_or((block.style.font_weight, block.style.font_style));
 
                     let height = measure_wrapped_text(
-                        text,
+                        &text.text,
                         text_width,
                         block.style.font_size,
                         weight,

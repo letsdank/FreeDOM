@@ -18,9 +18,19 @@ use crate::{
 use anyhow::Result;
 
 pub(crate) enum BlockContent {
-    Text(String),
+    Text(TextBlock),
     Svg(SvgDocument),
     Bitmap(RasterSurface),
+}
+
+pub(crate) struct TextBlock {
+    pub(crate) text: String,
+    pub(crate) runs: Vec<TextRun>,
+}
+
+pub(crate) struct TextRun {
+    pub(crate) range: std::ops::Range<usize>,
+    pub(crate) style: TextStyle,
 }
 
 pub(crate) struct Block {
@@ -33,7 +43,7 @@ pub(crate) struct Block {
 impl Block {
     fn text(&self) -> Option<&str> {
         match &self.content {
-            BlockContent::Text(text) => Some(text),
+            BlockContent::Text(text) => Some(&text.text),
             BlockContent::Svg(_) | BlockContent::Bitmap(_) => None,
         }
     }
@@ -188,6 +198,31 @@ impl Page {
 
         if block.sources.len() > 32 {
             output.push_str("  ... output limit reached\n");
+        }
+
+        if let BlockContent::Text(text) = &block.content {
+            for run in text.runs.iter().take(32) {
+                let excerpt: String = text
+                    .text
+                    .get(run.range.clone())
+                    .unwrap_or("<invalid range>")
+                    .chars()
+                    .take(80)
+                    .collect();
+
+                let _ = writeln!(
+                    output,
+                    "  text {:?} bytes={:?} weight={:?} color=#{:06x}",
+                    excerpt,
+                    run.range,
+                    run.style.font_weight,
+                    run.style.color & 0x00ff_ffff,
+                );
+            }
+
+            if text.runs.len() > 32 {
+                output.push_str("  ... text run limit reached\n");
+            }
         }
 
         Some(output)
@@ -762,10 +797,17 @@ struct ExtractionTrace {
     pending: Vec<SourcePath>,
     ancestors: Vec<ElementInfo>,
     pending_space: bool,
+    text_runs: Vec<TextRun>,
 }
 
 impl ExtractionTrace {
-    fn append_text(&mut self, current: &mut String, contents: &str, is_text_node: bool) {
+    fn append_text(
+        &mut self,
+        current: &mut String,
+        contents: &str,
+        is_text_node: bool,
+        style: &TextStyle,
+    ) {
         let before = current.len();
 
         append_collapsed(current, contents, &mut self.pending_space);
@@ -773,6 +815,11 @@ impl ExtractionTrace {
         if current.len() == before {
             return;
         }
+
+        self.text_runs.push(TextRun {
+            range: before..current.len(),
+            style: style.clone(),
+        });
 
         // Ordinary text is attributed to its containing element.
         // Top-level text has no containing element, so keep its own path.
@@ -806,7 +853,7 @@ fn extract_blocks(
     trace: &mut ExtractionTrace,
 ) {
     if let HtmlNode::Text(contents) = node {
-        trace.append_text(current, contents, true);
+        trace.append_text(current, contents, true, &inherited_style);
         return;
     }
 
@@ -908,8 +955,16 @@ fn extract_blocks(
             .map(|url| url.to_string());
 
         if !text.is_empty() {
+            let run = TextRun {
+                range: 0..text.len(),
+                style: style.clone(),
+            };
+
             blocks.push(Block {
-                content: BlockContent::Text(text),
+                content: BlockContent::Text(TextBlock {
+                    text,
+                    runs: vec![run],
+                }),
                 style,
                 link: target,
                 sources: vec![trace.current_source()],
@@ -930,7 +985,7 @@ fn extract_blocks(
         .as_deref()
         .and_then(|id| document.text_content_override(id))
     {
-        trace.append_text(current, contents, false);
+        trace.append_text(current, contents, false, &style);
 
         if is_block {
             flush(blocks, current, style, trace);
@@ -989,18 +1044,15 @@ fn flush(
     style: TextStyle,
     trace: &mut ExtractionTrace,
 ) {
-    let text = current
-        .trim_matches(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'))
-        .to_owned();
-
-    current.clear();
+    let text = std::mem::take(current);
     trace.pending_space = false;
 
     let sources = std::mem::take(&mut trace.pending);
+    let runs = std::mem::take(&mut trace.text_runs);
 
     if !text.is_empty() {
         blocks.push(Block {
-            content: BlockContent::Text(text),
+            content: BlockContent::Text(TextBlock { text, runs }),
             style,
             link: None,
             sources,
@@ -1945,7 +1997,13 @@ mod tests {
 
             blocks: vec![
                 Block {
-                    content: BlockContent::Text("Hello".into()),
+                    content: BlockContent::Text(TextBlock {
+                        text: "Hello".into(),
+                        runs: vec![TextRun {
+                            range: 0..5,
+                            style: TextStyle::initial(),
+                        }],
+                    }),
                     style: TextStyle::initial(),
                     link: None,
                     sources: Vec::new(),
@@ -4470,5 +4528,50 @@ mod tests {
         let blocks: Vec<_> = page.blocks.iter().filter_map(Block::text).collect();
 
         assert_eq!(blocks, ["A", "B"]);
+    }
+
+    #[test]
+    fn preserves_inline_styles_and_utf8_ranges_in_text_blocks() {
+        let page = parse_html(
+            "https://example.test/",
+            "<p>A<strong>Б</strong><span style='color:red'> C</span></p>",
+        );
+
+        let BlockContent::Text(text) = &page.blocks[0].content else {
+            panic!("expected text block");
+        };
+
+        assert_eq!(text.text, "AБ C");
+
+        let pieces: Vec<_> = text
+            .runs
+            .iter()
+            .map(|run| &text.text[run.range.clone()])
+            .collect();
+
+        assert_eq!(pieces, ["A", "Б", " C"]);
+        assert_eq!(text.runs[0].range.start, 0);
+
+        for pair in text.runs.windows(2) {
+            assert_eq!(pair[0].range.end, pair[1].range.start);
+        }
+
+        assert_eq!(text.runs.last().unwrap().range.end, text.text.len());
+        assert_eq!(text.runs[1].style.font_weight, FontWeight::Bold);
+        assert_eq!(text.runs[2].style.color, 0x00_ff_0000);
+
+        let description = page.describe_block_sources(0).unwrap();
+
+        assert!(description.contains("weight=Bold"));
+        assert!(description.contains("color=#ff0000"));
+
+        let page = parse_html("https://example.test/", "<a href='/'>link</a>");
+
+        let BlockContent::Text(text) = &page.blocks[0].content else {
+            panic!("expected text block");
+        };
+
+        assert_eq!(text.runs.len(), 1);
+        assert_eq!(&text.text[text.runs[0].range.clone()], "link");
     }
 }
