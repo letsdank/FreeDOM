@@ -1,7 +1,7 @@
 use crate::{
     css::{FontStyle, FontWeight},
     graphics::{font::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
-    page::{BlockContent, Page},
+    page::{BlockContent, Page, ResolvedFont},
 };
 
 pub(crate) const CONTENT_TOP: i32 = 90;
@@ -137,18 +137,15 @@ impl PageLayout {
                     let page_font = page_fonts.first().map(|entry| &entry.font);
                     let font = page_font.or(fallback_font.as_ref());
 
-                    let font_stack: Vec<_> = if page_fonts.len() > 1 {
-                        page_fonts.iter().map(|entry| &entry.font).collect()
+                    let font_stack = if page_fonts.len() > 1 {
+                        page_fonts.as_slice()
                     } else {
-                        Vec::new()
+                        &[]
                     };
 
-                    let synthesis: Vec<_> =
-                        page_fonts.iter().map(|entry| entry.synthesis).collect();
-
-                    let (weight, font_style) = synthesis
+                    let (weight, font_style) = page_fonts
                         .first()
-                        .copied()
+                        .map(|entry| entry.synthesis)
                         .unwrap_or((block.style.font_weight, block.style.font_style));
 
                     let height = measure_wrapped_text(
@@ -159,7 +156,6 @@ impl PageLayout {
                         font_style,
                         font,
                         &font_stack,
-                        &synthesis,
                     );
 
                     (text_width, height)
@@ -277,8 +273,7 @@ pub(crate) fn measure_wrapped_text(
     font_weight: FontWeight,
     font_style: FontStyle,
     vector_font: Option<&TrueTypeFont<'_>>,
-    font_stack: &[&TrueTypeFont<'_>],
-    synthesis: &[(FontWeight, FontStyle)],
+    font_stack: &[ResolvedFont<'_>],
 ) -> i32 {
     let metrics = stack_text_metrics(vector_font, font_stack, font_size);
     let mut wrap = TextWrap::new(0, available_width);
@@ -292,7 +287,6 @@ pub(crate) fn measure_wrapped_text(
             font_size,
             font_weight,
             font_style,
-            synthesis,
         );
 
         if wrap.place_word(metrics.character_width, word_width).wrapped {
@@ -303,17 +297,17 @@ pub(crate) fn measure_wrapped_text(
     line_count.saturating_mul(metrics.line_height)
 }
 
-pub(crate) fn stack_ascent(font_stack: &[&TrueTypeFont<'_>], font_size: f32) -> Option<f32> {
+pub(crate) fn stack_ascent(font_stack: &[ResolvedFont<'_>], font_size: f32) -> Option<f32> {
     font_stack
         .iter()
-        .filter_map(|font| font.line_metrics(font_size))
+        .filter_map(|entry| entry.font.line_metrics(font_size))
         .map(|metrics| metrics.ascent)
         .reduce(f32::max)
 }
 
 pub(crate) fn stack_text_metrics(
     font: Option<&TrueTypeFont<'_>>,
-    stack: &[&TrueTypeFont<'_>],
+    stack: &[ResolvedFont<'_>],
     size: f32,
 ) -> TextMetrics {
     let mut metrics = text_metrics(font, size);
@@ -321,7 +315,7 @@ pub(crate) fn stack_text_metrics(
     if let Some(ascent) = stack_ascent(stack, size) {
         let below = stack
             .iter()
-            .filter_map(|font| font.line_metrics(size))
+            .filter_map(|entry| entry.font.line_metrics(size))
             .map(|metrics| (metrics.line_height - metrics.ascent).max(0.0))
             .fold(0.0_f32, f32::max);
 
@@ -336,12 +330,11 @@ pub(crate) fn stack_text_metrics(
 
 pub(crate) fn stack_word_width(
     font: Option<&TrueTypeFont<'_>>,
-    stack: &[&TrueTypeFont<'_>],
+    stack: &[ResolvedFont<'_>],
     text: &str,
     size: f32,
     weight: FontWeight,
     style: FontStyle,
-    synthesis: &[(FontWeight, FontStyle)],
 ) -> i32 {
     if !stack.is_empty() && size > 0.0 {
         if let Ok(advance) =
@@ -351,12 +344,11 @@ pub(crate) fn stack_word_width(
         {
             let extra = stack
                 .iter()
-                .enumerate()
-                .map(|(index, font)| {
-                    let (weight, style) = synthesis.get(index).copied().unwrap_or((weight, style));
+                .map(|entry| {
+                    let (weight, style) = entry.synthesis;
 
                     synthetic_bold_offset(size, weight)
-                        + synthetic_italic_overhang(font, size, style)
+                        + synthetic_italic_overhang(&entry.font, size, style)
                 })
                 .fold(0.0_f32, f32::max);
 
@@ -505,7 +497,6 @@ mod tests {
             FontWeight::Normal,
             FontStyle::Normal,
             None,
-            &[],
             &[],
         );
 

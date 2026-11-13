@@ -723,7 +723,7 @@ impl PreviewLineMetrics {
 
     fn from_stack(
         font: Option<&TrueTypeFont<'_>>,
-        stack: &[&TrueTypeFont<'_>],
+        stack: &[ResolvedFont<'_>],
         font_size: f32,
     ) -> Self {
         let metrics = stack_text_metrics(font, stack, font_size);
@@ -835,23 +835,12 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             .and_then(|(_, fonts)| fonts.first().map(|entry| &entry.font))
     }
 
-    pub(crate) fn stack(&self, style: &TextStyle) -> Vec<&TrueTypeFont<'font>> {
+    pub(crate) fn stack(&self, style: &TextStyle) -> &[ResolvedFont<'font>] {
         self.entries
             .iter()
             .find(|(existing, _)| same_font(existing, style))
             .filter(|(_, fonts)| fonts.len() > 1)
-            .map(|(_, fonts)| fonts.iter().map(|entry| &entry.font).collect())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn syntheses(
-        &self,
-        style: &TextStyle,
-    ) -> Vec<(crate::css::FontWeight, crate::css::FontStyle)> {
-        self.entries
-            .iter()
-            .find(|(existing, _)| same_font(existing, style))
-            .map(|(_, fonts)| fonts.iter().map(|entry| entry.synthesis).collect())
+            .map(|(_, fonts)| fonts.as_slice())
             .unwrap_or_default()
     }
 
@@ -873,16 +862,14 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         measure_styled_word(word, |text, style| {
             let font = self.get(style).or(fallback);
             let stack = self.stack(style);
-            let synthesis = self.syntheses(style);
 
             let width = stack_word_width(
                 font,
-                &stack,
+                stack,
                 text,
                 style.font_size,
                 self.synthetic_weight(style),
                 self.synthetic_style(style),
-                &synthesis,
             );
 
             let advance = if font.is_none() {

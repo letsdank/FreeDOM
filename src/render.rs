@@ -10,7 +10,7 @@ use crate::{
     },
     layout_debug::{clear_preview_content, paint_preview_box},
     layout_preview::{PreviewCommand, PreviewFonts, PreviewLayout},
-    page::{BlockContent, Page},
+    page::{BlockContent, Page, ResolvedFont},
     page_layout::{
         CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, stack_ascent, stack_text_metrics,
         stack_word_width, svg_block_size, synthetic_bold_offset, synthetic_italic_shear,
@@ -352,7 +352,6 @@ pub(crate) fn paint_preview_scene(
                      run_style: &crate::css::TextStyle| {
                         let font = fonts.get(run_style).or(fallback.as_ref());
                         let font_stack = fonts.stack(run_style);
-                        let synthesis = fonts.syntheses(run_style);
 
                         draw_wrapped_text(
                             content_pixels,
@@ -371,8 +370,7 @@ pub(crate) fn paint_preview_scene(
                             run_style.color,
                             None,
                             font,
-                            &font_stack,
-                            &synthesis,
+                            font_stack,
                             0,
                             &mut links,
                             glyph_cache,
@@ -457,17 +455,15 @@ fn cache_text_block<'cache>(
     let page_font = page_fonts.first().map(|entry| &entry.font);
     let vector_font = page_font.or(fallback_font);
 
-    let font_stack: Vec<_> = if page_fonts.len() > 1 {
-        page_fonts.iter().map(|entry| &entry.font).collect()
+    let font_stack = if page_fonts.len() > 1 {
+        page_fonts.as_slice()
     } else {
-        Vec::new()
+        &[]
     };
 
-    let synthesis: Vec<_> = page_fonts.iter().map(|entry| entry.synthesis).collect();
-
-    let (weight, style) = synthesis
+    let (weight, style) = page_fonts
         .first()
-        .copied()
+        .map(|entry| entry.synthesis)
         .unwrap_or((block.style.font_weight, block.style.font_style));
 
     text_cache.get_or_render(
@@ -492,8 +488,7 @@ fn cache_text_block<'cache>(
                 block.style.color,
                 block.link.as_deref(),
                 vector_font,
-                &font_stack,
-                &synthesis,
+                font_stack,
                 0,
                 cache_links,
                 glyph_raster_cache,
@@ -657,18 +652,15 @@ pub(crate) fn paint(
                     let page_font = page_fonts.first().map(|entry| &entry.font);
                     let vector_font = page_font.or(fallback_font.as_ref());
 
-                    let font_stack: Vec<_> = if page_fonts.len() > 1 {
-                        page_fonts.iter().map(|entry| &entry.font).collect()
+                    let font_stack = if page_fonts.len() > 1 {
+                        page_fonts.as_slice()
                     } else {
-                        Vec::new()
+                        &[]
                     };
 
-                    let synthesis: Vec<_> =
-                        page_fonts.iter().map(|entry| entry.synthesis).collect();
-
-                    let (weight, style) = synthesis
+                    let (weight, style) = page_fonts
                         .first()
-                        .copied()
+                        .map(|entry| entry.synthesis)
                         .unwrap_or((block.style.font_weight, block.style.font_style));
 
                     draw_wrapped_text(
@@ -688,8 +680,7 @@ pub(crate) fn paint(
                         block.style.color,
                         block.link.as_deref(),
                         vector_font,
-                        &font_stack,
-                        &synthesis,
+                        font_stack,
                         CONTENT_TOP,
                         &mut link_regions,
                         glyph_raster_cache,
@@ -745,8 +736,7 @@ fn draw_wrapped_text(
     color: u32,
     link_target: Option<&str>,
     vector_font: Option<&TrueTypeFont<'_>>,
-    font_stack: &[&TrueTypeFont<'_>],
-    synthesis: &[(FontWeight, FontStyle)],
+    font_stack: &[ResolvedFont<'_>],
     visible_top: i32,
     link_regions: &mut Vec<LinkRegion>,
     glyph_raster_cache: &mut GlyphRasterCache,
@@ -766,7 +756,6 @@ fn draw_wrapped_text(
             font_size,
             font_weight,
             font_style,
-            synthesis,
         );
 
         let placement = wrap.place_word(metrics.character_width, word_width);
@@ -801,7 +790,6 @@ fn draw_wrapped_text(
                     color,
                     font,
                     font_stack,
-                    synthesis,
                     glyph_raster_cache,
                 )
             });
@@ -953,8 +941,7 @@ fn draw_vector_text_line(
     font_style: FontStyle,
     color: u32,
     font: &TrueTypeFont<'_>,
-    font_stack: &[&TrueTypeFont<'_>],
-    synthesis: &[(FontWeight, FontStyle)],
+    font_stack: &[ResolvedFont<'_>],
     glyph_raster_cache: &mut GlyphRasterCache,
 ) -> bool {
     let Some(line_metrics) = font.line_metrics(font_size) else {
@@ -968,71 +955,66 @@ fn draw_vector_text_line(
     };
 
     let baseline_phase = f32::from(phase_y) / GLYPH_SUBPIXEL_STEPS as f32;
-    let single_font = [font];
 
-    let result = crate::graphics::font::layout::visit_positioned_glyphs(
-        if font_stack.is_empty() {
-            &single_font
-        } else {
-            font_stack
-        },
-        text,
-        font_size,
-        |index, glyph_id, pen_x| {
-            let font = font_stack.get(index).copied().unwrap_or(font);
+    let mut visit = |index: usize, glyph_id: u16, pen_x: f32| {
+        let (font, (font_weight, font_style)) = font_stack
+            .get(index)
+            .map(|entry| (&entry.font, entry.synthesis))
+            .unwrap_or((font, (font_weight, font_style)));
 
-            let (font_weight, font_style) = synthesis
-                .get(index)
-                .copied()
-                .unwrap_or((font_weight, font_style));
+        let invalid = || crate::graphics::font::sfnt::FontError {
+            offset: 0,
+            message: "cannot rasterize vector glyph".to_owned(),
+        };
 
-            let invalid = || crate::graphics::font::sfnt::FontError {
-                offset: 0,
-                message: "cannot rasterize vector glyph".to_owned(),
-            };
+        let (glyph_x, phase_x) = split_subpixel_position(offset_x + pen_x).ok_or_else(invalid)?;
 
-            let (glyph_x, phase_x) =
-                split_subpixel_position(offset_x + pen_x).ok_or_else(invalid)?;
+        let key = GlyphRasterKey {
+            font_identity: font.glyph_cache_key(),
+            glyph_id,
+            font_size_bits: font_size.to_bits(),
+            bold: font_weight == FontWeight::Bold,
+            italic: font_style == FontStyle::Italic,
+            color,
+            phase_x,
+            phase_y,
+        };
 
-            let key = GlyphRasterKey {
-                font_identity: font.glyph_cache_key(),
-                glyph_id,
-                font_size_bits: font_size.to_bits(),
-                bold: font_weight == FontWeight::Bold,
-                italic: font_style == FontStyle::Italic,
-                color,
-                phase_x,
-                phase_y,
-            };
+        let phase_x = f32::from(phase_x) / GLYPH_SUBPIXEL_STEPS as f32;
 
-            let phase_x = f32::from(phase_x) / GLYPH_SUBPIXEL_STEPS as f32;
+        let glyph = glyph_raster_cache
+            .get_or_rasterize(key, || {
+                rasterize_vector_glyph(
+                    font,
+                    glyph_id,
+                    font_size,
+                    font_weight,
+                    font_style,
+                    phase_x,
+                    baseline_phase,
+                    color,
+                )
+            })
+            .ok_or_else(invalid)?;
 
-            let glyph = glyph_raster_cache
-                .get_or_rasterize(key, || {
-                    rasterize_vector_glyph(
-                        font,
-                        glyph_id,
-                        font_size,
-                        font_weight,
-                        font_style,
-                        phase_x,
-                        baseline_phase,
-                        color,
-                    )
-                })
-                .ok_or_else(invalid)?;
+        glyph.blit_to(
+            pixels,
+            width,
+            height,
+            x.saturating_add(glyph_x),
+            y.saturating_add(baseline_y),
+        );
 
-            glyph.blit_to(
-                pixels,
-                width,
-                height,
-                x.saturating_add(glyph_x),
-                y.saturating_add(baseline_y),
-            );
+        Ok(())
+    };
 
-            Ok(())
-        },
-    );
+    let result = if font_stack.is_empty() {
+        crate::graphics::font::layout::visit_positioned_glyphs(&[font], text, font_size, &mut visit)
+    } else {
+        crate::graphics::font::layout::visit_positioned_glyphs(
+            font_stack, text, font_size, &mut visit,
+        )
+    };
 
     result.is_ok()
 }
@@ -1196,7 +1178,6 @@ mod tests {
             Some("/link"),
             None,
             &[],
-            &[],
             0,
             &mut regions,
             &mut cache,
@@ -1218,7 +1199,6 @@ mod tests {
                 FontWeight::Normal,
                 FontStyle::Normal,
                 None,
-                &[],
                 &[],
             )
         );
@@ -1251,7 +1231,6 @@ mod tests {
             None,
             None,
             &[],
-            &[],
             0,
             &mut regions,
             &mut cache,
@@ -1268,7 +1247,6 @@ mod tests {
                 FontWeight::Normal,
                 FontStyle::Normal,
                 None,
-                &[],
                 &[],
             ),
         );
@@ -1306,7 +1284,6 @@ mod tests {
                 FontStyle::Normal,
                 0x00_00_00_00,
                 &font,
-                &[],
                 &[],
                 cache,
             ));

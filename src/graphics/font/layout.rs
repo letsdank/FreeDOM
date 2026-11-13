@@ -73,23 +73,34 @@ fn text_scale(font: &TrueTypeFont<'_>, font_size: f32) -> Result<f32, FontError>
     Ok(font_size / f32::from(font.head().units_per_em))
 }
 
+pub(crate) trait PositionedFont {
+    fn font(&self) -> &TrueTypeFont<'_>;
+}
+
+impl PositionedFont for &TrueTypeFont<'_> {
+    fn font(&self) -> &TrueTypeFont<'_> {
+        self
+    }
+}
+
 // Partial per-character fallback; cluster shaping is not implemented.
 // https://www.w3.org/TR/css-fonts-4/#font-matching-algorithm
-pub(crate) fn visit_positioned_glyphs<F>(
-    fonts: &[&TrueTypeFont<'_>],
+pub(crate) fn visit_positioned_glyphs<F, T>(
+    fonts: &[T],
     text: &str,
     font_size: f32,
     mut visit: F,
 ) -> Result<f32, FontError>
 where
     F: FnMut(usize, u16, f32) -> Result<(), FontError>,
+    T: PositionedFont,
 {
     let first = fonts.first().ok_or_else(|| FontError {
         offset: 0,
         message: "font list is empty".to_owned(),
     })?;
 
-    text_scale(first, font_size)?;
+    text_scale(first.font(), font_size)?;
 
     let mut pen_x = 0.0;
     let mut previous_glyph: Option<(usize, u16)> = None;
@@ -99,12 +110,12 @@ where
             .iter()
             .enumerate()
             .find_map(|(index, font)| {
-                let glyph = font.glyph_id(character);
+                let glyph = font.font().glyph_id(character);
                 (glyph != 0).then_some((index, glyph))
             })
             .unwrap_or((0, 0));
 
-        let font = fonts[index];
+        let font = fonts[index].font();
         let scale = text_scale(font, font_size)?;
 
         let metric = font.metric(glyph_id).ok_or_else(|| FontError {
@@ -173,6 +184,9 @@ mod tests {
         assert_eq!(positions[2].2, first + second);
         assert_eq!(width, first + second + first);
 
-        assert!(visit_positioned_glyphs(&[], "a", 32.0, |_, _, _| Ok(())).is_err());
+        assert!(
+            visit_positioned_glyphs(&[] as &[&TrueTypeFont<'_>], "a", 32.0, |_, _, _| Ok(()))
+                .is_err()
+        );
     }
 }

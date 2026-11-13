@@ -70,6 +70,12 @@ pub(crate) struct ResolvedFont<'a> {
     pub(crate) synthesis: (FontWeight, FontStyle),
 }
 
+impl crate::graphics::font::layout::PositionedFont for ResolvedFont<'_> {
+    fn font(&self) -> &crate::graphics::font::TrueTypeFont<'_> {
+        &self.font
+    }
+}
+
 pub(crate) struct Page {
     pub(crate) url: String,
     pub(crate) title: String,
@@ -4134,12 +4140,11 @@ mod tests {
         assert_eq!(
             crate::page_layout::stack_word_width(
                 Some(&fonts[0].font),
-                &font_refs,
+                &fonts,
                 "ߊᠠ",
                 32.0,
                 FontWeight::Normal,
                 FontStyle::Normal,
-                &[]
             ),
             expected.ceil() as i32,
         );
