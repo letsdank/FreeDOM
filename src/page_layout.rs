@@ -1,8 +1,7 @@
 use crate::{
     css::{FontStyle, FontWeight},
     graphics::{font::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
-    inline_layout::PositionedTextRun,
-    layout_preview::layout_text_block,
+    inline_layout::{PositionedTextRun, layout_text_block},
     page::{BlockContent, Page, ResolvedFont},
 };
 
