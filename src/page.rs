@@ -65,6 +65,11 @@ struct LoadedFontFace {
     data: Vec<u8>,
 }
 
+pub(crate) struct ResolvedFont<'a> {
+    pub(crate) font: crate::graphics::font::TrueTypeFont<'a>,
+    pub(crate) synthesis: (FontWeight, FontStyle),
+}
+
 pub(crate) struct Page {
     pub(crate) url: String,
     pub(crate) title: String,
@@ -106,10 +111,6 @@ impl Page {
             })
     }
 
-    fn font_face_for_style(&self, style: &TextStyle) -> Option<&LoadedFontFace> {
-        self.font_faces_for_style(style).next()
-    }
-
     fn font_faces_for_style<'a, 'b>(
         &'a self,
         style: &'b TextStyle,
@@ -127,6 +128,7 @@ impl Page {
         self.font_data_for_families(style).next()
     }
 
+    #[cfg(test)]
     pub(crate) fn font_data_for_families<'a, 'b>(
         &'a self,
         style: &'b TextStyle,
@@ -136,40 +138,6 @@ impl Page {
     {
         self.font_faces_for_style(style)
             .map(|face| face.data.as_slice())
-    }
-
-    pub(crate) fn synthetic_font_weight(
-        &self,
-        style: &TextStyle,
-        has_valid_page_font: bool,
-    ) -> FontWeight {
-        if has_valid_page_font
-            && style.font_weight == FontWeight::Bold
-            && self
-                .font_face_for_style(style)
-                .is_some_and(|face| face.font_weight == FontWeight::Bold)
-        {
-            FontWeight::Normal
-        } else {
-            style.font_weight
-        }
-    }
-
-    pub(crate) fn synthetic_font_style(
-        &self,
-        style: &TextStyle,
-        has_valid_page_font: bool,
-    ) -> FontStyle {
-        if has_valid_page_font
-            && style.font_style == FontStyle::Italic
-            && self
-                .font_face_for_style(style)
-                .is_some_and(|face| face.font_style == FontStyle::Italic)
-        {
-            FontStyle::Normal
-        } else {
-            style.font_style
-        }
     }
 
     pub(crate) fn describe_block_sources(&self, index: usize) -> Option<String> {
@@ -219,49 +187,33 @@ impl Page {
         Some(output)
     }
 
-    pub(crate) fn vector_fonts_for_style<'a>(
-        &'a self,
-        style: &TextStyle,
-    ) -> Vec<crate::graphics::font::TrueTypeFont<'a>> {
-        if style.font_weight == FontWeight::Normal && style.font_style == FontStyle::Normal {
-            return self
-                .font_data_for_families(style)
-                .filter_map(|data| crate::graphics::font::TrueTypeFont::parse(data).ok())
-                .collect();
-        }
+    pub(crate) fn vector_fonts_for_style<'a>(&'a self, style: &TextStyle) -> Vec<ResolvedFont<'a>> {
+        self.font_faces_for_style(style)
+            .filter_map(|face| {
+                let font = crate::graphics::font::TrueTypeFont::parse(&face.data).ok()?;
 
-        let mut faces = self.font_faces_for_style(style);
+                let weight = if style.font_weight == FontWeight::Bold
+                    && face.font_weight != FontWeight::Bold
+                {
+                    FontWeight::Bold
+                } else {
+                    FontWeight::Normal
+                };
 
-        let Some(first) = faces.next() else {
-            return Vec::new();
-        };
+                let font_style = if style.font_style == FontStyle::Italic
+                    && face.font_style != FontStyle::Italic
+                {
+                    FontStyle::Italic
+                } else {
+                    FontStyle::Normal
+                };
 
-        let Ok(font) = crate::graphics::font::TrueTypeFont::parse(&first.data) else {
-            return Vec::new();
-        };
-
-        let synthesis = |face: &LoadedFontFace| {
-            (
-                style.font_weight == FontWeight::Bold && face.font_weight != FontWeight::Bold,
-                style.font_style == FontStyle::Italic && face.font_style != FontStyle::Italic,
-            )
-        };
-
-        let first_synthesis = synthesis(first);
-        let mut fonts = vec![font];
-
-        for face in faces {
-            if let Ok(font) = crate::graphics::font::TrueTypeFont::parse(&face.data) {
-                if synthesis(face) != first_synthesis {
-                    fonts.truncate(1);
-                    break;
-                }
-
-                fonts.push(font);
-            }
-        }
-
-        fonts
+                Some(ResolvedFont {
+                    font,
+                    synthesis: (weight, font_style),
+                })
+            })
+            .collect()
     }
 }
 
@@ -4166,10 +4118,10 @@ mod tests {
         let fonts = page.vector_fonts_for_style(&page.blocks[0].style);
 
         assert_eq!(fonts.len(), 2);
-        assert_eq!(fonts[0].glyph_id('ᠠ'), 0);
-        assert_ne!(fonts[1].glyph_id('ᠠ'), 0);
+        assert_eq!(fonts[0].font.glyph_id('ᠠ'), 0);
+        assert_ne!(fonts[1].font.glyph_id('ᠠ'), 0);
 
-        let font_refs: Vec<_> = fonts.iter().collect();
+        let font_refs: Vec<_> = fonts.iter().map(|entry| &entry.font).collect();
 
         let expected = crate::graphics::font::layout::visit_positioned_glyphs(
             &font_refs,
@@ -4181,12 +4133,13 @@ mod tests {
 
         assert_eq!(
             crate::page_layout::stack_word_width(
-                Some(&fonts[0]),
+                Some(&fonts[0].font),
                 &font_refs,
                 "ߊᠠ",
                 32.0,
                 FontWeight::Normal,
                 FontStyle::Normal,
+                &[]
             ),
             expected.ceil() as i32,
         );
@@ -4319,8 +4272,52 @@ mod tests {
 
         assert_eq!(
             styled.vector_fonts_for_style(&styled.blocks[0].style).len(),
-            1
+            2
         );
+
+        let resolved = styled.vector_fonts_for_style(&styled.blocks[0].style);
+
+        assert_eq!(resolved[0].synthesis, (FontWeight::Bold, FontStyle::Italic));
+        assert_eq!(
+            resolved[1].synthesis,
+            (FontWeight::Normal, FontStyle::Normal)
+        );
+
+        let mixed = draw(&styled);
+        assert_ne!(mixed, synthetic);
+
+        let preview = crate::layout_preview::PreviewLayout::build(&styled, 120, None).unwrap();
+
+        let mut pixels = vec![0; 120 * 200];
+
+        crate::render::paint_preview_scene(
+            &mut pixels,
+            120,
+            200,
+            &styled,
+            &preview,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_eq!(&mixed[90 * 120..], &pixels[90 * 120..]);
+
+        styled.font_faces[0].font_weight = FontWeight::Bold;
+        styled.font_faces[0].font_style = FontStyle::Italic;
+        styled.font_faces[1].font_weight = FontWeight::Normal;
+        styled.font_faces[1].font_style = FontStyle::Normal;
+
+        let resolved = styled.vector_fonts_for_style(&styled.blocks[0].style);
+
+        assert_eq!(
+            resolved[0].synthesis,
+            (FontWeight::Normal, FontStyle::Normal)
+        );
+        assert_eq!(resolved[1].synthesis, (FontWeight::Bold, FontStyle::Italic));
+
+        let reverse = draw(&styled);
+        assert_ne!(reverse, mixed);
 
         page.font_faces.pop();
 

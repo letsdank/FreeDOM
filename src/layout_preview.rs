@@ -13,7 +13,7 @@ use crate::{
         TrueTypeFont,
         render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
     },
-    page::Page,
+    page::{Page, ResolvedFont},
     page_layout::{
         CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, bitmap_text_advance, stack_ascent,
         stack_text_metrics, stack_word_width, text_metrics, text_word_width,
@@ -798,8 +798,7 @@ fn finish_preview_line(
 }
 
 pub(crate) struct PreviewFonts<'style, 'font> {
-    page: &'font Page,
-    entries: Vec<(&'style TextStyle, Vec<TrueTypeFont<'font>>)>,
+    entries: Vec<(&'style TextStyle, Vec<ResolvedFont<'font>>)>,
 }
 
 impl<'style, 'font> PreviewFonts<'style, 'font> {
@@ -811,7 +810,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         page: &'font Page,
         styles: impl IntoIterator<Item = &'style TextStyle>,
     ) -> Self {
-        let mut entries: Vec<(&TextStyle, Vec<TrueTypeFont<'font>>)> = Vec::new();
+        let mut entries: Vec<(&TextStyle, Vec<ResolvedFont<'font>>)> = Vec::new();
 
         for style in styles {
             if entries
@@ -826,14 +825,14 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             entries.push((style, font));
         }
 
-        Self { page, entries }
+        Self { entries }
     }
 
     pub(crate) fn get(&self, style: &TextStyle) -> Option<&TrueTypeFont<'font>> {
         self.entries
             .iter()
             .find(|(existing, _)| same_font(existing, style))
-            .and_then(|(_, fonts)| fonts.first())
+            .and_then(|(_, fonts)| fonts.first().map(|entry| &entry.font))
     }
 
     pub(crate) fn stack(&self, style: &TextStyle) -> Vec<&TrueTypeFont<'font>> {
@@ -841,7 +840,18 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             .iter()
             .find(|(existing, _)| same_font(existing, style))
             .filter(|(_, fonts)| fonts.len() > 1)
-            .map(|(_, fonts)| fonts.iter().collect())
+            .map(|(_, fonts)| fonts.iter().map(|entry| &entry.font).collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn syntheses(
+        &self,
+        style: &TextStyle,
+    ) -> Vec<(crate::css::FontWeight, crate::css::FontStyle)> {
+        self.entries
+            .iter()
+            .find(|(existing, _)| same_font(existing, style))
+            .map(|(_, fonts)| fonts.iter().map(|entry| entry.synthesis).collect())
             .unwrap_or_default()
     }
 
@@ -863,6 +873,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         measure_styled_word(word, |text, style| {
             let font = self.get(style).or(fallback);
             let stack = self.stack(style);
+            let synthesis = self.syntheses(style);
 
             let width = stack_word_width(
                 font,
@@ -871,6 +882,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
                 style.font_size,
                 self.synthetic_weight(style),
                 self.synthetic_style(style),
+                &synthesis,
             );
 
             let advance = if font.is_none() {
@@ -953,13 +965,19 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
     }
 
     pub(crate) fn synthetic_weight(&self, style: &TextStyle) -> crate::css::FontWeight {
-        self.page
-            .synthetic_font_weight(style, self.get(style).is_some())
+        self.entries
+            .iter()
+            .find(|(existing, _)| same_font(existing, style))
+            .and_then(|(_, fonts)| fonts.first())
+            .map_or(style.font_weight, |entry| entry.synthesis.0)
     }
 
     pub(crate) fn synthetic_style(&self, style: &TextStyle) -> crate::css::FontStyle {
-        self.page
-            .synthetic_font_style(style, self.get(style).is_some())
+        self.entries
+            .iter()
+            .find(|(existing, _)| same_font(existing, style))
+            .and_then(|(_, fonts)| fonts.first())
+            .map_or(style.font_style, |entry| entry.synthesis.1)
     }
 }
 

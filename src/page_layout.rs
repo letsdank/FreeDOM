@@ -134,23 +134,32 @@ impl PageLayout {
 
                 BlockContent::Text(text) => {
                     let page_fonts = page.vector_fonts_for_style(&block.style);
-                    let page_font = page_fonts.first();
+                    let page_font = page_fonts.first().map(|entry| &entry.font);
                     let font = page_font.or(fallback_font.as_ref());
 
                     let font_stack: Vec<_> = if page_fonts.len() > 1 {
-                        page_fonts.iter().collect()
+                        page_fonts.iter().map(|entry| &entry.font).collect()
                     } else {
                         Vec::new()
                     };
+
+                    let synthesis: Vec<_> =
+                        page_fonts.iter().map(|entry| entry.synthesis).collect();
+
+                    let (weight, font_style) = synthesis
+                        .first()
+                        .copied()
+                        .unwrap_or((block.style.font_weight, block.style.font_style));
 
                     let height = measure_wrapped_text(
                         text,
                         text_width,
                         block.style.font_size,
-                        page.synthetic_font_weight(&block.style, page_font.is_some()),
-                        page.synthetic_font_style(&block.style, page_font.is_some()),
+                        weight,
+                        font_style,
                         font,
                         &font_stack,
+                        &synthesis,
                     );
 
                     (text_width, height)
@@ -269,6 +278,7 @@ pub(crate) fn measure_wrapped_text(
     font_style: FontStyle,
     vector_font: Option<&TrueTypeFont<'_>>,
     font_stack: &[&TrueTypeFont<'_>],
+    synthesis: &[(FontWeight, FontStyle)],
 ) -> i32 {
     let metrics = stack_text_metrics(vector_font, font_stack, font_size);
     let mut wrap = TextWrap::new(0, available_width);
@@ -282,6 +292,7 @@ pub(crate) fn measure_wrapped_text(
             font_size,
             font_weight,
             font_style,
+            synthesis,
         );
 
         if wrap.place_word(metrics.character_width, word_width).wrapped {
@@ -330,6 +341,7 @@ pub(crate) fn stack_word_width(
     size: f32,
     weight: FontWeight,
     style: FontStyle,
+    synthesis: &[(FontWeight, FontStyle)],
 ) -> i32 {
     if !stack.is_empty() && size > 0.0 {
         if let Ok(advance) =
@@ -339,7 +351,10 @@ pub(crate) fn stack_word_width(
         {
             let extra = stack
                 .iter()
-                .map(|font| {
+                .enumerate()
+                .map(|(index, font)| {
+                    let (weight, style) = synthesis.get(index).copied().unwrap_or((weight, style));
+
                     synthetic_bold_offset(size, weight)
                         + synthetic_italic_overhang(font, size, style)
                 })
@@ -490,6 +505,7 @@ mod tests {
             FontWeight::Normal,
             FontStyle::Normal,
             None,
+            &[],
             &[],
         );
 
