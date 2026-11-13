@@ -3264,6 +3264,7 @@ mod tests {
                 runs: vec![
                     PreviewTextRun {
                         x: 0,
+                        offset_x: 0.0,
                         y: vector_y,
                         offset_y: 0.0,
                         text: "ߊ".into(),
@@ -3271,6 +3272,7 @@ mod tests {
                     },
                     PreviewTextRun {
                         x: 90,
+                        offset_x: 0.0,
                         y: bitmap_y,
                         offset_y: 0.0,
                         text: "A".into(),
@@ -3336,6 +3338,31 @@ mod tests {
         assert_ne!(
             pixels, shifted,
             "vector run must use its vertical subpixel offset"
+        );
+
+        let PreviewCommand::Text { runs, .. } = &mut layout.display_list[0] else {
+            panic!("expected text command");
+        };
+
+        runs[0].offset_y = 0.0;
+        runs[0].offset_x = 0.5;
+
+        let mut shifted_x = vec![0; width * height];
+
+        paint_preview_scene(
+            &mut shifted_x,
+            width,
+            height,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_ne!(
+            pixels, shifted_x,
+            "vector run must use its horizontal subpixel offset"
         );
 
         // The bitmap glyph remains unchanged.

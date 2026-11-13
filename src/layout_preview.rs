@@ -49,6 +49,7 @@ pub(crate) enum PreviewCommand {
 
 pub(crate) struct PreviewTextRun {
     pub(crate) x: i32,
+    pub(crate) offset_x: f32,
     pub(crate) y: i32,
     pub(crate) offset_y: f32,
     pub(crate) text: String,
@@ -764,6 +765,7 @@ fn finish_preview_line(
 
         output.push(PreviewTextRun {
             x: run.x,
+            offset_x: 0.0,
             y: line_top.saturating_add(whole),
             offset_y: fraction,
             text: run.text,

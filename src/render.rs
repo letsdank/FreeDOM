@@ -345,6 +345,7 @@ pub(crate) fn paint_preview_scene(
 
                 let mut paint_text =
                     |x: i32,
+                     offset_x: f32,
                      y: i32,
                      offset_y: f32,
                      text: &str,
@@ -356,6 +357,7 @@ pub(crate) fn paint_preview_scene(
                             width,
                             content_height,
                             x,
+                            offset_x,
                             y,
                             offset_y,
                             rect.x.saturating_add(rect.width),
@@ -373,7 +375,7 @@ pub(crate) fn paint_preview_scene(
                     };
 
                 if runs.is_empty() {
-                    paint_text(rect.x, y, 0.0, text, style);
+                    paint_text(rect.x, 0.0, y, 0.0, text, style);
                 } else {
                     for run in runs {
                         let run_y = relative_y + i64::from(run.y);
@@ -381,6 +383,7 @@ pub(crate) fn paint_preview_scene(
                         if let Ok(run_y) = i32::try_from(run_y) {
                             paint_text(
                                 rect.x.saturating_add(run.x),
+                                run.offset_x,
                                 run_y,
                                 run.offset_y,
                                 &run.text,
@@ -465,6 +468,7 @@ fn cache_text_block<'cache>(
                 cache_width,
                 cache_height,
                 0,
+                0.0,
                 0,
                 0.0,
                 cache_width as i32,
@@ -649,6 +653,7 @@ pub(crate) fn paint(
                         width,
                         height,
                         16,
+                        0.0,
                         y,
                         0.0,
                         width as i32 - 16,
@@ -702,6 +707,7 @@ fn draw_wrapped_text(
     width: usize,
     height: usize,
     left: i32,
+    offset_x: f32,
     mut y: i32,
     offset_y: f32,
     right: i32,
@@ -747,7 +753,7 @@ fn draw_wrapped_text(
                     width,
                     height,
                     word_x,
-                    0.0,
+                    offset_x,
                     y,
                     offset_y,
                     word,
@@ -1132,6 +1138,7 @@ mod tests {
             64,
             30,
             0,
+            0.0,
             0,
             0.0,
             64,
@@ -1174,6 +1181,7 @@ mod tests {
             8,
             10,
             0,
+            0.0,
             0,
             0.0,
             8,
