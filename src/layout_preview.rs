@@ -678,7 +678,6 @@ fn same_font(left: &TextStyle, right: &TextStyle) -> bool {
 fn same_font_except_weight(left: &TextStyle, right: &TextStyle) -> bool {
     left.font_size.to_bits() == right.font_size.to_bits()
         && left.font_style == right.font_style
-        && left.font_family == right.font_family
         && left.font_families == right.font_families
 }
 

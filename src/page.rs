@@ -107,14 +107,6 @@ impl Page {
     }
 
     fn font_face_for_style(&self, style: &TextStyle) -> Option<&LoadedFontFace> {
-        if style.font_families.is_empty() {
-            return self.font_face_for(
-                style.font_family.as_deref(),
-                style.font_weight,
-                style.font_style,
-            );
-        }
-
         style.font_families.iter().find_map(|family| {
             self.font_face_for(Some(family), style.font_weight, style.font_style)
         })
@@ -1392,7 +1384,14 @@ mod tests {
 
         server.join().unwrap();
 
-        assert_eq!(page.blocks[0].style.font_family.as_deref(), Some("Test"));
+        assert_eq!(
+            page.blocks[0]
+                .style
+                .font_families
+                .first()
+                .map(String::as_str),
+            Some("Test")
+        );
 
         let font_data = page
             .font_data_for(Some("Test"), FontWeight::Normal, FontStyle::Normal)
@@ -1543,11 +1542,14 @@ mod tests {
             .find(|block| block.text() == Some("ߊ"))
             .expect("text block must exist");
 
-        assert_eq!(block.style.font_family.as_deref(), Some("Nko, Test"));
+        assert_eq!(
+            block.style.font_families.first().map(String::as_str),
+            Some("Nko, Test")
+        );
 
         let font_data = page
             .font_data_for(
-                block.style.font_family.as_deref(),
+                block.style.font_families.first().map(String::as_str),
                 block.style.font_weight,
                 block.style.font_style,
             )
@@ -1694,7 +1696,11 @@ mod tests {
         );
 
         assert_eq!(
-            page.blocks[0].style.font_family.as_deref(),
+            page.blocks[0]
+                .style
+                .font_families
+                .first()
+                .map(String::as_str),
             Some("Nko; Test")
         );
 
@@ -1714,12 +1720,20 @@ mod tests {
         );
 
         assert_eq!(
-            stylesheet.blocks[0].style.font_family.as_deref(),
+            stylesheet.blocks[0]
+                .style
+                .font_families
+                .first()
+                .map(String::as_str),
             Some("A\u{FFFD}B")
         );
 
         assert_eq!(
-            inline.blocks[0].style.font_family.as_deref(),
+            inline.blocks[0]
+                .style
+                .font_families
+                .first()
+                .map(String::as_str),
             Some("A\u{FFFD}B")
         );
     }
@@ -3238,7 +3252,7 @@ mod tests {
         assert_eq!(runs.len(), 2);
 
         // Change the display list directly: mixed fonts are still rejected by layout.
-        runs[0].style.font_family = Some("Nko Test".to_owned());
+        runs[0].style.font_families = vec!["Nko Test".to_owned()];
 
         let mut actual = vec![0; 120 * 120];
 
@@ -3262,7 +3276,7 @@ mod tests {
             })
             .unwrap();
 
-        runs[0].style.font_family = None;
+        runs[0].style.font_families.clear();
 
         let mut expected = vec![0; 120 * 120];
 
@@ -3332,7 +3346,7 @@ mod tests {
         });
 
         let mut vector_style = crate::css::TextStyle::initial();
-        vector_style.font_family = Some("Nko Test".into());
+        vector_style.font_families = vec!["Nko Test".into()];
         vector_style.font_size = vector_size;
         vector_style.color = 0x00_FF_00_00;
 

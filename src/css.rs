@@ -61,7 +61,6 @@ pub(crate) struct TextStyle {
     pub(crate) font_size: f32,
     pub(crate) font_weight: FontWeight,
     pub(crate) font_style: FontStyle,
-    pub(crate) font_family: Option<String>,
     pub(crate) font_families: Vec<String>,
     pub(crate) margin_before: i32,
     pub(crate) margin_after: i32,
@@ -83,7 +82,6 @@ impl TextStyle {
             color: DEFAULT_TEXT_COLOR,
             font_size: 16.0,
             font_weight: FontWeight::Normal,
-            font_family: None,
             font_families: Vec::new(),
             font_style: FontStyle::Normal,
             margin_before: 0,
@@ -1286,7 +1284,6 @@ fn apply_declarations(
     }
 
     if let Some(font_family) = &declarations.font_family {
-        style.font_family = font_family.first().cloned();
         style.font_families = font_family.clone();
     }
 }
@@ -1409,7 +1406,10 @@ mod tests {
 
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
-        assert_eq!(style.font_family.as_deref(), Some("FreeDOM Sans"));
+        assert_eq!(
+            style.font_families.first().map(String::as_str),
+            Some("FreeDOM Sans")
+        );
     }
 
     #[test]
@@ -1465,7 +1465,11 @@ mod tests {
 
         let style = compute_style(&element, TextStyle::initial(), &rules);
 
-        assert_eq!(style.font_family.as_deref(), Some("A/*B*/C"));
+        assert_eq!(
+            style.font_families.first().map(String::as_str),
+            Some("A/*B*/C")
+        );
+
         assert_eq!(style.color, 0x00_00_80_00);
     }
 
