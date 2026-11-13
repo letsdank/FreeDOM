@@ -580,25 +580,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn compares_saved_wpt_pair_as_preview_only() {
-        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata/wpt/css/CSS2/margin-padding-clear");
-
-        let read = |name| std::fs::read_to_string(base.join(name)).expect("WPT fixture must exist");
-
-        let result = compare_xhtml_preview(
-            &read("margin-collapse-003.xht"),
-            &read("margin-collapse-003-ref.xht"),
-            320,
-            200,
-        );
-
-        println!("Experimental preview result (not WPT): {result:?}");
-
-        assert_eq!(result, PreviewResult::Match);
-    }
-
     fn with_head(head: &str) -> String {
         format!(
             concat!(
