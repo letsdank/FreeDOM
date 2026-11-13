@@ -62,6 +62,7 @@ pub(crate) struct TextStyle {
     pub(crate) font_weight: FontWeight,
     pub(crate) font_style: FontStyle,
     pub(crate) font_family: Option<String>,
+    pub(crate) font_families: Vec<String>,
     pub(crate) margin_before: i32,
     pub(crate) margin_after: i32,
     pub(crate) margin_left: i32,
@@ -83,6 +84,7 @@ impl TextStyle {
             font_size: 16.0,
             font_weight: FontWeight::Normal,
             font_family: None,
+            font_families: Vec::new(),
             font_style: FontStyle::Normal,
             margin_before: 0,
             margin_after: 0,
@@ -121,7 +123,7 @@ struct Declarations {
     color: Option<TextColor>,
     font_size: Option<FontSize>,
     font_weight: Option<FontWeight>,
-    font_family: Option<String>,
+    font_family: Option<Vec<String>>,
     font_style: Option<FontStyle>,
     display: Option<Display>,
     margin_before: Option<i32>,
@@ -309,6 +311,15 @@ fn parse_text_font_family(value: &str) -> Option<String> {
     let first_family = value[..end].trim();
 
     parse_font_face_family(first_family)
+}
+
+// Partial font-family list parsing. Generic and escaped names are not resolved here.
+// https://www.w3.org/TR/css-fonts-4/#font-family-prop
+fn parse_text_font_families(value: &str) -> Option<Vec<String>> {
+    syntax::split_top_level_commas(value)
+        .into_iter()
+        .map(parse_text_font_family)
+        .collect()
 }
 
 fn parse_font_face_sources(value: &str) -> Vec<String> {
@@ -685,7 +696,7 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
             }
 
             "font-family" => {
-                if let Some(value) = parse_text_font_family(&declaration.value) {
+                if let Some(value) = parse_text_font_families(&declaration.value) {
                     parsed.font_family = Some(value);
                 }
             }
@@ -1275,7 +1286,8 @@ fn apply_declarations(
     }
 
     if let Some(font_family) = &declarations.font_family {
-        style.font_family = Some(font_family.clone())
+        style.font_family = font_family.first().cloned();
+        style.font_families = font_family.clone();
     }
 }
 
@@ -1413,6 +1425,14 @@ mod tests {
         );
 
         assert_eq!(parse_text_font_family(r#""Nko, Test"#), None);
+
+        assert_eq!(
+            parse_text_font_families(r#""Nko, Test", sans-serif"#),
+            Some(vec!["Nko, Test".to_owned(), "sans-serif".to_owned()])
+        );
+
+        assert_eq!(parse_text_font_families("Test, "), None);
+        assert_eq!(parse_text_font_families("Test, 'broken"), None);
     }
 
     #[test]

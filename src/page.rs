@@ -74,6 +74,7 @@ pub(crate) struct Page {
 }
 
 impl Page {
+    #[cfg(test)]
     pub(crate) fn font_data_for(
         &self,
         family: Option<&str>,
@@ -105,6 +106,25 @@ impl Page {
             })
     }
 
+    fn font_face_for_style(&self, style: &TextStyle) -> Option<&LoadedFontFace> {
+        if style.font_families.is_empty() {
+            return self.font_face_for(
+                style.font_family.as_deref(),
+                style.font_weight,
+                style.font_style,
+            );
+        }
+
+        style.font_families.iter().find_map(|family| {
+            self.font_face_for(Some(family), style.font_weight, style.font_style)
+        })
+    }
+
+    pub(crate) fn font_data_for_style(&self, style: &TextStyle) -> Option<&[u8]> {
+        self.font_face_for_style(style)
+            .map(|face| face.data.as_slice())
+    }
+
     pub(crate) fn synthetic_font_weight(
         &self,
         style: &TextStyle,
@@ -113,11 +133,7 @@ impl Page {
         if has_valid_page_font
             && style.font_weight == FontWeight::Bold
             && self
-                .font_face_for(
-                    style.font_family.as_deref(),
-                    style.font_weight,
-                    style.font_style,
-                )
+                .font_face_for_style(style)
                 .is_some_and(|face| face.font_weight == FontWeight::Bold)
         {
             FontWeight::Normal
@@ -134,11 +150,7 @@ impl Page {
         if has_valid_page_font
             && style.font_style == FontStyle::Italic
             && self
-                .font_face_for(
-                    style.font_family.as_deref(),
-                    style.font_weight,
-                    style.font_style,
-                )
+                .font_face_for_style(style)
                 .is_some_and(|face| face.font_style == FontStyle::Italic)
         {
             FontStyle::Normal
@@ -3965,5 +3977,69 @@ mod tests {
         let synthetic_italic = paint(&page);
 
         assert_ne!(actual_italic, synthetic_italic);
+    }
+
+    #[test]
+    fn falls_back_to_next_loaded_font_family() {
+        use crate::graphics::font::normalize_font_container;
+        use crate::layout_preview::PreviewLayout;
+        use crate::render::{GlyphRasterCache, paint_preview_scene};
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/fonts/noto/nko-hmtx.woff2"
+        );
+
+        let font = normalize_font_container(std::fs::read(path).expect("font fixture must exist"))
+            .unwrap();
+
+        let make_page = |family: &str| {
+            let html = format!("<div style=\"font-family: {family};font-size:32px\">ߊ</div>");
+
+            let mut page = parse_html("https://example.test/", &html);
+
+            page.font_faces.push(LoadedFontFace {
+                family: "Nko, Test".into(),
+                font_weight: FontWeight::Normal,
+                font_style: FontStyle::Normal,
+                data: font.clone(),
+            });
+
+            page
+        };
+
+        let fallback = make_page("Missing, 'Nko, Test'");
+        let direct = make_page("'Nko, Test'");
+
+        let paint = |page: &Page| {
+            let layout = PreviewLayout::build(page, 120, None).unwrap();
+            let mut pixels = vec![0; 120 * 160];
+
+            paint_preview_scene(
+                &mut pixels,
+                120,
+                160,
+                page,
+                &layout,
+                None,
+                0,
+                &mut GlyphRasterCache::new(),
+            );
+
+            pixels
+        };
+
+        assert_eq!(
+            fallback.blocks[0].style.font_families,
+            vec!["Missing", "Nko, Test"]
+        );
+
+        assert!(
+            fallback
+                .font_data_for_style(&fallback.blocks[0].style)
+                .is_some()
+        );
+
+        assert_eq!(paint(&fallback), paint(&direct));
     }
 }

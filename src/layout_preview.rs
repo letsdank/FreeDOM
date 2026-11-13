@@ -679,6 +679,7 @@ fn same_font_except_weight(left: &TextStyle, right: &TextStyle) -> bool {
     left.font_size.to_bits() == right.font_size.to_bits()
         && left.font_style == right.font_style
         && left.font_family == right.font_family
+        && left.font_families == right.font_families
 }
 
 struct InlineTextFragment<'a> {
@@ -799,11 +800,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             }
 
             let font = page
-                .font_data_for(
-                    style.font_family.as_deref(),
-                    style.font_weight,
-                    style.font_style,
-                )
+                .font_data_for_style(style)
                 .and_then(|data| TrueTypeFont::parse(data).ok());
 
             entries.push((style, font));

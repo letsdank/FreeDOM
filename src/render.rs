@@ -450,11 +450,7 @@ fn cache_text_block<'cache>(
     let block_height = usize::try_from(layout.block_height(index).max(0)).unwrap_or(0);
 
     let page_font = page
-        .font_data_for(
-            block.style.font_family.as_deref(),
-            block.style.font_weight,
-            block.style.font_style,
-        )
+        .font_data_for_style(&block.style)
         .and_then(|data| TrueTypeFont::parse(data).ok());
 
     let vector_font = page_font.as_ref().or(fallback_font);
@@ -641,11 +637,7 @@ pub(crate) fn paint(
                     cached.append_link_regions(&mut link_regions, 16, y);
                 } else {
                     let page_font = page
-                        .font_data_for(
-                            block.style.font_family.as_deref(),
-                            block.style.font_weight,
-                            block.style.font_style,
-                        )
+                        .font_data_for_style(&block.style)
                         .and_then(|data| TrueTypeFont::parse(data).ok());
 
                     let vector_font = page_font.as_ref().or(fallback_font.as_ref());

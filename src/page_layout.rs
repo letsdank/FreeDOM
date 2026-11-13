@@ -134,11 +134,7 @@ impl PageLayout {
 
                 BlockContent::Text(text) => {
                     let page_font = page
-                        .font_data_for(
-                            block.style.font_family.as_deref(),
-                            block.style.font_weight,
-                            block.style.font_style,
-                        )
+                        .font_data_for_style(&block.style)
                         .and_then(|data| TrueTypeFont::parse(data).ok());
 
                     let font = page_font.as_ref().or(fallback_font.as_ref());
