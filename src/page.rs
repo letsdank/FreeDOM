@@ -122,6 +122,7 @@ impl Page {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn font_data_for_style(&self, style: &TextStyle) -> Option<&[u8]> {
         self.font_data_for_families(style).next()
     }
@@ -4185,6 +4186,54 @@ mod tests {
         };
 
         let fallback = draw(&page);
+
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 120, None).unwrap();
+
+        let mut preview_pixels = vec![0; 120 * 200];
+
+        crate::render::paint_preview_scene(
+            &mut preview_pixels,
+            120,
+            200,
+            &page,
+            &preview,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_eq!(&fallback[90 * 120..], &preview_pixels[90 * 120..]);
+
+        let mut split = parse_html(
+            "https://example.test/",
+            "<div style='font-family:A,b;font-size:32px'>ߊ<span>ᠠ</span></div>",
+        );
+
+        for face in &page.font_faces {
+            split.font_faces.push(LoadedFontFace {
+                family: face.family.clone(),
+                font_weight: face.font_weight,
+                font_style: face.font_style,
+                data: face.data.clone(),
+            });
+        }
+
+        let split_layout = crate::layout_preview::PreviewLayout::build(&split, 120, None).unwrap();
+
+        let mut split_pixels = vec![0; 120 * 200];
+
+        crate::render::paint_preview_scene(
+            &mut split_pixels,
+            120,
+            200,
+            &split,
+            &split_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_eq!(&fallback[90 * 120..], &split_pixels[90 * 120..]);
 
         page.font_faces.pop();
 

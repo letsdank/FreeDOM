@@ -15,8 +15,8 @@ use crate::{
     },
     page::Page,
     page_layout::{
-        CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, bitmap_text_advance, text_metrics,
-        text_word_width,
+        CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, bitmap_text_advance, stack_ascent,
+        stack_text_metrics, stack_word_width, text_metrics, text_word_width,
     },
     styled_tree::SourcePath,
 };
@@ -477,7 +477,11 @@ impl PreviewLayout {
                                 word.parts
                                     .iter()
                                     .any(|part| part.style.font_weight != first.style.font_weight)
-                                    && fonts.measure_vector_word(word, fallback).is_none()
+                                    && (word
+                                        .parts
+                                        .iter()
+                                        .any(|part| !fonts.stack(part.style).is_empty())
+                                        || fonts.measure_vector_word(word, fallback).is_none())
                             })
                         });
 
@@ -491,7 +495,10 @@ impl PreviewLayout {
                     }
 
                     let font = fonts.get(inherited).or(fallback);
-                    let base_metrics = PreviewLineMetrics::from_font(font, inherited.font_size);
+                    let base_stack = fonts.stack(inherited);
+
+                    let base_metrics =
+                        PreviewLineMetrics::from_stack(font, &base_stack, inherited.font_size);
 
                     let mut wrap = TextWrap::new(0, width);
                     let mut line_metrics = base_metrics;
@@ -524,9 +531,13 @@ impl PreviewLayout {
 
                         for run in measured.runs {
                             let run_font = fonts.get(run.style).or(fallback);
+                            let run_stack = fonts.stack(run.style);
 
-                            let run_metrics =
-                                PreviewLineMetrics::from_font(run_font, run.style.font_size);
+                            let run_metrics = PreviewLineMetrics::from_stack(
+                                run_font,
+                                &run_stack,
+                                run.style.font_size,
+                            );
 
                             line_metrics.include(run_metrics);
 
@@ -705,16 +716,28 @@ struct PreviewLineMetrics {
 }
 
 impl PreviewLineMetrics {
+    #[cfg(test)]
     fn from_font(font: Option<&TrueTypeFont<'_>>, font_size: f32) -> Self {
-        let metrics = text_metrics(font, font_size);
+        Self::from_stack(font, &[], font_size)
+    }
+
+    fn from_stack(
+        font: Option<&TrueTypeFont<'_>>,
+        stack: &[&TrueTypeFont<'_>],
+        font_size: f32,
+    ) -> Self {
+        let metrics = stack_text_metrics(font, stack, font_size);
         let height = metrics.line_height.max(0);
 
         let steps = i64::from(GLYPH_SUBPIXEL_STEPS);
         let height_subpixels = i64::from(height) * steps;
 
-        let above = font
-            .and_then(|font| font.line_metrics(font_size))
-            .and_then(|metrics| split_subpixel_position(metrics.ascent))
+        let above = stack_ascent(stack, font_size)
+            .or_else(|| {
+                font.and_then(|font| font.line_metrics(font_size))
+                    .map(|metrics| metrics.ascent)
+            })
+            .and_then(split_subpixel_position)
             .map(|(base, phase)| i64::from(base) * steps + i64::from(phase))
             .unwrap_or(i64::from(metrics.glyph_height) * steps)
             .clamp(0, height_subpixels);
@@ -776,7 +799,7 @@ fn finish_preview_line(
 
 pub(crate) struct PreviewFonts<'style, 'font> {
     page: &'font Page,
-    entries: Vec<(&'style TextStyle, Option<TrueTypeFont<'font>>)>,
+    entries: Vec<(&'style TextStyle, Vec<TrueTypeFont<'font>>)>,
 }
 
 impl<'style, 'font> PreviewFonts<'style, 'font> {
@@ -788,7 +811,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         page: &'font Page,
         styles: impl IntoIterator<Item = &'style TextStyle>,
     ) -> Self {
-        let mut entries: Vec<(&TextStyle, Option<TrueTypeFont<'font>>)> = Vec::new();
+        let mut entries: Vec<(&TextStyle, Vec<TrueTypeFont<'font>>)> = Vec::new();
 
         for style in styles {
             if entries
@@ -798,9 +821,7 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
                 continue;
             }
 
-            let font = page
-                .font_data_for_style(style)
-                .and_then(|data| TrueTypeFont::parse(data).ok());
+            let font = page.vector_fonts_for_style(style);
 
             entries.push((style, font));
         }
@@ -812,7 +833,16 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
         self.entries
             .iter()
             .find(|(existing, _)| same_font(existing, style))
-            .and_then(|(_, font)| font.as_ref())
+            .and_then(|(_, fonts)| fonts.first())
+    }
+
+    pub(crate) fn stack(&self, style: &TextStyle) -> Vec<&TrueTypeFont<'font>> {
+        self.entries
+            .iter()
+            .find(|(existing, _)| same_font(existing, style))
+            .filter(|(_, fonts)| fonts.len() > 1)
+            .map(|(_, fonts)| fonts.iter().collect())
+            .unwrap_or_default()
     }
 
     fn measure_word<'a>(
@@ -832,9 +862,11 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
 
         measure_styled_word(word, |text, style| {
             let font = self.get(style).or(fallback);
+            let stack = self.stack(style);
 
-            let width = text_word_width(
+            let width = stack_word_width(
                 font,
+                &stack,
                 text,
                 style.font_size,
                 self.synthetic_weight(style),

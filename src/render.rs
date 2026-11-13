@@ -351,6 +351,7 @@ pub(crate) fn paint_preview_scene(
                      text: &str,
                      run_style: &crate::css::TextStyle| {
                         let font = fonts.get(run_style).or(fallback.as_ref());
+                        let font_stack = fonts.stack(run_style);
 
                         draw_wrapped_text(
                             content_pixels,
@@ -369,7 +370,7 @@ pub(crate) fn paint_preview_scene(
                             run_style.color,
                             None,
                             font,
-                            &[],
+                            &font_stack,
                             0,
                             &mut links,
                             glyph_cache,
