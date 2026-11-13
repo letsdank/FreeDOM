@@ -3682,12 +3682,12 @@ mod tests {
     }
 
     #[test]
-    fn preview_rejects_mixed_weight_with_vector_font() {
+    fn preview_handles_separate_vector_words_with_mixed_weight() {
         use crate::graphics::font::normalize_font_container;
         use crate::layout_preview::{PreviewError, PreviewLayout};
 
         let inside = parse_html("https://example.test/", "<div>A<strong>B</strong></div>");
-        let between = parse_html("https://example.test/", "<div>A <strong>B</strong></div>");
+        let between = parse_html("https://example.test/", "<div>ߊ <strong>ߊ</strong></div>");
 
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3703,10 +3703,7 @@ mod tests {
             Err(PreviewError::InlineFont(_))
         ));
 
-        assert!(matches!(
-            PreviewLayout::build(&between, 120, Some(&font)),
-            Err(PreviewError::InlineFont(_))
-        ));
+        assert!(PreviewLayout::build(&between, 120, Some(&font)).is_ok());
     }
 
     #[test]

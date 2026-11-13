@@ -456,6 +456,8 @@ impl PreviewLayout {
                     collect_styled_fragments(items, inherited, None, &mut fragments)?;
 
                     let fonts = PreviewFonts::new(page, &fragments);
+                    let words = split_styled_words(&fragments);
+
                     let changed_weight = fragments
                         .iter()
                         .find(|fragment| fragment.style.font_weight != inherited.font_weight);
@@ -465,7 +467,22 @@ impl PreviewLayout {
                             .iter()
                             .any(|item| fonts.get(item.style).or(fallback).is_some());
 
-                        if has_vector_font {
+                        let has_bitmap_font = fragments
+                            .iter()
+                            .any(|item| fonts.get(item.style).or(fallback).is_none());
+
+                        let mixed_weight_word = words.iter().any(|word| {
+                            word.parts.first().is_some_and(|first| {
+                                word.parts
+                                    .iter()
+                                    .any(|part| part.style.font_weight != first.style.font_weight)
+                            })
+                        });
+
+                        // Within a word, a font change requires fractional advances
+                        // and kerning across runs. Mixed bitmap/vector baselines are
+                        // also not positioned precisely yet.
+                        if has_vector_font && (mixed_weight_word || has_bitmap_font) {
                             let path = fragment
                                 .style_source
                                 .map_or_else(Vec::new, |path| path.indices().to_vec());
@@ -475,8 +492,6 @@ impl PreviewLayout {
                     }
 
                     let font = fonts.get(inherited).or(fallback);
-                    let words = split_styled_words(&fragments);
-
                     let base_metrics = PreviewLineMetrics::from_font(font, inherited.font_size);
 
                     let mut wrap = TextWrap::new(0, width);
