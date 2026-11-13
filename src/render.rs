@@ -747,6 +747,7 @@ fn draw_wrapped_text(
                     width,
                     height,
                     word_x,
+                    0.0,
                     y,
                     offset_y,
                     word,
@@ -897,6 +898,7 @@ fn draw_vector_text_line(
     width: usize,
     height: usize,
     x: i32,
+    offset_x: f32,
     y: i32,
     offset_y: f32,
     text: &str,
@@ -924,7 +926,7 @@ fn draw_vector_text_line(
     };
 
     let baseline_phase = f32::from(phase_y) / GLYPH_SUBPIXEL_STEPS as f32;
-    let mut pen_x = 0.0;
+    let mut pen_x = offset_x;
     let mut previous_glyph = None;
 
     for character in text.chars() {
@@ -1210,7 +1212,7 @@ mod tests {
 
         let font = TrueTypeFont::parse(&data).unwrap();
 
-        let render = |offset_y: f32, cache: &mut GlyphRasterCache| {
+        let render = |offset_x: f32, offset_y: f32, cache: &mut GlyphRasterCache| {
             let mut pixels = vec![0x00_FF_FF_FF; 80 * 80];
 
             assert!(draw_vector_text_line(
@@ -1218,6 +1220,7 @@ mod tests {
                 80,
                 80,
                 10,
+                offset_x,
                 10,
                 offset_y,
                 "ߊ",
@@ -1234,24 +1237,41 @@ mod tests {
 
         let mut cache = GlyphRasterCache::new();
 
-        let at_zero = render(0.0, &mut cache);
-        let at_half = render(0.5, &mut cache);
+        let at_zero = render(0.0, 0.0, &mut cache);
+        let at_half = render(0.0, 0.5, &mut cache);
 
         assert_eq!(cache.entries.len(), 2);
         assert_ne!(at_zero, at_half);
 
         // Repeated draws must reuse the correct cached glyph.
-        assert_eq!(at_half, render(0.5, &mut cache));
-        assert_eq!(at_zero, render(0.0, &mut cache));
+        assert_eq!(at_half, render(0.0, 0.5, &mut cache));
+        assert_eq!(at_zero, render(0.0, 0.0, &mut cache));
         assert_eq!(cache.entries.len(), 2);
 
         // A fresh cache must produce the same result.
-        assert_eq!(at_half, render(0.5, &mut GlyphRasterCache::new()));
+        assert_eq!(at_half, render(0.0, 0.5, &mut GlyphRasterCache::new()));
 
         // A whole-pixel shift reuses the same phase and moves the image down.
-        let at_one = render(1.0, &mut cache);
+        let at_one = render(0.0, 1.0, &mut cache);
 
         assert_eq!(&at_one[80..], &at_zero[..79 * 80]);
         assert_eq!(cache.entries.len(), 2);
+
+        let right_half = render(0.5, 0.0, &mut cache);
+
+        assert_ne!(right_half, at_zero);
+        assert_eq!(cache.entries.len(), 3);
+        assert_eq!(right_half, render(0.5, 0.0, &mut cache));
+
+        let right_one = render(1.0, 0.0, &mut cache);
+
+        for y in 0..80 {
+            assert_eq!(
+                &right_one[y * 80 + 1..(y + 1) * 80],
+                &at_zero[y * 80..y * 80 + 79]
+            );
+        }
+
+        assert_eq!(cache.entries.len(), 3);
     }
 }
