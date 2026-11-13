@@ -1,6 +1,7 @@
 mod box_tree;
 mod css;
 mod fetch;
+mod inline_layout;
 mod layout_debug;
 mod layout_preview;
 mod page;

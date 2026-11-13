@@ -13,6 +13,7 @@ use crate::{
         TrueTypeFont,
         render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
     },
+    inline_layout::{InlineFonts, PositionedTextRun, same_font, same_font_except_weight},
     page::{Page, ResolvedFont, TextBlock},
     page_layout::{
         CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, bitmap_text_advance, stack_ascent,
@@ -45,15 +46,6 @@ pub(crate) enum PreviewCommand {
         style: TextStyle,
         runs: Vec<PositionedTextRun>,
     },
-}
-
-pub(crate) struct PositionedTextRun {
-    pub(crate) x: i32,
-    pub(crate) offset_x: f32,
-    pub(crate) y: i32,
-    pub(crate) offset_y: f32,
-    pub(crate) text: String,
-    pub(crate) style: TextStyle,
 }
 
 struct PendingMargin {
@@ -630,16 +622,6 @@ fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
     Ok(group)
 }
 
-fn same_font(left: &TextStyle, right: &TextStyle) -> bool {
-    same_font_except_weight(left, right) && left.font_weight == right.font_weight
-}
-
-fn same_font_except_weight(left: &TextStyle, right: &TextStyle) -> bool {
-    left.font_size.to_bits() == right.font_size.to_bits()
-        && left.font_style == right.font_style
-        && left.font_families == right.font_families
-}
-
 struct InlineTextFragment<'a> {
     text: &'a str,
     style: &'a TextStyle,
@@ -887,51 +869,9 @@ fn finish_preview_line(
     }
 }
 
-pub(crate) struct InlineFonts<'style, 'font> {
-    entries: Vec<(&'style TextStyle, Vec<ResolvedFont<'font>>)>,
-}
-
 impl<'style, 'font> InlineFonts<'style, 'font> {
     fn new(page: &'font Page, fragments: &[InlineTextFragment<'style>]) -> Self {
         Self::from_styles(page, fragments.iter().map(|fragment| fragment.style))
-    }
-
-    pub(crate) fn from_styles(
-        page: &'font Page,
-        styles: impl IntoIterator<Item = &'style TextStyle>,
-    ) -> Self {
-        let mut entries: Vec<(&TextStyle, Vec<ResolvedFont<'font>>)> = Vec::new();
-
-        for style in styles {
-            if entries
-                .iter()
-                .any(|(existing, _)| same_font(existing, style))
-            {
-                continue;
-            }
-
-            let font = page.vector_fonts_for_style(style);
-
-            entries.push((style, font));
-        }
-
-        Self { entries }
-    }
-
-    pub(crate) fn get(&self, style: &TextStyle) -> Option<&TrueTypeFont<'font>> {
-        self.entries
-            .iter()
-            .find(|(existing, _)| same_font(existing, style))
-            .and_then(|(_, fonts)| fonts.first().map(|entry| &entry.font))
-    }
-
-    pub(crate) fn stack(&self, style: &TextStyle) -> &[ResolvedFont<'font>] {
-        self.entries
-            .iter()
-            .find(|(existing, _)| same_font(existing, style))
-            .filter(|(_, fonts)| fonts.len() > 1)
-            .map(|(_, fonts)| fonts.as_slice())
-            .unwrap_or_default()
     }
 
     fn measure_word<'a>(
@@ -1068,22 +1008,6 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
             let font = self.get(style).or(fallback);
             text_metrics(font, style.font_size).character_width
         })
-    }
-
-    pub(crate) fn synthetic_weight(&self, style: &TextStyle) -> crate::css::FontWeight {
-        self.entries
-            .iter()
-            .find(|(existing, _)| same_font(existing, style))
-            .and_then(|(_, fonts)| fonts.first())
-            .map_or(style.font_weight, |entry| entry.synthesis.0)
-    }
-
-    pub(crate) fn synthetic_style(&self, style: &TextStyle) -> crate::css::FontStyle {
-        self.entries
-            .iter()
-            .find(|(existing, _)| same_font(existing, style))
-            .and_then(|(_, fonts)| fonts.first())
-            .map_or(style.font_style, |entry| entry.synthesis.1)
     }
 }
 
@@ -1716,7 +1640,7 @@ mod tests {
         let fonts = InlineFonts::new(&page, &fragments);
 
         // Color does not require a separate font.
-        assert_eq!(fonts.entries.len(), 2);
+        assert_eq!(fonts.len(), 2);
 
         let words = split_styled_words(&fragments);
         assert_eq!(words.len(), 2);

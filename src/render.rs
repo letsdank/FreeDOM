@@ -8,8 +8,9 @@ use crate::{
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
     },
+    inline_layout::{InlineFonts, PositionedTextRun},
     layout_debug::{clear_preview_content, paint_preview_box},
-    layout_preview::{InlineFonts, PositionedTextRun, PreviewCommand, PreviewLayout},
+    layout_preview::{PreviewCommand, PreviewLayout},
     page::{BlockContent, Page, ResolvedFont},
     page_layout::{
         CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, stack_ascent, stack_text_metrics,
