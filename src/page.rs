@@ -107,13 +107,33 @@ impl Page {
     }
 
     fn font_face_for_style(&self, style: &TextStyle) -> Option<&LoadedFontFace> {
-        style.font_families.iter().find_map(|family| {
+        self.font_faces_for_style(style).next()
+    }
+
+    fn font_faces_for_style<'a, 'b>(
+        &'a self,
+        style: &'b TextStyle,
+    ) -> impl Iterator<Item = &'a LoadedFontFace> + 'b
+    where
+        'a: 'b,
+    {
+        style.font_families.iter().filter_map(move |family| {
             self.font_face_for(Some(family), style.font_weight, style.font_style)
         })
     }
 
     pub(crate) fn font_data_for_style(&self, style: &TextStyle) -> Option<&[u8]> {
-        self.font_face_for_style(style)
+        self.font_data_for_families(style).next()
+    }
+
+    pub(crate) fn font_data_for_families<'a, 'b>(
+        &'a self,
+        style: &'b TextStyle,
+    ) -> impl Iterator<Item = &'a [u8]> + 'b
+    where
+        'a: 'b,
+    {
+        self.font_faces_for_style(style)
             .map(|face| face.data.as_slice())
     }
 
@@ -1330,6 +1350,17 @@ mod tests {
             page.font_data_for(Some("freedom sans"), FontWeight::Bold, FontStyle::Italic),
             Some([4].as_slice())
         );
+
+        let mut style = TextStyle::initial();
+
+        style.font_families = vec!["missing".into(), "Other".into(), "freedom sans".into()];
+        style.font_weight = FontWeight::Bold;
+        style.font_style = FontStyle::Italic;
+
+        let data: Vec<_> = page.font_data_for_families(&style).collect();
+
+        assert_eq!(data, vec![[9].as_slice(), [4].as_slice()]);
+        assert_eq!(page.font_data_for_style(&style), Some([9].as_slice()));
     }
 
     #[test]
