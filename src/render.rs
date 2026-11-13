@@ -915,77 +915,67 @@ fn draw_vector_text_line(
         return false;
     };
 
-    let units_per_em = f32::from(font.head().units_per_em);
-
-    if units_per_em <= 0.0 {
-        return false;
-    }
-
-    let scale = font_size / units_per_em;
     let Some((baseline_y, phase_y)) = split_subpixel_position(line_metrics.ascent + offset_y)
     else {
         return false;
     };
 
     let baseline_phase = f32::from(phase_y) / GLYPH_SUBPIXEL_STEPS as f32;
-    let mut pen_x = offset_x;
-    let mut previous_glyph = None;
 
-    for character in text.chars() {
-        let glyph_id = font.glyph_id(character);
-        let Some(metric) = font.metric(glyph_id) else {
-            return false;
-        };
+    let result = crate::graphics::font::layout::visit_positioned_glyphs(
+        &[font],
+        text,
+        font_size,
+        |_, glyph_id, pen_x| {
+            let invalid = || crate::graphics::font::sfnt::FontError {
+                offset: 0,
+                message: "cannot rasterize vector glyph".to_owned(),
+            };
 
-        if let Some(previous_glyph) = previous_glyph {
-            pen_x += f32::from(font.kerning(previous_glyph, glyph_id)) * scale;
-        }
+            let (glyph_x, phase_x) =
+                split_subpixel_position(offset_x + pen_x).ok_or_else(invalid)?;
 
-        let Some((glyph_x, phase_x)) = split_subpixel_position(pen_x) else {
-            return false;
-        };
-
-        let key = GlyphRasterKey {
-            font_identity: font.glyph_cache_key(),
-            glyph_id,
-            font_size_bits: font_size.to_bits(),
-            bold: font_weight == FontWeight::Bold,
-            italic: font_style == FontStyle::Italic,
-            color,
-            phase_x,
-            phase_y,
-        };
-
-        let phase_x = f32::from(phase_x) / GLYPH_SUBPIXEL_STEPS as f32;
-
-        let Some(glyph) = glyph_raster_cache.get_or_rasterize(key, || {
-            rasterize_vector_glyph(
-                font,
+            let key = GlyphRasterKey {
+                font_identity: font.glyph_cache_key(),
                 glyph_id,
-                font_size,
-                font_weight,
-                font_style,
-                phase_x,
-                baseline_phase,
+                font_size_bits: font_size.to_bits(),
+                bold: font_weight == FontWeight::Bold,
+                italic: font_style == FontStyle::Italic,
                 color,
-            )
-        }) else {
-            return false;
-        };
+                phase_x,
+                phase_y,
+            };
 
-        glyph.blit_to(
-            pixels,
-            width,
-            height,
-            x.saturating_add(glyph_x),
-            y.saturating_add(baseline_y),
-        );
+            let phase_x = f32::from(phase_x) / GLYPH_SUBPIXEL_STEPS as f32;
 
-        pen_x += f32::from(metric.advance_width) * scale;
-        previous_glyph = Some(glyph_id);
-    }
+            let glyph = glyph_raster_cache
+                .get_or_rasterize(key, || {
+                    rasterize_vector_glyph(
+                        font,
+                        glyph_id,
+                        font_size,
+                        font_weight,
+                        font_style,
+                        phase_x,
+                        baseline_phase,
+                        color,
+                    )
+                })
+                .ok_or_else(invalid)?;
 
-    true
+            glyph.blit_to(
+                pixels,
+                width,
+                height,
+                x.saturating_add(glyph_x),
+                y.saturating_add(baseline_y),
+            );
+
+            Ok(())
+        },
+    );
+
+    result.is_ok()
 }
 
 fn raster_color(color: u32) -> RasterColor {

@@ -22,7 +22,7 @@ pub fn layout_text(
     let scale = text_scale(font, font_size)?;
     let mut glyph_paths = Vec::with_capacity(text.chars().count());
 
-    let advance_width = visit_positioned_glyphs(font, text, scale, |glyph_id, pen_x| {
+    let advance_width = visit_positioned_glyphs(&[font], text, font_size, |_, glyph_id, pen_x| {
         let glyph_path = font.glyph_path(glyph_id)?;
         let transform = Transform::scale(scale, -scale).then(Transform::translate(pen_x, 0.0));
 
@@ -41,9 +41,7 @@ pub fn text_advance_width(
     text: &str,
     font_size: f32,
 ) -> Result<f32, FontError> {
-    let scale = text_scale(font, font_size)?;
-
-    visit_positioned_glyphs(font, text, scale, |_, _| Ok(()))
+    visit_positioned_glyphs(&[font], text, font_size, |_, _, _| Ok(()))
 }
 
 pub fn outline_text(
@@ -75,34 +73,106 @@ fn text_scale(font: &TrueTypeFont<'_>, font_size: f32) -> Result<f32, FontError>
     Ok(font_size / f32::from(font.head().units_per_em))
 }
 
-fn visit_positioned_glyphs<F>(
-    font: &TrueTypeFont<'_>,
+// Partial per-character fallback; cluster shaping is not implemented.
+// https://www.w3.org/TR/css-fonts-4/#font-matching-algorithm
+pub(crate) fn visit_positioned_glyphs<F>(
+    fonts: &[&TrueTypeFont<'_>],
     text: &str,
-    scale: f32,
+    font_size: f32,
     mut visit: F,
 ) -> Result<f32, FontError>
 where
-    F: FnMut(u16, f32) -> Result<(), FontError>,
+    F: FnMut(usize, u16, f32) -> Result<(), FontError>,
 {
+    let first = fonts.first().ok_or_else(|| FontError {
+        offset: 0,
+        message: "font list is empty".to_owned(),
+    })?;
+
+    text_scale(first, font_size)?;
+
     let mut pen_x = 0.0;
-    let mut previous_glyph = None;
+    let mut previous_glyph: Option<(usize, u16)> = None;
 
     for character in text.chars() {
-        let glyph_id = font.glyph_id(character);
+        let (index, glyph_id) = fonts
+            .iter()
+            .enumerate()
+            .find_map(|(index, font)| {
+                let glyph = font.glyph_id(character);
+                (glyph != 0).then_some((index, glyph))
+            })
+            .unwrap_or((0, 0));
+
+        let font = fonts[index];
+        let scale = text_scale(font, font_size)?;
+
         let metric = font.metric(glyph_id).ok_or_else(|| FontError {
             offset: 0,
             message: "cmap refers to a glyph outside the font".to_owned(),
         })?;
 
-        if let Some(previous_glyph) = previous_glyph {
-            pen_x += f32::from(font.kerning(previous_glyph, glyph_id)) * scale;
+        if let Some((previous_font, previous_glyph)) = previous_glyph {
+            if previous_font == index {
+                pen_x += f32::from(font.kerning(previous_glyph, glyph_id)) * scale;
+            }
         }
 
-        visit(glyph_id, pen_x)?;
+        visit(index, glyph_id, pen_x)?;
 
         pen_x += f32::from(metric.advance_width) * scale;
-        previous_glyph = Some(glyph_id);
+        previous_glyph = Some((index, glyph_id));
     }
 
     Ok(pen_x)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graphics::font::normalize_font_container;
+
+    #[test]
+    fn chooses_font_per_character_and_positions_glyphs() {
+        let read = |path: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+
+            normalize_font_container(std::fs::read(path).expect("font fixture must exist")).unwrap()
+        };
+
+        let data_a = read("testdata/fonts/noto/nko-hmtx.woff2");
+        let data_b = read("testdata/wpt/fonts/noto/NotoSansMongolian-regular.woff2");
+
+        let a = TrueTypeFont::parse(&data_a).unwrap();
+        let b = TrueTypeFont::parse(&data_b).unwrap();
+
+        assert_ne!(a.glyph_id('ߊ'), 0);
+        assert_eq!(a.glyph_id('ᠠ'), 0);
+        assert_ne!(b.glyph_id('ᠠ'), 0);
+
+        let mut positions = Vec::new();
+
+        let width = visit_positioned_glyphs(&[&a, &b], "ߊᠠߊ", 32.0, |index, glyph, x| {
+            positions.push((index, glyph, x));
+            Ok(())
+        })
+        .unwrap();
+
+        let first = a.text_advance_width("ߊ", 32.0).unwrap();
+        let second = b.text_advance_width("ᠠ", 32.0).unwrap();
+
+        assert_eq!(
+            positions
+                .iter()
+                .map(|position| position.0)
+                .collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
+
+        assert_eq!(positions[1].2, first);
+        assert_eq!(positions[2].2, first + second);
+        assert_eq!(width, first + second + first);
+
+        assert!(visit_positioned_glyphs(&[], "a", 32.0, |_, _, _| Ok(())).is_err());
+    }
 }
