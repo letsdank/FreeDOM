@@ -16,7 +16,7 @@ use crate::{
     page::{Page, ResolvedFont},
     page_layout::{
         CONTENT_HORIZONTAL_PADDING, LayoutRect, TextWrap, bitmap_text_advance, stack_ascent,
-        stack_text_metrics, stack_word_width, text_metrics, text_word_width,
+        stack_text_metrics, stack_word_width, text_metrics,
     },
     styled_tree::SourcePath,
 };
@@ -477,11 +477,7 @@ impl PreviewLayout {
                                 word.parts
                                     .iter()
                                     .any(|part| part.style.font_weight != first.style.font_weight)
-                                    && (word
-                                        .parts
-                                        .iter()
-                                        .any(|part| !fonts.stack(part.style).is_empty())
-                                        || fonts.measure_vector_word(word, fallback).is_none())
+                                    && fonts.measure_vector_word(word, fallback).is_none()
                             })
                         });
 
@@ -897,9 +893,11 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
 
         let mut measured = measure_styled_word(word, |text, style| {
             let font = self.get(style).or(fallback).expect("font checked above");
+            let stack = self.stack(style);
 
-            let width = text_word_width(
+            let width = stack_word_width(
                 Some(font),
+                stack,
                 text,
                 style.font_size,
                 self.synthetic_weight(style),
@@ -914,14 +912,24 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
 
         for run in &mut measured.runs {
             let font = self.get(run.style).or(fallback)?;
-            let identity = font.glyph_cache_key();
-            let first_glyph = font.glyph_id(run.text.chars().next()?);
+            let stack = self.stack(run.style);
+
+            let first_character = run.text.chars().next()?;
+
+            let first_font = stack
+                .iter()
+                .map(|entry| &entry.font)
+                .find(|candidate| candidate.glyph_id(first_character) != 0)
+                .unwrap_or(font);
+
+            let identity = first_font.glyph_cache_key();
+            let first_glyph = first_font.glyph_id(first_character);
 
             if let Some((previous_font, left)) = previous {
                 if previous_font == identity {
-                    let scale = run.style.font_size / f32::from(font.head().units_per_em);
+                    let scale = run.style.font_size / f32::from(first_font.head().units_per_em);
 
-                    pen += f32::from(font.kerning(left, first_glyph)) * scale;
+                    pen += f32::from(first_font.kerning(left, first_glyph)) * scale;
                 }
             }
 
@@ -930,15 +938,31 @@ impl<'style, 'font> PreviewFonts<'style, 'font> {
             run.x = x;
             run.offset_x = f32::from(phase) / GLYPH_SUBPIXEL_STEPS as f32;
 
-            pen += font
-                .text_advance_width(&run.text, run.style.font_size)
-                .ok()?;
+            pen += if stack.is_empty() {
+                font.text_advance_width(&run.text, run.style.font_size)
+                    .ok()?
+            } else {
+                crate::graphics::font::layout::visit_positioned_glyphs(
+                    stack,
+                    &run.text,
+                    run.style.font_size,
+                    |_, _, _| Ok(()),
+                )
+                .ok()?
+            };
 
-            previous = run
-                .text
-                .chars()
-                .last()
-                .map(|character| (identity, font.glyph_id(character)));
+            let last_character = run.text.chars().last()?;
+
+            let last_font = stack
+                .iter()
+                .map(|entry| &entry.font)
+                .find(|candidate| candidate.glyph_id(last_character) != 0)
+                .unwrap_or(font);
+
+            previous = Some((
+                last_font.glyph_cache_key(),
+                last_font.glyph_id(last_character),
+            ));
         }
 
         Some(measured)

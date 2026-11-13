@@ -4221,6 +4221,109 @@ mod tests {
 
         assert_eq!(&fallback[90 * 120..], &split_pixels[90 * 120..]);
 
+        let mut mixed_weight = parse_html(
+            "https://example.test/",
+            "<div style='font-family:A,B;font-size:32px'>ߊᠠ<strong>ᠠߊ</strong></div>",
+        );
+
+        for face in &page.font_faces {
+            mixed_weight.font_faces.push(LoadedFontFace {
+                family: face.family.clone(),
+                font_weight: face.font_weight,
+                font_style: face.font_style,
+                data: face.data.clone(),
+            });
+        }
+
+        let layout = crate::layout_preview::PreviewLayout::build(&mixed_weight, 120, None).unwrap();
+
+        let runs = layout
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                crate::layout_preview::PreviewCommand::Text { runs, .. } if runs.len() == 2 => {
+                    Some(runs)
+                }
+
+                _ => None,
+            })
+            .expect("two positioned runs expected");
+
+        let mut positions = Vec::new();
+
+        crate::graphics::font::layout::visit_positioned_glyphs(
+            &fonts,
+            "ߊᠠᠠߊ",
+            32.0,
+            |index, _, x| {
+                positions.push((index, x));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            positions.iter().map(|item| item.0).collect::<Vec<_>>(),
+            [0, 1, 1, 0]
+        );
+
+        let (x, phase) =
+            crate::graphics::font::render::split_subpixel_position(positions[2].1).unwrap();
+
+        assert_eq!(
+            (runs[1].x, runs[1].offset_x),
+            (
+                x,
+                f32::from(phase) / crate::graphics::font::render::GLYPH_SUBPIXEL_STEPS as f32
+            )
+        );
+
+        assert_eq!(runs[1].style.font_weight, FontWeight::Bold);
+
+        let mut mixed_pixels = vec![0; 120 * 200];
+
+        crate::render::paint_preview_scene(
+            &mut mixed_pixels,
+            120,
+            200,
+            &mixed_weight,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        let mut plain = parse_html(
+            "https://example.test/",
+            "<div style='font-family:A,B;font-size:32px'>ߊᠠᠠߊ</div>",
+        );
+
+        for face in &page.font_faces {
+            plain.font_faces.push(LoadedFontFace {
+                family: face.family.clone(),
+                font_weight: face.font_weight,
+                font_style: face.font_style,
+                data: face.data.clone(),
+            });
+        }
+
+        let plain_layout = crate::layout_preview::PreviewLayout::build(&plain, 120, None).unwrap();
+
+        let mut plain_pixels = vec![0; 120 * 200];
+
+        crate::render::paint_preview_scene(
+            &mut plain_pixels,
+            120,
+            200,
+            &plain,
+            &plain_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+
+        assert_ne!(mixed_pixels, plain_pixels);
+
         let mut styled = parse_html(
             "https://example.test/",
             concat!(
