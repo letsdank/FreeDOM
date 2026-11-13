@@ -937,15 +937,29 @@ fn extract_blocks(
 
         let mut text = String::new();
 
-        let contents = element
+        let mut link_trace = ExtractionTrace {
+            path: trace.path.clone(),
+            ancestors: trace.ancestors.clone(),
+            ..ExtractionTrace::default()
+        };
+
+        if let Some(contents) = element
             .id
             .as_deref()
             .and_then(|id| document.text_content_override(id))
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| text_content(node));
+        {
+            link_trace.append_text(&mut text, contents, false, &style);
+        } else {
+            link_trace.ancestors.push(element.clone());
 
-        let mut pending_space = false;
-        append_collapsed(&mut text, &contents, &mut pending_space);
+            for (index, child) in dom_element.children.iter().enumerate() {
+                link_trace.path.push(index);
+
+                collect_link_text(child, rules, &style, document, &mut text, &mut link_trace);
+
+                link_trace.path.pop();
+            }
+        }
 
         let target = element
             .href
@@ -955,15 +969,10 @@ fn extract_blocks(
             .map(|url| url.to_string());
 
         if !text.is_empty() {
-            let run = TextRun {
-                range: 0..text.len(),
-                style: style.clone(),
-            };
-
             blocks.push(Block {
                 content: BlockContent::Text(TextBlock {
                     text,
-                    runs: vec![run],
+                    runs: link_trace.text_runs,
                 }),
                 style,
                 link: target,
@@ -1019,6 +1028,65 @@ fn extract_blocks(
     if is_block {
         flush(blocks, current, style, trace);
     }
+}
+
+fn collect_link_text(
+    node: &HtmlNode,
+    rules: &[CssRule],
+    inherited: &TextStyle,
+    document: &DocumentState,
+    text: &mut String,
+    trace: &mut ExtractionTrace,
+) {
+    if let HtmlNode::Text(contents) = node {
+        trace.append_text(text, contents, true, inherited);
+        return;
+    }
+
+    let (Some(element), HtmlNode::Element(dom_element)) = (element_info(node), node) else {
+        return;
+    };
+
+    if matches!(
+        element.tag.as_str(),
+        "script" | "style" | "template" | "head" | "title" | "meta" | "link" | "br" | "img" | "svg"
+    ) {
+        return;
+    }
+
+    let ancestors: Vec<_> = trace
+        .ancestors
+        .iter()
+        .map(ElementInfo::css_element)
+        .collect();
+
+    let style =
+        compute_style_with_ancestors(&element.css_element(), inherited.clone(), rules, &ancestors);
+
+    if style.display == Display::None {
+        return;
+    }
+
+    if let Some(contents) = element
+        .id
+        .as_deref()
+        .and_then(|id| document.text_content_override(id))
+    {
+        trace.append_text(text, contents, false, &style);
+        return;
+    }
+
+    trace.ancestors.push(element);
+
+    for (index, child) in dom_element.children.iter().enumerate() {
+        trace.path.push(index);
+
+        collect_link_text(child, rules, &style, document, text, trace);
+
+        trace.path.pop();
+    }
+
+    trace.ancestors.pop();
 }
 
 // Partial white-space: normal processing across inline text nodes.

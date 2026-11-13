@@ -137,17 +137,13 @@ impl PageLayout {
                 }
 
                 BlockContent::Text(text) => {
-                    let styled = if block.link.is_none() {
-                        layout_text_block(
-                            page,
-                            text,
-                            &block.style,
-                            text_width,
-                            fallback_font.as_ref(),
-                        )
-                    } else {
-                        None
-                    };
+                    let styled = layout_text_block(
+                        page,
+                        text,
+                        &block.style,
+                        text_width,
+                        fallback_font.as_ref(),
+                    );
 
                     if let Some((height, runs)) = styled {
                         (text_width, height, Some(runs))

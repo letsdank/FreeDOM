@@ -468,6 +468,7 @@ fn cache_text_block<'cache>(
                     runs,
                     page,
                     fallback_font,
+                    block.link.as_deref(),
                     0,
                     links,
                     glyph_raster_cache,
@@ -683,6 +684,7 @@ pub(crate) fn paint(
                         runs,
                         page,
                         fallback_font.as_ref(),
+                        block.link.as_deref(),
                         CONTENT_TOP,
                         &mut link_regions,
                         glyph_raster_cache,
@@ -769,6 +771,7 @@ fn draw_positioned_text(
     runs: &[PositionedTextRun],
     page: &Page,
     fallback: Option<&TrueTypeFont<'_>>,
+    link_target: Option<&str>,
     visible_top: i32,
     links: &mut Vec<LinkRegion>,
     glyph_cache: &mut GlyphRasterCache,
@@ -794,7 +797,7 @@ fn draw_positioned_text(
             style.font_weight,
             fonts.synthetic_style(style),
             style.color,
-            None,
+            link_target,
             font,
             fonts.stack(style),
             visible_top,
@@ -1460,5 +1463,64 @@ mod tests {
         let direct = draw(&mut disabled);
 
         assert_eq!(cached, direct);
+    }
+
+    #[test]
+    fn styled_link_remains_clickable_with_and_without_cache() {
+        let page = crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            concat!(
+                "<html xmlns='http://www.w3.org/1999/xhtml'>",
+                "<head><style>a strong { color: red; }</style></head>",
+                "<body><a href='/target'>A <strong>B</strong> C</a></body>",
+                "</html>"
+            ),
+        )
+        .unwrap();
+
+        let layout = PageLayout::build(&page, 64, None);
+        assert!(layout.block_text_runs(0).is_some());
+
+        let run = |cache: &mut BlockRasterCache| {
+            let mut pixels = vec![0; 64 * 130];
+
+            let result = paint(
+                &mut pixels,
+                64,
+                130,
+                &page,
+                &layout,
+                "",
+                "",
+                None,
+                cache,
+                &mut GlyphRasterCache::new(),
+                0,
+                false,
+            );
+
+            (pixels, result.link_regions)
+        };
+
+        let (cached_pixels, cached_regions) = run(&mut BlockRasterCache::new());
+
+        let mut cache = BlockRasterCache::new();
+        cache.entries.push(BlockRasterCacheEntry::Uncacheable);
+
+        let (direct_pixels, direct_regions) = run(&mut cache);
+
+        assert_eq!(cached_pixels, direct_pixels);
+        assert!(cached_pixels[90 * 64..].contains(&0x00ff0000));
+
+        for regions in [&cached_regions, &direct_regions] {
+            for (x, y) in [(16, 90), (32, 90), (16, 100)] {
+                assert!(
+                    regions.iter().any(|region| {
+                        region.contains(x, y) && region.target() == "https://example.test/target"
+                    }),
+                    "missing link at {x},{y}"
+                );
+            }
+        }
     }
 }
