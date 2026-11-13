@@ -94,15 +94,14 @@ impl Page {
 
         self.font_faces
             .iter()
-            .find(|face| {
-                face.family.eq_ignore_ascii_case(family)
-                    && face.font_weight == font_weight
-                    && face.font_style == font_style
-            })
-            .or_else(|| {
-                self.font_faces
-                    .iter()
-                    .find(|face| face.family.eq_ignore_ascii_case(family))
+            .filter(|face| face.family.eq_ignore_ascii_case(family))
+            // Partial CSS Fonts matching: style precedes weight.
+            // https://www.w3.org/TR/css-fonts-4/#font-matching-algorithm
+            .min_by_key(|face| {
+                (
+                    face.font_style != font_style,
+                    face.font_weight != font_weight,
+                )
             })
     }
 
@@ -1282,22 +1281,50 @@ mod tests {
 
     #[test]
     fn selects_a_matching_loaded_font_face() {
-        let page = Page {
+        let face = |family: &str, weight, style, marker| LoadedFontFace {
+            family: family.to_owned(),
+            font_weight: weight,
+            font_style: style,
+            data: vec![marker],
+        };
+
+        let mut page = Page {
             url: "https://example.test/".to_owned(),
             title: String::new(),
             blocks: Vec::new(),
-            font_faces: vec![LoadedFontFace {
-                family: "FreeDOM Sans".to_owned(),
-                font_weight: FontWeight::Normal,
-                font_style: FontStyle::Normal,
-                data: vec![1, 2, 3],
-            }],
+            font_faces: vec![
+                face("Other", FontWeight::Bold, FontStyle::Italic, 9),
+                face("FreeDOM Sans", FontWeight::Bold, FontStyle::Normal, 1),
+                face("FreeDOM Sans", FontWeight::Normal, FontStyle::Italic, 2),
+                face("FreeDOM Sans", FontWeight::Normal, FontStyle::Normal, 3),
+            ],
             styled_tree: StyledTree::default(),
         };
 
+        for (weight, style, marker) in [
+            (FontWeight::Bold, FontStyle::Italic, 2),
+            (FontWeight::Normal, FontStyle::Italic, 2),
+            (FontWeight::Bold, FontStyle::Normal, 1),
+            (FontWeight::Normal, FontStyle::Normal, 3),
+        ] {
+            assert_eq!(
+                page.font_data_for(Some("freedom sans"), weight, style),
+                Some([marker].as_slice()),
+                "weight={weight:?}, style={style:?}"
+            );
+        }
+
+        assert!(
+            page.font_data_for(Some("missing"), FontWeight::Normal, FontStyle::Normal)
+                .is_none()
+        );
+
+        page.font_faces
+            .push(face("FreeDOM Sans", FontWeight::Bold, FontStyle::Italic, 4));
+
         assert_eq!(
-            page.font_data_for(Some("freedom sans"), FontWeight::Normal, FontStyle::Normal,),
-            Some([1, 2, 3].as_slice())
+            page.font_data_for(Some("freedom sans"), FontWeight::Bold, FontStyle::Italic),
+            Some([4].as_slice())
         );
     }
 
