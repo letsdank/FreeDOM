@@ -761,13 +761,14 @@ struct ExtractionTrace {
     path: Vec<usize>,
     pending: Vec<SourcePath>,
     ancestors: Vec<ElementInfo>,
+    pending_space: bool,
 }
 
 impl ExtractionTrace {
     fn append_text(&mut self, current: &mut String, contents: &str, is_text_node: bool) {
         let before = current.len();
 
-        append_collapsed(current, contents);
+        append_collapsed(current, contents, &mut self.pending_space);
 
         if current.len() == before {
             return;
@@ -896,7 +897,8 @@ fn extract_blocks(
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| text_content(node));
 
-        append_collapsed(&mut text, &contents);
+        let mut pending_space = false;
+        append_collapsed(&mut text, &contents, &mut pending_space);
 
         let target = element
             .href
@@ -964,13 +966,20 @@ fn extract_blocks(
     }
 }
 
-fn append_collapsed(target: &mut String, source: &str) {
-    for word in source.split_whitespace() {
-        if !target.is_empty() {
-            target.push(' ');
-        }
+// Partial white-space: normal processing across inline text nodes.
+// https://www.w3.org/TR/css-text-3/#white-space-processing
+fn append_collapsed(target: &mut String, source: &str, pending_space: &mut bool) {
+    for ch in source.chars() {
+        if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c') {
+            *pending_space = !target.is_empty();
+        } else {
+            if *pending_space && !target.is_empty() {
+                target.push(' ');
+            }
 
-        target.push_str(word);
+            target.push(ch);
+            *pending_space = false;
+        }
     }
 }
 
@@ -980,8 +989,12 @@ fn flush(
     style: TextStyle,
     trace: &mut ExtractionTrace,
 ) {
-    let text = current.trim().to_owned();
+    let text = current
+        .trim_matches(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'))
+        .to_owned();
+
     current.clear();
+    trace.pending_space = false;
 
     let sources = std::mem::take(&mut trace.pending);
 
@@ -4432,5 +4445,30 @@ mod tests {
         let missing = draw(&page);
 
         assert_ne!(fallback, missing);
+    }
+
+    #[test]
+    fn collapses_whitespace_across_inline_text_nodes() {
+        for (html, expected) in [
+            ("<div>Free<strong>DOM</strong>!</div>", "FreeDOM!"),
+            ("<div>one <span>  two</span> three</div>", "one two three"),
+            ("<div>one<span> </span><em></em>two</div>", "one two"),
+            ("<div>  a\n<span>\tb</span>  </div>", "a b"),
+            ("<div>\u{a0}a\u{a0}b\u{a0}</div>", "\u{a0}a\u{a0}b\u{a0}"),
+        ] {
+            let page = parse_html("https://example.test/", html);
+
+            assert_eq!(page.blocks.len(), 1, "{html}");
+            assert_eq!(page.blocks[0].text(), Some(expected), "{html}");
+        }
+
+        let page = parse_html(
+            "https://example.test/",
+            "<div>A <span> </span></div><div>B</div>",
+        );
+
+        let blocks: Vec<_> = page.blocks.iter().filter_map(Block::text).collect();
+
+        assert_eq!(blocks, ["A", "B"]);
     }
 }
