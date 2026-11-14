@@ -31,6 +31,7 @@ pub(crate) struct TextBlock {
 pub(crate) struct TextRun {
     pub(crate) range: std::ops::Range<usize>,
     pub(crate) style: TextStyle,
+    pub(crate) link: Option<String>,
 }
 
 pub(crate) struct Block {
@@ -212,11 +213,12 @@ impl Page {
 
                 let _ = writeln!(
                     output,
-                    "  text {:?} bytes={:?} weight={:?} color=#{:06x}",
+                    "  text {:?} bytes={:?} weight={:?} color=#{:06x} link={:?}",
                     excerpt,
                     run.range,
                     run.style.font_weight,
                     run.style.color & 0x00ff_ffff,
+                    run.link
                 );
             }
 
@@ -819,6 +821,7 @@ impl ExtractionTrace {
         self.text_runs.push(TextRun {
             range: before..current.len(),
             style: style.clone(),
+            link: None,
         });
 
         // Ordinary text is attributed to its containing element.
@@ -967,6 +970,10 @@ fn extract_blocks(
             .and_then(|href| page_url.and_then(|url| url.join(href.trim()).ok()))
             .filter(|url| matches!(url.scheme(), "http" | "https"))
             .map(|url| url.to_string());
+
+        for run in &mut link_trace.text_runs {
+            run.link = target.clone();
+        }
 
         if !text.is_empty() {
             blocks.push(Block {
@@ -2070,6 +2077,7 @@ mod tests {
                         runs: vec![TextRun {
                             range: 0..5,
                             style: TextStyle::initial(),
+                            link: None,
                         }],
                     }),
                     style: TextStyle::initial(),
@@ -4626,6 +4634,7 @@ mod tests {
         }
 
         assert_eq!(text.runs.last().unwrap().range.end, text.text.len());
+        assert!(text.runs.iter().all(|run| run.link.is_none()));
         assert_eq!(text.runs[1].style.font_weight, FontWeight::Bold);
         assert_eq!(text.runs[2].style.color, 0x00_ff_0000);
 
@@ -4642,6 +4651,42 @@ mod tests {
 
         assert_eq!(text.runs.len(), 1);
         assert_eq!(&text.text[text.runs[0].range.clone()], "link");
+
+        assert_eq!(text.runs[0].link.as_deref(), Some("https://example.test/"));
+
+        let page = parse_html(
+            "https://example.test/",
+            "<a href='/next'>one <strong>two</strong></a>",
+        );
+
+        let BlockContent::Text(text) = &page.blocks[0].content else {
+            panic!("expected text block");
+        };
+
+        assert_eq!(text.runs.len(), 2);
+
+        assert!(
+            text.runs
+                .iter()
+                .all(|run| run.link.as_deref() == Some("https://example.test/next"))
+        );
+
+        assert!(
+            page.describe_block_sources(0)
+                .unwrap()
+                .contains("link=Some(\"https://example.test/next\")"),
+        );
+
+        let page = parse_html(
+            "https://example.test/",
+            "<a href='javascript:alert(1)'>unsafe</a>",
+        );
+
+        let BlockContent::Text(text) = &page.blocks[0].content else {
+            panic!("expected text block");
+        };
+
+        assert!(text.runs.iter().all(|run| run.link.is_none()));
     }
 
     #[test]
