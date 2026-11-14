@@ -167,7 +167,7 @@ fn build_node(
         return None;
     }
 
-    let children = if matches!(info.tag.as_str(), "img" | "svg" | "br") {
+    let children = if matches!(info.tag.as_str(), "img" | "svg" | "br" | "canvas") {
         Vec::new()
     } else if let Some(text) = info
         .id

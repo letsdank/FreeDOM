@@ -201,6 +201,12 @@ impl PageLayout {
                         (text_width, height, None)
                     }
                 }
+
+                BlockContent::Canvas(canvas) => (
+                    i32::try_from(canvas.surface().width()).unwrap_or(i32::MAX),
+                    i32::try_from(canvas.surface().height()).unwrap_or(i32::MAX),
+                    None,
+                ),
             };
 
             blocks.push(BlockLayout {

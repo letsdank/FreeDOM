@@ -584,7 +584,7 @@ fn cache_visual_block<'cache>(
             )
         }
 
-        BlockContent::Text(_) => None,
+        BlockContent::Text(_) | BlockContent::Canvas(_) => None,
     }
 }
 
@@ -736,6 +736,10 @@ pub(crate) fn paint(
                     );
                 }
             }
+
+            BlockContent::Canvas(canvas) => {
+                blit_canvas(canvas.surface(), pixels, width, height, 16, y);
+            }
         }
 
         if let Some(block_started) = block_started {
@@ -746,6 +750,7 @@ pub(crate) fn paint(
                     BlockContent::Text(_) => "text",
                     BlockContent::Svg(_) => "svg",
                     BlockContent::Bitmap(_) => "bitmap",
+                    BlockContent::Canvas(_) => "canvas",
                 };
 
                 eprintln!(
@@ -765,6 +770,71 @@ pub(crate) fn paint(
             .content_height()
             .saturating_sub(content_viewport_height)
             .max(0),
+    }
+}
+
+// A canvas is mutable: render it directly and only visit visible pixels.
+fn blit_canvas(
+    source: &RasterSurface,
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+) {
+    if width == 0 {
+        return;
+    }
+
+    let height = height.min(pixels.len() / width);
+
+    let (Ok(width_i64), Ok(height_i64)) = (i64::try_from(width), i64::try_from(height)) else {
+        return;
+    };
+
+    let (Ok(source_width), Ok(source_height)) = (
+        i64::try_from(source.width()),
+        i64::try_from(source.height()),
+    ) else {
+        return;
+    };
+
+    let (x, y) = (i64::from(x), i64::from(y));
+
+    let left = x.max(0);
+    let top = y.max(i64::from(CONTENT_TOP));
+    let right = (x + source_width).min(width_i64);
+    let bottom = (y + source_height).min(height_i64);
+
+    if left >= right || top >= bottom {
+        return;
+    }
+
+    for dy in top..bottom {
+        for dx in left..right {
+            let Some(foreground) = source.pixel((dx - x) as usize, (dy - y) as usize) else {
+                continue;
+            };
+
+            if foreground.alpha == 0 {
+                continue;
+            }
+
+            let index = dy as usize * width + dx as usize;
+
+            let Some(pixel) = pixels.get_mut(index) else {
+                continue;
+            };
+
+            let background =
+                RasterColor::rgba((*pixel >> 16) as u8, (*pixel >> 8) as u8, *pixel as u8, 255);
+
+            let color = crate::graphics::raster::blend_source_over(background, foreground, 1.0);
+
+            *pixel = (u32::from(color.red) << 16)
+                | (u32::from(color.green) << 8)
+                | u32::from(color.blue);
+        }
     }
 }
 
@@ -1991,5 +2061,53 @@ mod tests {
 
         assert_eq!(fallback_layout.block_height(0), 10);
         assert!(fallback_layout.block_text_runs(0).is_some());
+    }
+
+    #[test]
+    fn canvas_is_mutable_clipped_and_not_cached() {
+        let mut page = crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            concat!(
+                "<html xmlns='http://www.w3.org/1999/xhtml'>",
+                "<body><canvas width='4' height='4'></canvas></body>",
+                "</html>"
+            ),
+        )
+        .unwrap();
+
+        let layout = PageLayout::build(&page, 64, None);
+        let mut cache = BlockRasterCache::new();
+
+        for (color, expected) in [
+            (RasterColor::rgba(255, 0, 0, 255), 0xff0000),
+            (RasterColor::rgba(0, 255, 0, 255), 0x00ff00),
+        ] {
+            let BlockContent::Canvas(canvas) = &mut page.blocks[0].content else {
+                panic!("canvas expected");
+            };
+
+            canvas.set_fill_style(color);
+            canvas.fill_rect(0.0, 0.0, 4.0, 4.0);
+
+            let mut pixels = vec![0; 64 * 100];
+
+            paint(
+                &mut pixels,
+                64,
+                100,
+                &page,
+                &layout,
+                "",
+                "",
+                None,
+                &mut cache,
+                &mut GlyphRasterCache::new(),
+                2,
+                false,
+            );
+
+            assert_eq!(pixels[90 * 64 + 16], expected);
+            assert_eq!(pixels[89 * 64 + 16], BACKGROUND);
+        }
     }
 }

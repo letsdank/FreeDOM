@@ -5,6 +5,7 @@ use crate::{
     },
     fetch::Fetcher,
     graphics::{
+        canvas::Canvas2D,
         font::normalize_font_container,
         image::{decode_jpeg, decode_png_for_display},
         raster::Surface as RasterSurface,
@@ -21,6 +22,7 @@ pub(crate) enum BlockContent {
     Text(TextBlock),
     Svg(SvgDocument),
     Bitmap(RasterSurface),
+    Canvas(Canvas2D),
 }
 
 pub(crate) struct TextBlock {
@@ -45,21 +47,21 @@ impl Block {
     fn text(&self) -> Option<&str> {
         match &self.content {
             BlockContent::Text(text) => Some(&text.text),
-            BlockContent::Svg(_) | BlockContent::Bitmap(_) => None,
+            BlockContent::Svg(_) | BlockContent::Bitmap(_) | BlockContent::Canvas(_) => None,
         }
     }
 
     fn svg(&self) -> Option<&SvgDocument> {
         match &self.content {
             BlockContent::Svg(svg) => Some(svg),
-            BlockContent::Text(_) | BlockContent::Bitmap(_) => None,
+            BlockContent::Text(_) | BlockContent::Bitmap(_) | BlockContent::Canvas(_) => None,
         }
     }
 
     fn bitmap(&self) -> Option<&RasterSurface> {
         match &self.content {
             BlockContent::Bitmap(bitmap) => Some(bitmap),
-            BlockContent::Text(_) | BlockContent::Svg(_) => None,
+            BlockContent::Text(_) | BlockContent::Svg(_) | BlockContent::Canvas(_) => None,
         }
     }
 }
@@ -166,6 +168,7 @@ impl Page {
             BlockContent::Text(_) => "text",
             BlockContent::Svg(_) => "svg",
             BlockContent::Bitmap(_) => "image",
+            BlockContent::Canvas(_) => "canvas",
         };
 
         let mut output = format!("FreeDOM block #{index} ({kind}) - source contributors:\n");
@@ -800,6 +803,8 @@ struct ExtractionTrace {
     ancestors: Vec<ElementInfo>,
     pending_space: bool,
     text_runs: Vec<TextRun>,
+    canvas_pixels: usize,
+    canvas_count: usize,
 }
 
 impl ExtractionTrace {
@@ -894,6 +899,43 @@ fn extract_blocks(
     );
 
     if style.display == Display::None {
+        return;
+    }
+
+    if element.tag == "canvas" {
+        flush(blocks, current, inherited_style, trace);
+
+        let width = html_attribute(dom_element, "width")
+            .and_then(parse_canvas_dimension)
+            .unwrap_or(300);
+
+        let height = html_attribute(dom_element, "height")
+            .and_then(parse_canvas_dimension)
+            .unwrap_or(150);
+
+        const MAX_PAGE_CANVAS_PIXELS: usize = 16 * 1024 * 1024;
+        const MAX_PAGE_CANVASES: usize = 1024;
+
+        let total = width
+            .checked_mul(height)
+            .and_then(|pixels| trace.canvas_pixels.checked_add(pixels));
+
+        if let Some(total) = total.filter(|total| {
+            *total <= MAX_PAGE_CANVAS_PIXELS && trace.canvas_count < MAX_PAGE_CANVASES
+        }) {
+            if let Some(canvas) = Canvas2D::new(width, height) {
+                trace.canvas_pixels = total;
+                trace.canvas_count += 1;
+
+                blocks.push(Block {
+                    content: BlockContent::Canvas(canvas),
+                    style,
+                    link: None,
+                    sources: vec![trace.current_source()],
+                });
+            }
+        }
+
         return;
     }
 
@@ -1074,6 +1116,35 @@ fn extract_blocks(
     }
 }
 
+// Partial HTML non-negative integer parser for canvas dimensions.
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-non-negative-integers
+fn parse_canvas_dimension(input: &str) -> Option<usize> {
+    let input = input.trim_start_matches(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'));
+
+    let (negative, digits) = if let Some(rest) = input.strip_prefix('-') {
+        (true, rest)
+    } else {
+        (false, input.strip_prefix('+').unwrap_or(input))
+    };
+
+    let mut value = 0_usize;
+    let mut found = false;
+
+    for digit in digits.bytes().take_while(u8::is_ascii_digit) {
+        found = true;
+
+        value = value
+            .saturating_mul(10)
+            .saturating_add(usize::from(digit - b'0'));
+    }
+
+    if !found || (negative && value != 0) {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 fn collect_link_text(
     node: &HtmlNode,
     rules: &[CssRule],
@@ -1093,7 +1164,17 @@ fn collect_link_text(
 
     if matches!(
         element.tag.as_str(),
-        "script" | "style" | "template" | "head" | "title" | "meta" | "link" | "br" | "img" | "svg"
+        "script"
+            | "style"
+            | "template"
+            | "head"
+            | "title"
+            | "meta"
+            | "link"
+            | "br"
+            | "img"
+            | "svg"
+            | "canvas"
     ) {
         return;
     }
@@ -4831,5 +4912,47 @@ mod tests {
         );
 
         assert!(pixels[90 * 48..].contains(&0x00ff0000));
+    }
+
+    #[test]
+    fn extracts_canvas_sizes_without_fallback_content() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<canvas>fallback</canvas>",
+                "<canvas width=' +12px' height='0'>hidden</canvas>",
+                "<canvas width='-1' height='3'></canvas>",
+                "<canvas width='16385' height='1'>not shown</canvas>",
+            ),
+        );
+
+        assert_eq!(page.blocks.len(), 3);
+
+        let sizes: Vec<_> = page
+            .blocks
+            .iter()
+            .map(|block| match &block.content {
+                BlockContent::Canvas(canvas) => {
+                    (canvas.surface().width(), canvas.surface().height())
+                }
+                _ => panic!("canvas block expected"),
+            })
+            .collect();
+
+        assert_eq!(sizes, [(300, 150), (12, 0), (300, 3)]);
+
+        assert_eq!(parse_canvas_dimension("-0junk"), Some(0));
+        assert_eq!(parse_canvas_dimension("+no"), None);
+        assert_eq!(parse_canvas_dimension("-1"), None);
+        assert_eq!(
+            parse_canvas_dimension("9999999999999999999999999999999999"),
+            Some(usize::MAX)
+        );
+
+        let layout = crate::page_layout::PageLayout::build(&page, 128, None);
+        let rects: Vec<_> = layout.block_rects().collect();
+
+        assert_eq!((rects[0].width, rects[0].height), (300, 150));
+        assert_eq!((rects[1].width, rects[1].height), (12, 0));
     }
 }

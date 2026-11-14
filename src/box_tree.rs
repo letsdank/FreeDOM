@@ -162,7 +162,7 @@ impl Builder {
                 ));
             }
 
-            "img" | "svg" => BlockContent::Replaced,
+            "img" | "svg" | "canvas" => BlockContent::Replaced,
 
             _ => BlockContent::Flow(self.flow(children, depth + 1)?),
         };
@@ -208,7 +208,9 @@ impl Builder {
                 match tag.as_str() {
                     "br" => Ok(Some(InlineItem::Break { source })),
 
-                    "img" | "svg" => Ok(Some(InlineItem::Replaced { source, tag, style })),
+                    "img" | "svg" | "canvas" => {
+                        Ok(Some(InlineItem::Replaced { source, tag, style }))
+                    }
 
                     _ => {
                         let mut result = Vec::new();
