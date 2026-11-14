@@ -211,6 +211,61 @@ pub(crate) fn layout_text_block(
     ))
 }
 
+// Keep link hit testing when a block must use the legacy single-style fallback.
+pub(crate) fn layout_link_fallback(
+    page: &Page,
+    block: &TextBlock,
+    inherited: &TextStyle,
+    width: i32,
+    fallback: Option<&TrueTypeFont<'_>>,
+) -> Option<(i32, Vec<PositionedTextRun>)> {
+    if !block.runs.iter().any(|run| run.link.is_some()) {
+        return None;
+    }
+
+    let mut end = 0;
+    let mut text = Vec::with_capacity(block.runs.len());
+
+    for run in &block.runs {
+        if run.range.start != end {
+            return None;
+        }
+
+        let slice = block.text.get(run.range.clone())?;
+        end = run.range.end;
+
+        text.push(
+            slice
+                .chars()
+                .map(|ch| if ch.is_whitespace() { ' ' } else { ch })
+                .collect::<String>(),
+        );
+    }
+
+    if end != block.text.len() {
+        return None;
+    }
+
+    let fragments: Vec<_> = block
+        .runs
+        .iter()
+        .zip(&text)
+        .map(|(run, text)| InlineTextFragment {
+            text,
+            style: inherited,
+            style_source: None,
+            link: run.link.as_deref(),
+        })
+        .collect();
+
+    let words = split_styled_words(&fragments);
+    let fonts = InlineFonts::from_styles(page, std::iter::once(inherited));
+
+    Some(layout_inline_words(
+        &fonts, &words, inherited, width, fallback, true,
+    ))
+}
+
 pub(crate) fn layout_inline_words(
     fonts: &InlineFonts<'_, '_>,
     words: &[InlineWord<'_>],

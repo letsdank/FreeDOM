@@ -935,6 +935,43 @@ fn extract_blocks(
         return;
     }
 
+    if element.tag == "a" && style.display != Display::Block {
+        let target = element
+            .href
+            .as_deref()
+            .and_then(|href| page_url.and_then(|url| url.join(href.trim()).ok()))
+            .filter(|url| matches!(url.scheme(), "http" | "https"))
+            .map(|url| url.to_string());
+
+        let first_run = trace.text_runs.len();
+
+        if let Some(contents) = element
+            .id
+            .as_deref()
+            .and_then(|id| document.text_content_override(id))
+        {
+            trace.append_text(current, contents, false, &style);
+        } else {
+            trace.ancestors.push(element.clone());
+
+            for (index, child) in dom_element.children.iter().enumerate() {
+                trace.path.push(index);
+
+                collect_link_text(child, rules, &style, document, current, trace);
+
+                trace.path.pop();
+            }
+
+            trace.ancestors.pop();
+        }
+
+        for run in &mut trace.text_runs[first_run..] {
+            run.link = target.clone();
+        }
+
+        return;
+    }
+
     if element.tag == "a" {
         flush(blocks, current, inherited_style, trace);
 
@@ -1219,17 +1256,18 @@ mod tests {
             r#"<p>Read <a href="../about.html">about us</a>.</p>"#,
         );
 
-        let link = page
-            .blocks
-            .iter()
-            .find(|block| block.text().unwrap() == "about us")
-            .unwrap();
+        let BlockContent::Text(text) = &page.blocks[0].content else {
+            panic!("expected text block");
+        };
 
-        assert_eq!(
-            link.link.as_deref(),
-            Some("https://example.test/docs/about.html")
-        );
+        assert_eq!(text.text, "Read about us.");
+
+        assert!(text.runs.iter().any(|run| {
+            text.text[run.range.clone()].contains("about us")
+                && run.link.as_deref() == Some("https://example.test/docs/about.html")
+        }));
     }
+
     #[test]
     fn inline_javascript_updates_the_page_title() {
         let page = parse_html(

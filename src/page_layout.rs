@@ -1,7 +1,7 @@
 use crate::{
     css::{FontStyle, FontWeight},
     graphics::{font::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
-    inline_layout::{PositionedTextRun, layout_text_block},
+    inline_layout::{PositionedTextRun, layout_link_fallback, layout_text_block},
     page::{BlockContent, Page, ResolvedFont},
 };
 
@@ -143,7 +143,16 @@ impl PageLayout {
                         &block.style,
                         text_width,
                         fallback_font.as_ref(),
-                    );
+                    )
+                    .or_else(|| {
+                        layout_link_fallback(
+                            page,
+                            text,
+                            &block.style,
+                            text_width,
+                            fallback_font.as_ref(),
+                        )
+                    });
 
                     if let Some((height, runs)) = styled {
                         (text_width, height, Some(runs))

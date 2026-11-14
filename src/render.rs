@@ -1614,4 +1614,93 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn inline_html_links_render_and_remain_clickable_with_fallback() {
+        for html in [
+            "<p>aa <a href='/one'>bb</a> cc <a href='/two'>dd</a> ee</p>",
+            "<p>aa <a href='/one'><span style='font-size:24px'>bb</span></a> cc <a href='/two'>dd</a> ee</p>",
+            "<p>aa\u{a0}<a href='/one'>bb</a> cc <a href='/two'>dd</a> ee</p>",
+        ] {
+            let html =
+                format!("<html xmlns='http://www.w3.org/1999/xhtml'><body>{html}</body></html>");
+
+            let page = crate::page::parse_xhtml_for_test("https://example.test/", &html).unwrap();
+
+            assert_eq!(page.blocks.len(), 1);
+
+            let layout = PageLayout::build(&page, 80, None);
+            let runs = layout.block_text_runs(0).expect("positioned link runs");
+
+            let targets: Vec<_> = runs.iter().filter_map(|run| run.link.as_deref()).collect();
+
+            assert_eq!(
+                targets,
+                ["https://example.test/one", "https://example.test/two"]
+            );
+
+            let first = runs
+                .iter()
+                .find(|run| run.link.as_deref() == Some("https://example.test/one"))
+                .unwrap();
+
+            let second = runs
+                .iter()
+                .find(|run| run.link.as_deref() == Some("https://example.test/two"))
+                .unwrap();
+
+            assert!(second.y > first.y);
+
+            let draw = |cache: &mut BlockRasterCache| {
+                let mut pixels = vec![0; 80 * 160];
+
+                let result = paint(
+                    &mut pixels,
+                    80,
+                    160,
+                    &page,
+                    &layout,
+                    "",
+                    "",
+                    None,
+                    cache,
+                    &mut GlyphRasterCache::new(),
+                    0,
+                    false,
+                );
+
+                (pixels, result.link_regions)
+            };
+
+            let (cached, regions) = draw(&mut BlockRasterCache::new());
+
+            let mut disabled = BlockRasterCache::new();
+            disabled.entries.push(BlockRasterCacheEntry::Uncacheable);
+
+            let (direct, direct_regions) = draw(&mut disabled);
+
+            assert_eq!(cached, direct);
+
+            for regions in [&regions, &direct_regions] {
+                for run in runs {
+                    let x = 16 + run.x;
+                    let y = CONTENT_TOP + run.y;
+
+                    if let Some(target) = &run.link {
+                        assert!(
+                            regions.iter().any(|region| {
+                                region.contains(x, y) && region.target() == target
+                            }),
+                            "{html}"
+                        );
+                    } else {
+                        assert!(
+                            !regions.iter().any(|region| region.contains(x, y)),
+                            "{html}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
