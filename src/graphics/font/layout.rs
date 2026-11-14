@@ -83,6 +83,23 @@ impl PositionedFont for &TrueTypeFont<'_> {
     }
 }
 
+// Prefer an actual NBSP in the font stack. If non exists, use a space glyph.
+pub(crate) fn select_positioned_glyph<T: PositionedFont>(
+    fonts: &[T],
+    character: char,
+) -> (usize, u16) {
+    let find = |character| {
+        fonts.iter().enumerate().find_map(|(index, font)| {
+            let glyph = font.font().glyph_id(character);
+            (glyph != 0).then_some((index, glyph))
+        })
+    };
+
+    find(character)
+        .or_else(|| (character == '\u{00a0}').then(|| find(' ')).flatten())
+        .unwrap_or((0, 0))
+}
+
 // Partial per-character fallback; cluster shaping is not implemented.
 // https://www.w3.org/TR/css-fonts-4/#font-matching-algorithm
 pub(crate) fn visit_positioned_glyphs<F, T>(
@@ -106,15 +123,7 @@ where
     let mut previous_glyph: Option<(usize, u16)> = None;
 
     for character in text.chars() {
-        let (index, glyph_id) = fonts
-            .iter()
-            .enumerate()
-            .find_map(|(index, font)| {
-                let glyph = font.font().glyph_id(character);
-                (glyph != 0).then_some((index, glyph))
-            })
-            .unwrap_or((0, 0));
-
+        let (index, glyph_id) = select_positioned_glyph(fonts, character);
         let font = fonts[index].font();
         let scale = text_scale(font, font_size)?;
 
@@ -187,6 +196,41 @@ mod tests {
         assert!(
             visit_positioned_glyphs(&[] as &[&TrueTypeFont<'_>], "a", 32.0, |_, _, _| Ok(()))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn selects_nbsp_or_space_using_the_font_stack() {
+        let load = |path: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+            normalize_font_container(std::fs::read(path).unwrap()).unwrap()
+        };
+
+        let a_bytes = load("testdata/wpt/fonts/noto/NotoSansMongolian-regular.woff2");
+        let b_bytes = load("testdata/fonts/noto/nko-hmtx.woff2");
+
+        let a = TrueTypeFont::parse(&a_bytes).unwrap();
+        let b = TrueTypeFont::parse(&b_bytes).unwrap();
+
+        assert_eq!(a.glyph_id('\u{00a0}'), 0);
+        assert_ne!(a.glyph_id(' '), 0);
+        assert_ne!(b.glyph_id('\u{00a0}'), 0);
+
+        assert_eq!(
+            select_positioned_glyph(&[&a], '\u{00a0}'),
+            (0, a.glyph_id(' '))
+        );
+
+        assert_eq!(
+            select_positioned_glyph(&[&a, &b], '\u{00a0}'),
+            (1, b.glyph_id('\u{00a0}'))
+        );
+
+        assert_eq!(select_positioned_glyph(&[&a], '\u{10ffff}'), (0, 0));
+
+        assert_eq!(
+            a.text_advance_width("\u{00a0}", 16.0).unwrap(),
+            a.text_advance_width(" ", 16.0).unwrap()
         );
     }
 }

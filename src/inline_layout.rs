@@ -507,17 +507,16 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
         for run in &mut measured.runs {
             let font = self.get(run.style).or(fallback)?;
             let stack = self.stack(run.style);
-
             let first_character = run.text.chars().next()?;
 
-            let first_font = stack
-                .iter()
-                .map(|entry| &entry.font)
-                .find(|candidate| candidate.glyph_id(first_character) != 0)
-                .unwrap_or(font);
+            let (first_index, first_glyph) = if stack.is_empty() {
+                crate::graphics::font::layout::select_positioned_glyph(&[font], first_character)
+            } else {
+                crate::graphics::font::layout::select_positioned_glyph(stack, first_character)
+            };
 
+            let first_font = stack.get(first_index).map_or(font, |entry| &entry.font);
             let identity = first_font.glyph_cache_key();
-            let first_glyph = first_font.glyph_id(first_character);
 
             if let Some((previous_font, left, previous_size)) = previous {
                 if previous_font == identity && previous_size == run.style.font_size.to_bits() {
@@ -547,15 +546,17 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
 
             let last_character = run.text.chars().last()?;
 
-            let last_font = stack
-                .iter()
-                .map(|entry| &entry.font)
-                .find(|candidate| candidate.glyph_id(last_character) != 0)
-                .unwrap_or(font);
+            let (last_index, last_glyph) = if stack.is_empty() {
+                crate::graphics::font::layout::select_positioned_glyph(&[font], last_character)
+            } else {
+                crate::graphics::font::layout::select_positioned_glyph(stack, last_character)
+            };
+
+            let last_font = stack.get(last_index).map_or(font, |entry| &entry.font);
 
             previous = Some((
                 last_font.glyph_cache_key(),
-                last_font.glyph_id(last_character),
+                last_glyph,
                 run.style.font_size.to_bits(),
             ));
         }

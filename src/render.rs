@@ -1857,5 +1857,41 @@ mod tests {
                 }));
             }
         }
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/wpt/fonts/noto/NotoSansMongolian-regular.woff2"
+        );
+
+        let bytes = normalize_font_container(std::fs::read(path).unwrap()).unwrap();
+        let font = TrueTypeFont::parse(&bytes).unwrap();
+
+        let page = parse("<p>ᠠ<a href='/x' style='color:black'>\u{00a0}</a>ᠠ</p>");
+        let layout = PageLayout::build(&page, 120, Some(&bytes));
+        let runs = layout.block_text_runs(0).unwrap();
+
+        assert_eq!(runs.len(), 3);
+
+        let mut positions = Vec::new();
+
+        crate::graphics::font::layout::visit_positioned_glyphs(
+            &[&font],
+            "ᠠ\u{00a0}ᠠ",
+            16.0,
+            |_, _, x| {
+                positions.push(x);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        for (run, x) in runs.iter().zip(positions) {
+            let (base, phase) = split_subpixel_position(x).unwrap();
+
+            assert_eq!(
+                (run.x, run.offset_x),
+                (base, f32::from(phase) / GLYPH_SUBPIXEL_STEPS as f32)
+            );
+        }
     }
 }
