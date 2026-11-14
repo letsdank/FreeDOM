@@ -450,7 +450,13 @@ fn cache_text_block<'cache>(
         return None;
     };
 
-    let content_width = viewport_width.saturating_sub(32).max(1);
+    // An unwrapped line may paint into the right-hand page padding.
+    let content_width = if block.style.white_space == crate::css::WhiteSpace::Nowrap {
+        viewport_width.saturating_sub(16).max(1)
+    } else {
+        viewport_width.saturating_sub(32).max(1)
+    };
+
     let block_height = usize::try_from(layout.block_height(index).max(0)).unwrap_or(0);
 
     if let Some(runs) = layout.block_text_runs(index) {
@@ -1893,5 +1899,97 @@ mod tests {
                 (base, f32::from(phase) / GLYPH_SUBPIXEL_STEPS as f32)
             );
         }
+    }
+
+    #[test]
+    fn inherited_nowrap_keeps_one_line_and_link_clickable() {
+        let parse = |body: &str| {
+            crate::page::parse_xhtml_for_test(
+                "https://example.test/",
+                &format!("<html xmlns='http://www.w3.org/1999/xhtml'><body>{body}</body></html>"),
+            )
+            .unwrap()
+        };
+
+        let page = parse("<div style='white-space:nowrap'><p>A <a href='/x'>B</a> C</p></div>");
+
+        assert_eq!(page.blocks.len(), 1);
+
+        let layout = PageLayout::build(&page, 64, None);
+        assert_eq!(layout.block_height(0), 10);
+
+        let runs = layout.block_text_runs(0).unwrap();
+        assert!(runs.iter().all(|run| run.y == 0));
+
+        let draw = |cache: &mut BlockRasterCache| {
+            let mut pixels = vec![0; 64 * 130];
+
+            let result = paint(
+                &mut pixels,
+                64,
+                130,
+                &page,
+                &layout,
+                "",
+                "",
+                None,
+                cache,
+                &mut GlyphRasterCache::new(),
+                0,
+                false,
+            );
+
+            (pixels, result.link_regions)
+        };
+
+        let (pixels, regions) = draw(&mut BlockRasterCache::new());
+
+        let mut no_cache = BlockRasterCache::new();
+        no_cache.entries.push(BlockRasterCacheEntry::Uncacheable);
+
+        let (direct, direct_regions) = draw(&mut no_cache);
+
+        assert_eq!(pixels, direct);
+
+        for regions in [&regions, &direct_regions] {
+            assert!(regions.iter().any(|region| {
+                region.contains(32, 90) && region.target() == "https://example.test/x"
+            }));
+        }
+
+        for keyword in ["normal", "initial"] {
+            let page = parse(&format!(
+                "<div style='white-space:nowrap'><p style='white-space: {keyword}'>A B C</p></div>"
+            ));
+
+            assert_eq!(
+                PageLayout::build(&page, 64, None).block_height(0),
+                20,
+                "{keyword}"
+            );
+        }
+
+        for keyword in ["inherit", "unset"] {
+            let page = parse(&format!(
+                "<div style='white-space:nowrap'><p style='white-space:normal;white-space:{keyword}'>A B C</p></div>"
+            ));
+
+            assert_eq!(
+                PageLayout::build(&page, 64, None).block_height(0),
+                10,
+                "{keyword}"
+            );
+        }
+
+        let page = parse("<p style='white-space:nowrap;white-space:pre'>A B C</p>");
+        assert_eq!(PageLayout::build(&page, 64, None).block_height(0), 10);
+
+        let page =
+            parse("<p style='white-space:nowrap'>A <span style='font-family:Other'>B</span> C</p>");
+
+        let fallback_layout = PageLayout::build(&page, 64, None);
+
+        assert_eq!(fallback_layout.block_height(0), 10);
+        assert!(fallback_layout.block_text_runs(0).is_some());
     }
 }

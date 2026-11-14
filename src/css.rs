@@ -49,6 +49,14 @@ pub(crate) enum CssSize {
     Pixels(i32),
 }
 
+// Partial CSS Text white-space support.
+// https://www.w3.org/TR/css-text-3/#white-space-property
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WhiteSpace {
+    Normal,
+    Nowrap,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BorderEdge {
     pub(crate) width: i32,
@@ -74,6 +82,7 @@ pub(crate) struct TextStyle {
     pub(crate) border_bottom: BorderEdge,
     pub(crate) border_left: BorderEdge,
     pub(crate) border_right: BorderEdge,
+    pub(crate) white_space: WhiteSpace,
 }
 
 impl TextStyle {
@@ -96,6 +105,7 @@ impl TextStyle {
             border_bottom: BorderEdge::default(),
             border_left: BorderEdge::default(),
             border_right: BorderEdge::default(),
+            white_space: WhiteSpace::Normal,
         }
     }
 }
@@ -135,6 +145,14 @@ struct Declarations {
     border_bottom: Option<BorderEdge>,
     border_left: Option<BorderEdge>,
     border_right: Option<BorderEdge>,
+    white_space: Option<WhiteSpaceDeclaration>,
+}
+
+#[derive(Clone, Copy)]
+enum WhiteSpaceDeclaration {
+    Value(WhiteSpace),
+    Inherit,
+    Initial,
 }
 
 pub(crate) struct CssRule {
@@ -794,6 +812,20 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "white-space" => {
+                let value = match declaration.value.trim().to_ascii_lowercase().as_str() {
+                    "normal" => Some(WhiteSpaceDeclaration::Value(WhiteSpace::Normal)),
+                    "nowrap" => Some(WhiteSpaceDeclaration::Value(WhiteSpace::Nowrap)),
+                    "inherit" | "unset" => Some(WhiteSpaceDeclaration::Inherit),
+                    "initial" => Some(WhiteSpaceDeclaration::Initial),
+                    _ => None,
+                };
+
+                if let Some(value) = value {
+                    parsed.white_space = Some(value);
+                }
+            }
+
             _ => {}
         }
     }
@@ -1037,6 +1069,7 @@ pub(crate) fn compute_style_with_ancestors(
 ) -> TextStyle {
     let parent_font_size = inherited_style.font_size;
     let parent_color = inherited_style.color;
+    let parent_white_space = inherited_style.white_space;
     let mut style = default_style(&element.tag, inherited_style);
 
     let mut matching_rules: Vec<&CssRule> = rules
@@ -1065,7 +1098,13 @@ pub(crate) fn compute_style_with_ancestors(
     for declaration in declarations {
         let parsed = parse_text_declarations(std::slice::from_ref(declaration));
 
-        apply_declarations(&mut style, &parsed, parent_font_size, parent_color);
+        apply_declarations(
+            &mut style,
+            &parsed,
+            parent_font_size,
+            parent_color,
+            parent_white_space,
+        );
     }
 
     style
@@ -1208,7 +1247,16 @@ fn apply_declarations(
     declarations: &Declarations,
     parent_font_size: f32,
     parent_color: u32,
+    parent_white_space: WhiteSpace,
 ) {
+    if let Some(white_space) = declarations.white_space {
+        style.white_space = match white_space {
+            WhiteSpaceDeclaration::Value(value) => value,
+            WhiteSpaceDeclaration::Inherit => parent_white_space,
+            WhiteSpaceDeclaration::Initial => WhiteSpace::Normal,
+        };
+    }
+
     if let Some(color) = declarations.color {
         style.color = match color {
             TextColor::Value(value) => value,

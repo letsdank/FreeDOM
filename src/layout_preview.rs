@@ -8,7 +8,7 @@
 
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
-    css::{BackgroundColor, BorderEdge, CssSize, TextStyle},
+    css::{BackgroundColor, BorderEdge, CssSize, TextStyle, WhiteSpace},
     graphics::font::TrueTypeFont,
     inline_layout::{
         InlineFonts, InlineTextFragment, PositionedTextRun, layout_inline_words, same_font,
@@ -480,6 +480,7 @@ impl PreviewLayout {
                     }
 
                     let use_positioned_runs = fragments.len() > 1
+                        || inherited.white_space == WhiteSpace::Nowrap
                         || fragments.iter().any(|fragment| {
                             fragment.style.color != inherited.color
                                 || !same_font(inherited, fragment.style)
@@ -700,6 +701,10 @@ fn collect_text(
 
         if !same_font_except_weight(inherited, fragment.style) {
             return Err(PreviewError::InlineFont(source_path()));
+        }
+
+        if inherited.white_space != fragment.style.white_space {
+            return Err(PreviewError::InlineStyle(source_path()));
         }
 
         for character in fragment.text.chars() {

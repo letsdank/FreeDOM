@@ -5,7 +5,7 @@
 //! <https://www.w3.org/TR/css-text-3/#white-space-processing>
 
 use crate::{
-    css::{FontStyle, FontWeight, TextStyle},
+    css::{FontStyle, FontWeight, TextStyle, WhiteSpace},
     graphics::font::{
         TrueTypeFont,
         render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
@@ -145,6 +145,7 @@ pub(crate) fn layout_text_block(
         if run.range.start != end
             || run.style.font_style != inherited.font_style
             || run.style.font_families != inherited.font_families
+            || run.style.white_space != inherited.white_space
         {
             return None;
         }
@@ -161,12 +162,13 @@ pub(crate) fn layout_text_block(
     }
 
     if end != block.text.len()
-        || !fragments.iter().any(|fragment| {
-            fragment.style.color != inherited.color
-                || fragment.style.font_weight != inherited.font_weight
-                || fragment.style.font_size.to_bits() != inherited.font_size.to_bits()
-                || fragment.link.is_some()
-        })
+        || (inherited.white_space != WhiteSpace::Nowrap
+            && !fragments.iter().any(|fragment| {
+                fragment.style.color != inherited.color
+                    || fragment.style.font_weight != inherited.font_weight
+                    || fragment.style.font_size.to_bits() != inherited.font_size.to_bits()
+                    || fragment.link.is_some()
+            }))
     {
         return None;
     }
@@ -213,15 +215,17 @@ pub(crate) fn layout_text_block(
     ))
 }
 
-// Keep link hit testing when a block must use the legacy single-style fallback.
-pub(crate) fn layout_link_fallback(
+// Preserve link hit testing and nowrap with the legacy single-style fallback.
+pub(crate) fn layout_uniform_fallback(
     page: &Page,
     block: &TextBlock,
     inherited: &TextStyle,
     width: i32,
     fallback: Option<&TrueTypeFont<'_>>,
 ) -> Option<(i32, Vec<PositionedTextRun>)> {
-    if !block.runs.iter().any(|run| run.link.is_some()) {
+    if inherited.white_space != WhiteSpace::Nowrap
+        && !block.runs.iter().any(|run| run.link.is_some())
+    {
         return None;
     }
 
@@ -294,7 +298,12 @@ pub(crate) fn layout_inline_words(
 
     for word in words {
         let measured = fonts.measure_word(word, fallback);
-        let placement = wrap.place_word(fonts.space_width(word, fallback), measured.width());
+
+        let placement = wrap.place_word_with_wrap(
+            fonts.space_width(word, fallback),
+            measured.width(),
+            inherited.white_space != WhiteSpace::Nowrap,
+        );
 
         if placement.wrapped {
             finish_inline_line(&mut pending, &mut output, metrics, line_top);

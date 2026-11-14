@@ -1,7 +1,7 @@
 use crate::{
     css::{FontStyle, FontWeight},
     graphics::{font::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
-    inline_layout::{PositionedTextRun, layout_link_fallback, layout_text_block},
+    inline_layout::{PositionedTextRun, layout_text_block, layout_uniform_fallback},
     page::{BlockContent, Page, ResolvedFont},
 };
 
@@ -83,7 +83,17 @@ impl TextWrap {
     }
 
     pub(crate) fn place_word(&mut self, space_width: i32, word_width: i32) -> WordPlacement {
-        let wrapped = self.x != self.left
+        self.place_word_with_wrap(space_width, word_width, true)
+    }
+
+    pub(crate) fn place_word_with_wrap(
+        &mut self,
+        space_width: i32,
+        word_width: i32,
+        allow_wrap: bool,
+    ) -> WordPlacement {
+        let wrapped = allow_wrap
+            && self.x != self.left
             && self
                 .x
                 .saturating_add(space_width)
@@ -151,7 +161,7 @@ impl PageLayout {
                         fallback_font.as_ref(),
                     )
                     .or_else(|| {
-                        layout_link_fallback(
+                        layout_uniform_fallback(
                             page,
                             text,
                             &block.style,
