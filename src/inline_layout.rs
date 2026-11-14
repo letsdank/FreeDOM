@@ -127,12 +127,10 @@ pub(crate) fn layout_text_block(
     width: i32,
     fallback: Option<&TrueTypeFont<'_>>,
 ) -> Option<(i32, Vec<PositionedTextRun>)> {
-    // Keep the legacy behavior for non-CSS Unicode whitespace.
-    if block
-        .text
-        .chars()
-        .any(|ch| ch.is_whitespace() && !matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'))
-    {
+    // Keep the legacy behavior for unsupported Unicode whitespace.
+    if block.text.chars().any(|ch| {
+        ch.is_whitespace() && !matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\u{00a0}')
+    }) {
         return None;
     }
 
@@ -241,7 +239,13 @@ pub(crate) fn layout_link_fallback(
         text.push(
             slice
                 .chars()
-                .map(|ch| if ch.is_whitespace() { ' ' } else { ch })
+                .map(|ch| {
+                    if ch.is_whitespace() && ch != '\u{00a0}' {
+                        ' '
+                    } else {
+                        ch
+                    }
+                })
                 .collect::<String>(),
         );
     }

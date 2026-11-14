@@ -13,8 +13,9 @@ use crate::{
     layout_preview::{PreviewCommand, PreviewLayout},
     page::{BlockContent, Page, ResolvedFont},
     page_layout::{
-        CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, stack_ascent, stack_text_metrics,
-        stack_word_width, svg_block_size, synthetic_bold_offset, synthetic_italic_shear,
+        CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, split_layout_words, stack_ascent,
+        stack_text_metrics, stack_word_width, svg_block_size, synthetic_bold_offset,
+        synthetic_italic_shear,
     },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -836,7 +837,7 @@ fn draw_wrapped_text(
     let metrics = stack_text_metrics(vector_font, font_stack, font_size);
     let mut wrap = TextWrap::new(left, right);
 
-    for word in text.split_whitespace() {
+    for word in split_layout_words(text) {
         let word_width = stack_word_width(
             vector_font,
             font_stack,
@@ -1142,6 +1143,10 @@ fn draw_glyph(
     scale: usize,
     color: u32,
 ) {
+    if character == '\u{00a0}' {
+        return;
+    }
+
     let glyph = BASIC_FONTS.get(character).or_else(|| BASIC_FONTS.get('?'));
 
     let Some(rows) = glyph else {
@@ -1775,6 +1780,82 @@ mod tests {
                 region.contains(16 + runs[0].x, 90 + runs[0].y)
                     || region.contains(16 + runs[2].x, 90 + runs[2].y)
             }));
+        }
+    }
+
+    #[test]
+    fn nbsp_stays_unbroken_and_blank_in_normal_and_link_text() {
+        let parse = |text: &str| {
+            crate::page::parse_xhtml_for_test(
+                "https://example.test/",
+                &format!("<html xmlns='http://www.w3.org/1999/xhtml'><body>{text}</body></html>"),
+            )
+            .unwrap()
+        };
+
+        let plain = parse("<p>A\u{00a0}B</p>");
+        let regular = parse("<p>A B</p>");
+
+        assert_eq!(PageLayout::build(&plain, 48, None).block_height(0), 10);
+        assert_eq!(PageLayout::build(&regular, 48, None).block_height(0), 20);
+
+        for html in [
+            "<p>A<a href='/x'>\u{00a0}B</a> C</p>",
+            "<p>A<a href='/x' style='font-family:Other'>\u{00a0}B</a> C</p>",
+        ] {
+            let page = parse(html);
+            let layout = PageLayout::build(&page, 64, None);
+            let runs = layout.block_text_runs(0).unwrap();
+
+            assert_eq!(
+                runs.iter().map(|run| run.text.as_str()).collect::<Vec<_>>(),
+                ["A", "\u{00a0}B", "C"]
+            );
+
+            assert_eq!((runs[0].y, runs[1].y), (0, 0));
+            assert!(runs[2].y > 0);
+
+            let draw = |cache: &mut BlockRasterCache| {
+                let mut pixels = vec![0; 64 * 130];
+
+                let result = paint(
+                    &mut pixels,
+                    64,
+                    130,
+                    &page,
+                    &layout,
+                    "",
+                    "",
+                    None,
+                    cache,
+                    &mut GlyphRasterCache::new(),
+                    0,
+                    false,
+                );
+
+                (pixels, result.link_regions)
+            };
+
+            let (pixels, regions) = draw(&mut BlockRasterCache::new());
+
+            let mut disabled = BlockRasterCache::new();
+            disabled.entries.push(BlockRasterCacheEntry::Uncacheable);
+
+            let (direct, direct_regions) = draw(&mut disabled);
+
+            assert_eq!(pixels, direct);
+
+            for y in 90..98 {
+                for x in 24..32 {
+                    assert_eq!(pixels[y * 64 + x], BACKGROUND, "{html}");
+                }
+            }
+
+            for regions in [&regions, &direct_regions] {
+                assert!(regions.iter().any(|region| {
+                    region.contains(32, 90) && region.target() == "https://example.test/x"
+                }));
+            }
         }
     }
 }

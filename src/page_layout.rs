@@ -9,6 +9,12 @@ pub(crate) const CONTENT_TOP: i32 = 90;
 
 pub(crate) const CONTENT_HORIZONTAL_PADDING: usize = 16;
 
+// Preserve NBSP inside words; other Unicode whitespace keeps legacy behavior.
+pub(crate) fn split_layout_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|ch: char| ch.is_whitespace() && ch != '\u{00a0}')
+        .filter(|word| !word.is_empty())
+}
+
 pub(crate) struct PageLayout {
     viewport_width: usize,
     blocks: Vec<BlockLayout>,
@@ -309,7 +315,7 @@ pub(crate) fn measure_wrapped_text(
     let mut wrap = TextWrap::new(0, available_width);
     let mut line_count = 1_i32;
 
-    for word in text.split_whitespace() {
+    for word in split_layout_words(text) {
         let word_width = stack_word_width(
             vector_font,
             font_stack,
