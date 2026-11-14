@@ -1703,4 +1703,78 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn mixed_inline_sizes_align_and_preserve_link_hit_testing() {
+        let page = crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            concat!(
+                "<html xmlns='http://www.w3.org/1999/xhtml'><body>",
+                "<p>A<a href='/link' style='font-size:32px;color:red'>B</a>C</p>",
+                "</body></html>",
+            ),
+        )
+        .unwrap();
+
+        let layout = PageLayout::build(&page, 120, None);
+        let runs = layout.block_text_runs(0).expect("mixed-size runs");
+
+        assert_eq!(runs.len(), 3);
+
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.style.font_size)
+                .collect::<Vec<_>>(),
+            [16.0, 32.0, 16.0]
+        );
+
+        assert!(runs[0].y > runs[1].y);
+        assert_eq!(runs[0].y, runs[2].y);
+        assert_eq!(runs[1].link.as_deref(), Some("https://example.test/link"));
+        assert!(runs[0].link.is_none() && runs[2].link.is_none());
+        assert!(runs[2].x > runs[1].x);
+
+        let draw = |cache: &mut BlockRasterCache| {
+            let mut pixels = vec![0; 120 * 150];
+
+            let result = paint(
+                &mut pixels,
+                120,
+                150,
+                &page,
+                &layout,
+                "",
+                "",
+                None,
+                cache,
+                &mut GlyphRasterCache::new(),
+                0,
+                false,
+            );
+
+            (pixels, result.link_regions)
+        };
+
+        let (pixels, regions) = draw(&mut BlockRasterCache::new());
+
+        let mut no_cache = BlockRasterCache::new();
+        no_cache.entries.push(BlockRasterCacheEntry::Uncacheable);
+
+        let (direct, direct_regions) = draw(&mut no_cache);
+
+        assert_eq!(pixels, direct);
+        assert!(pixels[90 * 120..].contains(&0x00ff0000));
+
+        for regions in [&regions, &direct_regions] {
+            assert!(regions.iter().any(|region| {
+                region.contains(16 + runs[1].x, 90 + runs[1].y)
+                    && region.target() == "https://example.test/link"
+            }));
+
+            assert!(!regions.iter().any(|region| {
+                region.contains(16 + runs[0].x, 90 + runs[0].y)
+                    || region.contains(16 + runs[2].x, 90 + runs[2].y)
+            }));
+        }
+    }
 }

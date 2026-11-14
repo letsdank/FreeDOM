@@ -144,7 +144,10 @@ pub(crate) fn layout_text_block(
     let mut fragments = Vec::with_capacity(block.runs.len());
 
     for run in &block.runs {
-        if run.range.start != end || !same_font_except_weight(inherited, &run.style) {
+        if run.range.start != end
+            || run.style.font_style != inherited.font_style
+            || run.style.font_families != inherited.font_families
+        {
             return None;
         }
 
@@ -163,6 +166,7 @@ pub(crate) fn layout_text_block(
         || !fragments.iter().any(|fragment| {
             fragment.style.color != inherited.color
                 || fragment.style.font_weight != inherited.font_weight
+                || fragment.style.font_size.to_bits() != inherited.font_size.to_bits()
                 || fragment.link.is_some()
         })
     {
@@ -196,7 +200,7 @@ pub(crate) fn layout_text_block(
         && words.iter().any(|word| {
             word.parts.first().is_some_and(|first| {
                 word.parts.iter().any(|part| {
-                    part.style.font_weight != first.style.font_weight
+                    !same_font(part.style, first.style)
                         || part.style.color != first.style.color
                         || part.link != first.link
                 }) && fonts.measure_vector_word(word, fallback).is_none()
@@ -431,8 +435,9 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
     ) -> MeasuredWord<'a> {
         if word.parts.first().is_some_and(|first| {
             word.parts.iter().any(|part| {
-                part.style.font_weight != first.style.font_weight
+                !same_font(part.style, first.style)
                     || part.style.color != first.style.color
+                    || part.link != first.link
             })
         }) {
             if let Some(measured) = self.measure_vector_word(word, fallback) {
@@ -493,7 +498,7 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
         });
 
         let mut pen = 0.0_f32;
-        let mut previous: Option<(usize, u16)> = None;
+        let mut previous: Option<(usize, u16, u32)> = None;
 
         for run in &mut measured.runs {
             let font = self.get(run.style).or(fallback)?;
@@ -510,8 +515,8 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
             let identity = first_font.glyph_cache_key();
             let first_glyph = first_font.glyph_id(first_character);
 
-            if let Some((previous_font, left)) = previous {
-                if previous_font == identity {
+            if let Some((previous_font, left, previous_size)) = previous {
+                if previous_font == identity && previous_size == run.style.font_size.to_bits() {
                     let scale = run.style.font_size / f32::from(first_font.head().units_per_em);
 
                     pen += f32::from(first_font.kerning(left, first_glyph)) * scale;
@@ -547,6 +552,7 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
             previous = Some((
                 last_font.glyph_cache_key(),
                 last_font.glyph_id(last_character),
+                run.style.font_size.to_bits(),
             ));
         }
 
