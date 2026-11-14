@@ -642,6 +642,7 @@ fn collect_styled_fragments<'a>(
                         text,
                         style: inherited,
                         style_source,
+                        link: None,
                     });
                 }
             }
@@ -875,21 +876,25 @@ mod tests {
                 text: " \t",
                 style: &normal,
                 style_source: None,
+                link: None,
             },
             InlineTextFragment {
                 text: "one",
                 style: &normal,
                 style_source: None,
+                link: None,
             },
             InlineTextFragment {
                 text: "\n",
                 style: &normal,
                 style_source: None,
+                link: None,
             },
             InlineTextFragment {
                 text: "\t two \r",
                 style: &normal,
                 style_source: None,
+                link: None,
             },
         ];
 
@@ -915,6 +920,7 @@ mod tests {
             text: " \t\n",
             style: &normal,
             style_source: None,
+            link: None,
         }];
 
         assert!(split_styled_words(&whitespace_only).is_empty());

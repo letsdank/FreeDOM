@@ -797,7 +797,7 @@ fn draw_positioned_text(
             style.font_weight,
             fonts.synthetic_style(style),
             style.color,
-            link_target,
+            run.link.as_deref().or(link_target),
             font,
             fonts.stack(style),
             visible_top,
@@ -1521,6 +1521,97 @@ mod tests {
                     "missing link at {x},{y}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn link_targets_survive_inline_layout_and_cache() {
+        use crate::page::{TextBlock, TextRun};
+
+        let mut page = crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><body><p>abcd</p></body></html>",
+        )
+        .unwrap();
+
+        let block = &mut page.blocks[0];
+        let style = block.style.clone();
+
+        block.content = BlockContent::Text(TextBlock {
+            text: "abcd".into(),
+            runs: vec![
+                TextRun {
+                    range: 0..1,
+                    style: style.clone(),
+                    link: None,
+                },
+                TextRun {
+                    range: 1..3,
+                    style: style.clone(),
+                    link: Some("https://example.test/bc".into()),
+                },
+                TextRun {
+                    range: 3..4,
+                    style,
+                    link: None,
+                },
+            ],
+        });
+
+        let layout = PageLayout::build(&page, 120, None);
+        let runs = layout.block_text_runs(0).expect("positioned runs");
+
+        assert_eq!(
+            runs.iter()
+                .map(|run| (run.text.as_str(), run.link.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("a", None),
+                ("bc", Some("https://example.test/bc")),
+                ("d", None)
+            ]
+        );
+
+        let paint_page = |cache: &mut BlockRasterCache| {
+            let mut pixels = vec![0; 120 * 120];
+
+            let result = paint(
+                &mut pixels,
+                120,
+                120,
+                &page,
+                &layout,
+                "",
+                "",
+                None,
+                cache,
+                &mut GlyphRasterCache::new(),
+                0,
+                false,
+            );
+
+            (pixels, result.link_regions)
+        };
+
+        let (cached_pixels, cached_regions) = paint_page(&mut BlockRasterCache::new());
+
+        let mut no_cache = BlockRasterCache::new();
+        no_cache.entries.push(BlockRasterCacheEntry::Uncacheable);
+
+        let (direct_pixels, direct_regions) = paint_page(&mut no_cache);
+
+        assert_eq!(cached_pixels, direct_pixels);
+
+        for regions in [&cached_regions, &direct_regions] {
+            assert!(regions.iter().any(|region| {
+                region.contains(24, 90) && region.target() == "https://example.test/bc"
+            }));
+
+            assert!(
+                !regions
+                    .iter()
+                    .any(|region| { region.contains(16, 90) || region.contains(40, 90) })
+            );
         }
     }
 }

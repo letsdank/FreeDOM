@@ -25,6 +25,7 @@ pub(crate) struct PositionedTextRun {
     pub(crate) offset_y: f32,
     pub(crate) text: String,
     pub(crate) style: TextStyle,
+    pub(crate) link: Option<String>,
 }
 
 pub(crate) fn same_font(left: &TextStyle, right: &TextStyle) -> bool {
@@ -104,11 +105,13 @@ pub(crate) struct InlineTextFragment<'a> {
     pub(crate) text: &'a str,
     pub(crate) style: &'a TextStyle,
     pub(crate) style_source: Option<&'a SourcePath>,
+    pub(crate) link: Option<&'a str>,
 }
 
 pub(crate) struct InlineWordPart<'a> {
     pub(crate) text: &'a str,
     pub(crate) style: &'a TextStyle,
+    pub(crate) link: Option<&'a str>,
 }
 
 pub(crate) struct InlineWord<'a> {
@@ -152,6 +155,7 @@ pub(crate) fn layout_text_block(
             text,
             style: &run.style,
             style_source: None,
+            link: run.link.as_deref(),
         });
     }
 
@@ -159,6 +163,7 @@ pub(crate) fn layout_text_block(
         || !fragments.iter().any(|fragment| {
             fragment.style.color != inherited.color
                 || fragment.style.font_weight != inherited.font_weight
+                || fragment.link.is_some()
         })
     {
         return None;
@@ -193,6 +198,7 @@ pub(crate) fn layout_text_block(
                 word.parts.iter().any(|part| {
                     part.style.font_weight != first.style.font_weight
                         || part.style.color != first.style.color
+                        || part.link != first.link
                 }) && fonts.measure_vector_word(word, fallback).is_none()
             })
         })
@@ -248,6 +254,7 @@ pub(crate) fn layout_inline_words(
                     above_subpixels: run_metrics.above_subpixels,
                     text: run.text.into_owned(),
                     style: run.style.clone(),
+                    link: run.link.map(str::to_owned),
                 });
             }
         }
@@ -317,6 +324,7 @@ struct PendingInlineRun {
     above_subpixels: i64,
     text: String,
     style: TextStyle,
+    link: Option<String>,
 }
 
 fn finish_inline_line(
@@ -343,6 +351,7 @@ fn finish_inline_line(
             offset_y: fraction,
             text: run.text,
             style: run.style,
+            link: run.link,
         });
     }
 }
@@ -503,6 +512,7 @@ struct MeasuredRun<'a> {
     width: i32,
     text: std::borrow::Cow<'a, str>,
     style: &'a TextStyle,
+    link: Option<&'a str>,
 }
 
 struct MeasuredWord<'a> {
@@ -536,10 +546,12 @@ fn measure_styled_word<'a>(
     while index < word.parts.len() {
         let start = index;
         let style = word.parts[index].style;
+        let link = word.parts[index].link;
 
         while index < word.parts.len()
             && same_font(style, word.parts[index].style)
             && style.color == word.parts[index].style.color
+            && link == word.parts[index].link
         {
             index += 1;
         }
@@ -563,6 +575,7 @@ fn measure_styled_word<'a>(
             width,
             text,
             style,
+            link,
         });
 
         x = x.saturating_add(advance);
@@ -590,6 +603,7 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
                         &mut pending_space,
                         &fragment.text[start..index],
                         fragment.style,
+                        fragment.link,
                     );
                 }
 
@@ -609,6 +623,7 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
                 &mut pending_space,
                 &fragment.text[start..],
                 fragment.style,
+                fragment.link,
             );
         }
     }
@@ -622,8 +637,9 @@ fn push_word_part<'a>(
     pending_space: &mut Option<&'a TextStyle>,
     text: &'a str,
     style: &'a TextStyle,
+    link: Option<&'a str>,
 ) {
-    let part = InlineWordPart { text, style };
+    let part = InlineWordPart { text, style, link };
 
     if *in_word {
         words
@@ -659,16 +675,19 @@ mod tests {
                 text: "  hel",
                 style: &normal,
                 style_source: None,
+                link: None,
             },
             InlineTextFragment {
                 text: "lo \t",
                 style: &bold,
                 style_source: None,
+                link: None,
             },
             InlineTextFragment {
                 text: "\nмир  ",
                 style: &normal,
                 style_source: None,
+                link: None,
             },
         ];
 
@@ -708,14 +727,17 @@ mod tests {
                 InlineWordPart {
                     text: "h",
                     style: &normal,
+                    link: None,
                 },
                 InlineWordPart {
                     text: "el",
                     style: &normal,
+                    link: None,
                 },
                 InlineWordPart {
                     text: "lo",
                     style: &bold,
+                    link: None,
                 },
             ],
         };
@@ -775,10 +797,12 @@ mod tests {
                 InlineWordPart {
                     text: "a",
                     style: &normal,
+                    link: None,
                 },
                 InlineWordPart {
                     text: "b",
                     style: &bold,
+                    link: None,
                 },
             ],
         };
@@ -813,16 +837,19 @@ mod tests {
                 text: "a",
                 style: &normal,
                 style_source: None,
+                link: None,
             },
             InlineTextFragment {
                 text: "b ",
                 style: &bold,
                 style_source: None,
+                link: None,
             },
             InlineTextFragment {
                 text: "c",
                 style: &same_font_other_color,
                 style_source: None,
+                link: None,
             },
         ];
 
@@ -927,6 +954,7 @@ mod tests {
                 above_subpixels: small_metrics.above_subpixels,
                 text: "small".into(),
                 style: small,
+                link: None,
             },
             PendingInlineRun {
                 x: 40,
@@ -934,6 +962,7 @@ mod tests {
                 above_subpixels: large_metrics.above_subpixels,
                 text: "large".into(),
                 style: large,
+                link: None,
             },
         ];
 
@@ -1028,6 +1057,7 @@ mod tests {
                 above_subpixels: 85,
                 text: "a".into(),
                 style: style.clone(),
+                link: None,
             },
             PendingInlineRun {
                 x: 20,
@@ -1035,6 +1065,7 @@ mod tests {
                 above_subpixels: 98,
                 text: "b".into(),
                 style,
+                link: None,
             },
         ];
 
@@ -1101,6 +1132,7 @@ mod tests {
                 above_subpixels: small_metrics.above_subpixels,
                 text: "ߊ".into(),
                 style: small.clone(),
+                link: None,
             },
             PendingInlineRun {
                 x: 100,
@@ -1108,6 +1140,7 @@ mod tests {
                 above_subpixels: large_metrics.above_subpixels,
                 text: "ߊ".into(),
                 style: large,
+                link: None,
             },
         ];
 
@@ -1228,10 +1261,12 @@ mod tests {
                 InlineWordPart {
                     text: "A",
                     style: &bold,
+                    link: None,
                 },
                 InlineWordPart {
                     text: ".",
                     style: &normal,
+                    link: None,
                 },
             ],
         };

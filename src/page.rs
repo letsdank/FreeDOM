@@ -3556,6 +3556,7 @@ mod tests {
                         offset_y: 0.0,
                         text: "ߊ".into(),
                         style: vector_style,
+                        link: None,
                     },
                     PositionedTextRun {
                         x: 90,
@@ -3564,6 +3565,7 @@ mod tests {
                         offset_y: 0.0,
                         text: "A".into(),
                         style: bitmap_style,
+                        link: None,
                     },
                 ],
             }],
