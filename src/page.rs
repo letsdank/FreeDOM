@@ -22,7 +22,12 @@ pub(crate) enum BlockContent {
     Text(TextBlock),
     Svg(SvgDocument),
     Bitmap(RasterSurface),
-    Canvas(Canvas2D),
+    Canvas(CanvasBlock),
+}
+
+pub(crate) struct CanvasBlock {
+    pub(crate) node_id: u64,
+    pub(crate) canvas: Canvas2D,
 }
 
 pub(crate) struct TextBlock {
@@ -95,6 +100,7 @@ pub(crate) struct Page {
     pub(crate) blocks: Vec<Block>,
     font_faces: Vec<LoadedFontFace>,
     pub(crate) styled_tree: StyledTree,
+    pub(crate) document: DocumentState,
 }
 
 impl Page {
@@ -228,6 +234,19 @@ impl Page {
             if text.runs.len() > 32 {
                 output.push_str("  ... text run limit reached\n");
             }
+        }
+
+        if let BlockContent::Canvas(canvas) = &block.content {
+            let connected = self
+                .document
+                .element(canvas.node_id)
+                .is_some_and(|node| node.connected);
+
+            let _ = writeln!(
+                output,
+                "  DOM node_id={} connected={connected}",
+                canvas.node_id
+            );
         }
 
         Some(output)
@@ -411,6 +430,7 @@ fn parse_dom_with_fetcher(
         blocks,
         font_faces,
         styled_tree,
+        document: document_state,
     }
 }
 
@@ -441,8 +461,12 @@ fn text_content(node: &HtmlNode) -> String {
 }
 
 fn register_document_elements(root: &HtmlDocument, document: &mut DocumentState) {
-    for child in &root.children {
-        register_document_elements_in_node(child, None, document)
+    let mut path = Vec::new();
+
+    for (index, child) in root.children.iter().enumerate() {
+        path.push(index);
+        register_document_elements_in_node(child, None, document, &mut path);
+        path.pop();
     }
 }
 
@@ -450,6 +474,7 @@ fn register_document_elements_in_node(
     node: &HtmlNode,
     parent_node_id: Option<u64>,
     document: &mut DocumentState,
+    path: &mut Vec<usize>,
 ) {
     let HtmlNode::Element(element) = node else {
         return;
@@ -462,12 +487,18 @@ fn register_document_elements_in_node(
         parent_node_id,
     );
 
+    if element.name == "canvas" {
+        document.register_parsed_canvas(path, node_id);
+    }
+
     for attribute in &element.attributes {
         document.register_element_attribute(node_id, &attribute.name, attribute.value.clone());
     }
 
-    for child in &element.children {
-        register_document_elements_in_node(child, Some(node_id), document);
+    for (index, child) in element.children.iter().enumerate() {
+        path.push(index);
+        register_document_elements_in_node(child, Some(node_id), document, path);
+        path.pop();
     }
 }
 
@@ -905,11 +936,27 @@ fn extract_blocks(
     if element.tag == "canvas" {
         flush(blocks, current, inherited_style, trace);
 
-        let width = html_attribute(dom_element, "width")
+        let Some(node_id) = document.connected_parsed_canvas(&trace.path) else {
+            return;
+        };
+
+        let Some(canvas_node) = document.element(node_id) else {
+            return;
+        };
+
+        let attribute = |name: &str| {
+            canvas_node
+                .attributes
+                .iter()
+                .find(|attribute| attribute.name == name)
+                .map(|attribute| attribute.value.as_str())
+        };
+
+        let width = attribute("width")
             .and_then(parse_canvas_dimension)
             .unwrap_or(300);
 
-        let height = html_attribute(dom_element, "height")
+        let height = attribute("height")
             .and_then(parse_canvas_dimension)
             .unwrap_or(150);
 
@@ -928,7 +975,7 @@ fn extract_blocks(
                 trace.canvas_count += 1;
 
                 blocks.push(Block {
-                    content: BlockContent::Canvas(canvas),
+                    content: BlockContent::Canvas(CanvasBlock { node_id, canvas }),
                     style,
                     link: None,
                     sources: vec![trace.current_source()],
@@ -1586,6 +1633,7 @@ mod tests {
                 face("FreeDOM Sans", FontWeight::Normal, FontStyle::Normal, 3),
             ],
             styled_tree: StyledTree::default(),
+            document: DocumentState::default(),
         };
 
         for (weight, style, marker) in [
@@ -2213,6 +2261,7 @@ mod tests {
 
             font_faces: vec![],
             styled_tree: StyledTree::default(),
+            document: DocumentState::default(),
         };
 
         let (width, height) = (100, 130);
@@ -4932,9 +4981,10 @@ mod tests {
             .blocks
             .iter()
             .map(|block| match &block.content {
-                BlockContent::Canvas(canvas) => {
-                    (canvas.surface().width(), canvas.surface().height())
-                }
+                BlockContent::Canvas(canvas) => (
+                    canvas.canvas.surface().width(),
+                    canvas.canvas.surface().height(),
+                ),
                 _ => panic!("canvas block expected"),
             })
             .collect();
@@ -4954,5 +5004,92 @@ mod tests {
 
         assert_eq!((rects[0].width, rects[0].height), (300, 150));
         assert_eq!((rects[1].width, rects[1].height), (12, 0));
+    }
+
+    #[test]
+    fn canvas_blocks_preserve_parsed_dom_identity() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div>text<!-- comment -->",
+                "<canvas id='dup' width='2' height='2'></canvas>",
+                "<canvas id='dup' width='2' height='2'></canvas>",
+                "</div>",
+                "<script>document.getElementById('dup').id = 'new';</script>"
+            ),
+        );
+
+        let ids: Vec<_> = page
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.content {
+                BlockContent::Canvas(canvas) => Some(canvas.node_id),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+
+        assert_eq!(page.document.get_element_by_id("new"), Some(ids[0]));
+        assert_eq!(page.document.get_element_by_id("dup"), Some(ids[1]));
+
+        let index = page
+            .blocks
+            .iter()
+            .position(|block| {
+                matches!(
+                    &block.content,
+                    BlockContent::Canvas(canvas) if canvas.node_id == ids[0]
+                )
+            })
+            .unwrap();
+
+        assert!(
+            page.describe_block_sources(index)
+                .unwrap()
+                .contains(&format!("DOM node_id={} connected=true", ids[0]))
+        );
+
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<canvas id='c' width='2' height='4'></canvas>",
+                "<script>",
+                "document.getElementById('c').setAttribute('width', '7');",
+                "document.getElementById('c').removeAttribute('height');",
+                "</script>",
+            ),
+        );
+
+        let BlockContent::Canvas(canvas) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        assert_eq!(
+            (
+                canvas.canvas.surface().width(),
+                canvas.canvas.surface().height()
+            ),
+            (7, 150)
+        );
+
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div id='parent'><canvas id='dead'></canvas></div>",
+                "<script>",
+                "document.getElementById('parent').removeChild(",
+                "document.getElementById('dead'));",
+                "</script>",
+            ),
+        );
+
+        assert!(
+            !page
+                .blocks
+                .iter()
+                .any(|block| matches!(block.content, BlockContent::Canvas(_)))
+        );
     }
 }

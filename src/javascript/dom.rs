@@ -29,9 +29,23 @@ pub struct DocumentState {
     elements_by_node_id: HashMap<u64, ElementState>,
     body: Option<u64>,
     next_node_id: u64,
+    parsed_canvases_by_path: HashMap<Vec<usize>, u64>,
 }
 
 impl DocumentState {
+    // Paths refer to the original parsed HTML snapshot, not the live DOM order.
+    pub(crate) fn register_parsed_canvas(&mut self, path: &[usize], node_id: u64) {
+        self.parsed_canvases_by_path.insert(path.to_vec(), node_id);
+    }
+
+    pub(crate) fn connected_parsed_canvas(&self, path: &[usize]) -> Option<u64> {
+        let node_id = *self.parsed_canvases_by_path.get(path)?;
+
+        self.element(node_id).filter(|element| element.connected)?;
+
+        Some(node_id)
+    }
+
     pub fn with_title(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),

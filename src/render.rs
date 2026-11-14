@@ -738,7 +738,7 @@ pub(crate) fn paint(
             }
 
             BlockContent::Canvas(canvas) => {
-                blit_canvas(canvas.surface(), pixels, width, height, 16, y);
+                blit_canvas(canvas.canvas.surface(), pixels, width, height, 16, y);
             }
         }
 
@@ -2086,8 +2086,8 @@ mod tests {
                 panic!("canvas expected");
             };
 
-            canvas.set_fill_style(color);
-            canvas.fill_rect(0.0, 0.0, 4.0, 4.0);
+            canvas.canvas.set_fill_style(color);
+            canvas.canvas.fill_rect(0.0, 0.0, 4.0, 4.0);
 
             let mut pixels = vec![0; 64 * 100];
 

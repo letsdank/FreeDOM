@@ -203,8 +203,8 @@ impl PageLayout {
                 }
 
                 BlockContent::Canvas(canvas) => (
-                    i32::try_from(canvas.surface().width()).unwrap_or(i32::MAX),
-                    i32::try_from(canvas.surface().height()).unwrap_or(i32::MAX),
+                    i32::try_from(canvas.canvas.surface().width()).unwrap_or(i32::MAX),
+                    i32::try_from(canvas.canvas.surface().height()).unwrap_or(i32::MAX),
                     None,
                 ),
             };
