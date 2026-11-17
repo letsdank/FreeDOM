@@ -5462,4 +5462,98 @@ mod tests {
         assert_eq!(image.pixel(3, 2), Some(Color::TRANSPARENT));
         assert_eq!(image.pixel(4, 2), Some(Color::BLACK));
     }
+
+    #[test]
+    fn draws_zero_length_canvas_dash_segments() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='a' width='28' height='28'></canvas>
+                <canvas id='b' width='24' height='24'></canvas>
+                <canvas id='closed' width='14' height='14'></canvas>
+
+                <script>
+                    let ctx = document.getElementById('a').getContext('2d');
+
+                    ctx.lineWidth = 4;
+                    ctx.lineCap = 'round';
+                    ctx.setLineDash([0, 6]);
+
+                    ctx.beginPath();
+                    ctx.moveTo(3, 4);
+                    ctx.lineTo(21, 4);
+                    ctx.stroke();
+
+                    ctx.lineDashOffset = -3;
+                    ctx.beginPath();
+                    ctx.moveTo(3, 11);
+                    ctx.lineTo(21, 11);
+                    ctx.stroke();
+
+                    ctx.lineDashOffset = 0;
+                    ctx.lineCap = 'butt';
+                    ctx.setLineDash([4, 0]);
+                    ctx.beginPath();
+                    ctx.moveTo(3, 18);
+                    ctx.lineTo(21, 18);
+                    ctx.stroke();
+
+                    ctx.setLineDash([0, 0]);
+                    ctx.beginPath();
+                    ctx.moveTo(3, 24);
+                    ctx.lineTo(21, 24);
+                    ctx.stroke();
+
+                    let square = document.getElementById('b').getContext('2d');
+                    square.lineWidth = 4;
+                    square.lineCap = 'square';
+                    square.setLineDash([0, 8]);
+                    square.beginPath();
+                    square.moveTo(4, 4);
+                    square.lineTo(20, 20);
+                    square.stroke();
+
+                    let closed = document.getElementById('closed').getContext('2d');
+                    closed.lineWidth = 4;
+                    closed.beginPath();
+                    closed.moveTo(2, 10);
+                    closed.lineTo(7, 3);
+                    closed.lineTo(12, 10);
+                    closed.closePath();
+                    closed.stroke();
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(a) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        let image = a.canvas.surface();
+
+        assert_eq!(image.pixel(3, 3), Some(Color::BLACK));
+        assert_eq!(image.pixel(6, 3), Some(Color::TRANSPARENT));
+        assert_eq!(image.pixel(9, 3), Some(Color::BLACK));
+        assert_eq!(image.pixel(21, 3), Some(Color::BLACK));
+
+        assert_eq!(image.pixel(3, 10), Some(Color::TRANSPARENT));
+        assert_eq!(image.pixel(6, 10), Some(Color::BLACK));
+
+        assert_eq!(image.pixel(7, 17), Some(Color::BLACK));
+        assert_eq!(image.pixel(7, 23), Some(Color::BLACK));
+
+        let BlockContent::Canvas(b) = &page.blocks[1].content else {
+            panic!("square canvas expected");
+        };
+
+        assert!(b.canvas.surface().pixel(5, 5).unwrap().alpha > 0);
+
+        let BlockContent::Canvas(closed) = &page.blocks[2].content else {
+            panic!("closed canvas expected");
+        };
+
+        assert!(closed.canvas.surface().pixel(6, 0).unwrap().alpha > 0);
+    }
 }

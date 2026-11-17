@@ -435,7 +435,12 @@ pub fn stroke_path_clipped(
     }
 
     let dashed_path = dash_path(path, &style.dash_array, style.dash_offset);
-    let path = dashed_path.as_ref().unwrap_or(path);
+
+    let (path, dots): (&FlattenedPath, &[DashDot]) = match dashed_path.as_ref() {
+        Some(dashed) => (&dashed.path, &dashed.dots),
+        None => (path, &[]),
+    };
+
     let radius = style.width * 0.5;
     let miter_limit = sanitized_miter_limit(style.miter_limit);
 
@@ -444,7 +449,14 @@ pub fn stroke_path_clipped(
         StrokeLineJoin::Round | StrokeLineJoin::Bevel => radius,
     };
 
-    let Some((start_x, end_x, start_y, end_y)) = pixel_bounds(surface, path, join_padding + 1.0)
+    let cap_padding = if style.line_cap == StrokeLineCap::Square {
+        radius * std::f32::consts::SQRT_2
+    } else {
+        radius
+    };
+
+    let Some((start_x, end_x, start_y, end_y)) =
+        pixel_bounds(surface, path, join_padding.max(cap_padding) + 1.0)
     else {
         return;
     };
@@ -456,16 +468,24 @@ pub fn stroke_path_clipped(
                 .filter(|(offset_x, offset_y)| {
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
 
-                    sample_is_on_stroke(
+                    let on_stroke = sample_is_on_stroke(
                         path,
                         sample,
                         radius,
                         style.line_cap,
                         style.line_join,
                         miter_limit,
-                    ) && clips
-                        .iter()
-                        .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
+                    );
+
+                    let on_square_dot = style.line_cap == StrokeLineCap::Square
+                        && dots
+                            .iter()
+                            .any(|dot| sample_is_on_dash_square(sample, *dot, radius));
+
+                    (on_stroke || on_square_dot)
+                        && clips
+                            .iter()
+                            .all(|(clip, fill_rule)| sample_is_inside(clip, sample, *fill_rule))
                 })
                 .count() as f32
                 / SAMPLE_OFFSETS.len() as f32;
@@ -477,9 +497,22 @@ pub fn stroke_path_clipped(
     }
 }
 
-fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Option<FlattenedPath> {
+#[derive(Clone, Copy)]
+struct DashDot {
+    position: Point,
+    direction_x: f32,
+    direction_y: f32,
+}
+
+struct DashedPath {
+    path: FlattenedPath,
+    dots: Vec<DashDot>,
+}
+
+fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Option<DashedPath> {
     let dash_array = normalized_dash_array(dash_array)?;
     let mut output = Vec::new();
+    let mut dots = Vec::new();
     let mut pieces_left = 16_384_usize;
 
     for contour in path.contours() {
@@ -491,7 +524,15 @@ fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Opti
 
         let mut state = DashState::new(&dash_array, dash_offset);
         let mut visible_contour = Vec::new();
+
         let segment_count = points.len() - 1 + usize::from(contour.is_closed());
+
+        let last_segment = (0..segment_count).rev().find(|&index| {
+            let from = points[index];
+            let to = points[(index + 1) % points.len()];
+
+            (to.x - from.x).hypot(to.y - from.y) > f32::EPSILON
+        });
 
         for index in 0..segment_count {
             let from = points[index];
@@ -503,24 +544,32 @@ fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Opti
                 &mut state,
                 &mut visible_contour,
                 &mut output,
+                &mut dots,
+                Some(index) == last_segment,
                 &mut pieces_left,
             ) {
                 eprintln!("FreeDOM: dashed path exceeds rasterization limits");
-                return Some(FlattenedPath::from_open_contours(Vec::new()));
+                return Some(DashedPath {
+                    path: FlattenedPath::from_open_contours(Vec::new()),
+                    dots: Vec::new(),
+                });
             }
         }
 
         finish_dash_contour(&mut visible_contour, &mut output);
     }
 
-    Some(FlattenedPath::from_open_contours(output))
+    Some(DashedPath {
+        path: FlattenedPath::from_open_contours(output),
+        dots,
+    })
 }
 
 fn normalized_dash_array(dash_array: &[f32]) -> Option<Vec<f32>> {
     if dash_array.is_empty()
         || dash_array
             .iter()
-            .any(|value| !value.is_finite() || *value <= 0.0)
+            .any(|value| !value.is_finite() || *value < 0.0)
     {
         return None;
     }
@@ -531,7 +580,9 @@ fn normalized_dash_array(dash_array: &[f32]) -> Option<Vec<f32>> {
         normalized.extend_from_within(..);
     }
 
-    if !normalized.iter().sum::<f32>().is_finite() {
+    let total: f32 = normalized.iter().sum();
+
+    if !total.is_finite() || total == 0.0 {
         return None;
     }
 
@@ -547,6 +598,7 @@ struct DashState<'a> {
 impl<'a> DashState<'a> {
     fn new(pattern: &'a [f32], offset: f32) -> Self {
         let total_length: f32 = pattern.iter().sum();
+
         let mut position = if offset.is_finite() {
             offset.rem_euclid(total_length)
         } else {
@@ -556,7 +608,7 @@ impl<'a> DashState<'a> {
         let mut index = 0;
         let mut inspected = 0;
 
-        while position >= pattern[index] && inspected < pattern.len() {
+        while position > 0.0 && position >= pattern[index] && inspected < pattern.len() {
             position -= pattern[index];
             index = (index + 1) % pattern.len();
             inspected += 1;
@@ -579,9 +631,8 @@ impl<'a> DashState<'a> {
     }
 
     fn advance(&mut self, amount: f32) {
-        self.remaining -= amount;
-
-        if self.remaining > 0.000_01 {
+        if amount < self.remaining {
+            self.remaining -= amount;
             return;
         }
 
@@ -596,6 +647,8 @@ fn append_dashed_segment(
     state: &mut DashState<'_>,
     visible_contour: &mut Vec<Point>,
     output: &mut Vec<Vec<Point>>,
+    dots: &mut Vec<DashDot>,
+    include_end: bool,
     pieces_left: &mut usize,
 ) -> bool {
     let delta_x = to.x - from.x;
@@ -610,12 +663,42 @@ fn append_dashed_segment(
     let direction_y = delta_y / length;
     let mut consumed = 0.0;
 
-    while consumed < length {
+    while consumed < length || (include_end && state.remaining == 0.0) {
         if *pieces_left == 0 {
             return false;
         }
 
         *pieces_left -= 1;
+
+        if state.remaining == 0.0 {
+            if state.is_visible() {
+                let position = if consumed == length {
+                    to
+                } else {
+                    Point::new(
+                        from.x + direction_x * consumed,
+                        from.y + direction_y * consumed,
+                    )
+                };
+
+                finish_dash_contour(visible_contour, output);
+
+                // Keeps the point in the flattened path for bounds and round caps.
+                output.push(vec![position, position]);
+
+                // Square caps also need the direction of the original segment.
+                dots.push(DashDot {
+                    position,
+                    direction_x,
+                    direction_y,
+                });
+            } else {
+                finish_dash_contour(visible_contour, output);
+            }
+
+            state.advance(0.0);
+            continue;
+        }
 
         let piece_length = (length - consumed).min(state.remaining);
 
@@ -627,6 +710,7 @@ fn append_dashed_segment(
             from.x + direction_x * consumed,
             from.y + direction_y * consumed,
         );
+
         let piece_end = Point::new(
             from.x + direction_x * (consumed + piece_length),
             from.y + direction_y * (consumed + piece_length),
@@ -650,6 +734,16 @@ fn append_dashed_segment(
     }
 
     true
+}
+
+fn sample_is_on_dash_square(sample: Point, dot: DashDot, radius: f32) -> bool {
+    let dx = sample.x - dot.position.x;
+    let dy = sample.y - dot.position.y;
+
+    let along = dx * dot.direction_x + dy * dot.direction_y;
+    let across = dx * dot.direction_y - dy * dot.direction_x;
+
+    along.abs() <= radius && across.abs() <= radius
 }
 
 fn finish_dash_contour(contour: &mut Vec<Point>, output: &mut Vec<Vec<Point>>) {
@@ -730,8 +824,6 @@ fn sample_is_on_stroke(
             if point_is_inside_butt_segment(sample, points[points.len() - 1], points[0], radius) {
                 return true;
             }
-
-            continue;
         }
 
         if points.len() >= 3 {

@@ -652,9 +652,9 @@ fn canvas_stroke_style(context: &ObjectStorage, dash: &[f64]) -> Result<StrokeSt
     for &number in dash {
         let value = number as f32;
 
-        if !value.is_finite() || value < 0.0001 {
+        if !value.is_finite() || (number != 0.0 && value < 0.0001) {
             return Err(JsError::unsupported(
-                "stroke: zero, tiny, or oversized dash segment is not supported yet",
+                "stroke: tiny or oversized dash segment is not supported yet",
             ));
         }
 
