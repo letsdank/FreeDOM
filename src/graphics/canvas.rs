@@ -182,6 +182,50 @@ impl Canvas2D {
         }
     }
 
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-quadraticcurveto-dev
+    pub fn quadratic_curve_to(&mut self, cx: f64, cy: f64, x: f64, y: f64) {
+        let (Some(control), Some(to)) = (canvas_point(cx, cy), canvas_point(x, y)) else {
+            return;
+        };
+
+        let needed = if self.has_subpath { 1 } else { 2 };
+
+        if self.current_path.commands().len().saturating_add(needed) > MAX_CANVAS_PATH_COMMANDS {
+            return;
+        }
+
+        if !self.has_subpath {
+            self.current_path.move_to(control);
+            self.has_subpath = true;
+        }
+
+        self.current_path.quadratic_to(control, to);
+    }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beziercurveto-dev
+    pub fn bezier_curve_to(&mut self, c1x: f64, c1y: f64, c2x: f64, c2y: f64, x: f64, y: f64) {
+        let (Some(control_one), Some(control_two), Some(to)) = (
+            canvas_point(c1x, c1y),
+            canvas_point(c2x, c2y),
+            canvas_point(x, y),
+        ) else {
+            return;
+        };
+
+        let needed = if self.has_subpath { 1 } else { 2 };
+
+        if self.current_path.commands().len().saturating_add(needed) > MAX_CANVAS_PATH_COMMANDS {
+            return;
+        }
+
+        if !self.has_subpath {
+            self.current_path.move_to(control_one);
+            self.has_subpath = true;
+        }
+
+        self.current_path.cubic_to(control_one, control_two, to);
+    }
+
     pub fn close_path(&mut self) {
         if self.has_subpath && self.current_path.commands().len() < MAX_CANVAS_PATH_COMMANDS {
             self.current_path.close();

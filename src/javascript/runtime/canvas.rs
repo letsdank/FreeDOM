@@ -18,6 +18,8 @@ pub(super) enum PathOperation {
     LineTo,
     Close,
     Fill,
+    QuadraticCurveTo,
+    BezierCurveTo,
 }
 
 impl Interpreter {
@@ -125,6 +127,11 @@ impl Interpreter {
             ("lineTo", ElementMethod::CanvasLineTo(node_id)),
             ("closePath", ElementMethod::CanvasClosePath(node_id)),
             ("fill", ElementMethod::CanvasFill(node_id)),
+            (
+                "quadraticCurveTo",
+                ElementMethod::CanvasQuadraticCurveTo(node_id),
+            ),
+            ("bezierCurveTo", ElementMethod::CanvasBezierCurveTo(node_id)),
         ] {
             context.borrow_mut().define_own_data_property(
                 name.to_owned(),
@@ -349,29 +356,36 @@ impl Interpreter {
             PathOperation::LineTo => "lineTo",
             PathOperation::Close => "closePath",
             PathOperation::Fill => "fill",
+            PathOperation::QuadraticCurveTo => "quadraticCurveTo",
+            PathOperation::BezierCurveTo => "bezierCurveTo",
         };
 
         let context = self.canvas_context_receiver(node_id, receiver, name)?;
 
-        let point = if matches!(operation, PathOperation::MoveTo | PathOperation::LineTo) {
-            if arguments.len() < 2 {
-                return Err(JsError::type_error(format!(
-                    "{name} requires two arguments"
-                )));
-            }
-
-            let x = self.to_number(&arguments[0]).ok_or_else(|| {
-                JsError::type_error(format!("{name}: unsupported number conversion"))
-            })?;
-
-            let y = self.to_number(&arguments[1]).ok_or_else(|| {
-                JsError::type_error(format!("{name}: unsupported number conversion"))
-            })?;
-
-            Some((x, y))
-        } else {
-            None
+        let coordinate_count = match operation {
+            PathOperation::MoveTo | PathOperation::LineTo => 2,
+            PathOperation::QuadraticCurveTo => 4,
+            PathOperation::BezierCurveTo => 6,
+            _ => 0,
         };
+
+        if arguments.len() < coordinate_count {
+            return Err(JsError::type_error(format!(
+                "{name} requires {coordinate_count} arguments"
+            )));
+        }
+
+        let mut coordinates = [0.0; 6];
+
+        for (target, value) in coordinates
+            .iter_mut()
+            .zip(arguments.iter())
+            .take(coordinate_count)
+        {
+            *target = self.to_number(value).ok_or_else(|| {
+                JsError::type_error(format!("{name}: unsupported number conversion"))
+            })?;
+        }
 
         let rule = if matches!(operation, PathOperation::Fill) {
             match arguments.first() {
@@ -401,13 +415,31 @@ impl Interpreter {
                 PathOperation::Begin => canvas.begin_path(),
 
                 PathOperation::MoveTo => {
-                    let (x, y) = point.expect("point arguments validated");
-                    canvas.move_to(x, y);
+                    canvas.move_to(coordinates[0], coordinates[1]);
                 }
 
                 PathOperation::LineTo => {
-                    let (x, y) = point.expect("point arguments validated");
-                    canvas.line_to(x, y);
+                    canvas.line_to(coordinates[0], coordinates[1]);
+                }
+
+                PathOperation::QuadraticCurveTo => {
+                    canvas.quadratic_curve_to(
+                        coordinates[0],
+                        coordinates[1],
+                        coordinates[2],
+                        coordinates[3],
+                    );
+                }
+
+                PathOperation::BezierCurveTo => {
+                    canvas.bezier_curve_to(
+                        coordinates[0],
+                        coordinates[1],
+                        coordinates[2],
+                        coordinates[3],
+                        coordinates[4],
+                        coordinates[5],
+                    );
                 }
 
                 PathOperation::Close => canvas.close_path(),

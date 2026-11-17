@@ -5200,4 +5200,43 @@ mod tests {
         assert_eq!(image.pixel(6, 6), Some(Color::rgba(0, 0, 255, 255)));
         assert_eq!(image.pixel(5, 5), Some(Color::TRANSPARENT));
     }
+
+    #[test]
+    fn fills_canvas_bezier_curves_from_inline_script() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='picture' width='20' height='10'></canvas>
+                <script>
+                    let ctx = document.getElementById('picture').getContext('2d');
+
+                    ctx.fillStyle = 'red';
+                    ctx.beginPath();
+                    ctx.moveTo(0, 8);
+                    ctx.quadraticCurveTo(5, -2, 10, 8);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    ctx.fillStyle = 'blue';
+                    ctx.beginPath();
+                    ctx.moveTo(10, 8);
+                    ctx.bezierCurveTo(10, -2, 20, -2, 20, 8);
+                    ctx.closePath();
+                    ctx.fill();
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(canvas) = &page.blocks[0].content else {
+            panic!("canvas block expected");
+        };
+
+        let image = canvas.canvas.surface();
+
+        assert_eq!(image.pixel(4, 6), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(image.pixel(14, 6), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(image.pixel(0, 0), Some(Color::TRANSPARENT));
+    }
 }

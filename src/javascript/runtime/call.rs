@@ -282,6 +282,22 @@ impl Interpreter {
                 self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::LineTo)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasQuadraticCurveTo(node_id)) => self
+                .canvas_path_operation(
+                    node_id,
+                    receiver,
+                    values,
+                    canvas::PathOperation::QuadraticCurveTo,
+                ),
+
+            Value::ElementMethod(ElementMethod::CanvasBezierCurveTo(node_id)) => self
+                .canvas_path_operation(
+                    node_id,
+                    receiver,
+                    values,
+                    canvas::PathOperation::BezierCurveTo,
+                ),
+
             Value::ElementMethod(ElementMethod::CanvasClosePath(node_id)) => {
                 self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Close)
             }
