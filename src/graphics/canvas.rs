@@ -241,15 +241,9 @@ impl Canvas2D {
     }
 
     /// Strokes the current path without changing it.
-    pub fn stroke(&mut self, color: Color, width: f32) {
+    pub fn stroke(&mut self, color: Color, style: StrokeStyle) {
         let flattened =
             flatten_path(&self.current_path, 0.25).expect("constant flattening tolerance is valid");
-
-        let style = StrokeStyle {
-            width,
-            miter_limit: 10.0,
-            ..StrokeStyle::default()
-        };
 
         stroke_path(&mut self.surface, &flattened, style, color);
     }

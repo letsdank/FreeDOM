@@ -7,7 +7,7 @@ use crate::{
     css::parse_color,
     graphics::{
         canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
-        raster::{Color, FillRule},
+        raster::{Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle},
     },
 };
 
@@ -42,27 +42,47 @@ impl Interpreter {
         name: &str,
         value: &Value,
     ) -> bool {
-        if !matches!(name, "fillStyle" | "strokeStyle" | "lineWidth")
-            || !self
-                .canvas_contexts
-                .values()
-                .any(|context| std::rc::Rc::ptr_eq(context, object))
+        if !matches!(
+            name,
+            "fillStyle" | "strokeStyle" | "lineWidth" | "lineCap" | "lineJoin" | "miterLimit"
+        ) || !self
+            .canvas_contexts
+            .values()
+            .any(|context| std::rc::Rc::ptr_eq(context, object))
         {
             return false;
         }
 
-        if name == "lineWidth" {
-            if let Some(width) = self.to_number(value) {
-                let raster_width = width as f32;
+        if name == "lineCap" || name == "lineJoin" {
+            if let Value::String(value) = value {
+                let valid = match name {
+                    "lineCap" => matches!(value.as_str(), "butt" | "round" | "square"),
+                    "lineJoin" => matches!(value.as_str(), "miter" | "round" | "bevel"),
+                    _ => false,
+                };
 
-                if width.is_finite()
-                    && width > 0.0
-                    && raster_width.is_finite()
-                    && raster_width > 0.0
+                if valid {
+                    object
+                        .borrow_mut()
+                        .set(name.to_owned(), Value::String(value.clone()));
+                }
+
+                return true;
+            }
+        }
+
+        if name == "lineWidth" || name == "miterLimit" {
+            if let Some(number) = self.to_number(value) {
+                let raster_number = number as f32;
+
+                if number.is_finite()
+                    && number > 0.0
+                    && raster_number.is_finite()
+                    && raster_number > 0.0
                 {
                     object
                         .borrow_mut()
-                        .set(name.to_owned(), Value::Number(width));
+                        .set(name.to_owned(), Value::Number(number));
                 }
             }
 
@@ -127,6 +147,9 @@ impl Interpreter {
                     Value::String("#000000".to_owned()),
                 ),
                 ("lineWidth".to_owned(), Value::Number(1.0)),
+                ("lineCap".to_owned(), Value::String("butt".to_owned())),
+                ("lineJoin".to_owned(), Value::String("miter".to_owned())),
+                ("miterLimit".to_owned(), Value::Number(10.0)),
             ],
             self.object_prototype.clone(),
         ) else {
@@ -322,6 +345,9 @@ impl Interpreter {
             );
 
             context.set("lineWidth".to_owned(), Value::Number(1.0));
+            context.set("lineCap".to_owned(), Value::String("butt".to_owned()));
+            context.set("lineJoin".to_owned(), Value::String("miter".to_owned()));
+            context.set("miterLimit".to_owned(), Value::Number(10.0));
         }
 
         self.ensure_canvas_surface(node_id);
@@ -449,11 +475,6 @@ impl Interpreter {
             },
         );
 
-        let width = match context.borrow().get("lineWidth") {
-            Some(Value::Number(width)) => *width as f32,
-            _ => 1.0,
-        };
-
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
                 .canvas_surfaces
@@ -498,11 +519,45 @@ impl Interpreter {
                     canvas.fill(rule);
                 }
 
-                PathOperation::Stroke => canvas.stroke(color, width),
+                PathOperation::Stroke => canvas.stroke(color, canvas_stroke_style(&context)),
             }
         }
 
         Ok(Value::Undefined)
+    }
+}
+
+fn canvas_stroke_style(context: &ObjectStorage) -> StrokeStyle {
+    let context = context.borrow();
+
+    let line_cap = match context.get("lineCap") {
+        Some(Value::String(value)) if value == "round" => StrokeLineCap::Round,
+        Some(Value::String(value)) if value == "square" => StrokeLineCap::Square,
+        _ => StrokeLineCap::Butt,
+    };
+
+    let line_join = match context.get("lineJoin") {
+        Some(Value::String(value)) if value == "round" => StrokeLineJoin::Round,
+        Some(Value::String(value)) if value == "bevel" => StrokeLineJoin::Bevel,
+        _ => StrokeLineJoin::Miter,
+    };
+
+    let width = match context.get("lineWidth") {
+        Some(Value::Number(value)) => *value as f32,
+        _ => 1.0,
+    };
+
+    let miter_limit = match context.get("miterLimit") {
+        Some(Value::Number(value)) => *value as f32,
+        _ => 10.0,
+    };
+
+    StrokeStyle {
+        width,
+        line_cap,
+        line_join,
+        miter_limit,
+        ..StrokeStyle::default()
     }
 }
 

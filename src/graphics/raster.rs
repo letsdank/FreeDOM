@@ -826,7 +826,8 @@ fn point_is_inside_line_join(
         return point_is_inside_triangle(sample, vertex, outer_from, outer_to);
     }
 
-    point_is_inside_triangle(sample, outer_from, miter, outer_to)
+    point_is_inside_triangle(sample, vertex, outer_from, outer_to)
+        || point_is_inside_triangle(sample, outer_from, miter, outer_to)
 }
 
 fn unit_direction(from: Point, to: Point) -> Option<(f32, f32)> {

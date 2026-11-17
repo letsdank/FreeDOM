@@ -5286,4 +5286,118 @@ mod tests {
         assert_eq!(image.pixel(4, 7), Some(Color::rgba(0, 0, 255, 255)));
         assert_eq!(image.pixel(4, 8), Some(Color::TRANSPARENT));
     }
+
+    #[test]
+    fn canvas_stroke_caps_joins_and_reset() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='cap' width='14' height='14'></canvas>
+                <canvas id='join' width='14' height='14'></canvas>
+                <canvas id='miter' width='14' height='14'></canvas>
+                <canvas id='limited' width='14' height='14'></canvas>
+
+                <script>
+                    let cap = document.getElementById('cap');
+                    let ctx = cap.getContext('2d');
+
+                    ctx.lineWidth = 4;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'bevel';
+                    ctx.miterLimit = 3;
+
+                    ctx.lineCap = 'ROUND';
+                    ctx.lineJoin = 'invalid';
+                    ctx.miterLimit = 0;
+
+                    document.title =
+                        ctx.lineCap + '/' + ctx.lineJoin + '/' + ctx.miterLimit;
+
+                    ctx.strokeStyle = 'red';
+                    ctx.beginPath();
+                    ctx.moveTo(3, 3);
+                    ctx.lineTo(10, 3);
+                    ctx.stroke();
+
+                    ctx.lineCap = 'butt';
+                    ctx.strokeStyle = 'blue';
+                    ctx.beginPath();
+                    ctx.moveTo(3, 10);
+                    ctx.lineTo(10, 10);
+                    ctx.stroke();
+
+                    let other = document.getElementById('join');
+                    let c = other.getContext('2d');
+
+                    c.lineWidth = 4;
+                    c.lineJoin = 'bevel';
+                    c.lineCap = 'square';
+                    c.miterLimit = 3;
+                    other.width = other.width;
+
+                    document.title = document.title + '|'
+                        + c.lineCap + '/' + c.lineJoin + '/' + c.miterLimit;
+
+                    c.lineWidth = 4;
+                    c.lineJoin = 'bevel';
+                    c.beginPath();
+                    c.moveTo(2, 10);
+                    c.lineTo(7, 3);
+                    c.lineTo(12, 10);
+                    c.stroke();
+
+                    let m = document.getElementById('miter').getContext('2d');
+                    m.lineWidth = 4;
+                    m.beginPath();
+                    m.moveTo(2, 10);
+                    m.lineTo(7, 3);
+                    m.lineTo(12, 10);
+                    m.stroke();
+
+                    let l = document.getElementById('limited').getContext('2d');
+                    l.lineWidth = 4;
+                    l.miterLimit = 1;
+                    l.beginPath();
+                    l.moveTo(2, 10);
+                    l.lineTo(7, 3);
+                    l.lineTo(12, 10);
+                    l.stroke();
+                </script>
+            "#,
+        );
+
+        assert_eq!(page.title, "round/bevel/3|butt/miter/10");
+
+        let BlockContent::Canvas(canvas) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        let image = canvas.canvas.surface();
+
+        assert!(image.pixel(1, 2).unwrap().alpha > 0);
+        assert_eq!(image.pixel(1, 9), Some(Color::TRANSPARENT));
+        assert_eq!(image.pixel(4, 9), Some(Color::rgba(0, 0, 255, 255)));
+
+        let BlockContent::Canvas(bevel) = &page.blocks[1].content else {
+            panic!("bevel canvas expected");
+        };
+
+        let BlockContent::Canvas(miter) = &page.blocks[2].content else {
+            panic!("miter canvas expected");
+        };
+
+        let BlockContent::Canvas(limited) = &page.blocks[3].content else {
+            panic!("limited canvas expected");
+        };
+
+        assert_eq!(bevel.canvas.surface().pixel(6, 0), Some(Color::TRANSPARENT));
+        assert!(miter.canvas.surface().pixel(6, 0).unwrap().alpha > 0);
+        assert_eq!(miter.canvas.surface().pixel(6, 2), Some(Color::BLACK));
+        assert_eq!(
+            limited.canvas.surface().pixel(6, 0),
+            Some(Color::TRANSPARENT)
+        );
+    }
 }
