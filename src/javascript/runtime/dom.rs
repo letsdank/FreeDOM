@@ -419,6 +419,7 @@ impl Interpreter {
             .current_document_mut()?
             .set_node_attribute(node_id, &name, value)
         {
+            self.reset_canvas_attribute(node_id, &name);
             Ok(Value::Undefined)
         } else {
             Err(JsError::runtime(
@@ -440,10 +441,23 @@ impl Interpreter {
 
         let name = arguments[0].to_js_string().to_ascii_lowercase();
 
+        let had_attribute = self
+            .current_document_element(node_id)
+            .is_some_and(|element| {
+                element
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute.name == name)
+            });
+
         if self
             .current_document_mut()?
             .remove_node_attribute(node_id, &name)
         {
+            if had_attribute {
+                self.reset_canvas_attribute(node_id, &name);
+            }
+
             Ok(Value::Undefined)
         } else {
             Err(JsError::runtime(

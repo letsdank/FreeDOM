@@ -163,12 +163,24 @@ impl Interpreter {
                         }
                     }
 
+                    Value::Element(node_id)
+                        if matches!(property.as_str(), "width" | "height")
+                            && self
+                                .current_document_element(node_id)
+                                .is_some_and(|element| {
+                                    element.tag_name.eq_ignore_ascii_case("canvas")
+                                }) =>
+                    {
+                        self.set_canvas_dimension(node_id, &property, value)
+                    }
+
                     Value::Attribute { node_id, name } if property == "value" => {
                         if self.current_document_mut()?.set_node_attribute(
                             node_id,
                             &name,
                             value.to_js_string(),
                         ) {
+                            self.reset_canvas_attribute(node_id, &name);
                             Ok(())
                         } else {
                             Err(JsError::runtime(
@@ -198,6 +210,17 @@ impl Interpreter {
                 Value::Null | Value::Undefined => Err(JsError::type_error(
                     "cannot write property of null or undefined",
                 )),
+
+                Value::Element(node_id)
+                    if matches!(index.to_js_string().as_str(), "width" | "height")
+                        && self
+                            .current_document_element(node_id)
+                            .is_some_and(|element| {
+                                element.tag_name.eq_ignore_ascii_case("canvas")
+                            }) =>
+                {
+                    self.set_canvas_dimension(node_id, &index.to_js_string(), value)
+                }
 
                 Value::Object(values) => {
                     let property = index.to_js_string();

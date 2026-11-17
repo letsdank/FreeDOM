@@ -169,6 +169,21 @@ impl Interpreter {
                         Ok(Value::ElementMethod(ElementMethod::GetContext(node_id)))
                     }
 
+                    "width" | "height" if element.tag_name.eq_ignore_ascii_case("canvas") => {
+                        let default = if property == "width" { 300 } else { 150 };
+
+                        let dimension = element
+                            .attributes
+                            .iter()
+                            .find(|attribute| attribute.name == property)
+                            .and_then(|attribute| {
+                                crate::graphics::canvas::parse_canvas_dimension(&attribute.value)
+                            })
+                            .unwrap_or(default);
+
+                        Ok(Value::Number(dimension as f64))
+                    }
+
                     "id" => Ok(Value::String(element.id.clone())),
 
                     "tagName" => Ok(Value::String(element.tag_name.to_ascii_uppercase())),
@@ -356,6 +371,10 @@ impl Interpreter {
 
         if matches!(object, Value::ObjectConstructor) {
             return self.member_value(Value::ObjectConstructor, &index.to_js_string());
+        }
+
+        if let Value::Element(node_id) = object {
+            return self.member_value(Value::Element(node_id), &index.to_js_string());
         }
 
         if let Value::Array(values) = object {

@@ -104,6 +104,12 @@ impl Interpreter {
             false,
         );
 
+        context.borrow_mut().define_own_data_property(
+            "clearRect".to_owned(),
+            Value::ElementMethod(ElementMethod::CanvasClearRect(node_id)),
+            false,
+        );
+
         self.canvas_contexts.insert(node_id, context.clone());
 
         Ok(Value::Object(context))
@@ -161,14 +167,15 @@ impl Interpreter {
         true
     }
 
-    pub(super) fn canvas_fill_rect(
-        &mut self,
+    fn canvas_rect_arguments(
+        &self,
         node_id: u64,
         receiver: Option<Value>,
         arguments: Vec<Value>,
-    ) -> Result<Value, JsError> {
+        method: &str,
+    ) -> Result<(ObjectStorage, [f64; 4]), JsError> {
         let Some(Value::Object(context)) = receiver else {
-            return Err(JsError::type_error("fillRect: invalid receiver"));
+            return Err(JsError::type_error(format!("{method}: invalid receiver")));
         };
 
         if !self
@@ -176,20 +183,34 @@ impl Interpreter {
             .get(&node_id)
             .is_some_and(|expected| std::rc::Rc::ptr_eq(expected, &context))
         {
-            return Err(JsError::type_error("fillRect: invalid receiver"));
+            return Err(JsError::type_error(format!("{method}: invalid receiver")));
         }
 
         if arguments.len() < 4 {
-            return Err(JsError::type_error("fillRect requires four arguments"));
+            return Err(JsError::type_error(format!(
+                "{method} requires four arguments"
+            )));
         }
 
         let mut coordinates = [0.0; 4];
 
         for (output, value) in coordinates.iter_mut().zip(&arguments) {
-            *output = self
-                .to_number(value)
-                .ok_or_else(|| JsError::type_error("fillRect: unsupported number conversion"))?;
+            *output = self.to_number(value).ok_or_else(|| {
+                JsError::type_error(format!("{method}: unsupported number conversion"))
+            })?;
         }
+
+        Ok((context, coordinates))
+    }
+
+    pub(super) fn canvas_fill_rect(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        let (context, coordinates) =
+            self.canvas_rect_arguments(node_id, receiver, arguments, "fillRect")?;
 
         let fill_style = context
             .borrow()
@@ -225,5 +246,75 @@ impl Interpreter {
         }
 
         Ok(Value::Undefined)
+    }
+
+    pub(super) fn canvas_clear_rect(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        let (_, coordinates) =
+            self.canvas_rect_arguments(node_id, receiver, arguments, "clearRect")?;
+
+        if self.ensure_canvas_surface(node_id) {
+            let canvas = self
+                .canvas_surfaces
+                .get_mut(&node_id)
+                .expect("surface was initialized");
+
+            canvas.clear_rect(
+                coordinates[0],
+                coordinates[1],
+                coordinates[2],
+                coordinates[3],
+            );
+        }
+
+        Ok(Value::Undefined)
+    }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element
+    pub(super) fn reset_canvas_attribute(&mut self, node_id: u64, name: &str) {
+        if !matches!(name, "width" | "height") || !self.canvas_contexts.contains_key(&node_id) {
+            return;
+        }
+
+        self.canvas_surfaces.remove(&node_id);
+
+        if let Some(context) = self.canvas_contexts.get(&node_id) {
+            context
+                .borrow_mut()
+                .set("fillStyle".to_owned(), Value::String("#000000".to_owned()));
+        }
+
+        self.ensure_canvas_surface(node_id);
+    }
+
+    pub(super) fn set_canvas_dimension(
+        &mut self,
+        node_id: u64,
+        name: &str,
+        value: Value,
+    ) -> Result<(), JsError> {
+        let number = self.to_number(&value).ok_or_else(|| {
+            JsError::type_error("canvas dimension: unsupported number conversion")
+        })?;
+
+        let value = if number.is_finite() {
+            number.trunc().rem_euclid(4_294_967_296.0) as u32
+        } else {
+            0
+        };
+
+        self.set_document_element_attribute(
+            node_id,
+            vec![
+                Value::String(name.to_owned()),
+                Value::String(value.to_string()),
+            ],
+        )?;
+
+        Ok(())
     }
 }

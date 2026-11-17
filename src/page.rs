@@ -5116,4 +5116,46 @@ mod tests {
         assert_eq!(image.pixel(0, 0), Some(Color::rgba(255, 0, 0, 255)));
         assert_eq!(image.pixel(3, 2), Some(Color::TRANSPARENT));
     }
+
+    #[test]
+    fn clears_and_resets_canvas_from_inline_script() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='picture' width='4' height='3'></canvas>
+                <script>
+                    let canvas = document.getElementById('picture');
+                    let ctx = canvas.getContext('2d');
+
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(0, 0, 4, 3);
+
+                    canvas.width = canvas.width;
+                    ctx.fillRect(0, 0, 1, 1);
+
+                    ctx.fillStyle = 'blue';
+                    canvas.setAttribute('height', '3');
+                    ctx.fillRect(1, 0, 1, 1);
+
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(0, 1, 4, 1);
+                    ctx.clearRect(1, 1, 2, 1);
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(canvas) = &page.blocks[0].content else {
+            panic!("canvas block expected");
+        };
+
+        let image = canvas.canvas.surface();
+
+        assert_eq!(image.pixel(0, 0), Some(Color::TRANSPARENT));
+        assert_eq!(image.pixel(1, 0), Some(Color::BLACK));
+        assert_eq!(image.pixel(0, 1), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(image.pixel(1, 1), Some(Color::TRANSPARENT));
+        assert_eq!(image.pixel(3, 1), Some(Color::rgba(255, 0, 0, 255)));
+    }
 }
