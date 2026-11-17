@@ -44,7 +44,13 @@ impl Interpreter {
     ) -> bool {
         if !matches!(
             name,
-            "fillStyle" | "strokeStyle" | "lineWidth" | "lineCap" | "lineJoin" | "miterLimit"
+            "fillStyle"
+                | "strokeStyle"
+                | "lineWidth"
+                | "lineCap"
+                | "lineJoin"
+                | "miterLimit"
+                | "lineDashOffset"
         ) || !self
             .canvas_contexts
             .values()
@@ -69,6 +75,16 @@ impl Interpreter {
 
                 return true;
             }
+        }
+
+        if name == "lineDashOffset" {
+            if let Some(offset) = self.to_number(value).filter(|number| number.is_finite()) {
+                object
+                    .borrow_mut()
+                    .set(name.to_owned(), Value::Number(offset));
+            }
+
+            return true;
         }
 
         if name == "lineWidth" || name == "miterLimit" {
@@ -150,6 +166,7 @@ impl Interpreter {
                 ("lineCap".to_owned(), Value::String("butt".to_owned())),
                 ("lineJoin".to_owned(), Value::String("miter".to_owned())),
                 ("miterLimit".to_owned(), Value::Number(10.0)),
+                ("lineDashOffset".to_owned(), Value::Number(0.0)),
             ],
             self.object_prototype.clone(),
         ) else {
@@ -180,6 +197,8 @@ impl Interpreter {
                 ElementMethod::CanvasQuadraticCurveTo(node_id),
             ),
             ("bezierCurveTo", ElementMethod::CanvasBezierCurveTo(node_id)),
+            ("setLineDash", ElementMethod::CanvasSetLineDash(node_id)),
+            ("getLineDash", ElementMethod::CanvasGetLineDash(node_id)),
         ] {
             context.borrow_mut().define_own_data_property(
                 name.to_owned(),
@@ -333,6 +352,7 @@ impl Interpreter {
         }
 
         self.canvas_surfaces.remove(&node_id);
+        self.canvas_dashes.remove(&node_id);
 
         if let Some(context) = self.canvas_contexts.get(&node_id) {
             let mut context = context.borrow_mut();
@@ -348,6 +368,7 @@ impl Interpreter {
             context.set("lineCap".to_owned(), Value::String("butt".to_owned()));
             context.set("lineJoin".to_owned(), Value::String("miter".to_owned()));
             context.set("miterLimit".to_owned(), Value::Number(10.0));
+            context.set("lineDashOffset".to_owned(), Value::Number(0.0));
         }
 
         self.ensure_canvas_surface(node_id);
@@ -475,6 +496,18 @@ impl Interpreter {
             },
         );
 
+        let stroke_style = if matches!(operation, PathOperation::Stroke) {
+            Some(canvas_stroke_style(
+                &context,
+                self.canvas_dashes
+                    .get(&node_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            )?)
+        } else {
+            None
+        };
+
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
                 .canvas_surfaces
@@ -519,15 +552,77 @@ impl Interpreter {
                     canvas.fill(rule);
                 }
 
-                PathOperation::Stroke => canvas.stroke(color, canvas_stroke_style(&context)),
+                PathOperation::Stroke => {
+                    canvas.stroke(color, stroke_style.expect("stroke style was initialized"))
+                }
             }
         }
 
         Ok(Value::Undefined)
     }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-setlinedash-dev
+    pub(super) fn canvas_set_line_dash(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        self.canvas_context_receiver(node_id, receiver, "setLineDash")?;
+
+        let Some(value @ Value::Array(_)) = arguments.first() else {
+            return Err(JsError::type_error(
+                "setLineDash currently requires an array",
+            ));
+        };
+
+        let values = self.create_list_from_array_like(value)?;
+
+        if values.len() > 4096 {
+            return Err(JsError::unsupported("setLineDash array limit exceeded"));
+        }
+
+        let mut dash = Vec::with_capacity(values.len().saturating_mul(2));
+
+        for value in &values {
+            let number = self.to_number(value).ok_or_else(|| {
+                JsError::unsupported("setLineDash: unsupported number conversion")
+            })?;
+
+            if !number.is_finite() || number < 0.0 {
+                return Ok(Value::Undefined);
+            }
+
+            dash.push(number);
+        }
+
+        if dash.len() % 2 == 1 {
+            dash.extend_from_within(..);
+        }
+
+        self.canvas_dashes.insert(node_id, dash);
+
+        Ok(Value::Undefined)
+    }
+
+    pub(super) fn canvas_get_line_dash(
+        &self,
+        node_id: u64,
+        receiver: Option<Value>,
+    ) -> Result<Value, JsError> {
+        self.canvas_context_receiver(node_id, receiver, "getLineDash")?;
+
+        let values = self
+            .canvas_dashes
+            .get(&node_id)
+            .map(|dash| dash.iter().copied().map(Value::Number).collect())
+            .unwrap_or_default();
+
+        Ok(Value::array(values))
+    }
 }
 
-fn canvas_stroke_style(context: &ObjectStorage) -> StrokeStyle {
+fn canvas_stroke_style(context: &ObjectStorage, dash: &[f64]) -> Result<StrokeStyle, JsError> {
     let context = context.borrow();
 
     let line_cap = match context.get("lineCap") {
@@ -552,13 +647,46 @@ fn canvas_stroke_style(context: &ObjectStorage) -> StrokeStyle {
         _ => 10.0,
     };
 
-    StrokeStyle {
+    let mut dash_array = Vec::with_capacity(dash.len());
+
+    for &number in dash {
+        let value = number as f32;
+
+        if !value.is_finite() || value < 0.0001 {
+            return Err(JsError::unsupported(
+                "stroke: zero, tiny, or oversized dash segment is not supported yet",
+            ));
+        }
+
+        dash_array.push(value);
+    }
+
+    if !dash_array.iter().sum::<f32>().is_finite() {
+        return Err(JsError::unsupported("stroke: dash pattern is too large"));
+    }
+
+    let offset = match context.get("lineDashOffset") {
+        Some(Value::Number(value)) => *value,
+        _ => 0.0,
+    };
+
+    let dash_offset = offset as f32;
+
+    if !dash_offset.is_finite() || (offset != 0.0 && dash_offset == 0.0) {
+        return Err(JsError::unsupported(
+            "stroke: dash offset is outside raster range",
+        ));
+    }
+
+    Ok(StrokeStyle {
         width,
         line_cap,
         line_join,
         miter_limit,
+        dash_array,
+        dash_offset,
         ..StrokeStyle::default()
-    }
+    })
 }
 
 fn canvas_color(context: &ObjectStorage, property: &str) -> Color {

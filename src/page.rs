@@ -5400,4 +5400,66 @@ mod tests {
             Some(Color::TRANSPARENT)
         );
     }
+
+    #[test]
+    fn draws_and_resets_canvas_dashes_from_inline_script() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='a' width='16' height='6'></canvas>
+                <canvas id='b' width='1' height='1'></canvas>
+
+                <script>
+                    let a = document.getElementById('a');
+                    let ctx = a.getContext('2d');
+
+                    ctx.setLineDash([3, 2, 1]);
+
+                    let copy = ctx.getLineDash();
+                    copy[0] = 88;
+
+                    ctx.setLineDash([-1, 2]);
+                    ctx.lineDashOffset = 2;
+
+                    document.title = ctx.getLineDash()[0] + '/'
+                        + ctx.getLineDash().length + '/'
+                        + ctx.lineDashOffset;
+
+                    ctx.beginPath();
+                    ctx.moveTo(1, 2.5);
+                    ctx.lineTo(15, 2.5);
+                    ctx.stroke();
+
+                    ctx.setLineDash([0, 2]);
+                    document.title = document.title + '/' + ctx.getLineDash()[0];
+
+                    let b = document.getElementById('b');
+                    let other = b.getContext('2d');
+
+                    other.setLineDash([2, 1]);
+                    other.lineDashOffset = -2;
+                    b.width = b.width;
+
+                    document.title = document.title + '/'
+                        + other.getLineDash().length + '/'
+                        + other.lineDashOffset;
+                </script>
+            "#,
+        );
+
+        assert_eq!(page.title, "3/6/2/0/0/0");
+
+        let BlockContent::Canvas(canvas) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        let image = canvas.canvas.surface();
+
+        assert_eq!(image.pixel(1, 2), Some(Color::BLACK));
+        assert_eq!(image.pixel(2, 2), Some(Color::TRANSPARENT));
+        assert_eq!(image.pixel(3, 2), Some(Color::TRANSPARENT));
+        assert_eq!(image.pixel(4, 2), Some(Color::BLACK));
+    }
 }

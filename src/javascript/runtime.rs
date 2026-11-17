@@ -158,6 +158,7 @@ pub(super) struct Interpreter {
     array_prototype: ArrayStorage,
     canvas_contexts: HashMap<u64, ObjectStorage>,
     canvas_surfaces: HashMap<u64, crate::graphics::canvas::Canvas2D>,
+    canvas_dashes: HashMap<u64, Vec<f64>>,
 }
 
 impl Interpreter {
@@ -372,6 +373,7 @@ impl Interpreter {
             array_prototype,
             canvas_contexts: HashMap::new(),
             canvas_surfaces: HashMap::new(),
+            canvas_dashes: HashMap::new(),
         }
     }
 

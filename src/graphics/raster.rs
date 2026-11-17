@@ -480,6 +480,7 @@ pub fn stroke_path_clipped(
 fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Option<FlattenedPath> {
     let dash_array = normalized_dash_array(dash_array)?;
     let mut output = Vec::new();
+    let mut pieces_left = 16_384_usize;
 
     for contour in path.contours() {
         let points = contour.points();
@@ -496,7 +497,17 @@ fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Opti
             let from = points[index];
             let to = points[(index + 1) % points.len()];
 
-            append_dashed_segment(from, to, &mut state, &mut visible_contour, &mut output);
+            if !append_dashed_segment(
+                from,
+                to,
+                &mut state,
+                &mut visible_contour,
+                &mut output,
+                &mut pieces_left,
+            ) {
+                eprintln!("FreeDOM: dashed path exceeds rasterization limits");
+                return Some(FlattenedPath::from_open_contours(Vec::new()));
+            }
         }
 
         finish_dash_contour(&mut visible_contour, &mut output);
@@ -520,6 +531,10 @@ fn normalized_dash_array(dash_array: &[f32]) -> Option<Vec<f32>> {
         normalized.extend_from_within(..);
     }
 
+    if !normalized.iter().sum::<f32>().is_finite() {
+        return None;
+    }
+
     Some(normalized)
 }
 
@@ -539,10 +554,17 @@ impl<'a> DashState<'a> {
         };
 
         let mut index = 0;
+        let mut inspected = 0;
 
-        while position >= pattern[index] {
+        while position >= pattern[index] && inspected < pattern.len() {
             position -= pattern[index];
             index = (index + 1) % pattern.len();
+            inspected += 1;
+        }
+
+        if inspected == pattern.len() {
+            index = 0;
+            position = 0.0;
         }
 
         Self {
@@ -574,13 +596,14 @@ fn append_dashed_segment(
     state: &mut DashState<'_>,
     visible_contour: &mut Vec<Point>,
     output: &mut Vec<Vec<Point>>,
-) {
+    pieces_left: &mut usize,
+) -> bool {
     let delta_x = to.x - from.x;
     let delta_y = to.y - from.y;
     let length = (delta_x * delta_x + delta_y * delta_y).sqrt();
 
     if length <= f32::EPSILON {
-        return;
+        return true;
     }
 
     let direction_x = delta_x / length;
@@ -588,7 +611,18 @@ fn append_dashed_segment(
     let mut consumed = 0.0;
 
     while consumed < length {
+        if *pieces_left == 0 {
+            return false;
+        }
+
+        *pieces_left -= 1;
+
         let piece_length = (length - consumed).min(state.remaining);
+
+        if consumed + piece_length <= consumed {
+            return false;
+        }
+
         let piece_start = Point::new(
             from.x + direction_x * consumed,
             from.y + direction_y * consumed,
@@ -614,6 +648,8 @@ fn append_dashed_segment(
         consumed += piece_length;
         state.advance(piece_length);
     }
+
+    true
 }
 
 fn finish_dash_contour(contour: &mut Vec<Point>, output: &mut Vec<Vec<Point>>) {

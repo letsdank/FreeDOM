@@ -310,6 +310,14 @@ impl Interpreter {
                 self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Stroke)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasSetLineDash(node_id)) => {
+                self.canvas_set_line_dash(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasGetLineDash(node_id)) => {
+                self.canvas_get_line_dash(node_id, receiver)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {
