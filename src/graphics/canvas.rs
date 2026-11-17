@@ -8,7 +8,7 @@
 use super::{
     flatten::flatten_path,
     geometry::{Path, Point},
-    raster::{Color, FillRule, Surface, fill_path},
+    raster::{Color, FillRule, StrokeStyle, Surface, fill_path, stroke_path},
 };
 
 const MAX_CANVAS_DIMENSION: usize = 16_384;
@@ -238,6 +238,20 @@ impl Canvas2D {
             flatten_path(&self.current_path, 0.25).expect("constant flattening tolerance is valid");
 
         fill_path(&mut self.surface, &flattened, fill_rule, self.fill_style);
+    }
+
+    /// Strokes the current path without changing it.
+    pub fn stroke(&mut self, color: Color, width: f32) {
+        let flattened =
+            flatten_path(&self.current_path, 0.25).expect("constant flattening tolerance is valid");
+
+        let style = StrokeStyle {
+            width,
+            miter_limit: 10.0,
+            ..StrokeStyle::default()
+        };
+
+        stroke_path(&mut self.surface, &flattened, style, color);
     }
 }
 

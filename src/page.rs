@@ -5239,4 +5239,51 @@ mod tests {
         assert_eq!(image.pixel(14, 6), Some(Color::rgba(0, 0, 255, 255)));
         assert_eq!(image.pixel(0, 0), Some(Color::TRANSPARENT));
     }
+
+    #[test]
+    fn strokes_canvas_paths_from_inline_script() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='picture' width='10' height='10'></canvas>
+                <script>
+                    let canvas = document.getElementById('picture');
+                    let ctx = canvas.getContext('2d');
+
+                    ctx.strokeStyle = 'red';
+                    ctx.lineWidth = 4;
+                    canvas.width = canvas.width;
+
+                    ctx.beginPath();
+                    ctx.moveTo(1, 2.5);
+                    ctx.lineTo(9, 2.5);
+                    ctx.stroke();
+
+                    ctx.strokeStyle = 'blue';
+                    ctx.lineWidth = 2;
+                    ctx.lineWidth = 0;
+
+                    ctx.beginPath();
+                    ctx.moveTo(1, 7);
+                    ctx.lineTo(9, 7);
+                    ctx.stroke();
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(canvas) = &page.blocks[0].content else {
+            panic!("canvas block expected");
+        };
+
+        let image = canvas.canvas.surface();
+
+        assert_eq!(image.pixel(4, 2), Some(Color::BLACK));
+        assert_eq!(image.pixel(4, 3), Some(Color::TRANSPARENT));
+
+        assert_eq!(image.pixel(4, 6), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(image.pixel(4, 7), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(image.pixel(4, 8), Some(Color::TRANSPARENT));
+    }
 }

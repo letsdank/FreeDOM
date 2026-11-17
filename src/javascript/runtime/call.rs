@@ -306,6 +306,10 @@ impl Interpreter {
                 self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Fill)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasStroke(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Stroke)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {

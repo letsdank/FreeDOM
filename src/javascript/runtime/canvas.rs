@@ -20,6 +20,7 @@ pub(super) enum PathOperation {
     Fill,
     QuadraticCurveTo,
     BezierCurveTo,
+    Stroke,
 }
 
 impl Interpreter {
@@ -41,13 +42,31 @@ impl Interpreter {
         name: &str,
         value: &Value,
     ) -> bool {
-        if name != "fillStyle"
+        if !matches!(name, "fillStyle" | "strokeStyle" | "lineWidth")
             || !self
                 .canvas_contexts
                 .values()
                 .any(|context| std::rc::Rc::ptr_eq(context, object))
         {
             return false;
+        }
+
+        if name == "lineWidth" {
+            if let Some(width) = self.to_number(value) {
+                let raster_width = width as f32;
+
+                if width.is_finite()
+                    && width > 0.0
+                    && raster_width.is_finite()
+                    && raster_width > 0.0
+                {
+                    object
+                        .borrow_mut()
+                        .set(name.to_owned(), Value::Number(width));
+                }
+            }
+
+            return true;
         }
 
         if let Value::String(value) = value {
@@ -62,7 +81,7 @@ impl Interpreter {
             if let Some(normalized) = normalized {
                 object
                     .borrow_mut()
-                    .set("fillStyle".to_owned(), Value::String(normalized));
+                    .set(name.to_owned(), Value::String(normalized));
             }
         }
 
@@ -103,6 +122,11 @@ impl Interpreter {
             [
                 ("canvas".to_owned(), Value::Element(node_id)),
                 ("fillStyle".to_owned(), Value::String("#000000".to_owned())),
+                (
+                    "strokeStyle".to_owned(),
+                    Value::String("#000000".to_owned()),
+                ),
+                ("lineWidth".to_owned(), Value::Number(1.0)),
             ],
             self.object_prototype.clone(),
         ) else {
@@ -127,6 +151,7 @@ impl Interpreter {
             ("lineTo", ElementMethod::CanvasLineTo(node_id)),
             ("closePath", ElementMethod::CanvasClosePath(node_id)),
             ("fill", ElementMethod::CanvasFill(node_id)),
+            ("stroke", ElementMethod::CanvasStroke(node_id)),
             (
                 "quadraticCurveTo",
                 ElementMethod::CanvasQuadraticCurveTo(node_id),
@@ -232,7 +257,7 @@ impl Interpreter {
         let (context, coordinates) =
             self.canvas_rect_arguments(node_id, receiver, arguments, "fillRect")?;
 
-        let color = canvas_fill_color(&context);
+        let color = canvas_color(&context, "fillStyle");
 
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
@@ -287,9 +312,16 @@ impl Interpreter {
         self.canvas_surfaces.remove(&node_id);
 
         if let Some(context) = self.canvas_contexts.get(&node_id) {
-            context
-                .borrow_mut()
-                .set("fillStyle".to_owned(), Value::String("#000000".to_owned()));
+            let mut context = context.borrow_mut();
+
+            context.set("fillStyle".to_owned(), Value::String("#000000".to_owned()));
+
+            context.set(
+                "strokeStyle".to_owned(),
+                Value::String("#000000".to_owned()),
+            );
+
+            context.set("lineWidth".to_owned(), Value::Number(1.0));
         }
 
         self.ensure_canvas_surface(node_id);
@@ -356,11 +388,16 @@ impl Interpreter {
             PathOperation::LineTo => "lineTo",
             PathOperation::Close => "closePath",
             PathOperation::Fill => "fill",
+            PathOperation::Stroke => "stroke",
             PathOperation::QuadraticCurveTo => "quadraticCurveTo",
             PathOperation::BezierCurveTo => "bezierCurveTo",
         };
 
         let context = self.canvas_context_receiver(node_id, receiver, name)?;
+
+        if matches!(operation, PathOperation::Stroke) && !arguments.is_empty() {
+            return Err(JsError::type_error("stroke: Path2D is not supported yet"));
+        }
 
         let coordinate_count = match operation {
             PathOperation::MoveTo | PathOperation::LineTo => 2,
@@ -403,7 +440,19 @@ impl Interpreter {
             FillRule::NonZero
         };
 
-        let color = canvas_fill_color(&context);
+        let color = canvas_color(
+            &context,
+            if matches!(operation, PathOperation::Stroke) {
+                "strokeStyle"
+            } else {
+                "fillStyle"
+            },
+        );
+
+        let width = match context.borrow().get("lineWidth") {
+            Some(Value::Number(width)) => *width as f32,
+            _ => 1.0,
+        };
 
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
@@ -448,6 +497,8 @@ impl Interpreter {
                     canvas.set_fill_style(color);
                     canvas.fill(rule);
                 }
+
+                PathOperation::Stroke => canvas.stroke(color, width),
             }
         }
 
@@ -455,10 +506,10 @@ impl Interpreter {
     }
 }
 
-fn canvas_fill_color(context: &ObjectStorage) -> Color {
+fn canvas_color(context: &ObjectStorage, property: &str) -> Color {
     match context
         .borrow()
-        .get("fillStyle")
+        .get(property)
         .cloned()
         .unwrap_or(Value::Undefined)
     {

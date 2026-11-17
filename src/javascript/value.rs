@@ -80,6 +80,7 @@ pub(crate) enum ElementMethod {
     CanvasFill(u64),
     CanvasQuadraticCurveTo(u64),
     CanvasBezierCurveTo(u64),
+    CanvasStroke(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
