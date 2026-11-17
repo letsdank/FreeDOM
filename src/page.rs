@@ -5,7 +5,7 @@ use crate::{
     },
     fetch::Fetcher,
     graphics::{
-        canvas::Canvas2D,
+        canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
         font::normalize_font_container,
         image::{decode_jpeg, decode_png_for_display},
         raster::Surface as RasterSurface,
@@ -379,7 +379,7 @@ fn parse_dom_with_fetcher(
     let mut document_state = DocumentState::with_title(find_title(document).unwrap_or_default());
 
     register_document_elements(document, &mut document_state);
-    run_inline_scripts(document, &mut document_state);
+    let canvas_surfaces = run_inline_scripts(document, &mut document_state);
 
     let title = if document_state.title.is_empty() {
         url.to_owned()
@@ -401,7 +401,17 @@ fn parse_dom_with_fetcher(
 
     let mut blocks = Vec::new();
     let mut current_text = String::new();
-    let mut trace = ExtractionTrace::default();
+
+    let mut trace = ExtractionTrace {
+        canvas_pixels: canvas_surfaces
+            .values()
+            .map(|canvas| canvas.surface().width() * canvas.surface().height())
+            .sum(),
+        canvas_count: canvas_surfaces.len(),
+        canvas_surfaces,
+        ..ExtractionTrace::default()
+    };
+
     let page_url = Url::parse(url).ok();
 
     for (index, child) in document.children.iter().enumerate() {
@@ -502,12 +512,17 @@ fn register_document_elements_in_node(
     }
 }
 
-fn run_inline_scripts(root: &HtmlDocument, document: &mut DocumentState) {
+fn run_inline_scripts(
+    root: &HtmlDocument,
+    document: &mut DocumentState,
+) -> std::collections::HashMap<u64, Canvas2D> {
     let mut session = DocumentScriptSession::new(document);
 
     for child in &root.children {
         run_inline_scripts_in_node(child, document, &mut session);
     }
+
+    session.into_canvas_surfaces()
 }
 
 fn run_inline_scripts_in_node(
@@ -836,6 +851,7 @@ struct ExtractionTrace {
     text_runs: Vec<TextRun>,
     canvas_pixels: usize,
     canvas_count: usize,
+    canvas_surfaces: std::collections::HashMap<u64, Canvas2D>,
 }
 
 impl ExtractionTrace {
@@ -960,8 +976,16 @@ fn extract_blocks(
             .and_then(parse_canvas_dimension)
             .unwrap_or(150);
 
-        const MAX_PAGE_CANVAS_PIXELS: usize = 16 * 1024 * 1024;
-        const MAX_PAGE_CANVASES: usize = 1024;
+        if let Some(canvas) = trace.canvas_surfaces.remove(&node_id) {
+            blocks.push(Block {
+                content: BlockContent::Canvas(CanvasBlock { node_id, canvas }),
+                style,
+                link: None,
+                sources: vec![trace.current_source()],
+            });
+
+            return;
+        }
 
         let total = width
             .checked_mul(height)
@@ -1160,35 +1184,6 @@ fn extract_blocks(
 
     if is_block {
         flush(blocks, current, style, trace);
-    }
-}
-
-// Partial HTML non-negative integer parser for canvas dimensions.
-// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-non-negative-integers
-fn parse_canvas_dimension(input: &str) -> Option<usize> {
-    let input = input.trim_start_matches(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'));
-
-    let (negative, digits) = if let Some(rest) = input.strip_prefix('-') {
-        (true, rest)
-    } else {
-        (false, input.strip_prefix('+').unwrap_or(input))
-    };
-
-    let mut value = 0_usize;
-    let mut found = false;
-
-    for digit in digits.bytes().take_while(u8::is_ascii_digit) {
-        found = true;
-
-        value = value
-            .saturating_mul(10)
-            .saturating_add(usize::from(digit - b'0'));
-    }
-
-    if !found || (negative && value != 0) {
-        None
-    } else {
-        Some(value)
     }
 }
 
@@ -5091,5 +5086,34 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block.content, BlockContent::Canvas(_)))
         );
+    }
+
+    #[test]
+    fn draws_canvas_from_inline_script() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='picture' width='4' height='3'></canvas>
+                <script>
+                    let ctx = document.getElementById('picture').getContext('2d');
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(1, 1, 2, 1);
+                    ctx.fillStyle = 'not-a-color';
+                    ctx.fillRect(0, 0, 1, 1);
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(canvas) = &page.blocks[0].content else {
+            panic!("canvas block expected");
+        };
+
+        let image = canvas.canvas.surface();
+
+        assert_eq!(image.pixel(1, 1), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(image.pixel(0, 0), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(image.pixel(3, 2), Some(Color::TRANSPARENT));
     }
 }

@@ -10,7 +10,7 @@ mod input;
 mod specificity;
 mod syntax;
 
-use self::color::parse_color;
+pub(crate) use self::color::parse_color;
 use self::comments::remove_css_comments;
 use self::ident::consume_identifier;
 pub(crate) use self::input::preprocess_input;

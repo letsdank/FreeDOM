@@ -261,6 +261,10 @@ impl Interpreter {
                 self.get_canvas_context(node_id, receiver, values)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasFillRect(node_id)) => {
+                self.canvas_fill_rect(node_id, receiver, values)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {

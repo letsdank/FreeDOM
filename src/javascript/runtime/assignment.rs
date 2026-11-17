@@ -111,7 +111,10 @@ impl Interpreter {
                     )),
 
                     Value::Object(values) => {
-                        values.borrow_mut().set(property, value);
+                        if !self.set_canvas_property(&values, &property, &value) {
+                            values.borrow_mut().set(property, value);
+                        }
+
                         Ok(())
                     }
 
@@ -197,7 +200,12 @@ impl Interpreter {
                 )),
 
                 Value::Object(values) => {
-                    values.borrow_mut().set(index.to_js_string(), value);
+                    let property = index.to_js_string();
+
+                    if !self.set_canvas_property(&values, &property, &value) {
+                        values.borrow_mut().set(property, value);
+                    }
+
                     Ok(())
                 }
 

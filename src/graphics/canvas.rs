@@ -3,7 +3,7 @@
 //! Rectangle operations and bitmap initialization:
 //! <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillrect-dev>
 //!
-//! This module is not yet connected to HTML, JavaScript, or color management.
+//! Color management and full Canvas 2D semantics are not implemented yet.
 
 use super::{
     flatten::flatten_path,
@@ -13,6 +13,8 @@ use super::{
 
 const MAX_CANVAS_DIMENSION: usize = 16_384;
 const MAX_CANVAS_PIXELS: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_PAGE_CANVAS_PIXELS: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_PAGE_CANVASES: usize = 1024;
 
 const SAMPLE_OFFSETS: [(f64, f64); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
 
@@ -153,6 +155,35 @@ fn valid_size(width: usize, height: usize) -> bool {
         && width
             .checked_mul(height)
             .is_some_and(|pixels| pixels <= MAX_CANVAS_PIXELS)
+}
+
+// Partial HTML non-negative integer parser for canvas dimensions.
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-non-negative-integers
+pub(crate) fn parse_canvas_dimension(input: &str) -> Option<usize> {
+    let input = input.trim_start_matches(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'));
+
+    let (negative, digits) = if let Some(rest) = input.strip_prefix('-') {
+        (true, rest)
+    } else {
+        (false, input.strip_prefix('+').unwrap_or(input))
+    };
+
+    let mut value = 0_usize;
+    let mut found = false;
+
+    for digit in digits.bytes().take_while(u8::is_ascii_digit) {
+        found = true;
+
+        value = value
+            .saturating_mul(10)
+            .saturating_add(usize::from(digit - b'0'));
+    }
+
+    if !found || (negative && value != 0) {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 #[cfg(test)]

@@ -71,6 +71,7 @@ pub(crate) enum ElementMethod {
     ClassListRemove(u64),
     ClassListToggle(u64),
     GetContext(u64),
+    CanvasFillRect(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]

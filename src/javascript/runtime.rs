@@ -157,6 +157,7 @@ pub(super) struct Interpreter {
     reference_error_prototype: ObjectStorage,
     array_prototype: ArrayStorage,
     canvas_contexts: HashMap<u64, ObjectStorage>,
+    canvas_surfaces: HashMap<u64, crate::graphics::canvas::Canvas2D>,
 }
 
 impl Interpreter {
@@ -370,6 +371,7 @@ impl Interpreter {
             reference_error_prototype,
             array_prototype,
             canvas_contexts: HashMap::new(),
+            canvas_surfaces: HashMap::new(),
         }
     }
 

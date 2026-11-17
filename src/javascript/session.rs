@@ -41,6 +41,12 @@ impl DocumentScriptSession {
 
         result.map(Completion::into_value)
     }
+
+    pub(crate) fn into_canvas_surfaces(
+        mut self,
+    ) -> std::collections::HashMap<u64, crate::graphics::canvas::Canvas2D> {
+        self.interpreter.take_canvas_surfaces()
+    }
 }
 
 #[cfg(test)]
