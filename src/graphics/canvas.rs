@@ -15,12 +15,15 @@ const MAX_CANVAS_DIMENSION: usize = 16_384;
 const MAX_CANVAS_PIXELS: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_PAGE_CANVAS_PIXELS: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_PAGE_CANVASES: usize = 1024;
+const MAX_CANVAS_PATH_COMMANDS: usize = 100_000;
 
 const SAMPLE_OFFSETS: [(f64, f64); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
 
 pub struct Canvas2D {
     surface: Surface,
     fill_style: Color,
+    current_path: Path,
+    has_subpath: bool,
 }
 
 impl Canvas2D {
@@ -33,6 +36,8 @@ impl Canvas2D {
         Some(Self {
             surface: Surface::new(width, height, Color::TRANSPARENT),
             fill_style: Color::BLACK,
+            current_path: Path::new(),
+            has_subpath: false,
         })
     }
 
@@ -140,6 +145,62 @@ impl Canvas2D {
 
         (rect.left < rect.right && rect.top < rect.bottom).then_some(rect)
     }
+
+    /// Starts an empty current path without changing the bitmap.
+    pub fn begin_path(&mut self) {
+        self.current_path = Path::new();
+        self.has_subpath = false;
+    }
+
+    pub fn move_to(&mut self, x: f64, y: f64) {
+        let Some(point) = canvas_point(x, y) else {
+            return;
+        };
+
+        if self.current_path.commands().len() >= MAX_CANVAS_PATH_COMMANDS {
+            return;
+        }
+
+        self.current_path.move_to(point);
+        self.has_subpath = true;
+    }
+
+    pub fn line_to(&mut self, x: f64, y: f64) {
+        let Some(point) = canvas_point(x, y) else {
+            return;
+        };
+
+        if self.current_path.commands().len() >= MAX_CANVAS_PATH_COMMANDS {
+            return;
+        }
+
+        if self.has_subpath {
+            self.current_path.line_to(point);
+        } else {
+            self.current_path.move_to(point);
+            self.has_subpath = true;
+        }
+    }
+
+    pub fn close_path(&mut self) {
+        if self.has_subpath && self.current_path.commands().len() < MAX_CANVAS_PATH_COMMANDS {
+            self.current_path.close();
+        }
+    }
+
+    /// Fills without discarding the current path.
+    pub fn fill(&mut self, fill_rule: FillRule) {
+        let flattened =
+            flatten_path(&self.current_path, 0.25).expect("constant flattening tolerance is valid");
+
+        fill_path(&mut self.surface, &flattened, fill_rule, self.fill_style);
+    }
+}
+
+fn canvas_point(x: f64, y: f64) -> Option<Point> {
+    let (x, y) = (x as f32, y as f32);
+
+    (x.is_finite() && y.is_finite()).then_some(Point::new(x, y))
 }
 
 struct Rect {

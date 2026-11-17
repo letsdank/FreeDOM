@@ -7,9 +7,18 @@ use crate::{
     css::parse_color,
     graphics::{
         canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
-        raster::Color,
+        raster::{Color, FillRule},
     },
 };
+
+#[derive(Clone, Copy)]
+pub(super) enum PathOperation {
+    Begin,
+    MoveTo,
+    LineTo,
+    Close,
+    Fill,
+}
 
 impl Interpreter {
     pub(in crate::javascript) fn take_canvas_surfaces(
@@ -110,6 +119,20 @@ impl Interpreter {
             false,
         );
 
+        for (name, method) in [
+            ("beginPath", ElementMethod::CanvasBeginPath(node_id)),
+            ("moveTo", ElementMethod::CanvasMoveTo(node_id)),
+            ("lineTo", ElementMethod::CanvasLineTo(node_id)),
+            ("closePath", ElementMethod::CanvasClosePath(node_id)),
+            ("fill", ElementMethod::CanvasFill(node_id)),
+        ] {
+            context.borrow_mut().define_own_data_property(
+                name.to_owned(),
+                Value::ElementMethod(method),
+                false,
+            );
+        }
+
         self.canvas_contexts.insert(node_id, context.clone());
 
         Ok(Value::Object(context))
@@ -174,17 +197,7 @@ impl Interpreter {
         arguments: Vec<Value>,
         method: &str,
     ) -> Result<(ObjectStorage, [f64; 4]), JsError> {
-        let Some(Value::Object(context)) = receiver else {
-            return Err(JsError::type_error(format!("{method}: invalid receiver")));
-        };
-
-        if !self
-            .canvas_contexts
-            .get(&node_id)
-            .is_some_and(|expected| std::rc::Rc::ptr_eq(expected, &context))
-        {
-            return Err(JsError::type_error(format!("{method}: invalid receiver")));
-        }
+        let context = self.canvas_context_receiver(node_id, receiver, method)?;
 
         if arguments.len() < 4 {
             return Err(JsError::type_error(format!(
@@ -212,23 +225,7 @@ impl Interpreter {
         let (context, coordinates) =
             self.canvas_rect_arguments(node_id, receiver, arguments, "fillRect")?;
 
-        let fill_style = context
-            .borrow()
-            .get("fillStyle")
-            .cloned()
-            .unwrap_or(Value::Undefined);
-
-        let color = match fill_style {
-            Value::String(value) if value.eq_ignore_ascii_case("transparent") => Color::TRANSPARENT,
-
-            Value::String(value) => {
-                let rgb = parse_color(&value).unwrap_or(0);
-
-                Color::rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255)
-            }
-
-            _ => Color::BLACK,
-        };
+        let color = canvas_fill_color(&context);
 
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
@@ -316,5 +313,131 @@ impl Interpreter {
         )?;
 
         Ok(())
+    }
+
+    fn canvas_context_receiver(
+        &self,
+        node_id: u64,
+        receiver: Option<Value>,
+        method: &str,
+    ) -> Result<ObjectStorage, JsError> {
+        let Some(Value::Object(context)) = receiver else {
+            return Err(JsError::type_error(format!("{method}: invalid receiver")));
+        };
+
+        if !self
+            .canvas_contexts
+            .get(&node_id)
+            .is_some_and(|expected| std::rc::Rc::ptr_eq(expected, &context))
+        {
+            return Err(JsError::type_error(format!("{method}: invalid receiver")));
+        }
+
+        Ok(context)
+    }
+
+    pub(super) fn canvas_path_operation(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+        operation: PathOperation,
+    ) -> Result<Value, JsError> {
+        let name = match operation {
+            PathOperation::Begin => "beginPath",
+            PathOperation::MoveTo => "moveTo",
+            PathOperation::LineTo => "lineTo",
+            PathOperation::Close => "closePath",
+            PathOperation::Fill => "fill",
+        };
+
+        let context = self.canvas_context_receiver(node_id, receiver, name)?;
+
+        let point = if matches!(operation, PathOperation::MoveTo | PathOperation::LineTo) {
+            if arguments.len() < 2 {
+                return Err(JsError::type_error(format!(
+                    "{name} requires two arguments"
+                )));
+            }
+
+            let x = self.to_number(&arguments[0]).ok_or_else(|| {
+                JsError::type_error(format!("{name}: unsupported number conversion"))
+            })?;
+
+            let y = self.to_number(&arguments[1]).ok_or_else(|| {
+                JsError::type_error(format!("{name}: unsupported number conversion"))
+            })?;
+
+            Some((x, y))
+        } else {
+            None
+        };
+
+        let rule = if matches!(operation, PathOperation::Fill) {
+            match arguments.first() {
+                None | Some(Value::Undefined) => FillRule::NonZero,
+
+                Some(Value::String(value)) if value == "nonzero" => FillRule::NonZero,
+
+                Some(Value::String(value)) if value == "evenodd" => FillRule::EvenOdd,
+
+                _ => {
+                    return Err(JsError::type_error("fill: unsupported fill rule or Path2D"));
+                }
+            }
+        } else {
+            FillRule::NonZero
+        };
+
+        let color = canvas_fill_color(&context);
+
+        if self.ensure_canvas_surface(node_id) {
+            let canvas = self
+                .canvas_surfaces
+                .get_mut(&node_id)
+                .expect("surface was initialized");
+
+            match operation {
+                PathOperation::Begin => canvas.begin_path(),
+
+                PathOperation::MoveTo => {
+                    let (x, y) = point.expect("point arguments validated");
+                    canvas.move_to(x, y);
+                }
+
+                PathOperation::LineTo => {
+                    let (x, y) = point.expect("point arguments validated");
+                    canvas.line_to(x, y);
+                }
+
+                PathOperation::Close => canvas.close_path(),
+
+                PathOperation::Fill => {
+                    canvas.set_fill_style(color);
+                    canvas.fill(rule);
+                }
+            }
+        }
+
+        Ok(Value::Undefined)
+    }
+}
+
+fn canvas_fill_color(context: &ObjectStorage) -> Color {
+    match context
+        .borrow()
+        .get("fillStyle")
+        .cloned()
+        .unwrap_or(Value::Undefined)
+    {
+        Value::String(value) if value.eq_ignore_ascii_case("transparent") => Color::TRANSPARENT,
+
+        Value::String(value) => {
+            let rgb = parse_color(&value).unwrap_or(0);
+
+            Color::rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255)
+        }
+
+        _ => Color::BLACK,
     }
 }

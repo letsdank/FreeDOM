@@ -5158,4 +5158,46 @@ mod tests {
         assert_eq!(image.pixel(1, 1), Some(Color::TRANSPARENT));
         assert_eq!(image.pixel(3, 1), Some(Color::rgba(255, 0, 0, 255)));
     }
+
+    #[test]
+    fn fills_canvas_paths_from_inline_script() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='picture' width='8' height='8'></canvas>
+                <script>
+                    let canvas = document.getElementById('picture');
+                    let ctx = canvas.getContext('2d');
+
+                    ctx.fillStyle = 'red';
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(8, 0);
+                    ctx.lineTo(0, 8);
+                    ctx.fill();
+
+                    ctx.beginPath();
+                    ctx.fillStyle = 'blue';
+                    ctx.moveTo(6, 6);
+                    ctx.lineTo(8, 6);
+                    ctx.lineTo(8, 8);
+                    ctx.lineTo(6, 8);
+                    ctx.closePath();
+                    ctx.fill('evenodd');
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(canvas) = &page.blocks[0].content else {
+            panic!("canvas block expected");
+        };
+
+        let image = canvas.canvas.surface();
+
+        assert_eq!(image.pixel(1, 1), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(image.pixel(6, 6), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(image.pixel(5, 5), Some(Color::TRANSPARENT));
+    }
 }

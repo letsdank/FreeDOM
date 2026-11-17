@@ -73,6 +73,11 @@ pub(crate) enum ElementMethod {
     GetContext(u64),
     CanvasFillRect(u64),
     CanvasClearRect(u64),
+    CanvasBeginPath(u64),
+    CanvasMoveTo(u64),
+    CanvasLineTo(u64),
+    CanvasClosePath(u64),
+    CanvasFill(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]

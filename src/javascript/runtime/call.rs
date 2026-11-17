@@ -5,6 +5,7 @@
 //!
 //! Host bindings and supported call semantics are incomplete.
 
+use super::canvas;
 use super::{
     ArrayMethodKind, DocumentMethod, ElementMethod, Expression, Interpreter, JsError,
     NativeFunction, TestContextMethod, Value,
@@ -267,6 +268,26 @@ impl Interpreter {
 
             Value::ElementMethod(ElementMethod::CanvasClearRect(node_id)) => {
                 self.canvas_clear_rect(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasBeginPath(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Begin)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasMoveTo(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::MoveTo)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasLineTo(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::LineTo)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasClosePath(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Close)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasFill(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Fill)
             }
 
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
