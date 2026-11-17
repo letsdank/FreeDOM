@@ -105,4 +105,39 @@ mod tests {
 
         assert_eq!(result, Value::String("undefined".to_owned()));
     }
+
+    #[test]
+    fn canvas_context_identity_is_shared_between_scripts() {
+        let mut document = DocumentState::default();
+
+        document.register_parsed_element("canvas", "first", String::new(), None);
+        document.register_parsed_element("canvas", "second", String::new(), None);
+
+        let mut session = DocumentScriptSession::new(&document);
+
+        session
+            .evaluate(
+                r#"
+                let canvas = document.getElementById('first');
+                let ctx = canvas.getContext('2d');
+            "#,
+                &mut document,
+            )
+            .unwrap();
+
+        let result = session
+            .evaluate(
+                r#"
+                ctx === canvas.getContext('2d')
+                    && ctx.canvas === canvas
+                    && ctx !== document.getElementById('second').getContext('2d')
+                    && canvas.getContext('webgl') === null
+                    && canvas.getContext('2D') === null;
+            "#,
+                &mut document,
+            )
+            .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }

@@ -117,6 +117,9 @@ mod array_slice;
 #[path = "runtime/error.rs"]
 mod error;
 
+#[path = "runtime/canvas.rs"]
+mod canvas;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: FunctionValue,
@@ -153,6 +156,7 @@ pub(super) struct Interpreter {
     type_error_prototype: ObjectStorage,
     reference_error_prototype: ObjectStorage,
     array_prototype: ArrayStorage,
+    canvas_contexts: HashMap<u64, ObjectStorage>,
 }
 
 impl Interpreter {
@@ -365,6 +369,7 @@ impl Interpreter {
             type_error_prototype,
             reference_error_prototype,
             array_prototype,
+            canvas_contexts: HashMap::new(),
         }
     }
 

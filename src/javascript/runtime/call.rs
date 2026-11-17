@@ -257,6 +257,10 @@ impl Interpreter {
                 self.class_list_toggle(node_id, values)
             }
 
+            Value::ElementMethod(ElementMethod::GetContext(node_id)) => {
+                self.get_canvas_context(node_id, receiver, values)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {

@@ -165,6 +165,10 @@ impl Interpreter {
                 };
 
                 match property {
+                    "getContext" if element.tag_name.eq_ignore_ascii_case("canvas") => {
+                        Ok(Value::ElementMethod(ElementMethod::GetContext(node_id)))
+                    }
+
                     "id" => Ok(Value::String(element.id.clone())),
 
                     "tagName" => Ok(Value::String(element.tag_name.to_ascii_uppercase())),
