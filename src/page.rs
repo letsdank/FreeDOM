@@ -5616,4 +5616,116 @@ mod tests {
         assert_eq!(pixel(2), Color::TRANSPARENT);
         assert_eq!(pixel(3), Color::TRANSPARENT);
     }
+
+    #[test]
+    fn saves_and_restores_canvas_drawing_state() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='a' width='10' height='10'></canvas>
+                <canvas id='b' width='2' height='2'></canvas>
+
+                <script>
+                    let canvas = document.getElementById('a');
+                    let ctx = canvas.getContext('2d');
+
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(0, 0, 1, 1);
+
+                    ctx.fillStyle = 'blue';
+                    ctx.strokeStyle = 'blue';
+                    ctx.lineWidth = 2;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'bevel';
+                    ctx.miterLimit = 3;
+                    ctx.setLineDash([2, 1]);
+                    ctx.lineDashOffset = 2;
+                    ctx.save();
+
+                    ctx.fillStyle = 'green';
+                    ctx.setLineDash([4, 3]);
+                    ctx.lineDashOffset = 9;
+                    ctx.save();
+
+                    ctx.fillStyle = 'red';
+                    ctx.strokeStyle = 'red';
+                    ctx.lineWidth = 9;
+                    ctx.lineCap = 'square';
+                    ctx.lineJoin = 'miter';
+                    ctx.miterLimit = 8;
+                    ctx.setLineDash([8, 1]);
+                    ctx.lineDashOffset = 7;
+
+                    ctx.beginPath();
+                    ctx.moveTo(2, 2);
+                    ctx.lineTo(8, 2);
+                    ctx.lineTo(2, 8);
+                    ctx.closePath();
+
+                    ctx.restore();
+
+                    let ok = ctx.fillStyle === '#008000'
+                        && ctx.getLineDash()[0] === 4
+                        && ctx.lineDashOffset === 9;
+
+                    ctx.restore();
+                    ctx.restore();
+
+                    ok = ok
+                        && ctx.fillStyle === '#0000ff'
+                        && ctx.strokeStyle === '#0000ff'
+                        && ctx.lineWidth === 2
+                        && ctx.lineCap === 'round'
+                        && ctx.lineJoin === 'bevel'
+                        && ctx.miterLimit === 3
+                        && ctx.getLineDash()[0] === 2
+                        && ctx.lineDashOffset === 2;
+
+                    ctx.fill();
+
+                    let otherCanvas = document.getElementById('b');
+                    let other = otherCanvas.getContext('2d');
+
+                    other.fillStyle = 'red';
+                    other.setLineDash([3, 1]);
+                    other.save();
+
+                    otherCanvas.width = otherCanvas.width;
+                    other.restore();
+
+                    ok = ok
+                        && other.fillStyle === '#000000'
+                        && other.getLineDash().length === 0;
+
+                    other.fillRect(0, 0, 1, 1);
+
+                    document.title = ok;
+                </script>
+            "#,
+        );
+
+        assert_eq!(page.title, "true");
+
+        let BlockContent::Canvas(a) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        assert_eq!(
+            a.canvas.surface().pixel(0, 0),
+            Some(Color::rgba(255, 0, 0, 255))
+        );
+
+        assert_eq!(
+            a.canvas.surface().pixel(3, 3),
+            Some(Color::rgba(0, 0, 255, 255))
+        );
+
+        let BlockContent::Canvas(b) = &page.blocks[1].content else {
+            panic!("canvas expected");
+        };
+
+        assert_eq!(b.canvas.surface().pixel(0, 0), Some(Color::BLACK));
+    }
 }

@@ -318,6 +318,14 @@ impl Interpreter {
                 self.canvas_get_line_dash(node_id, receiver)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasSave(node_id)) => {
+                self.canvas_save(node_id, receiver)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasRestore(node_id)) => {
+                self.canvas_restore(node_id, receiver)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {

@@ -159,6 +159,9 @@ pub(super) struct Interpreter {
     canvas_contexts: HashMap<u64, ObjectStorage>,
     canvas_surfaces: HashMap<u64, crate::graphics::canvas::Canvas2D>,
     canvas_dashes: HashMap<u64, Vec<f64>>,
+    canvas_state_stacks: HashMap<u64, Vec<canvas::CanvasSavedState>>,
+    canvas_saved_states: usize,
+    canvas_saved_dash_values: usize,
 }
 
 impl Interpreter {
@@ -374,6 +377,9 @@ impl Interpreter {
             canvas_contexts: HashMap::new(),
             canvas_surfaces: HashMap::new(),
             canvas_dashes: HashMap::new(),
+            canvas_state_stacks: HashMap::new(),
+            canvas_saved_states: 0,
+            canvas_saved_dash_values: 0,
         }
     }
 

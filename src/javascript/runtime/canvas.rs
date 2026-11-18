@@ -11,6 +11,24 @@ use crate::{
     },
 };
 
+const CANVAS_SAVED_PROPERTIES: [&str; 7] = [
+    "fillStyle",
+    "strokeStyle",
+    "lineWidth",
+    "lineCap",
+    "lineJoin",
+    "miterLimit",
+    "lineDashOffset",
+];
+
+const MAX_SAVED_CANVAS_STATES: usize = 4096;
+const MAX_SAVED_CANVAS_DASH_VALUES: usize = 1_048_576;
+
+pub(super) struct CanvasSavedState {
+    properties: [Value; 7],
+    dash: Vec<f64>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum PathOperation {
     Begin,
@@ -199,6 +217,8 @@ impl Interpreter {
             ("bezierCurveTo", ElementMethod::CanvasBezierCurveTo(node_id)),
             ("setLineDash", ElementMethod::CanvasSetLineDash(node_id)),
             ("getLineDash", ElementMethod::CanvasGetLineDash(node_id)),
+            ("save", ElementMethod::CanvasSave(node_id)),
+            ("restore", ElementMethod::CanvasRestore(node_id)),
         ] {
             context.borrow_mut().define_own_data_property(
                 name.to_owned(),
@@ -353,6 +373,7 @@ impl Interpreter {
 
         self.canvas_surfaces.remove(&node_id);
         self.canvas_dashes.remove(&node_id);
+        self.clear_canvas_state_stack(node_id);
 
         if let Some(context) = self.canvas_contexts.get(&node_id) {
             let mut context = context.borrow_mut();
@@ -619,6 +640,99 @@ impl Interpreter {
             .unwrap_or_default();
 
         Ok(Value::array(values))
+    }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-save-dev
+    pub(super) fn canvas_save(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+    ) -> Result<Value, JsError> {
+        let context = self.canvas_context_receiver(node_id, receiver, "save")?;
+
+        let dash_len = self.canvas_dashes.get(&node_id).map_or(0, Vec::len);
+
+        if self.canvas_saved_states >= MAX_SAVED_CANVAS_STATES
+            || dash_len > MAX_SAVED_CANVAS_DASH_VALUES - self.canvas_saved_dash_values
+        {
+            return Err(JsError::unsupported("canvas state stack limit exceeded"));
+        }
+
+        let properties = {
+            let context = context.borrow();
+
+            CANVAS_SAVED_PROPERTIES
+                .map(|name| context.get(name).cloned().unwrap_or(Value::Undefined))
+        };
+
+        let dash = self
+            .canvas_dashes
+            .get(&node_id)
+            .cloned()
+            .unwrap_or_default();
+
+        self.canvas_state_stacks
+            .entry(node_id)
+            .or_default()
+            .push(CanvasSavedState { properties, dash });
+
+        self.canvas_saved_states += 1;
+        self.canvas_saved_dash_values += dash_len;
+
+        Ok(Value::Undefined)
+    }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-restore-dev
+    pub(super) fn canvas_restore(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+    ) -> Result<Value, JsError> {
+        let context = self.canvas_context_receiver(node_id, receiver, "restore")?;
+
+        let Some(saved) = self
+            .canvas_state_stacks
+            .get_mut(&node_id)
+            .and_then(Vec::pop)
+        else {
+            return Ok(Value::Undefined);
+        };
+
+        if self
+            .canvas_state_stacks
+            .get(&node_id)
+            .is_some_and(Vec::is_empty)
+        {
+            self.canvas_state_stacks.remove(&node_id);
+        }
+
+        self.canvas_saved_states -= 1;
+        self.canvas_saved_dash_values -= saved.dash.len();
+
+        {
+            let mut context = context.borrow_mut();
+
+            for (name, value) in CANVAS_SAVED_PROPERTIES.into_iter().zip(saved.properties) {
+                context.set(name.to_owned(), value);
+            }
+        }
+
+        if saved.dash.is_empty() {
+            self.canvas_dashes.remove(&node_id);
+        } else {
+            self.canvas_dashes.insert(node_id, saved.dash);
+        }
+
+        Ok(Value::Undefined)
+    }
+
+    fn clear_canvas_state_stack(&mut self, node_id: u64) {
+        if let Some(stack) = self.canvas_state_stacks.remove(&node_id) {
+            self.canvas_saved_states -= stack.len();
+
+            self.canvas_saved_dash_values -=
+                stack.iter().map(|state| state.dash.len()).sum::<usize>();
+        }
     }
 }
 
