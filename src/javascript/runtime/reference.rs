@@ -6,6 +6,7 @@
 
 use super::{Expression, Interpreter, JsError, PostfixStep, Value};
 
+#[derive(Clone)]
 pub(super) enum Reference {
     Binding(String),
     Member { object: Value, property: String },
@@ -188,6 +189,22 @@ impl Interpreter {
                 self.write_reference(Reference::Member { object, property }, value)
             }
         }
+    }
+
+    pub(super) fn with_active_reference<T>(
+        &mut self,
+        reference: Reference,
+        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.active_references.len();
+
+        self.active_references.push(reference);
+
+        let result = operation(self, index);
+
+        self.active_references.truncate(index);
+
+        result
     }
 }
 

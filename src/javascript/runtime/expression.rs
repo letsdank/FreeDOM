@@ -126,10 +126,15 @@ impl Interpreter {
 
             Expression::Assignment { target, value } => {
                 let reference = self.prepare_reference(target)?;
-                let value = self.evaluate_expression(value)?;
 
-                self.write_reference(reference, value.clone())?;
-                Ok(value)
+                self.with_active_reference(reference, |interpreter, index| {
+                    let value = interpreter.evaluate_expression(value)?;
+                    let reference = interpreter.active_references[index].clone();
+
+                    interpreter.write_reference(reference, value.clone())?;
+
+                    Ok(value)
+                })
             }
 
             Expression::CompoundAssignment {
@@ -139,14 +144,18 @@ impl Interpreter {
             } => {
                 let reference = self.prepare_reference(target)?;
 
-                let left = self.read_reference(&reference)?;
-                let right = self.evaluate_expression(value)?;
+                self.with_active_reference(reference, |interpreter, index| {
+                    let reference = interpreter.active_references[index].clone();
+                    let left = interpreter.read_reference(&reference)?;
 
-                let result = self.evaluate_binary(left, *operator, right)?;
+                    let result = interpreter.evaluate_binary_chain_step(left, *operator, value)?;
 
-                self.write_reference(reference, result.clone())?;
+                    let reference = interpreter.active_references[index].clone();
 
-                Ok(result)
+                    interpreter.write_reference(reference, result.clone())?;
+
+                    Ok(result)
+                })
             }
 
             Expression::BinaryChain { first, rest } => {

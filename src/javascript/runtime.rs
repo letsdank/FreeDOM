@@ -185,6 +185,7 @@ pub(super) struct Interpreter {
     execution_depth: usize,
     active_call_frames: Vec<ActiveCallFrame>,
     temporary_values: Vec<Value>,
+    active_references: Vec<reference::Reference>,
 }
 
 impl Interpreter {
@@ -417,6 +418,7 @@ impl Interpreter {
             execution_depth: 0,
             active_call_frames: Vec::new(),
             temporary_values: Vec::new(),
+            active_references: Vec::new(),
         }
     }
 
@@ -727,6 +729,48 @@ mod tests {
 
             assert!(interpreter.execute_script(&program).is_err());
             assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+        }
+    }
+
+    #[test]
+    fn assignment_references_survive_nested_calls_and_errors() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let target = {a: 1};
+            let original = target;
+            let key = 'a';
+
+            function mutate() {
+                target = {a: 100};
+                key = 'b';
+                return 2;
+            }
+
+            original[key] += mutate();
+
+            original.a === 3 && target.a === 100 && key === 'b';
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.active_references.is_empty());
+        assert!(interpreter.temporary_values.is_empty());
+
+        for source in [
+            "original.a = missing;",
+            "original.a += missing;",
+            "original.a += ({ valueOf: function() { throw 'error'; } });",
+        ] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err());
+            assert!(interpreter.active_references.is_empty());
+            assert!(interpreter.temporary_values.is_empty());
         }
     }
 }
