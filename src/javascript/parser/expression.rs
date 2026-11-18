@@ -57,6 +57,10 @@ impl Parser<'_> {
     }
 
     fn parse_assignment_expression(&mut self) -> Result<Expression, JsError> {
+        self.with_parse_frame(|parser| parser.parse_assignment_expression_inner())
+    }
+
+    fn parse_assignment_expression_inner(&mut self) -> Result<Expression, JsError> {
         if let TokenKind::Identifier(parameter) = self.cursor.peek()?.kind.clone() {
             let is_arrow = self
                 .cursor
@@ -303,6 +307,10 @@ impl Parser<'_> {
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, JsError> {
+        self.with_parse_frame(|parser| parser.parse_unary_expression_inner())
+    }
+
+    fn parse_unary_expression_inner(&mut self) -> Result<Expression, JsError> {
         if self.await_allowed && self.consume_contextual_keyword("await")? {
             return Ok(Expression::Await(Box::new(self.parse_unary_expression()?)));
         }

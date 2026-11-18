@@ -9,6 +9,10 @@ use crate::javascript::ast::CatchClause;
 
 impl Parser<'_> {
     pub(super) fn parse_statement(&mut self) -> Result<Statement, JsError> {
+        self.with_parse_frame(|parser| parser.parse_statement_inner())
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<Statement, JsError> {
         let first = self.cursor.peek()?;
 
         if matches!(&first.kind,TokenKind::Identifier(name)if name == "async") {

@@ -5,6 +5,8 @@ use super::{
 
 use cursor::ParserCursor;
 
+const MAX_PARSE_DEPTH: usize = 32;
+
 #[path = "parser/cursor.rs"]
 mod cursor;
 
@@ -34,6 +36,7 @@ struct Parser<'source> {
     cursor: ParserCursor<'source>,
     source: &'source str,
     await_allowed: bool,
+    depth: usize,
 }
 
 impl<'source> Parser<'source> {
@@ -42,6 +45,7 @@ impl<'source> Parser<'source> {
             cursor: ParserCursor::new(source),
             source,
             await_allowed: false,
+            depth: 0,
         }
     }
 
@@ -72,5 +76,59 @@ impl<'source> Parser<'source> {
             }
             _ => Ok(false),
         }
+    }
+
+    fn with_parse_frame<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(JsError::resource_limit(
+                "JavaScript parser depth limit exceeded",
+            ));
+        }
+
+        self.depth += 1;
+
+        let result = parse(self);
+
+        self.depth -= 1;
+
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Parser;
+    use crate::javascript::JsErrorKind;
+
+    #[test]
+    fn bounds_recursive_parser_nesting_and_unwinds() {
+        let cases = [
+            format!("{}1{};", "(".repeat(100), ")".repeat(100)),
+            format!("{}true;", "!".repeat(100)),
+            format!("{}0;", "a = ".repeat(100)),
+            format!("{}0;{}", "if (true) {".repeat(100), "}".repeat(100)),
+            format!("{}1{};", "[".repeat(100), "]".repeat(100)),
+        ];
+
+        for source in cases {
+            let mut parser = Parser::new(&source);
+
+            let error = parser.parse_program().err().unwrap();
+
+            assert_eq!(error.kind, JsErrorKind::ResourceLimit);
+            assert!(error.message.contains("parser depth"));
+            assert_eq!(parser.depth, 0);
+        }
+
+        assert!(Parser::new("let x = (1 + 2);").parse_program().is_ok());
+
+        let mut invalid = Parser::new("if (true) { const x = ; }");
+        let error = invalid.parse_program().err().unwrap();
+
+        assert_eq!(error.kind, JsErrorKind::Syntax);
+        assert_eq!(invalid.depth, 0);
     }
 }
