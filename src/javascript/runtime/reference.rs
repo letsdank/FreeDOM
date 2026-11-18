@@ -176,71 +176,24 @@ impl Interpreter {
                 )),
             },
 
-            Reference::Index { object, index } => match object {
-                Value::Document(document) if index.to_js_string() == "title" => {
-                    document.borrow_mut().title = value.to_js_string();
-                    Ok(())
+            Reference::Index { object, index } => {
+                if matches!(object, Value::Null | Value::Undefined) {
+                    return Err(JsError::type_error(
+                        "cannot write property of null or undefined",
+                    ));
                 }
 
-                Value::Null | Value::Undefined => Err(JsError::type_error(
-                    "cannot write property of null or undefined",
-                )),
+                let property = index.to_js_string();
 
-                Value::Element(node_id)
-                    if matches!(index.to_js_string().as_str(), "width" | "height")
-                        && self
-                            .current_document_element(node_id)
-                            .is_some_and(|element| {
-                                element.tag_name.eq_ignore_ascii_case("canvas")
-                            }) =>
-                {
-                    self.set_canvas_dimension(node_id, &index.to_js_string(), value)
-                }
-
-                Value::Object(values) => {
-                    let property = index.to_js_string();
-
-                    if !self.set_canvas_property(&values, &property, &value) {
-                        values.borrow_mut().set(property, value);
-                    }
-
-                    Ok(())
-                }
-
-                Value::Function(function) => {
-                    function.set(index.to_js_string(), value);
-                    Ok(())
-                }
-
-                Value::NativeError(error) => {
-                    error.set(index.to_js_string(), value);
-                    Ok(())
-                }
-
-                Value::Arguments(_) => Err(JsError::unsupported(
-                    "arguments property mutation is not implemented",
-                )),
-
-                Value::Array(values) => {
-                    self.set_array_property(values, &index.to_js_string(), value)
-                }
-
-                Value::RegExp(regexp) if index.to_js_string() == "lastIndex" => {
-                    regexp.inner.borrow_mut().last_index = value;
-                    Ok(())
-                }
-
-                _ => Err(JsError::runtime(
-                    "TypeError: indexed assignment target is not supported",
-                )),
-            },
+                self.write_reference(Reference::Member { object, property }, value)
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::javascript::{Value, evaluate};
+    use crate::javascript::{DocumentState, Value, evaluate, evaluate_with_document};
 
     #[test]
     fn evaluates_assignment_target_before_right_hand_side() {
@@ -557,5 +510,26 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn computed_property_writes_use_the_same_dom_setters() {
+        let mut document = DocumentState::default();
+        document.register_element("welcome", "h1", "Before".to_owned());
+
+        let result = evaluate_with_document(
+            r#"
+                let element = document.getElementById('welcome');
+                let property = 'textContent';
+
+                element[property] = 'After';
+
+                element.textContent;
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("After".to_owned()));
     }
 }
