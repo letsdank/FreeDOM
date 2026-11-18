@@ -189,6 +189,24 @@ impl DocumentState {
         result
     }
 
+    // The DOM does not currently track namespaces; `name` matching assumes HTML elements.
+    // https://dom.spec.whatwg.org/#dom-htmlcollectioon-nameditem
+    pub(crate) fn collection_named_element(&self, nodes: &[u64], name: &str) -> Option<u64> {
+        if name.is_empty() {
+            return None;
+        }
+
+        nodes.iter().copied().find(|node_id| {
+            self.element(*node_id).is_some_and(|element| {
+                element.id == name
+                    || element
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute.name == "name" && attribute.value == name)
+            })
+        })
+    }
+
     pub(crate) fn collect_elements_by_tag_name(
         &self,
         node_id: u64,

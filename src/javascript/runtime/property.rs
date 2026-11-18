@@ -144,6 +144,50 @@ impl Interpreter {
                 Ok(Value::Number(length as f64))
             }
 
+            (collection @ (Value::HtmlCollection(_) | Value::ElementChildren(_)), property) => {
+                if matches!(
+                    property,
+                    "item"
+                        | "namedItem"
+                        | "constructor"
+                        | "toString"
+                        | "toLocaleString"
+                        | "valueOf"
+                        | "hasOwnProperty"
+                        | "isPrototypeOf"
+                        | "propertyIsEnumerable"
+                        | "__proto__"
+                        | "__defineGetter__"
+                        | "__defineSetter__"
+                        | "__lookupGetter__"
+                        | "__lookupSetter__"
+                ) {
+                    return Err(JsError::unsupported(
+                        "HTMLCollection prototype properties are not implemented",
+                    ));
+                }
+
+                let Some(document) = self.current_document() else {
+                    return Ok(Value::Undefined);
+                };
+
+                let nodes = match collection {
+                    Value::HtmlCollection(tag_name) => document.get_elements_by_tag_name(&tag_name),
+
+                    Value::ElementChildren(node_id) => document
+                        .element(node_id)
+                        .map(|element| element.children.clone())
+                        .unwrap_or_default(),
+
+                    _ => unreachable!(),
+                };
+
+                Ok(document
+                    .collection_named_element(&nodes, property)
+                    .map(Value::Element)
+                    .unwrap_or(Value::Undefined))
+            }
+
             (Value::ClassList(node_id), "length") => {
                 Ok(Value::Number(self.class_list_tokens(node_id)?.len() as f64))
             }
@@ -446,6 +490,14 @@ impl Interpreter {
                     return Ok(Value::Undefined);
                 }
 
+                None if matches!(
+                    &object,
+                    Value::HtmlCollection(_) | Value::ElementChildren(_)
+                ) =>
+                {
+                    return self.member_value(object, &key);
+                }
+
                 None => {
                     return Err(JsError::unsupported(
                         "named collection properties are not implemented",
@@ -699,13 +751,54 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
 
-        let error =
+        let value =
             evaluate_with_document("document.getElementsByTagName('h1')['01'];", &mut document)
-                .unwrap_err();
+                .unwrap();
 
-        assert_eq!(
-            error.kind,
-            crate::javascript::JsErrorKind::UnsupportedFeature
-        );
+        assert_eq!(value, Value::Undefined);
+    }
+
+    #[test]
+    fn html_collections_lookup_names_in_live_tree_order() {
+        let mut document = DocumentState::default();
+
+        let parent = document.register_parsed_element("div", "parent", String::new(), None);
+
+        let first = document.register_parsed_element("span", "first", String::new(), Some(parent));
+
+        let second =
+            document.register_parsed_element("span", "shared", String::new(), Some(parent));
+
+        document.register_parsed_element("span", "length", String::new(), Some(parent));
+
+        document.register_element_attribute(first, "name", "shared".to_owned());
+        document.register_element_attribute(second, "name", "01".to_owned());
+
+        let result = evaluate_with_document(
+            r#"
+                let collection = document.getElementsByTagName('span');
+                let children = document.getElementById('parent').children;
+
+                let before = collection.shared.id === 'first'
+                    && collection['01'].id === 'shared'
+                    && collection['0'].id === 'first'
+                    && children['01'].id === 'shared'
+                    && collection.length === 3
+                    && children['length'] === 3
+                    && collection[''] === undefined
+                    && collection['missing'] === undefined;
+
+                collection.first.setAttribute('name', 'changed');
+
+                before
+                    && collection.shared.id === 'shared'
+                    && collection.changed.id === 'first'
+                    && children.changed.id === 'first';
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }
