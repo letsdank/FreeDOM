@@ -24,16 +24,17 @@ fn ordinary_property(object: &ObjectStorage, name: &str) -> Result<Value, JsErro
 }
 
 impl Interpreter {
-    pub(super) fn create_list_from_array_like(&self, value: &Value) -> Result<Vec<Value>, JsError> {
+    pub(super) fn create_list_from_array_like(
+        &mut self,
+        value: &Value,
+    ) -> Result<Vec<Value>, JsError> {
         let length = match value {
             Value::Array(array) => array.borrow().values.len(),
 
             Value::Object(object) => {
                 let length = ordinary_property(object, "length")?;
 
-                let number = self.to_number(&length).ok_or_else(|| {
-                    JsError::unsupported("array-like length conversion is not implemented")
-                })?;
+                let number = self.to_number(&length)?;
 
                 if number.is_nan() || number <= 0.0 {
                     0
@@ -197,7 +198,7 @@ mod tests {
     #[test]
     fn reports_unsupported_lengths_and_excessive_sizes() {
         for source in [
-            "function f() {} f.apply({}, {length: {}});",
+            "function f() {} f.apply({}, {length: []});",
             "function f() {} f.apply({}, {length: 65537});",
             "function f() {} f.apply({}, {length: 'Infinity'});",
         ] {

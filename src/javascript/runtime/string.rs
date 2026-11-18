@@ -12,7 +12,7 @@ use super::{Interpreter, JsError, Value};
 
 impl Interpreter {
     pub(super) fn string_split(
-        &self,
+        &mut self,
         receiver: Option<Value>,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
@@ -47,11 +47,7 @@ impl Interpreter {
             Value::Undefined => u32::MAX,
 
             value => {
-                let number = self.to_number(value).ok_or_else(|| {
-                    JsError::unsupported(
-                        "String.prototype.split limit object coercion is not implemented",
-                    )
-                })?;
+                let number = self.to_number(value)?;
 
                 if !number.is_finite() || number == 0.0 {
                     0
@@ -130,13 +126,14 @@ impl Interpreter {
         Ok(Value::String(string))
     }
 
-    pub(super) fn string_from_char_code(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
+    pub(super) fn string_from_char_code(
+        &mut self,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
         let mut units = Vec::with_capacity(arguments.len());
 
         for value in &arguments {
-            let number = self.to_number(value).ok_or_else(|| {
-                JsError::unsupported("String.fromCharCode object coercion is not implemented")
-            })?;
+            let number = self.to_number(value)?;
 
             let unit = if !number.is_finite() || number == 0.0 {
                 0
@@ -258,7 +255,7 @@ mod tests {
         for source in [
             "'a,b'.split(/,/);",
             "'abc'.split({});",
-            "'abc'.split(',', {});",
+            "'abc'.split(',', []);",
             "'😀'.split('');",
         ] {
             assert_eq!(
@@ -362,7 +359,7 @@ mod tests {
         for source in [
             "String({});",
             "String(1.5);",
-            "String.fromCharCode({});",
+            "String.fromCharCode([]);",
             "new String('x');",
         ] {
             assert_eq!(

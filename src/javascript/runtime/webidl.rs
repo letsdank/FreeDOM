@@ -11,11 +11,7 @@ use super::{Interpreter, JsError, Value};
 
 impl Interpreter {
     pub(super) fn webidl_unsigned_long(&mut self, value: &Value) -> Result<u32, JsError> {
-        let primitive = self.ordinary_to_primitive(value, PrimitiveHint::Number)?;
-
-        let number = self.to_number(&primitive).ok_or_else(|| {
-            JsError::unsupported("Web IDL unsigned long conversion is not implemented")
-        })?;
+        let number = self.to_number(value)?;
 
         Ok(if !number.is_finite() || number == 0.0 {
             0

@@ -488,7 +488,7 @@ impl Interpreter {
                 }
             }
         } else {
-            let Some(index) = self.to_number(&index) else {
+            let Some(index) = self.primitive_to_number(&index) else {
                 return Err(JsError::runtime(
                     "TypeError: collection index must be numeric",
                 ));
@@ -546,6 +546,26 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use crate::javascript::{DocumentState, Value, evaluate, evaluate_with_document};
+
+    #[test]
+    fn canvas_numeric_property_propagates_user_conversion_errors() {
+        let mut document = DocumentState::default();
+        document.register_parsed_element("canvas", "drawing", String::new(), None);
+        let result = evaluate_with_document(
+            r#"
+                let ctx = document.getElementById('drawing').getContext('2d');
+                let calls = 0;
+                ctx.lineWidth = { valueOf: function() { calls++; return 3; } };
+                let caught = false;
+                try { ctx.lineWidth = { valueOf: function() { throw 'boom'; } }; }
+                catch (e) { caught = e === 'boom'; }
+                ctx.lineWidth === 3 && calls === 1 && caught;
+            "#,
+            &mut document,
+        )
+        .unwrap();
+        assert_eq!(result, Value::Boolean(true));
+    }
 
     #[test]
     fn reads_object_properties_using_dot_and_brackets() {

@@ -48,7 +48,7 @@ impl Interpreter {
             (Value::Undefined, Value::Null) | (Value::Null, Value::Undefined) => true,
 
             (Value::String(_), Value::Number(_)) | (Value::Number(_), Value::String(_)) => {
-                self.to_number(left) == self.to_number(right)
+                self.primitive_to_number(left) == self.primitive_to_number(right)
             }
 
             _ => Self::strictly_equals(left, right),
@@ -56,22 +56,12 @@ impl Interpreter {
     }
 
     pub(super) fn numeric_operands(
-        &self,
+        &mut self,
         left: &Value,
         right: &Value,
     ) -> Result<(f64, f64), JsError> {
-        let Some(left) = self.to_number(left) else {
-            return Err(JsError::runtime(
-                "TypeError: operator requires numeric operands",
-            ));
-        };
-
-        let Some(right) = self.to_number(right) else {
-            return Err(JsError::runtime(
-                "TypeError: operator requires numeric operands",
-            ));
-        };
-
+        let left = self.to_number(left)?;
+        let right = self.to_number(right)?;
         Ok((left, right))
     }
 
@@ -122,7 +112,7 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn to_number(&self, value: &Value) -> Option<f64> {
+    pub(super) fn primitive_to_number(&self, value: &Value) -> Option<f64> {
         match value {
             Value::Number(value) => Some(*value),
 
@@ -162,14 +152,33 @@ impl Interpreter {
         }
     }
 
+    // https://tc39.es/ecma262/#sec-tonumber
+    pub(super) fn to_number(&mut self, value: &Value) -> Result<f64, JsError> {
+        let primitive = self.ordinary_to_primitive(value, PrimitiveHint::Number)?;
+        self.primitive_to_number(&primitive).ok_or_else(|| {
+            JsError::unsupported("number conversion for this primitive is not implemented")
+        })
+    }
+
     pub(super) fn compare_values(
-        &self,
+        &mut self,
         left: &Value,
         right: &Value,
         comparison: impl FnOnce(f64, f64) -> bool,
     ) -> Result<bool, JsError> {
-        let (left, right) = self.numeric_operands(left, right)?;
-
+        let left = self.ordinary_to_primitive(left, PrimitiveHint::Number)?;
+        let right = self.ordinary_to_primitive(right, PrimitiveHint::Number)?;
+        if let (Value::String(left), Value::String(right)) = (&left, &right) {
+            use std::cmp::Ordering;
+            let order = left.encode_utf16().cmp(right.encode_utf16());
+            let delta = match order {
+                Ordering::Less => -1.0,
+                Ordering::Equal => 0.0,
+                Ordering::Greater => 1.0,
+            };
+            return Ok(comparison(delta, 0.0));
+        }
+        let (left, right) = self.numeric_operands(&left, &right)?;
         Ok(comparison(left, right))
     }
 
@@ -180,21 +189,21 @@ impl Interpreter {
         value: &Value,
         hint: PrimitiveHint,
     ) -> Result<Value, JsError> {
-        let object = match value {
+        match value {
             Value::Undefined
             | Value::Null
             | Value::Boolean(_)
             | Value::Number(_)
             | Value::String(_) => return Ok(value.clone()),
 
-            Value::Object(object) => object,
+            Value::Object(_) | Value::NativeError(_) => {}
 
             _ => {
                 return Err(JsError::unsupported(
                     "object-to-primitive conversion for this value is not implemented",
                 ));
             }
-        };
+        }
 
         let methods = match hint {
             PrimitiveHint::String => ["toString", "valueOf"],
@@ -202,7 +211,12 @@ impl Interpreter {
         };
 
         for name in methods {
-            let method = match ObjectState::lookup(object, name) {
+            let lookup = match value {
+                Value::Object(object) => ObjectState::lookup(object, name),
+                Value::NativeError(error) => error.lookup_method(name),
+                _ => unreachable!(),
+            };
+            let method = match lookup {
                 PropertyLookup::Found(method) => method,
 
                 PropertyLookup::Absent => continue,
@@ -264,21 +278,21 @@ mod tests {
 
     #[test]
     fn converts_supported_primitive_values() {
-        let interpreter = Interpreter::new();
+        let mut interpreter = Interpreter::new();
 
         assert!(!interpreter.is_truthy(&Value::Undefined));
         assert!(!interpreter.is_truthy(&Value::Number(f64::NAN)));
         assert!(interpreter.is_truthy(&Value::String("0".to_owned())));
 
         assert_eq!(
-            interpreter.to_number(&Value::String(" 1.5 ".to_owned())),
-            Some(1.5)
+            interpreter
+                .to_number(&Value::String(" 1.5 ".to_owned()))
+                .unwrap(),
+            1.5
         );
 
-        assert_eq!(interpreter.to_number(&Value::Null), Some(0.0));
-
+        assert_eq!(interpreter.to_number(&Value::Null).unwrap(), 0.0);
         assert_eq!(Interpreter::type_of(&Value::Null), "object");
-
         assert!(interpreter.loosely_equals(&Value::Null, &Value::Undefined));
     }
 }

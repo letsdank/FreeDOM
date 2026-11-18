@@ -369,6 +369,16 @@ pub struct NativeErrorValue {
 }
 
 impl NativeErrorValue {
+    pub(super) fn lookup_method(&self, name: &str) -> PropertyLookup {
+        if let Some(value) = self.properties.borrow().get(name) {
+            return PropertyLookup::Found(value.clone());
+        }
+        match &self.prototype {
+            Some(prototype) => ObjectState::lookup(prototype, name),
+            None => PropertyLookup::Unknown,
+        }
+    }
+
     fn new(name: &str, message: &str) -> Self {
         let mut properties = ObjectState::default();
 

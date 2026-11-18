@@ -147,7 +147,7 @@ impl Interpreter {
     }
 
     pub(super) fn set_array_property(
-        &self,
+        &mut self,
         receiver: ArrayStorage,
         name: &str,
         value: Value,
@@ -158,9 +158,7 @@ impl Interpreter {
             return Self::array_set(receiver, name, value);
         }
 
-        let number = self.to_number(&value).ok_or_else(|| {
-            JsError::unsupported("Array.length object-to-number conversion is not implemented")
-        })?;
+        let number = self.to_number(&value)?;
 
         if !number.is_finite() || number < 0.0 || number.fract() != 0.0 || number > u32::MAX as f64
         {
@@ -537,7 +535,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_or_unsupported_lengths_without_mutation() {
-        let interpreter = Interpreter::new();
+        let mut interpreter = Interpreter::new();
 
         let Value::Array(array) = Value::array(vec![Value::Number(1.0), Value::Number(2.0)]) else {
             unreachable!();

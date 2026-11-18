@@ -5,11 +5,12 @@
 //!
 //! This module preserves the interpreter's existing behavior.
 
+use super::value_ops::PrimitiveHint;
 use super::{BinaryOperator, Expression, Interpreter, JsError, Value};
 
 impl Interpreter {
     pub(super) fn evaluate_binary(
-        &self,
+        &mut self,
         left: Value,
         operator: BinaryOperator,
         right: Value,
@@ -28,6 +29,8 @@ impl Interpreter {
             }
 
             BinaryOperator::Add => {
+                let left = self.ordinary_to_primitive(&left, PrimitiveHint::Number)?;
+                let right = self.ordinary_to_primitive(&right, PrimitiveHint::Number)?;
                 if matches!(&left, Value::String(_)) || matches!(&right, Value::String(_)) {
                     return Ok(Value::String(format!(
                         "{}{}",
@@ -100,12 +103,7 @@ impl Interpreter {
         let reference = self.prepare_reference(target)?;
         let previous = self.read_reference(&reference)?;
 
-        let Some(number) = self.to_number(&previous) else {
-            return Err(JsError::runtime(
-                "TypeError: update operator requires a numeric value",
-            ));
-        };
-
+        let number = self.to_number(&previous)?;
         let updated = Value::Number(number + delta);
 
         self.write_reference(reference, updated.clone())?;
@@ -123,12 +121,7 @@ impl Interpreter {
         negate: bool,
     ) -> Result<Value, JsError> {
         let value = self.evaluate_expression(operand)?;
-
-        let Some(number) = self.to_number(&value) else {
-            return Err(JsError::unsupported(
-                "unary numeric conversion of objects is not implemented",
-            ));
-        };
+        let number = self.to_number(&value)?;
 
         Ok(Value::Number(if negate { -number } else { number }))
     }
@@ -137,6 +130,31 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use crate::javascript::{Value, evaluate};
+
+    #[test]
+    fn numeric_operators_use_primitive_conversion_and_propagate_errors() {
+        let result = evaluate(
+            r#"
+            let trace = '';
+            let left = { valueOf: function() { trace = trace + 'l'; return 2; } };
+            let right = { valueOf: function() { trace = trace + 'r'; return '3'; } };
+            let sum = left + right;
+            let difference = left - right;
+            let update = { valueOf: function() { return 8; } };
+            
+            let before = update++;
+            let failure = false;
+            try { +{ valueOf: function() { throw 'boom'; } }; }
+            catch (e) { failure = e === 'boom'; }
+            sum === '23' && difference === -1 && trace === 'lrlr'
+                && before === 8 && update === 9 && failure
+                && '10' < '2'
+                && String.fromCharCode({ valueOf: function() { return 65; } }) === 'A';
+            "#,
+        )
+        .unwrap();
+        assert_eq!(result, Value::Boolean(true));
+    }
 
     #[test]
     fn evaluates_binary_precedence_and_string_concatenation() {
@@ -223,7 +241,7 @@ mod tests {
 
     #[test]
     fn unary_object_conversion_is_explicitly_unsupported() {
-        let error = evaluate("+{};").unwrap_err();
+        let error = evaluate("+[];").unwrap_err();
 
         assert_eq!(
             error.kind,

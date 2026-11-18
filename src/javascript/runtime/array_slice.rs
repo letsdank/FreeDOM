@@ -8,10 +8,8 @@ use super::{Interpreter, JsError, Value};
 use crate::javascript::value::{ObjectState, PropertyLookup};
 
 impl Interpreter {
-    fn slice_index(&self, value: &Value, length: usize) -> Result<usize, JsError> {
-        let number = self.to_number(value).ok_or_else(|| {
-            JsError::unsupported("Array.prototype.slice index conversion is not implemented")
-        })?;
+    fn slice_index(&mut self, value: &Value, length: usize) -> Result<usize, JsError> {
+        let number = self.to_number(value)?;
 
         if number.is_nan() || number == 0.0 || number == f64::NEG_INFINITY {
             return Ok(0);

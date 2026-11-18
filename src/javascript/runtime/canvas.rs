@@ -57,11 +57,11 @@ impl Interpreter {
     }
 
     pub(super) fn set_canvas_property(
-        &self,
+        &mut self,
         object: &ObjectStorage,
         name: &str,
         value: &Value,
-    ) -> bool {
+    ) -> Result<bool, JsError> {
         if !matches!(
             name,
             "fillStyle"
@@ -76,7 +76,7 @@ impl Interpreter {
             .values()
             .any(|context| std::rc::Rc::ptr_eq(context, object))
         {
-            return false;
+            return Ok(false);
         }
 
         if name == "lineCap" || name == "lineJoin" {
@@ -93,36 +93,36 @@ impl Interpreter {
                         .set(name.to_owned(), Value::String(value.clone()));
                 }
 
-                return true;
+                return Ok(true);
             }
         }
 
         if name == "lineDashOffset" {
-            if let Some(offset) = self.to_number(value).filter(|number| number.is_finite()) {
+            let offset = self.to_number(value)?;
+            if offset.is_finite() {
                 object
                     .borrow_mut()
                     .set(name.to_owned(), Value::Number(offset));
             }
 
-            return true;
+            return Ok(true);
         }
 
         if name == "lineWidth" || name == "miterLimit" {
-            if let Some(number) = self.to_number(value) {
-                let raster_number = number as f32;
+            let number = self.to_number(value)?;
+            let raster_number = number as f32;
 
-                if number.is_finite()
-                    && number > 0.0
-                    && raster_number.is_finite()
-                    && raster_number > 0.0
-                {
-                    object
-                        .borrow_mut()
-                        .set(name.to_owned(), Value::Number(number));
-                }
+            if number.is_finite()
+                && number > 0.0
+                && raster_number.is_finite()
+                && raster_number > 0.0
+            {
+                object
+                    .borrow_mut()
+                    .set(name.to_owned(), Value::Number(number));
             }
 
-            return true;
+            return Ok(true);
         }
 
         if let Value::String(value) = value {
@@ -141,7 +141,7 @@ impl Interpreter {
             }
         }
 
-        true
+        Ok(true)
     }
 
     pub(super) fn get_canvas_context(
@@ -296,7 +296,7 @@ impl Interpreter {
     }
 
     fn canvas_rect_arguments(
-        &self,
+        &mut self,
         node_id: u64,
         receiver: Option<Value>,
         arguments: Vec<Value>,
@@ -313,9 +313,7 @@ impl Interpreter {
         let mut coordinates = [0.0; 4];
 
         for (output, value) in coordinates.iter_mut().zip(&arguments) {
-            *output = self.to_number(value).ok_or_else(|| {
-                JsError::type_error(format!("{method}: unsupported number conversion"))
-            })?;
+            *output = self.to_number(value)?;
         }
 
         Ok((context, coordinates))
@@ -490,9 +488,7 @@ impl Interpreter {
             .zip(arguments.iter())
             .take(coordinate_count)
         {
-            *target = self.to_number(value).ok_or_else(|| {
-                JsError::type_error(format!("{name}: unsupported number conversion"))
-            })?;
+            *target = self.to_number(value)?;
         }
 
         let rule = if matches!(operation, PathOperation::Fill) {
@@ -609,9 +605,7 @@ impl Interpreter {
         let mut dash = Vec::with_capacity(values.len().saturating_mul(2));
 
         for value in &values {
-            let number = self.to_number(value).ok_or_else(|| {
-                JsError::unsupported("setLineDash: unsupported number conversion")
-            })?;
+            let number = self.to_number(value)?;
 
             if !number.is_finite() || number < 0.0 {
                 return Ok(Value::Undefined);
@@ -764,13 +758,8 @@ impl Interpreter {
             return Err(JsError::type_error("translate requires two arguments"));
         }
 
-        let x = self
-            .to_number(&arguments[0])
-            .ok_or_else(|| JsError::type_error("translate: unsupported number conversion"))?;
-
-        let y = self
-            .to_number(&arguments[1])
-            .ok_or_else(|| JsError::type_error("translate: unsupported number conversion"))?;
+        let x = self.to_number(&arguments[0])?;
+        let y = self.to_number(&arguments[1])?;
 
         if self.ensure_canvas_surface(node_id) {
             self.canvas_surfaces
@@ -794,9 +783,7 @@ impl Interpreter {
             .first()
             .ok_or_else(|| JsError::type_error("rotate requires an argument"))?;
 
-        let angle = self
-            .to_number(value)
-            .ok_or_else(|| JsError::type_error("rotate: unsupported number conversion"))?;
+        let angle = self.to_number(value)?;
 
         if self.ensure_canvas_surface(node_id) {
             self.canvas_surfaces
@@ -820,13 +807,8 @@ impl Interpreter {
             return Err(JsError::type_error("scale requires two arguments"));
         }
 
-        let x = self
-            .to_number(&arguments[0])
-            .ok_or_else(|| JsError::type_error("scale: unsupported number conversion"))?;
-
-        let y = self
-            .to_number(&arguments[1])
-            .ok_or_else(|| JsError::type_error("scale: unsupported number conversion"))?;
+        let x = self.to_number(&arguments[0])?;
+        let y = self.to_number(&arguments[1])?;
 
         if self.ensure_canvas_surface(node_id) {
             self.canvas_surfaces
@@ -838,17 +820,11 @@ impl Interpreter {
         Ok(Value::Undefined)
     }
 
-    fn canvas_matrix_arguments(
-        &self,
-        arguments: &[Value],
-        method: &str,
-    ) -> Result<[f64; 6], JsError> {
+    fn canvas_matrix_arguments(&mut self, arguments: &[Value]) -> Result<[f64; 6], JsError> {
         let mut values = [0.0; 6];
 
         for (output, value) in values.iter_mut().zip(arguments) {
-            *output = self.to_number(value).ok_or_else(|| {
-                JsError::type_error(format!("{method}: unsupported number conversion"))
-            })?;
+            *output = self.to_number(value)?;
         }
 
         Ok(values)
@@ -866,7 +842,7 @@ impl Interpreter {
             return Err(JsError::type_error("transform requires six arguments"));
         }
 
-        let values = self.canvas_matrix_arguments(&arguments, "transform")?;
+        let values = self.canvas_matrix_arguments(&arguments)?;
 
         if self.ensure_canvas_surface(node_id) {
             self.canvas_surfaces
@@ -912,9 +888,7 @@ impl Interpreter {
                 ));
             }
 
-            _ if arguments.len() >= 6 => {
-                self.canvas_matrix_arguments(&arguments, "setTransform")?
-            }
+            _ if arguments.len() >= 6 => self.canvas_matrix_arguments(&arguments)?,
 
             _ => {
                 return Err(JsError::type_error(
