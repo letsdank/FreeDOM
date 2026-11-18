@@ -335,8 +335,9 @@ mod tests {
 
     #[test]
     fn cyclic_array_coercion_is_bounded() {
-        let error = evaluate("let a = []; a.push(a); '' + a;").unwrap_err();
-
-        assert_eq!(error.kind, crate::javascript::JsErrorKind::ResourceLimit);
+        assert_eq!(
+            evaluate("let a = []; a.push(a); '' + a;").unwrap(),
+            Value::String(String::new())
+        );
     }
 }

@@ -242,24 +242,51 @@ impl Interpreter {
             ));
         }
 
+        // The length is read before converting the separator.
+        // https://tc39.es/ecma262/#sec-array.prototype.join
+        let length = receiver.borrow().values.len();
+
         let separator = match arguments.first() {
             None | Some(Value::Undefined) => ",".to_owned(),
             Some(value) => self.array_join_string(value)?,
         };
 
-        let length = receiver.borrow().values.len();
-        let mut parts = Vec::with_capacity(length);
-
-        for index in 0..length {
-            let value = self.array_property(receiver.clone(), &index.to_string());
-
-            parts.push(match value {
-                Value::Undefined | Value::Null => String::new(),
-                value => self.array_join_string(&value)?,
-            });
+        // Suppress reentrant joins for the same array, as browsers do.
+        // https://github.com/v8/v8/blob/main/src/builtins/array-join.tq
+        if self
+            .active_array_joins
+            .iter()
+            .any(|active| std::rc::Rc::ptr_eq(active, &receiver))
+        {
+            return Ok(Value::String(String::new()));
         }
 
-        Ok(Value::String(parts.join(&separator)))
+        self.active_array_joins.push(receiver.clone());
+
+        let result = (|| {
+            let mut parts = Vec::with_capacity(length);
+
+            for index in 0..length {
+                let value = self.array_property(receiver.clone(), &index.to_string());
+
+                parts.push(match value {
+                    Value::Undefined | Value::Null => String::new(),
+                    value => self.array_join_string(&value)?,
+                });
+            }
+
+            Ok(Value::String(parts.join(&separator)))
+        })();
+
+        let active = self.active_array_joins.pop();
+
+        debug_assert!(
+            active
+                .as_ref()
+                .is_some_and(|array| std::rc::Rc::ptr_eq(array, &receiver))
+        );
+
+        result
     }
 
     fn array_join_string(&mut self, value: &Value) -> Result<String, JsError> {

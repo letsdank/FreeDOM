@@ -215,4 +215,64 @@ mod tests {
 
         assert_eq!(result, Value::String("[object Object]".to_owned()));
     }
+
+    #[test]
+    fn join_tracks_active_arrays_and_cleans_up_after_errors() {
+        let result = evaluate(
+            r#"
+                let a = [1];
+                let b = [3, a, 4];
+
+                a.push(b, 2);
+
+                let cycle = a.join(';') === '1;3,,4;2';
+
+                let child = [7];
+                let shared = [child, child].join('|') === '7|7';
+
+                let bad = {
+                    toString: function() { throw 'boom'; }
+                };
+
+                let values = [bad];
+                let caught = false;
+
+                try {
+                    values.join();
+                } catch (e) {
+                    caught = e === 'boom';
+                }
+
+                values[0] = 'ok';
+
+                let cleaned = values.join() === 'ok';
+
+                let dynamic = [1, 2];
+
+                let separator = {
+                    toString: function() {
+                        dynamic.push(3);
+                        return '-';
+                    }
+                };
+
+                let snapshot = dynamic.join(separator) === '1-2'
+                    && dynamic.length === 3;
+
+                let reentrant = [];
+
+                reentrant.push({
+                    toString: function() {
+                        return reentrant.join();
+                    }
+                });
+
+                cycle && shared && caught && cleaned && snapshot
+                    && reentrant.join() === '';
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }
