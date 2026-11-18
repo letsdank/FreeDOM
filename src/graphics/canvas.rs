@@ -66,6 +66,32 @@ impl Canvas2D {
     }
 
     pub fn fill_rect(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        if !self.has_translation_only() {
+            if let Some(points) = self.transformed_rect(x, y, width, height) {
+                let mut path = Path::new();
+
+                path.move_to(points[0]);
+
+                for point in &points[1..] {
+                    path.line_to(*point);
+                }
+
+                path.close();
+
+                let flattened =
+                    flatten_path(&path, 0.25).expect("constant flattening tolerance is valid");
+
+                fill_path(
+                    &mut self.surface,
+                    &flattened,
+                    FillRule::NonZero,
+                    self.fill_style,
+                );
+            }
+
+            return;
+        }
+
         let x = x + f64::from(self.transform.e);
         let y = y + f64::from(self.transform.f);
 
@@ -92,6 +118,14 @@ impl Canvas2D {
     }
 
     pub fn clear_rect(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        if !self.has_translation_only() {
+            if let Some(points) = self.transformed_rect(x, y, width, height) {
+                self.clear_quad(points);
+            }
+
+            return;
+        }
+
         let x = x + f64::from(self.transform.e);
         let y = y + f64::from(self.transform.f);
 
@@ -111,21 +145,7 @@ impl Canvas2D {
                     })
                     .count();
 
-                if covered == 0 {
-                    continue;
-                }
-
-                let Some(mut color) = self.surface.pixel(px, py) else {
-                    continue;
-                };
-
-                color.alpha = ((u16::from(color.alpha) * (4 - covered) as u16 + 2) / 4) as u8;
-
-                if color.alpha == 0 {
-                    color = Color::TRANSPARENT;
-                }
-
-                self.surface.set_pixel(px, py, color);
+                self.clear_pixel(px, py, covered);
             }
         }
     }
@@ -289,6 +309,31 @@ impl Canvas2D {
         }
     }
 
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-rotate-dev
+    pub fn rotate(&mut self, angle: f64) {
+        let angle = angle as f32;
+
+        if !angle.is_finite() {
+            return;
+        }
+
+        let transform = Transform::rotate(angle).then(self.transform);
+
+        if [
+            transform.a,
+            transform.b,
+            transform.c,
+            transform.d,
+            transform.e,
+            transform.f,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+        {
+            self.transform = transform;
+        }
+    }
+
     fn canvas_point(&self, x: f64, y: f64) -> Option<Point> {
         let (x, y) = (x as f32, y as f32);
 
@@ -300,6 +345,116 @@ impl Canvas2D {
 
         (point.x.is_finite() && point.y.is_finite()).then_some(point)
     }
+
+    fn has_translation_only(&self) -> bool {
+        self.transform.a == 1.0
+            && self.transform.b == 0.0
+            && self.transform.c == 0.0
+            && self.transform.d == 1.0
+    }
+
+    fn transformed_rect(&self, x: f64, y: f64, width: f64, height: f64) -> Option<[Point; 4]> {
+        if ![x, y, width, height].iter().all(|value| value.is_finite())
+            || width == 0.0
+            || height == 0.0
+        {
+            return None;
+        }
+
+        let matrix = self.transform;
+
+        let determinant =
+            f64::from(matrix.a) * f64::from(matrix.d) - f64::from(matrix.b) * f64::from(matrix.c);
+
+        if determinant == 0.0 {
+            return None;
+        }
+
+        Some([
+            self.canvas_point(x, y)?,
+            self.canvas_point(x + width, y)?,
+            self.canvas_point(x + width, y + height)?,
+            self.canvas_point(x, y + height)?,
+        ])
+    }
+
+    fn clear_quad(&mut self, points: [Point; 4]) {
+        let min_x = points
+            .iter()
+            .map(|point| f64::from(point.x))
+            .fold(f64::INFINITY, f64::min);
+
+        let max_x = points
+            .iter()
+            .map(|point| f64::from(point.x))
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let min_y = points
+            .iter()
+            .map(|point| f64::from(point.y))
+            .fold(f64::INFINITY, f64::min);
+
+        let max_y = points
+            .iter()
+            .map(|point| f64::from(point.y))
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let start_x = min_x.floor().clamp(0.0, self.surface.width() as f64) as usize;
+        let end_x = max_x.ceil().clamp(0.0, self.surface.width() as f64) as usize;
+        let start_y = min_y.floor().clamp(0.0, self.surface.height() as f64) as usize;
+        let end_y = max_y.ceil().clamp(0.0, self.surface.height() as f64) as usize;
+
+        for py in start_y..end_y {
+            for px in start_x..end_x {
+                let covered = SAMPLE_OFFSETS
+                    .iter()
+                    .filter(|(dx, dy)| point_in_quad(&points, px as f64 + dx, py as f64 + dy))
+                    .count();
+
+                self.clear_pixel(px, py, covered);
+            }
+        }
+    }
+
+    fn clear_pixel(&mut self, x: usize, y: usize, covered: usize) {
+        if covered == 0 {
+            return;
+        }
+
+        let Some(mut color) = self.surface.pixel(x, y) else {
+            return;
+        };
+
+        color.alpha = ((u16::from(color.alpha) * (4 - covered) as u16 + 2) / 4) as u8;
+
+        if color.alpha == 0 {
+            color = Color::TRANSPARENT;
+        }
+
+        self.surface.set_pixel(x, y, color);
+    }
+}
+
+fn point_in_quad(points: &[Point; 4], x: f64, y: f64) -> bool {
+    let mut positive = false;
+    let mut negative = false;
+
+    for index in 0..4 {
+        let a = points[index];
+        let b = points[(index + 1) % 4];
+
+        let cross = (f64::from(b.x) - f64::from(a.x)) * (y - f64::from(a.y))
+            - (f64::from(b.y) - f64::from(a.y)) * (x - f64::from(a.x));
+
+        positive |= cross > 0.0;
+        negative |= cross < 0.0;
+
+        if positive && negative {
+            return false;
+        }
+    }
+
+    true
 }
 
 struct Rect {

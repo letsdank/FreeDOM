@@ -222,6 +222,7 @@ impl Interpreter {
             ("save", ElementMethod::CanvasSave(node_id)),
             ("restore", ElementMethod::CanvasRestore(node_id)),
             ("translate", ElementMethod::CanvasTranslate(node_id)),
+            ("rotate", ElementMethod::CanvasRotate(node_id)),
         ] {
             context.borrow_mut().define_own_data_property(
                 name.to_owned(),
@@ -777,6 +778,32 @@ impl Interpreter {
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .translate(x, y);
+        }
+
+        Ok(Value::Undefined)
+    }
+
+    pub(super) fn canvas_rotate(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        self.canvas_context_receiver(node_id, receiver, "rotate")?;
+
+        let value = arguments
+            .first()
+            .ok_or_else(|| JsError::type_error("rotate requires an argument"))?;
+
+        let angle = self
+            .to_number(value)
+            .ok_or_else(|| JsError::type_error("rotate: unsupported number conversion"))?;
+
+        if self.ensure_canvas_surface(node_id) {
+            self.canvas_surfaces
+                .get_mut(&node_id)
+                .expect("surface was initialized")
+                .rotate(angle);
         }
 
         Ok(Value::Undefined)

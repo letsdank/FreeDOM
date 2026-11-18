@@ -5793,4 +5793,47 @@ mod tests {
         assert_eq!(b.canvas.surface().pixel(0, 0), Some(Color::BLACK));
         assert_eq!(b.canvas.surface().pixel(2, 1), Some(Color::TRANSPARENT));
     }
+
+    #[test]
+    fn canvas_rotates_and_clears_rectangles() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='a' width='12' height='10'></canvas>
+
+                <script>
+                    let ctx = document.getElementById('a').getContext('2d');
+
+                    ctx.fillStyle = 'blue';
+                    ctx.fillRect(0, 0, 12, 10);
+
+                    ctx.save();
+                    ctx.translate(8, 2);
+                    ctx.rotate(1.5707963267948966);
+
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(0, 0, 4, 2);
+                    ctx.clearRect(1, 0, 2, 1);
+
+                    ctx.restore();
+                    ctx.fillStyle = 'green';
+                    ctx.fillRect(0, 0, 1, 1);
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(a) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        let surface = a.canvas.surface();
+
+        assert_eq!(surface.pixel(0, 0), Some(Color::rgba(0, 128, 0, 255)));
+        assert_eq!(surface.pixel(7, 2), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(surface.pixel(6, 3), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(surface.pixel(7, 3), Some(Color::TRANSPARENT));
+        assert_eq!(surface.pixel(5, 3), Some(Color::rgba(0, 0, 255, 255)));
+    }
 }

@@ -86,6 +86,7 @@ pub(crate) enum ElementMethod {
     CanvasSave(u64),
     CanvasRestore(u64),
     CanvasTranslate(u64),
+    CanvasRotate(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
