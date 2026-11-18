@@ -94,14 +94,6 @@ pub(crate) enum Expression {
         constructor: String,
         arguments: Vec<Expression>,
     },
-    Member {
-        object: Box<Expression>,
-        property: String,
-    },
-    Call {
-        callee: Box<Expression>,
-        arguments: Vec<Expression>,
-    },
     Assignment {
         target: Box<Expression>,
         value: Box<Expression>,
@@ -116,11 +108,11 @@ pub(crate) enum Expression {
         first: Box<Expression>,
         rest: Vec<(BinaryOperator, Expression)>,
     },
-    Function(UserFunction),
-    Index {
-        object: Box<Expression>,
-        index: Box<Expression>,
+    PostfixChain {
+        base: Box<Expression>,
+        steps: Vec<PostfixStep>,
     },
+    Function(UserFunction),
     Not(Box<Expression>),
     UnaryPlus(Box<Expression>),
     UnaryMinus(Box<Expression>),
@@ -136,6 +128,13 @@ pub(crate) enum Expression {
     },
     TypeOf(Box<Expression>),
     Await(Box<Expression>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PostfixStep {
+    Member(String),
+    Index(Expression),
+    Call(Vec<Expression>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

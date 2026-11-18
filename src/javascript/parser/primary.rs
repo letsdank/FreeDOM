@@ -217,7 +217,7 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use crate::javascript::parser::parse_program;
-    use crate::javascript::{Expression, Statement};
+    use crate::javascript::{Expression, PostfixStep, Statement};
 
     #[test]
     fn parses_nested_object_and_array_literals() {
@@ -393,12 +393,12 @@ mod tests {
 
         let program = parse_program(source).unwrap();
 
-        let [Statement::Expression(Expression::Call { callee, arguments })] = program.as_slice()
+        let [Statement::Expression(Expression::PostfixChain { base, steps })] = program.as_slice()
         else {
             panic!("expected one top-level call");
         };
 
-        let Expression::Function(function) = callee.as_ref() else {
+        let Expression::Function(function) = base.as_ref() else {
             panic!("expected function expression");
         };
 
@@ -407,8 +407,12 @@ mod tests {
         assert!(function.body.len() > 1);
 
         assert!(matches!(
-            arguments.as_slice(),
-            [Expression::Identifier(name)] if name == "self"
+            steps.as_slice(),
+            [PostfixStep::Call(arguments)]
+                if matches!(
+                    arguments.as_slice(),
+                    [Expression::Identifier(name)] if name == "self"
+                )
         ));
     }
 

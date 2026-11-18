@@ -111,10 +111,7 @@ impl Interpreter {
                 arguments,
             } => self.construct(constructor, arguments),
 
-            Expression::Member { .. } | Expression::Index { .. } => {
-                let reference = self.prepare_reference(expression)?;
-                self.read_reference(&reference)
-            }
+            Expression::PostfixChain { base, steps } => self.evaluate_postfix_value(base, steps),
 
             Expression::Function(function) => Ok(self.create_function(function)),
 
@@ -151,8 +148,6 @@ impl Interpreter {
 
                 Ok(result)
             }
-
-            Expression::Call { callee, arguments } => self.evaluate_call(callee, arguments),
 
             Expression::BinaryChain { first, rest } => {
                 let mut value = self.evaluate_expression(first)?;
@@ -679,5 +674,49 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn long_postfix_chains_are_flat_and_preserve_references() {
+        let chain = format!("object{}", ".next".repeat(5_000));
+
+        let source = format!("let object = {{}}; object.next = object; {chain} === object;");
+
+        let program = crate::javascript::parse_program(&source).unwrap();
+        let copy = program.clone();
+
+        assert_eq!(program, copy);
+
+        drop(copy);
+        drop(program);
+
+        assert_eq!(evaluate(&source).unwrap(), Value::Boolean(true));
+
+        let source = format!(
+            "function outer() {{ \
+                let object = {{}}; \
+                object.next = object; \
+                return function() {{ return {chain} === object; }}; \
+            }} \
+            let f = outer(); \
+            f();"
+        );
+
+        assert_eq!(evaluate(&source).unwrap(), Value::Boolean(true));
+
+        assert_eq!(
+            evaluate(
+                r#"
+                    let object = {
+                        value: 7,
+                        read: function() { return this.value; }
+                    };
+
+                    (object.read)() === 7 && object['read']() === 7;
+                "#
+            )
+            .unwrap(),
+            Value::Boolean(true)
+        );
     }
 }

@@ -62,7 +62,8 @@ pub(crate) use value::{
 use value::RegExpState;
 
 pub(crate) use ast::{
-    BinaryOperator, Expression, FunctionKind, FunctionParameter, Statement, UserFunction,
+    BinaryOperator, Expression, FunctionKind, FunctionParameter, PostfixStep, Statement,
+    UserFunction,
 };
 
 use runtime::{Completion, Interpreter};

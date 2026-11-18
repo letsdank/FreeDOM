@@ -204,7 +204,7 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use crate::javascript::parser::parse_program;
-    use crate::javascript::{Expression, FunctionKind, Statement};
+    use crate::javascript::{Expression, FunctionKind, PostfixStep, Statement};
 
     #[test]
     fn parses_function_parameters_and_body() {
@@ -261,8 +261,11 @@ mod tests {
 
         assert!(matches!(
             &program[1],
-            Statement::Expression(Expression::Call { arguments, .. })
-                if arguments.len() == 2
+            Statement::Expression(Expression::PostfixChain { steps, .. })
+                if matches!(
+                    steps.last(),
+                    Some(PostfixStep::Call(arguments)) if arguments.len() == 2
+                )
         ));
     }
 
@@ -389,8 +392,16 @@ mod tests {
                 },
                 Statement::Return(Expression::Await(second))
             ] if name == "response"
-                && matches!(first.as_ref(), Expression::Call { .. })
-                && matches!(second.as_ref(), Expression::Call { .. })
+                && matches!(
+                    first.as_ref(),
+                    Expression::PostfixChain { steps, .. }
+                        if matches!(steps.last(), Some(PostfixStep::Call(_)))
+                )
+                && matches!(
+                    second.as_ref(),
+                    Expression::PostfixChain { steps, .. }
+                        if matches!(steps.last(), Some(PostfixStep::Call(_)))
+                )
         ));
     }
 

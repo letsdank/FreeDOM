@@ -174,24 +174,28 @@ fn visit_expression(expression: &Expression, names: &mut HashSet<String>) {
             }
         }
 
-        Expression::Member { object, .. } => {
-            visit_expression(object, names);
-        }
+        Expression::PostfixChain { base, steps } => {
+            visit_expression(base, names);
 
-        Expression::Call { callee, arguments } => {
-            visit_expression(callee, names);
+            for step in steps {
+                match step {
+                    super::PostfixStep::Member(_) => {}
 
-            for argument in arguments {
-                visit_expression(&argument, names);
+                    super::PostfixStep::Index(index) => {
+                        visit_expression(index, names);
+                    }
+
+                    super::PostfixStep::Call(arguments) => {
+                        for argument in arguments {
+                            visit_expression(argument, names);
+                        }
+                    }
+                }
             }
         }
 
         Expression::Assignment { target, value }
-        | Expression::CompoundAssignment { target, value, .. }
-        | Expression::Index {
-            object: target,
-            index: value,
-        } => {
+        | Expression::CompoundAssignment { target, value, .. } => {
             visit_expression(target, names);
             visit_expression(value, names);
         }

@@ -5,8 +5,8 @@
 //! This module preserves the interpreter's existing grammar subset.
 
 use super::{
-    BinaryOperator, Expression, FunctionKind, FunctionParameter, JsError, Parser, Statement,
-    TokenKind, UserFunction,
+    BinaryOperator, Expression, FunctionKind, FunctionParameter, JsError, Parser, PostfixStep,
+    Statement, TokenKind, UserFunction,
 };
 
 impl Parser<'_> {
@@ -320,18 +320,19 @@ impl Parser<'_> {
     }
 
     fn parse_postfix_expression(&mut self) -> Result<Expression, JsError> {
-        let mut expression = self.parse_primary()?;
+        let primary = self.parse_primary()?;
+
+        let (base, mut steps) = match primary {
+            Expression::PostfixChain { base, steps } => (base, steps),
+            other => (Box::new(other), Vec::new()),
+        };
 
         loop {
             if self.cursor.consume_optional(&TokenKind::Dot)? {
                 let (property, _) =
                     self.consume_identifier("expected a property name after '.'")?;
 
-                expression = Expression::Member {
-                    object: Box::new(expression),
-                    property,
-                };
-
+                steps.push(PostfixStep::Member(property));
                 continue;
             }
 
@@ -343,46 +344,40 @@ impl Parser<'_> {
                     "expected ']' after index expression",
                 )?;
 
-                expression = Expression::Index {
-                    object: Box::new(expression),
-                    index: Box::new(index),
-                };
-
+                steps.push(PostfixStep::Index(index));
                 continue;
             }
 
             if self.cursor.consume_optional(&TokenKind::LeftParen)? {
                 let arguments = self.parse_arguments()?;
 
-                expression = Expression::Call {
-                    callee: Box::new(expression),
-                    arguments,
-                };
-
-                continue;
-            }
-
-            if self.cursor.consume_optional(&TokenKind::PlusPlus)? {
-                expression = Expression::Update {
-                    target: Box::new(expression),
-                    delta: 1.0,
-                    prefix: false,
-                };
-
-                continue;
-            }
-
-            if self.cursor.consume_optional(&TokenKind::MinusMinus)? {
-                expression = Expression::Update {
-                    target: Box::new(expression),
-                    delta: -1.0,
-                    prefix: false,
-                };
-
+                steps.push(PostfixStep::Call(arguments));
                 continue;
             }
 
             break;
+        }
+
+        let expression = if steps.is_empty() {
+            *base
+        } else {
+            Expression::PostfixChain { base, steps }
+        };
+
+        if self.cursor.consume_optional(&TokenKind::PlusPlus)? {
+            return Ok(Expression::Update {
+                target: Box::new(expression),
+                delta: 1.0,
+                prefix: false,
+            });
+        }
+
+        if self.cursor.consume_optional(&TokenKind::MinusMinus)? {
+            return Ok(Expression::Update {
+                target: Box::new(expression),
+                delta: -1.0,
+                prefix: false,
+            });
         }
 
         Ok(expression)
@@ -421,7 +416,7 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use crate::javascript::parser::parse_program;
-    use crate::javascript::{BinaryOperator, Expression, Statement};
+    use crate::javascript::{BinaryOperator, Expression, PostfixStep, Statement};
 
     #[test]
     fn multiplication_has_higher_precedence_than_addition() {
@@ -467,18 +462,23 @@ mod tests {
     fn parses_chained_member_index_and_call() {
         let program = parse_program("object.method(1)[0];").unwrap();
 
-        let [Statement::Expression(Expression::Index { object, .. })] = program.as_slice() else {
-            panic!("expected an indexed expression");
+        let [Statement::Expression(Expression::PostfixChain { base, steps })] = program.as_slice()
+        else {
+            panic!("expected a postfix chain");
         };
 
         assert!(matches!(
-            object.as_ref(),
-            Expression::Call { callee, arguments }
-                if arguments.len() == 1
-                    && matches!(
-                        callee.as_ref(),
-                        Expression::Member{ property, .. } if property == "method"
-                    )
+            base.as_ref(),
+            Expression::Identifier(name) if name == "object"
+        ));
+
+        assert!(matches!(
+            steps.as_slice(),
+            [
+                PostfixStep::Member(name),
+                PostfixStep::Call(arguments),
+                PostfixStep::Index(_)
+            ] if name == "method" && arguments.len() == 1
         ));
     }
 
@@ -500,7 +500,8 @@ mod tests {
             Statement::Expression(Expression::Function(function))
                 if matches!(
                     function.body.as_slice(),
-                    [Statement::Return(Expression::Call { .. })]
+                    [Statement::Return(Expression::PostfixChain { steps, .. })]
+                        if matches!(steps.last(), Some(PostfixStep::Call(_)))
                 )
         ));
     }

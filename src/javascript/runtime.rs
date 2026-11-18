@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use super::value::{ArrayStorage, DocumentStorage, FunctionValue, ObjectStorage};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
-    JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
+    JsError, NativeFunction, PostfixStep, Statement, TestContextMethod, UserFunction, Value,
 };
 
 use self::bindings::{Bindings, CapturedBindings};

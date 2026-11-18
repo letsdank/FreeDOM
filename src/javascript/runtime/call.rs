@@ -7,8 +7,8 @@
 
 use super::canvas;
 use super::{
-    ArrayMethodKind, DocumentMethod, ElementMethod, Expression, Interpreter, JsError,
-    NativeFunction, TestContextMethod, Value,
+    ArrayMethodKind, DocumentMethod, ElementMethod, Interpreter, JsError, NativeFunction,
+    TestContextMethod, Value,
 };
 
 impl Interpreter {
@@ -33,32 +33,6 @@ impl Interpreter {
                 .map(Value::String)
                 .collect(),
         ))
-    }
-
-    pub(super) fn evaluate_call(
-        &mut self,
-        callee: &Expression,
-        arguments: &[Expression],
-    ) -> Result<Value, JsError> {
-        let (callee, receiver) = match callee {
-            Expression::Member { .. } | Expression::Index { .. } => {
-                let reference = self.prepare_reference(callee)?;
-                let receiver = reference.receiver();
-                let callee = self.read_reference(&reference)?;
-
-                (callee, receiver)
-            }
-
-            _ => (self.evaluate_expression(callee)?, None),
-        };
-
-        let mut values = Vec::with_capacity(arguments.len());
-
-        for argument in arguments {
-            values.push(self.evaluate_expression(argument)?);
-        }
-
-        self.dispatch_call(callee, receiver, values)
     }
 
     pub(super) fn dispatch_call(
