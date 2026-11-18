@@ -161,57 +161,33 @@ impl Interpreter {
 
             Expression::Call { callee, arguments } => self.evaluate_call(callee, arguments),
 
-            Expression::Binary {
-                left,
-                operator: BinaryOperator::Nullish,
-                right,
-            } => {
-                let left = self.evaluate_expression(left)?;
+            Expression::BinaryChain { first, rest } => {
+                let mut value = self.evaluate_expression(first)?;
 
-                if matches!(left, Value::Null | Value::Undefined) {
-                    self.evaluate_expression(right)
-                } else {
-                    Ok(left)
+                for (operator, expression) in rest {
+                    match operator {
+                        BinaryOperator::And if !self.is_truthy(&value) => return Ok(value),
+
+                        BinaryOperator::Or if self.is_truthy(&value) => return Ok(value),
+
+                        BinaryOperator::Nullish
+                            if !matches!(value, Value::Null | Value::Undefined) =>
+                        {
+                            return Ok(value);
+                        }
+
+                        BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Nullish => {
+                            value = self.evaluate_expression(expression)?;
+                        }
+
+                        _ => {
+                            let right = self.evaluate_expression(expression)?;
+                            value = self.evaluate_binary(value, *operator, right)?;
+                        }
+                    }
                 }
-            }
 
-            Expression::Binary {
-                left,
-                operator: BinaryOperator::And,
-                right,
-            } => {
-                let left = self.evaluate_expression(left)?;
-
-                if self.is_truthy(&left) {
-                    self.evaluate_expression(right)
-                } else {
-                    Ok(left)
-                }
-            }
-
-            Expression::Binary {
-                left,
-                operator: BinaryOperator::Or,
-                right,
-            } => {
-                let left = self.evaluate_expression(left)?;
-
-                if self.is_truthy(&left) {
-                    Ok(left)
-                } else {
-                    self.evaluate_expression(right)
-                }
-            }
-
-            Expression::Binary {
-                left,
-                operator,
-                right,
-            } => {
-                let left = self.evaluate_expression(left)?;
-                let right = self.evaluate_expression(right)?;
-
-                self.evaluate_binary(left, *operator, right)
+                Ok(value)
             }
 
             Expression::Update {
@@ -665,6 +641,46 @@ mod tests {
 
                 items[0] === 42 &&
                     !items.hasOwnProperty(0);
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn long_binary_chains_preserve_order_and_short_circuit() {
+        let chain = vec!["1"; 5_000].join(" + ");
+
+        let program = crate::javascript::parse_program(&chain).unwrap();
+        let copy = program.clone();
+        assert_eq!(program, copy);
+        drop(copy);
+        drop(program);
+
+        assert_eq!(evaluate(&chain).unwrap(), Value::Number(5_000.0));
+
+        let logical = vec!["true"; 5_000].join(" && ");
+        assert_eq!(evaluate(&logical).unwrap(), Value::Boolean(true));
+
+        let skipped = format!("false && {}", vec!["missing"; 5_000].join(" && "));
+        assert_eq!(evaluate(&skipped).unwrap(), Value::Boolean(false));
+
+        let equality = vec!["true"; 5_000].join(" === ");
+        assert_eq!(evaluate(&equality).unwrap(), Value::Boolean(true));
+
+        let source = format!(
+            "function outer() {{ let captured = 2; return function () {{ return captured + {chain}; }}; }} let f = outer(); f();"
+        );
+        assert_eq!(evaluate(&source).unwrap(), Value::Number(5_002.0));
+
+        let result = evaluate(
+            r#"
+                let count = 0;
+                false && (count = 1) && (count = 2);
+                true || (count = 3) || (count = 4);
+                0 ?? (count = 5) ?? (count = 6);
+                count === 0 && 100 - 20 + 3 * 4 / 2 === 86 && 'a' + 1 + 2 === 'a12';
             "#,
         )
         .unwrap();

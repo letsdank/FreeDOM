@@ -511,12 +511,9 @@ mod tests {
     fn execution_depth_limit_unwinds_and_resets() {
         let mut interpreter = Interpreter::new();
 
-        let nested_expression = vec!["1"; 64].join("+");
-
         for source in [
             "function direct() { direct(); } direct();",
             "function nested() { if (true) { nested(); } } nested();",
-            nested_expression.as_str(),
         ] {
             let program = parse_program(source).unwrap();
 

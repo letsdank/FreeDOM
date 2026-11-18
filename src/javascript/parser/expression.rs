@@ -121,18 +121,10 @@ impl Parser<'_> {
         let first = self.parse_equality_expression()?;
 
         if self.cursor.consume_optional(&TokenKind::Nullish)? {
-            let mut expression = Expression::Binary {
-                left: Box::new(first),
-                operator: BinaryOperator::Nullish,
-                right: Box::new(self.parse_equality_expression()?),
-            };
+            let mut rest = vec![(BinaryOperator::Nullish, self.parse_equality_expression()?)];
 
             while self.cursor.consume_optional(&TokenKind::Nullish)? {
-                expression = Expression::Binary {
-                    left: Box::new(expression),
-                    operator: BinaryOperator::Nullish,
-                    right: Box::new(self.parse_equality_expression()?),
-                };
+                rest.push((BinaryOperator::Nullish, self.parse_equality_expression()?));
             }
 
             if matches!(self.cursor.peek()?.kind, TokenKind::And | TokenKind::Or) {
@@ -142,7 +134,7 @@ impl Parser<'_> {
                 ));
             }
 
-            Ok(expression)
+            Ok(Self::binary_chain(first, rest))
         } else {
             let expression = self.parse_logical_or_tail(first)?;
 
@@ -158,46 +150,36 @@ impl Parser<'_> {
     }
 
     fn parse_logical_or_tail(&mut self, first: Expression) -> Result<Expression, JsError> {
-        let mut expression = self.parse_logical_and_tail(first)?;
+        let first = self.parse_logical_and_tail(first)?;
+        let mut rest = Vec::new();
 
         while self.cursor.consume_optional(&TokenKind::Or)? {
             let right = self.parse_logical_and_expression()?;
-
-            expression = Expression::Binary {
-                left: Box::new(expression),
-                operator: BinaryOperator::Or,
-                right: Box::new(right),
-            };
+            rest.push((BinaryOperator::Or, right));
         }
 
-        Ok(expression)
+        Ok(Self::binary_chain(first, rest))
     }
 
     fn parse_logical_and_expression(&mut self) -> Result<Expression, JsError> {
         let first = self.parse_equality_expression()?;
-
         self.parse_logical_and_tail(first)
     }
 
-    fn parse_logical_and_tail(
-        &mut self,
-        mut expression: Expression,
-    ) -> Result<Expression, JsError> {
+    fn parse_logical_and_tail(&mut self, first: Expression) -> Result<Expression, JsError> {
+        let mut rest = Vec::new();
+
         while self.cursor.consume_optional(&TokenKind::And)? {
             let right = self.parse_equality_expression()?;
-
-            expression = Expression::Binary {
-                left: Box::new(expression),
-                operator: BinaryOperator::And,
-                right: Box::new(right),
-            };
+            rest.push((BinaryOperator::And, right));
         }
 
-        Ok(expression)
+        Ok(Self::binary_chain(first, rest))
     }
 
     fn parse_equality_expression(&mut self) -> Result<Expression, JsError> {
-        let mut expression = self.parse_comparison_expression()?;
+        let first = self.parse_comparison_expression()?;
+        let mut rest = Vec::new();
 
         loop {
             let operator = if self.cursor.consume_optional(&TokenKind::StrictEqual)? {
@@ -213,19 +195,15 @@ impl Parser<'_> {
             };
 
             let right = self.parse_comparison_expression()?;
-
-            expression = Expression::Binary {
-                left: Box::new(expression),
-                operator,
-                right: Box::new(right),
-            };
+            rest.push((operator, right));
         }
 
-        Ok(expression)
+        Ok(Self::binary_chain(first, rest))
     }
 
     fn parse_comparison_expression(&mut self) -> Result<Expression, JsError> {
-        let mut expression = self.parse_term_expression()?;
+        let first = self.parse_term_expression()?;
+        let mut rest = Vec::new();
 
         loop {
             let operator = if self.cursor.consume_optional(&TokenKind::LessEqual)? {
@@ -245,19 +223,15 @@ impl Parser<'_> {
             };
 
             let right = self.parse_term_expression()?;
-
-            expression = Expression::Binary {
-                left: Box::new(expression),
-                operator,
-                right: Box::new(right),
-            };
+            rest.push((operator, right));
         }
 
-        Ok(expression)
+        Ok(Self::binary_chain(first, rest))
     }
 
     fn parse_term_expression(&mut self) -> Result<Expression, JsError> {
-        let mut expression = self.parse_factor_expression()?;
+        let first = self.parse_factor_expression()?;
+        let mut rest = Vec::new();
 
         loop {
             let operator = if self.cursor.consume_optional(&TokenKind::Plus)? {
@@ -269,19 +243,15 @@ impl Parser<'_> {
             };
 
             let right = self.parse_factor_expression()?;
-
-            expression = Expression::Binary {
-                left: Box::new(expression),
-                operator,
-                right: Box::new(right),
-            };
+            rest.push((operator, right));
         }
 
-        Ok(expression)
+        Ok(Self::binary_chain(first, rest))
     }
 
     fn parse_factor_expression(&mut self) -> Result<Expression, JsError> {
-        let mut expression = self.parse_unary_expression()?;
+        let first = self.parse_unary_expression()?;
+        let mut rest = Vec::new();
 
         loop {
             let operator = if self.cursor.consume_optional(&TokenKind::Star)? {
@@ -295,15 +265,10 @@ impl Parser<'_> {
             };
 
             let right = self.parse_unary_expression()?;
-
-            expression = Expression::Binary {
-                left: Box::new(expression),
-                operator,
-                right: Box::new(right),
-            };
+            rest.push((operator, right));
         }
 
-        Ok(expression)
+        Ok(Self::binary_chain(first, rest))
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, JsError> {
@@ -440,6 +405,17 @@ impl Parser<'_> {
             arguments,
         })
     }
+
+    fn binary_chain(first: Expression, rest: Vec<(BinaryOperator, Expression)>) -> Expression {
+        if rest.is_empty() {
+            first
+        } else {
+            Expression::BinaryChain {
+                first: Box::new(first),
+                rest,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -451,24 +427,16 @@ mod tests {
     fn multiplication_has_higher_precedence_than_addition() {
         let program = parse_program("1 + 2 * 3;").unwrap();
 
-        let [
-            Statement::Expression(Expression::Binary {
-                operator: BinaryOperator::Add,
-                right,
-                ..
-            }),
-        ] = program.as_slice()
+        let [Statement::Expression(Expression::BinaryChain { rest, .. })] = program.as_slice()
         else {
             panic!("expected an addition expression");
         };
 
-        assert!(matches!(
-            right.as_ref(),
-            Expression::Binary {
-                operator: BinaryOperator::Multiply,
-                ..
-            }
-        ));
+        let [(BinaryOperator::Add, Expression::BinaryChain { rest, .. })] = rest.as_slice() else {
+            panic!("expected multiplication as right operand");
+        };
+
+        assert!(matches!(rest.as_slice(), [(BinaryOperator::Multiply, _)]));
     }
 
     #[test]
@@ -559,12 +527,7 @@ mod tests {
 
         let [
             Statement::Declaration {
-                value:
-                    Expression::Binary {
-                        operator: BinaryOperator::StrictNotEqual,
-                        right,
-                        ..
-                    },
+                value: Expression::BinaryChain { rest, .. },
                 ..
             },
         ] = program.as_slice()
@@ -573,8 +536,8 @@ mod tests {
         };
 
         assert!(matches!(
-            right.as_ref(),
-            Expression::UnaryMinus(operand)
+            rest.as_slice(),
+            [(BinaryOperator::StrictNotEqual, Expression::UnaryMinus(operand))]
                 if matches!(
                     operand.as_ref(),
                     Expression::Literal(crate::javascript::Value::Number(number))
@@ -609,10 +572,8 @@ mod tests {
                 )
                 && matches!(
                     value.as_ref(),
-                    Expression::Binary {
-                        operator: BinaryOperator::Add,
-                        ..
-                    }
+                    Expression::BinaryChain { rest, .. }
+                        if matches!(rest.as_slice(), [(BinaryOperator::Add, _)])
                 )
         ));
     }
@@ -654,17 +615,12 @@ mod tests {
 
         assert!(matches!(
             program.as_slice(),
-            [Statement::Expression(Expression::Binary {
-                left,
-                operator: BinaryOperator::StrictEqual,
-                ..
-            })]
-                if matches!(
-                    left.as_ref(),
-                    Expression::Binary {
-                        operator: BinaryOperator::Remainder,
-                        ..
-                    }
+            [Statement::Expression(Expression::BinaryChain { first, rest })]
+                if matches!(rest.as_slice(), [(BinaryOperator::StrictEqual, _)])
+                && matches!(
+                    first.as_ref(),
+                    Expression::BinaryChain { rest, .. }
+                        if matches!(rest.as_slice(), [(BinaryOperator::Remainder, _)])
                 )
         ));
     }
@@ -705,10 +661,8 @@ mod tests {
 
         assert!(matches!(
             program.as_slice(),
-            [Statement::Expression(Expression::Binary {
-                operator: BinaryOperator::Nullish,
-                ..
-            })]
+            [Statement::Expression(Expression::BinaryChain { rest, .. })]
+                if matches!(rest.as_slice(), [(BinaryOperator::Nullish, _)])
         ));
     }
 }

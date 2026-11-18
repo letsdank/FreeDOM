@@ -188,17 +188,20 @@ fn visit_expression(expression: &Expression, names: &mut HashSet<String>) {
 
         Expression::Assignment { target, value }
         | Expression::CompoundAssignment { target, value, .. }
-        | Expression::Binary {
-            left: target,
-            right: value,
-            ..
-        }
         | Expression::Index {
             object: target,
             index: value,
         } => {
             visit_expression(target, names);
             visit_expression(value, names);
+        }
+
+        Expression::BinaryChain { first, rest } => {
+            visit_expression(first, names);
+
+            for (_, expression) in rest {
+                visit_expression(expression, names);
+            }
         }
 
         Expression::Function(function) => {

@@ -111,10 +111,10 @@ pub(crate) enum Expression {
         operator: BinaryOperator,
         value: Box<Expression>,
     },
-    Binary {
-        left: Box<Expression>,
-        operator: BinaryOperator,
-        right: Box<Expression>,
+    // Operators share a precedence level; short-circuit chains use one operator kind.
+    BinaryChain {
+        first: Box<Expression>,
+        rest: Vec<(BinaryOperator, Expression)>,
     },
     Function(UserFunction),
     Index {
