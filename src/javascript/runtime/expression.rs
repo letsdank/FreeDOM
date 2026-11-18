@@ -13,6 +13,14 @@ impl Interpreter {
         expression: &Expression,
     ) -> Result<Value, JsError> {
         self.consume_step()?;
+
+        self.with_execution_frame(|interpreter| interpreter.evaluate_expression_inner(expression))
+    }
+
+    pub(super) fn evaluate_expression_inner(
+        &mut self,
+        expression: &Expression,
+    ) -> Result<Value, JsError> {
         match expression {
             Expression::Literal(value) => Ok(value.clone()),
 

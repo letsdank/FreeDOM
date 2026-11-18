@@ -10,6 +10,7 @@ use super::{
 use self::bindings::{Bindings, CapturedBindings};
 
 const DEFAULT_EXECUTION_STEPS: usize = 1_000_000;
+const MAX_EXECUTION_DEPTH: usize = 32;
 
 #[path = "runtime/bindings.rs"]
 pub(super) mod bindings;
@@ -167,6 +168,7 @@ pub(super) struct Interpreter {
     canvas_saved_dash_values: usize,
     execution_limit: usize,
     steps_remaining: usize,
+    execution_depth: usize,
 }
 
 impl Interpreter {
@@ -388,6 +390,7 @@ impl Interpreter {
             canvas_saved_dash_values: 0,
             execution_limit: DEFAULT_EXECUTION_STEPS,
             steps_remaining: DEFAULT_EXECUTION_STEPS,
+            execution_depth: 0,
         }
     }
 
@@ -406,7 +409,9 @@ impl Interpreter {
 
     pub(super) fn execute(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
         self.consume_step()?;
-        let mut result = self.execute_statements(program);
+
+        let mut result =
+            self.with_execution_frame(|interpreter| interpreter.execute_statements(program));
 
         if let Err(error) = &mut result {
             if let super::JsErrorKind::NativeException(value) = &mut error.kind {
@@ -447,6 +452,25 @@ impl Interpreter {
 
         Ok(())
     }
+
+    fn with_execution_frame<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        if self.execution_depth >= MAX_EXECUTION_DEPTH {
+            return Err(JsError::resource_limit(
+                "JavaScript execution depth limit exceeded",
+            ));
+        }
+
+        self.execution_depth += 1;
+
+        let result = operation(self);
+
+        self.execution_depth -= 1;
+
+        result
+    }
 }
 
 #[cfg(test)]
@@ -471,6 +495,37 @@ mod tests {
 
             assert!(matches!(error.kind, JsErrorKind::ResourceLimit));
             assert!(error.message.contains("execution budget"));
+
+            let next_program = parse_program("42;").unwrap();
+
+            let result = interpreter
+                .execute_script(&next_program)
+                .unwrap()
+                .into_value();
+
+            assert_eq!(result, Value::Number(42.0));
+        }
+    }
+
+    #[test]
+    fn execution_depth_limit_unwinds_and_resets() {
+        let mut interpreter = Interpreter::new();
+
+        let nested_expression = vec!["1"; 64].join("+");
+
+        for source in [
+            "function direct() { direct(); } direct();",
+            "function nested() { if (true) { nested(); } } nested();",
+            nested_expression.as_str(),
+        ] {
+            let program = parse_program(source).unwrap();
+
+            let error = interpreter.execute_script(&program).err().unwrap();
+
+            assert_eq!(error.kind, JsErrorKind::ResourceLimit);
+            assert!(error.message.contains("execution depth"));
+
+            assert_eq!(interpreter.execution_depth, 0);
 
             let next_program = parse_program("42;").unwrap();
 
