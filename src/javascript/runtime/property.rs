@@ -90,16 +90,23 @@ impl Interpreter {
 
             (Value::Url(url), "protocol") => Ok(Value::String(format!("{}:", url.scheme()))),
 
-            (Value::Document(document), "title") => Ok(Value::String(document.title)),
+            (Value::Document(document), "title") => {
+                Ok(Value::String(document.borrow().title.clone()))
+            }
 
             (Value::Document(document), "body") => Ok(document
+                .borrow()
                 .body_node()
                 .map(Value::Element)
                 .unwrap_or(Value::Null)),
 
-            (Value::Document(document), "getElementById") => Ok(Value::DocumentMethod(
-                DocumentMethod::GetElementById(document),
-            )),
+            (Value::Document(_), "getElementById") => {
+                Ok(Value::DocumentMethod(DocumentMethod::GetElementById))
+            }
+
+            (Value::DocumentMethod(DocumentMethod::GetElementById), "call") => {
+                Ok(Value::NativeFunction(NativeFunction::FunctionCall))
+            }
 
             (Value::Document(_), "getElementsByTagName") => {
                 Ok(Value::DocumentMethod(DocumentMethod::GetElementsByTagName))
@@ -371,6 +378,10 @@ impl Interpreter {
 
         if matches!(object, Value::ObjectConstructor) {
             return self.member_value(Value::ObjectConstructor, &index.to_js_string());
+        }
+
+        if let Value::Document(document) = object {
+            return self.member_value(Value::Document(document), &index.to_js_string());
         }
 
         if let Value::Element(node_id) = object {

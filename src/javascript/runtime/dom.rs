@@ -1,6 +1,7 @@
 use crate::javascript::{
     DocumentState, JsError, Value,
     dom::{ElementState, parse_simple_selector},
+    value::DocumentStorage,
 };
 use std::cell::{Ref, RefMut};
 
@@ -8,14 +9,7 @@ use super::Interpreter;
 
 impl Interpreter {
     pub(super) fn current_document(&self) -> Option<Ref<'_, DocumentState>> {
-        Ref::filter_map(self.variables.get("document")?, |value| {
-            if let Value::Document(document) = value {
-                Some(document)
-            } else {
-                None
-            }
-        })
-        .ok()
+        self.document.as_ref().map(|document| document.borrow())
     }
 
     pub(super) fn current_document_element(&self, node_id: u64) -> Option<Ref<'_, ElementState>> {
@@ -26,19 +20,12 @@ impl Interpreter {
     }
 
     pub(super) fn current_document_mut(&mut self) -> Result<RefMut<'_, DocumentState>, JsError> {
-        let binding = self
-            .variables
-            .get_mut("document")
-            .ok_or_else(|| JsError::runtime("TypeError: document binding is unavailable"))?;
+        let document = self
+            .document
+            .as_ref()
+            .ok_or_else(|| JsError::runtime("document state is unavailable"))?;
 
-        RefMut::filter_map(binding, |value| {
-            if let Value::Document(document) = value {
-                Some(document)
-            } else {
-                None
-            }
-        })
-        .map_err(|_| JsError::runtime("TypeError: document binding is unavailable"))
+        Ok(document.borrow_mut())
     }
 
     pub(super) fn set_document_element_text_content(
@@ -111,7 +98,7 @@ impl Interpreter {
 
     pub(super) fn get_element_by_id(
         &mut self,
-        document: DocumentState,
+        document: DocumentStorage,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
         if arguments.len() != 1 {
@@ -122,10 +109,13 @@ impl Interpreter {
 
         let id = arguments[0].to_js_string();
 
-        Ok(document
+        let result = document
+            .borrow()
             .get_element_by_id(&id)
             .map(Value::Element)
-            .unwrap_or(Value::Null))
+            .unwrap_or(Value::Null);
+
+        Ok(result)
     }
 
     pub(super) fn get_elements_by_tag_name(

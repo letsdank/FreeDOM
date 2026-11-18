@@ -4,7 +4,7 @@
 //!
 //! Function prototype objects and full this binding are not implemented yet.
 
-use super::{Interpreter, JsError, Value};
+use super::{DocumentMethod, Interpreter, JsError, Value};
 use crate::javascript::FunctionKind;
 
 impl Interpreter {
@@ -50,6 +50,12 @@ impl Interpreter {
             Value::NativeFunction(function) => {
                 self.dispatch_call(Value::NativeFunction(function), Some(this_arg), arguments)
             }
+
+            Value::DocumentMethod(DocumentMethod::GetElementById) => self.dispatch_call(
+                Value::DocumentMethod(DocumentMethod::GetElementById),
+                Some(this_arg),
+                arguments,
+            ),
 
             Value::ArrayMethod { .. }
             | Value::DocumentMethod(_)

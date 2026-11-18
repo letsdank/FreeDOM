@@ -32,9 +32,7 @@ impl DocumentScriptSession {
         let result = self.interpreter.execute_script(&program);
 
         let Some(updated) = self.interpreter.snapshot_document() else {
-            return Err(JsError::runtime(
-                "TypeError: global document binding must remain a Document",
-            ));
+            return Err(JsError::runtime("document state is unavailable"));
         };
 
         *document = updated;
@@ -145,5 +143,55 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn document_aliases_and_saved_lookup_see_live_changes() {
+        let mut document = DocumentState::with_title("Before");
+        document.register_body("", String::new());
+
+        let mut session = DocumentScriptSession::new(&document);
+
+        session
+            .evaluate(
+                r#"
+                let alias = document;
+                let find = alias.getElementById;
+
+                document.title = 'Updated';
+
+                let before =
+                    alias.title === 'Updated' &&
+                    alias === document;
+
+                alias['title'] = 'From alias';
+
+                let element = document.createElement('div');
+                element.id = 'created';
+                document.body.appendChild(element);
+            "#,
+                &mut document,
+            )
+            .unwrap();
+
+        let result = session
+            .evaluate(
+                r#"
+                before &&
+                    document.title === 'From alias' &&
+                    find.call(alias, 'created') === element;
+            "#,
+                &mut document,
+            )
+            .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert_eq!(document.title, "From alias");
+
+        let error = session
+            .evaluate("find('created');", &mut document)
+            .unwrap_err();
+
+        assert!(matches!(error.kind, JsErrorKind::NativeException(_)));
     }
 }

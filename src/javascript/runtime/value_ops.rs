@@ -14,6 +14,8 @@ impl Interpreter {
         match (left, right) {
             (Value::Array(left), Value::Array(right)) => std::rc::Rc::ptr_eq(left, right),
 
+            (Value::Document(left), Value::Document(right)) => std::rc::Rc::ptr_eq(left, right),
+
             (Value::Object(left), Value::Object(right)) => std::rc::Rc::ptr_eq(left, right),
 
             _ => left == right,

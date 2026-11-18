@@ -192,7 +192,11 @@ impl Interpreter {
                 self.construct_error_with_prototype(values, self.reference_error_prototype.clone())
             }
 
-            Value::DocumentMethod(DocumentMethod::GetElementById(document)) => {
+            Value::DocumentMethod(DocumentMethod::GetElementById) => {
+                let Some(Value::Document(document)) = receiver else {
+                    return Err(JsError::type_error("getElementById: invalid receiver"));
+                };
+
                 self.get_element_by_id(document, values)
             }
 

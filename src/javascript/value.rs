@@ -49,7 +49,7 @@ pub enum NativeFunction {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DocumentMethod {
-    GetElementById(DocumentState),
+    GetElementById,
     CreateElement,
     GetElementsByTagName,
     QuerySelector,
@@ -355,6 +355,7 @@ pub(crate) struct ArrayState {
 
 pub(crate) type ArrayStorage = Rc<RefCell<ArrayState>>;
 pub(crate) type ObjectStorage = Rc<RefCell<ObjectState>>;
+pub type DocumentStorage = Rc<RefCell<DocumentState>>;
 
 /// A partial native Error object with optional prototype support.
 #[derive(Clone, Debug)]
@@ -575,7 +576,7 @@ pub enum Value {
     NativeError(NativeErrorValue),
     Url(Url),
     NativeFunction(NativeFunction),
-    Document(DocumentState),
+    Document(DocumentStorage),
     Element(u64),
     HtmlCollection(String),
     ElementChildren(u64),

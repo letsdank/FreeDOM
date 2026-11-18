@@ -8,15 +8,8 @@ use super::{Expression, Interpreter, JsError, Value};
 
 pub(super) enum AssignmentReference {
     Binding(String),
-    Member {
-        object: Value,
-        property: String,
-        document_title: bool,
-    },
-    Index {
-        object: Value,
-        index: Value,
-    },
+    Member { object: Value, property: String },
+    Index { object: Value, index: Value },
 }
 
 impl Interpreter {
@@ -28,21 +21,11 @@ impl Interpreter {
             Expression::Identifier(name) => Ok(AssignmentReference::Binding(name.clone())),
 
             Expression::Member { object, property } => {
-                let is_document_title_syntax = matches!(
-                    object.as_ref(),
-                    Expression::Identifier(name)
-                        if name == "document" && property == "title"
-                );
-
                 let object = self.evaluate_expression(object)?;
-
-                let document_title =
-                    is_document_title_syntax && matches!(&object, Value::Document(_));
 
                 Ok(AssignmentReference::Member {
                     object,
                     property: property.clone(),
-                    document_title,
                 })
             }
 
@@ -93,120 +76,117 @@ impl Interpreter {
                 Ok(())
             }
 
-            AssignmentReference::Member {
-                object,
-                property,
-                document_title,
-            } => {
-                if document_title {
-                    let mut document = self.current_document_mut()?;
-
-                    document.title = value.to_js_string();
-                    return Ok(());
+            AssignmentReference::Member { object, property } => match object {
+                Value::Document(document) if property == "title" => {
+                    document.borrow_mut().title = value.to_js_string();
+                    Ok(())
                 }
 
-                match object {
-                    Value::Null | Value::Undefined => Err(JsError::type_error(
-                        "cannot write property of null or undefined",
-                    )),
+                Value::Null | Value::Undefined => Err(JsError::type_error(
+                    "cannot write property of null or undefined",
+                )),
 
-                    Value::Object(values) => {
-                        if !self.set_canvas_property(&values, &property, &value) {
-                            values.borrow_mut().set(property, value);
-                        }
-
-                        Ok(())
+                Value::Object(values) => {
+                    if !self.set_canvas_property(&values, &property, &value) {
+                        values.borrow_mut().set(property, value);
                     }
 
-                    Value::Function(function) => {
-                        function.set(property, value);
-                        Ok(())
-                    }
+                    Ok(())
+                }
 
-                    Value::NativeError(error) => {
-                        error.set(property, value);
-                        Ok(())
-                    }
+                Value::Function(function) => {
+                    function.set(property, value);
+                    Ok(())
+                }
 
-                    Value::Arguments(_) => Err(JsError::unsupported(
-                        "arguments property mutation is not implemented",
-                    )),
+                Value::NativeError(error) => {
+                    error.set(property, value);
+                    Ok(())
+                }
 
-                    Value::Element(node_id) if property == "textContent" => {
-                        self.set_document_element_text_content(node_id, value.to_js_string())
-                    }
+                Value::Arguments(_) => Err(JsError::unsupported(
+                    "arguments property mutation is not implemented",
+                )),
 
-                    Value::Element(node_id) if property == "innerHTML" => {
-                        self.set_document_element_inner_html(node_id, value.to_js_string())
-                    }
+                Value::Element(node_id) if property == "textContent" => {
+                    self.set_document_element_text_content(node_id, value.to_js_string())
+                }
 
-                    Value::Element(node_id) if property == "outerHTML" => {
-                        self.set_document_element_outer_html(node_id, value.to_js_string())
-                    }
+                Value::Element(node_id) if property == "innerHTML" => {
+                    self.set_document_element_inner_html(node_id, value.to_js_string())
+                }
 
-                    Value::Element(node_id) if property == "id" => {
-                        self.set_document_element_id(node_id, value.to_js_string())
-                    }
+                Value::Element(node_id) if property == "outerHTML" => {
+                    self.set_document_element_outer_html(node_id, value.to_js_string())
+                }
 
-                    Value::Element(node_id) if property == "className" => {
-                        let class_name = value.to_js_string();
+                Value::Element(node_id) if property == "id" => {
+                    self.set_document_element_id(node_id, value.to_js_string())
+                }
 
-                        if self
-                            .current_document_mut()?
-                            .set_node_attribute(node_id, "class", class_name)
-                        {
-                            Ok(())
-                        } else {
-                            Err(JsError::runtime(
-                                "TypeError: element is no longer available",
-                            ))
-                        }
-                    }
+                Value::Element(node_id) if property == "className" => {
+                    let class_name = value.to_js_string();
 
-                    Value::Element(node_id)
-                        if matches!(property.as_str(), "width" | "height")
-                            && self
-                                .current_document_element(node_id)
-                                .is_some_and(|element| {
-                                    element.tag_name.eq_ignore_ascii_case("canvas")
-                                }) =>
+                    if self
+                        .current_document_mut()?
+                        .set_node_attribute(node_id, "class", class_name)
                     {
-                        self.set_canvas_dimension(node_id, &property, value)
-                    }
-
-                    Value::Attribute { node_id, name } if property == "value" => {
-                        if self.current_document_mut()?.set_node_attribute(
-                            node_id,
-                            &name,
-                            value.to_js_string(),
-                        ) {
-                            self.reset_canvas_attribute(node_id, &name);
-                            Ok(())
-                        } else {
-                            Err(JsError::runtime(
-                                "TypeError: attribute owner is no longer available",
-                            ))
-                        }
-                    }
-
-                    Value::RegExp(regexp) if property == "lastIndex" => {
-                        regexp.inner.borrow_mut().last_index = value;
                         Ok(())
+                    } else {
+                        Err(JsError::runtime(
+                            "TypeError: element is no longer available",
+                        ))
                     }
-
-                    Value::Array(values) => self.set_array_property(values, &property, value),
-
-                    Value::Element(_) => Err(JsError::runtime(format!(
-                        "Element.{property} is not implemented yet"
-                    ))),
-
-                    _ => Err(JsError::runtime(
-                        "TypeError: assignment target is not supported",
-                    )),
                 }
-            }
+
+                Value::Element(node_id)
+                    if matches!(property.as_str(), "width" | "height")
+                        && self
+                            .current_document_element(node_id)
+                            .is_some_and(|element| {
+                                element.tag_name.eq_ignore_ascii_case("canvas")
+                            }) =>
+                {
+                    self.set_canvas_dimension(node_id, &property, value)
+                }
+
+                Value::Attribute { node_id, name } if property == "value" => {
+                    if self.current_document_mut()?.set_node_attribute(
+                        node_id,
+                        &name,
+                        value.to_js_string(),
+                    ) {
+                        self.reset_canvas_attribute(node_id, &name);
+                        Ok(())
+                    } else {
+                        Err(JsError::runtime(
+                            "TypeError: attribute owner is no longer available",
+                        ))
+                    }
+                }
+
+                Value::RegExp(regexp) if property == "lastIndex" => {
+                    regexp.inner.borrow_mut().last_index = value;
+                    Ok(())
+                }
+
+                Value::Array(values) => self.set_array_property(values, &property, value),
+
+                Value::Element(_) => Err(JsError::runtime(format!(
+                    "Element.{property} is not implemented yet"
+                ))),
+
+                _ => Err(JsError::runtime(
+                    "TypeError: assignment target is not supported",
+                )),
+            },
 
             AssignmentReference::Index { object, index } => match object {
+                Value::Document(document) if index.to_js_string() == "title" => {
+                    document.borrow_mut().title = value.to_js_string();
+                    Ok(())
+                }
+
                 Value::Null | Value::Undefined => Err(JsError::type_error(
                     "cannot write property of null or undefined",
                 )),

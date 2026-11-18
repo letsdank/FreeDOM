@@ -1,7 +1,7 @@
 use crate::url::Url;
 use std::collections::{HashMap, VecDeque};
 
-use super::value::{ArrayStorage, FunctionValue, ObjectStorage};
+use super::value::{ArrayStorage, DocumentStorage, FunctionValue, ObjectStorage};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
     JsError, NativeFunction, Statement, TestContextMethod, UserFunction, Value,
@@ -144,6 +144,7 @@ impl Completion {
 
 pub(super) struct Interpreter {
     variables: Bindings,
+    document: Option<DocumentStorage>,
     cleanups: Vec<Cleanup>,
     function_locals: Vec<Vec<String>>,
     object_prototype: ObjectStorage,
@@ -362,6 +363,7 @@ impl Interpreter {
 
         Self {
             variables,
+            document: None,
             cleanups: Vec::new(),
             function_locals: Vec::new(),
             object_prototype,
@@ -384,6 +386,10 @@ impl Interpreter {
     }
 
     pub(super) fn set_document(&mut self, document: DocumentState) {
+        let document = std::rc::Rc::new(std::cell::RefCell::new(document));
+
+        self.document = Some(document.clone());
+
         self.variables
             .insert("document".to_owned(), Value::Document(document));
     }
