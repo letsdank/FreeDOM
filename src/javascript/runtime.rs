@@ -153,6 +153,7 @@ impl Completion {
 
 pub(super) struct Interpreter {
     variables: Bindings,
+    pending_script_results: Vec<Result<Completion, JsError>>,
     document: Option<DocumentStorage>,
     cleanups: Vec<Cleanup>,
     function_locals: Vec<Vec<String>>,
@@ -382,6 +383,7 @@ impl Interpreter {
 
         Self {
             variables,
+            pending_script_results: Vec::new(),
             document: None,
             cleanups: Vec::new(),
             function_locals: Vec::new(),
@@ -450,11 +452,33 @@ impl Interpreter {
             }
         }
 
-        if let Err(error) = self.perform_microtask_checkpoint() {
-            self.microtasks.clear();
-            return Err(error);
-        }
+        self.with_pending_script_result(result, |interpreter| {
+            let checkpoint = interpreter.perform_microtask_checkpoint();
 
+            if checkpoint.is_err() {
+                interpreter.microtasks.clear();
+            }
+
+            checkpoint
+        })
+    }
+
+    // Pending completions are future GC roots, but this is not a GC safepoint yet.
+    fn with_pending_script_result(
+        &mut self,
+        result: Result<Completion, JsError>,
+        operation: impl FnOnce(&mut Self) -> Result<(), JsError>,
+    ) -> Result<Completion, JsError> {
+        self.pending_script_results.push(result);
+
+        let checkpoint = operation(self);
+
+        let result = self
+            .pending_script_results
+            .pop()
+            .expect("pending script result must exist");
+
+        checkpoint?;
         result
     }
 
@@ -489,8 +513,8 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use super::Interpreter;
-    use crate::javascript::{JsErrorKind, Value, parse_program};
+    use super::{Completion, Interpreter};
+    use crate::javascript::{JsError, JsErrorKind, Value, parse_program};
 
     #[test]
     fn execution_guard_bounds_loops_and_microtasks() {
@@ -509,6 +533,7 @@ mod tests {
 
             assert!(matches!(error.kind, JsErrorKind::ResourceLimit));
             assert!(error.message.contains("execution budget"));
+            assert!(interpreter.pending_script_results.is_empty());
 
             let next_program = parse_program("42;").unwrap();
 
@@ -547,5 +572,71 @@ mod tests {
 
             assert_eq!(result, Value::Number(42.0));
         }
+    }
+
+    #[test]
+    fn pending_script_results_restore_after_nested_errors() {
+        let mut interpreter = Interpreter::new();
+        let original = Err(JsError::thrown(Value::Number(7.0)));
+
+        let result = interpreter.with_pending_script_result(original, |runtime| {
+            assert_eq!(runtime.pending_script_results.len(), 1);
+
+            assert!(matches!(
+                &runtime.pending_script_results[0],
+                Err(JsError {
+                    kind: JsErrorKind::Thrown(Value::Number(7.0)),
+                    ..
+                })
+            ));
+
+            let nested = runtime.with_pending_script_result(
+                Ok(Completion::Normal(Value::Null)),
+                |runtime| {
+                    assert_eq!(runtime.pending_script_results.len(), 2);
+                    Err(JsError::resource_limit("test limit"))
+                },
+            );
+
+            assert!(nested.is_err());
+            assert_eq!(runtime.pending_script_results.len(), 1);
+
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(JsError {
+                kind: JsErrorKind::Thrown(Value::Number(7.0)),
+                ..
+            })
+        ));
+
+        assert!(interpreter.pending_script_results.is_empty());
+    }
+
+    #[test]
+    fn script_exception_keeps_identity_across_microtask_checkpoint() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            "let value = { x: 1 }; \
+            queueMicrotask(function() { value.x = 2; }); \
+            throw value;",
+        )
+        .unwrap();
+
+        let error = interpreter.execute_script(&program).err().unwrap();
+
+        let JsErrorKind::Thrown(value) = error.kind else {
+            panic!("expected thrown value");
+        };
+
+        assert_eq!(
+            interpreter.member_value(value, "x").unwrap(),
+            Value::Number(2.0)
+        );
+
+        assert!(interpreter.pending_script_results.is_empty());
     }
 }
