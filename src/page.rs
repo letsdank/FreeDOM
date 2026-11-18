@@ -329,14 +329,6 @@ impl Page {
 
         true
     }
-
-    fn resolve_images(&mut self, fetcher: &Fetcher) {
-        for request in self.image_requests() {
-            let result = load_image(fetcher, &request.url);
-
-            self.apply_image_result(request.id, result);
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -384,10 +376,7 @@ pub(crate) fn load_page(input: &str) -> Result<Page> {
     let fetcher = Fetcher::new()?;
 
     let prepared = prepare_page(&fetcher, &url)?;
-    let mut page = build_prepared_page(prepared);
-    page.resolve_images(&fetcher);
-
-    Ok(page)
+    Ok(build_prepared_page(prepared))
 }
 
 fn prepare_page(fetcher: &Fetcher, url: &Url) -> Result<PreparedPage> {
@@ -792,7 +781,7 @@ fn load_font_face(
     None
 }
 
-fn load_image(fetcher: &Fetcher, resource_url: &Url) -> Option<BlockContent> {
+pub(crate) fn load_image(fetcher: &Fetcher, resource_url: &Url) -> Option<BlockContent> {
     let response = fetcher.get(resource_url).ok()?;
 
     if response.status >= 400 {
@@ -1610,7 +1599,10 @@ mod tests {
             Vec::new(),
         );
 
-        page.resolve_images(&fetcher);
+        for request in page.image_requests() {
+            let result = load_image(&fetcher, &request.url);
+            page.apply_image_result(request.id, result);
+        }
 
         server.join().unwrap();
 
@@ -1664,7 +1656,10 @@ mod tests {
             Vec::new(),
         );
 
-        page.resolve_images(&fetcher);
+        for request in page.image_requests() {
+            let result = load_image(&fetcher, &request.url);
+            page.apply_image_result(request.id, result);
+        }
 
         server.join().unwrap();
 

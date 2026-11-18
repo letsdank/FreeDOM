@@ -27,7 +27,7 @@ mod wpt;
 
 use crate::performance::FrameProfiler;
 use crate::{
-    page::{Page, load_page},
+    page::{BlockContent, Page, load_image, load_page},
     page_layout::PageLayout,
     render::{
         BlockRasterCache, GlyphRasterCache, LinkRegion, load_vector_font_from_environment, paint,
@@ -35,6 +35,10 @@ use crate::{
 };
 use anyhow::{Context as _, Result};
 use softbuffer::{Context as SoftbufferContext, Surface};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 use std::{num::NonZeroU32, rc::Rc};
 use winit::keyboard::ModifiersState;
@@ -97,6 +101,21 @@ enum AppEvent {
         kind: NavigationKind,
         result: std::result::Result<Page, String>,
     },
+    ImageFinished {
+        page_id: u64,
+        image_id: usize,
+        result: Option<BlockContent>,
+    },
+}
+
+fn apply_page_image_result(
+    page: &mut Page,
+    current_page_id: u64,
+    result_page_id: u64,
+    image_id: usize,
+    result: Option<BlockContent>,
+) -> bool {
+    current_page_id == result_page_id && page.apply_image_result(image_id, result)
 }
 
 fn main() -> Result<()> {
@@ -137,6 +156,7 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::<AppEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
     let mut app = App::new(page, proxy);
+    app.start_page_image_loads();
 
     event_loop.run_app(&mut app)?;
 
@@ -150,6 +170,8 @@ struct App {
     loading: bool,
     next_request_id: u64,
     active_request_id: u64,
+    page_id: u64,
+    image_cancel: Option<Arc<AtomicBool>>,
     event_proxy: EventLoopProxy<AppEvent>,
     window: Option<Rc<Window>>,
     _context: Option<SoftbufferContext<Rc<Window>>>,
@@ -185,6 +207,8 @@ impl App {
             loading: false,
             next_request_id: 0,
             active_request_id: 0,
+            page_id: 0,
+            image_cancel: None,
             event_proxy,
             window: None,
             _context: None,
@@ -557,6 +581,58 @@ impl App {
             }
         }
     }
+
+    fn start_page_image_loads(&mut self) {
+        if let Some(cancel) = self.image_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+
+        let requests = self.page.image_requests();
+
+        if requests.is_empty() {
+            return;
+        }
+
+        let page_id = self.page_id;
+        let proxy = self.event_proxy.clone();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.image_cancel = Some(cancel.clone());
+
+        std::thread::spawn(move || {
+            let fetcher = crate::fetch::Fetcher::new();
+
+            if let Err(error) = &fetcher {
+                eprintln!("FreeDOM: failed to initialize image loader: {error}");
+            }
+
+            for request in requests {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let result = fetcher
+                    .as_ref()
+                    .ok()
+                    .and_then(|fetcher| load_image(fetcher, &request.url));
+
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                if proxy
+                    .send_event(AppEvent::ImageFinished {
+                        page_id,
+                        image_id: request.id,
+                        result,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
 }
 
 fn next_scroll_offset(current: i32, maximum: i32, amount: i32) -> i32 {
@@ -648,9 +724,13 @@ impl ApplicationHandler<AppEvent> for App {
                         self.max_scroll_y = 0;
                         self.link_regions.clear();
                         self.page = page;
+                        self.page_id = request_id;
+
                         self.layout = None;
                         self.block_raster_cache.clear();
                         self.glyph_raster_cache.clear();
+
+                        self.start_page_image_loads();
                     }
 
                     Err(error) => {
@@ -663,6 +743,22 @@ impl ApplicationHandler<AppEvent> for App {
                 }
 
                 self.request_redraw();
+            }
+
+            AppEvent::ImageFinished {
+                page_id,
+                image_id,
+                result,
+            } => {
+                if apply_page_image_result(&mut self.page, self.page_id, page_id, image_id, result)
+                {
+                    self.layout = None;
+                    self.preview_layout = None;
+                    self.block_raster_cache.clear();
+                    self.link_regions.clear();
+
+                    self.request_redraw();
+                }
             }
         }
     }
@@ -740,5 +836,27 @@ mod tests {
 
         let (_, previous_url) = history.back_target().unwrap();
         assert_eq!(previous_url, "https://example.test/one");
+    }
+
+    #[test]
+    fn ignores_images_from_a_previous_page() {
+        let mut page = crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            r#"
+                <html xmlns="http://www.w3.org/1999/xhtml">
+                    <body>
+                        <img src="image.png" />
+                    </body>
+                </html>
+            "#,
+        )
+        .unwrap();
+
+        let image_id = page.image_requests()[0].id;
+
+        assert!(!apply_page_image_result(&mut page, 2, 1, image_id, None));
+        assert_eq!(page.image_requests().len(), 1);
+        assert!(apply_page_image_result(&mut page, 2, 2, image_id, None));
+        assert!(page.image_requests().is_empty());
     }
 }
