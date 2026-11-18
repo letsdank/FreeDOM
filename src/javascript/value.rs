@@ -26,6 +26,7 @@ pub enum NativeFunction {
     FunctionCall,
     FunctionApply,
     ObjectToString,
+    ObjectValueOf,
     ArrayToString,
     FunctionBind,
     QueueMicrotask,

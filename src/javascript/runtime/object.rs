@@ -111,6 +111,21 @@ impl Interpreter {
 
         Ok(Value::array(entries))
     }
+
+    // https://tc39.es/ecma262/#sec-object.prototype.valueof
+    pub(super) fn object_value_of(receiver: Option<Value>) -> Result<Value, JsError> {
+        match receiver.unwrap_or(Value::Undefined) {
+            Value::Null | Value::Undefined => Err(JsError::type_error(
+                "Object.prototype.valueOf requires a non-null value",
+            )),
+
+            Value::Boolean(_) | Value::Number(_) | Value::String(_) => Err(JsError::unsupported(
+                "Object.prototype.valueOf primitive boxing is not implemented",
+            )),
+
+            object => Ok(object),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -213,7 +228,7 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
 
-        let error = evaluate("'valueOf' in Object.create({});").unwrap_err();
+        let error = evaluate("'isPrototypeOf' in Object.create({});").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }

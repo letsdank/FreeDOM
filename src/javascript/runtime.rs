@@ -223,6 +223,12 @@ impl Interpreter {
             false,
         );
 
+        object_prototype.borrow_mut().define_own_data_property(
+            "valueOf".to_owned(),
+            Value::NativeFunction(NativeFunction::ObjectValueOf),
+            false,
+        );
+
         let Value::Array(array_prototype) = Value::array(Vec::new()) else {
             unreachable!("array constructor returns an array");
         };

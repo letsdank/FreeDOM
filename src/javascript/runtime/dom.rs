@@ -578,7 +578,7 @@ impl Interpreter {
     }
 
     pub(super) fn html_collection_item(
-        &self,
+        &mut self,
         receiver: Option<Value>,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
@@ -590,12 +590,7 @@ impl Interpreter {
             .first()
             .ok_or_else(|| JsError::type_error("HTMLCollection.item requires an argument"))?;
 
-        let index = self.webidl_unsigned_long(argument).ok_or_else(|| {
-            JsError::unsupported(
-                "HTMLCollection.item object-to-number conversion is not implemented",
-            )
-        })?;
-
+        let index = self.webidl_unsigned_long(argument)?;
         let nodes = self.html_collection_nodes(collection)?;
 
         Ok(usize::try_from(index)

@@ -412,9 +412,7 @@ impl Interpreter {
         name: &str,
         value: Value,
     ) -> Result<(), JsError> {
-        let value = self.webidl_unsigned_long(&value).ok_or_else(|| {
-            JsError::type_error("canvas dimension: unsupported number conversion")
-        })?;
+        let value = self.webidl_unsigned_long(&value)?;
 
         self.set_document_element_attribute(
             node_id,

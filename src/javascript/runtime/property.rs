@@ -982,4 +982,74 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn collection_item_converts_objects_in_number_hint_order() {
+        let mut document = DocumentState::default();
+        document.register_element("parent", "div", String::new());
+
+        let result = evaluate_with_document(
+            r#"
+                let collection = document.getElementsByTagName('span');
+                let trace = '';
+
+                let index = {
+                    valueOf: function() {
+                        trace = trace + 'v';
+
+                        let item = document.createElement('span');
+                        item.id = 'added';
+                        document.getElementById('parent').appendChild(item);
+
+                        return 0;
+                    },
+
+                    toString: function() {
+                        trace = trace + 's';
+                        return '0';
+                    }
+                };
+
+                let found = collection.item(index).id === 'added'
+                    && trace === 'v';
+
+                let fallback = {
+                    valueOf: function() {
+                        trace = trace + 'a';
+                        return {};
+                    },
+
+                    toString: function() {
+                        trace = trace + 'b';
+                        return '0';
+                    },
+                };
+
+                let second = collection.item(fallback).id === 'added'
+                    && trace === 'vab';
+
+                let caught = false;
+
+                try {
+                    collection.item({
+                        valueOf: function() { throw 'boom'; }
+                    });
+                } catch (e) {
+                    caught = e === 'boom';
+                }
+
+                let object = {};
+
+                let builtin =
+                    Object.prototype.valueOf.call(object) === object
+                    && 'valueOf' in object;
+
+                found && second && caught && builtin;
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
 }

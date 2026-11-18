@@ -6,13 +6,18 @@
 //! Object conversion is limited to ordinary objects; symbols and complete
 //! number formatting are not implemented.
 
+use super::value_ops::PrimitiveHint;
 use super::{Interpreter, JsError, Value};
 
 impl Interpreter {
-    pub(super) fn webidl_unsigned_long(&self, value: &Value) -> Option<u32> {
-        let number = self.to_number(value)?;
+    pub(super) fn webidl_unsigned_long(&mut self, value: &Value) -> Result<u32, JsError> {
+        let primitive = self.ordinary_to_primitive(value, PrimitiveHint::Number)?;
 
-        Some(if !number.is_finite() || number == 0.0 {
+        let number = self.to_number(&primitive).ok_or_else(|| {
+            JsError::unsupported("Web IDL unsigned long conversion is not implemented")
+        })?;
+
+        Ok(if !number.is_finite() || number == 0.0 {
             0
         } else {
             number.trunc().rem_euclid(4_294_967_296.0) as u32
@@ -20,7 +25,7 @@ impl Interpreter {
     }
 
     pub(super) fn webidl_dom_string(&mut self, value: &Value) -> Result<String, JsError> {
-        let value = self.ordinary_to_primitive_string(value)?;
+        let value = self.ordinary_to_primitive(value, PrimitiveHint::String)?;
 
         let result = match &value {
             Value::Number(number) if *number == 0.0 => Some("0".to_owned()),
@@ -68,7 +73,7 @@ mod tests {
             (Value::Number(f64::INFINITY), 0),
             (Value::String("42".to_owned()), 42),
         ] {
-            assert_eq!(interpreter.webidl_unsigned_long(&input), Some(expected));
+            assert_eq!(interpreter.webidl_unsigned_long(&input).unwrap(), expected);
         }
 
         assert_eq!(
@@ -90,8 +95,8 @@ mod tests {
 
         assert!(
             interpreter
-                .webidl_unsigned_long(&Value::object([]))
-                .is_none()
+                .webidl_unsigned_long(&Value::array(vec![]))
+                .is_err()
         );
 
         assert!(interpreter.webidl_dom_string(&Value::Number(1.5)).is_err());

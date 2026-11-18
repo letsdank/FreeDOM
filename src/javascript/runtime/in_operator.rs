@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn does_not_guess_the_result_without_prototype_lookup() {
-        let error = evaluate("'valueOf' in {};").unwrap_err();
+        let error = evaluate("'isPrototypeOf' in {};").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
     }
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn unimplemented_intrinsic_names_remain_unknown() {
-        for name in ["valueOf", "isPrototypeOf", "__proto__", "__defineGetter__"] {
+        for name in ["isPrototypeOf", "__proto__", "__defineGetter__"] {
             let source = format!("'{name}' in {{}};");
 
             assert_eq!(

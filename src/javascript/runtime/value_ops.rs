@@ -8,6 +8,12 @@
 use super::{Interpreter, JsError, Value};
 use crate::javascript::value::{ObjectState, PropertyLookup};
 
+#[derive(Clone, Copy)]
+pub(super) enum PrimitiveHint {
+    String,
+    Number,
+}
+
 impl Interpreter {
     // The heap-backed Array and Object variants compare by identity.
     // https://tc39.es/ecma262/#sec-isstrictlyequal
@@ -167,9 +173,13 @@ impl Interpreter {
         Ok(comparison(left, right))
     }
 
-    // OrdinaryToPrimitive with the string hint, for ordinary objects only.
+    // OrdinaryToPrimitive for ordinary objects; @@toPrimitive is not implemented.
     // https://tc39.es/ecma262/#sec-ordinarytoprimitive
-    pub(super) fn ordinary_to_primitive_string(&mut self, value: &Value) -> Result<Value, JsError> {
+    pub(super) fn ordinary_to_primitive(
+        &mut self,
+        value: &Value,
+        hint: PrimitiveHint,
+    ) -> Result<Value, JsError> {
         let object = match value {
             Value::Undefined
             | Value::Null
@@ -186,7 +196,12 @@ impl Interpreter {
             }
         };
 
-        for name in ["toString", "valueOf"] {
+        let methods = match hint {
+            PrimitiveHint::String => ["toString", "valueOf"],
+            PrimitiveHint::Number => ["valueOf", "toString"],
+        };
+
+        for name in methods {
             let method = match ObjectState::lookup(object, name) {
                 PropertyLookup::Found(method) => method,
 
