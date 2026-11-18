@@ -169,8 +169,8 @@ impl Interpreter {
                         }
 
                         _ => {
-                            let right = self.evaluate_expression(expression)?;
-                            value = self.evaluate_binary(value, *operator, right)?;
+                            value =
+                                self.evaluate_binary_chain_step(value, *operator, expression)?;
                         }
                     }
                 }
@@ -215,6 +215,30 @@ impl Interpreter {
                 Err(JsError::unsupported("await evaluation is not implemented"))
             }
         }
+    }
+
+    fn evaluate_binary_chain_step(
+        &mut self,
+        left: Value,
+        operator: BinaryOperator,
+        right_expression: &Expression,
+    ) -> Result<Value, JsError> {
+        let base = self.temporary_values.len();
+        self.temporary_values.push(left);
+
+        let result = (|| {
+            let right = self.evaluate_expression(right_expression)?;
+            self.temporary_values.push(right);
+
+            let left = self.temporary_values[base].clone();
+            let right = self.temporary_values[base + 1].clone();
+
+            self.evaluate_binary(left, operator, right)
+        })();
+
+        self.temporary_values.truncate(base);
+
+        result
     }
 
     fn construct(&mut self, constructor: &str, arguments: &[Expression]) -> Result<Value, JsError> {

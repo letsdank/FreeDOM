@@ -184,6 +184,7 @@ pub(super) struct Interpreter {
     steps_remaining: usize,
     execution_depth: usize,
     active_call_frames: Vec<ActiveCallFrame>,
+    temporary_values: Vec<Value>,
 }
 
 impl Interpreter {
@@ -415,6 +416,7 @@ impl Interpreter {
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
             active_call_frames: Vec::new(),
+            temporary_values: Vec::new(),
         }
     }
 
@@ -678,5 +680,53 @@ mod tests {
             interpreter.execute_script(&program).unwrap().into_value(),
             Value::Number(42.0)
         );
+    }
+
+    #[test]
+    fn binary_temporary_values_are_scoped_across_nested_calls_and_errors() {
+        let mut interpreter = Interpreter::new();
+
+        interpreter.temporary_values.push(Value::Number(77.0));
+
+        let program = parse_program(
+            r#"
+            let trace = '';
+            let left = {
+                valueOf: function() {
+                    trace = trace + 'l';
+                    return 2;
+                }
+            };
+            let right = {
+                valueOf: function() {
+                    trace = trace + 'r';
+                    return 3;
+                }
+            };
+
+            function nested() {
+                trace = trace + 'n';
+                return right;
+            }
+
+            left + nested() === 5 && trace === 'nlr';
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+
+        for source in [
+            "1 + missing;",
+            "({valueOf: function() { throw 'error'; }}) + 1;",
+        ] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err());
+            assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+        }
     }
 }
