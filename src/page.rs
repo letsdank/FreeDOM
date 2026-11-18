@@ -5728,4 +5728,69 @@ mod tests {
 
         assert_eq!(b.canvas.surface().pixel(0, 0), Some(Color::BLACK));
     }
+
+    #[test]
+    fn canvas_translation_affects_rectangles_and_new_path_points() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='a' width='12' height='10'></canvas>
+                <canvas id='b' width='4' height='4'></canvas>
+
+                <script>
+                    let ctx = document.getElementById('a').getContext('2d');
+
+                    ctx.translate(3, 2);
+                    ctx.fillStyle = 'blue';
+                    ctx.fillRect(0, 0, 2, 2);
+
+                    ctx.save();
+                    ctx.translate(2, 0);
+
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(4, 0);
+                    ctx.lineTo(0, 4);
+                    ctx.closePath();
+
+                    ctx.restore();
+                    ctx.fill();
+
+                    ctx.clearRect(1, 0, 1, 1);
+                    ctx.fillRect(0, 4, 1, 1);
+
+                    let canvas = document.getElementById('b');
+                    let other = canvas.getContext('2d');
+
+                    other.translate(2, 1);
+                    other.save();
+
+                    canvas.width = canvas.width;
+                    other.restore();
+                    other.fillRect(0, 0, 1, 1);
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(a) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        let surface = a.canvas.surface();
+
+        assert_eq!(surface.pixel(3, 2), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(surface.pixel(4, 2), Some(Color::TRANSPARENT));
+        assert_eq!(surface.pixel(5, 2), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(surface.pixel(3, 6), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(surface.pixel(0, 0), Some(Color::TRANSPARENT));
+
+        let BlockContent::Canvas(b) = &page.blocks[1].content else {
+            panic!("canvas expected");
+        };
+
+        assert_eq!(b.canvas.surface().pixel(0, 0), Some(Color::BLACK));
+        assert_eq!(b.canvas.surface().pixel(2, 1), Some(Color::TRANSPARENT));
+    }
 }

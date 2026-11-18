@@ -7,6 +7,7 @@ use crate::{
     css::parse_color,
     graphics::{
         canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
+        geometry::Transform,
         raster::{Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle},
     },
 };
@@ -27,6 +28,7 @@ const MAX_SAVED_CANVAS_DASH_VALUES: usize = 1_048_576;
 pub(super) struct CanvasSavedState {
     properties: [Value; 7],
     dash: Vec<f64>,
+    transform: Transform,
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +221,7 @@ impl Interpreter {
             ("getLineDash", ElementMethod::CanvasGetLineDash(node_id)),
             ("save", ElementMethod::CanvasSave(node_id)),
             ("restore", ElementMethod::CanvasRestore(node_id)),
+            ("translate", ElementMethod::CanvasTranslate(node_id)),
         ] {
             context.borrow_mut().define_own_data_property(
                 name.to_owned(),
@@ -671,10 +674,20 @@ impl Interpreter {
             .cloned()
             .unwrap_or_default();
 
+        let transform = self
+            .canvas_surfaces
+            .get(&node_id)
+            .map(Canvas2D::current_transform)
+            .unwrap_or(Transform::IDENTITY);
+
         self.canvas_state_stacks
             .entry(node_id)
             .or_default()
-            .push(CanvasSavedState { properties, dash });
+            .push(CanvasSavedState {
+                properties,
+                dash,
+                transform,
+            });
 
         self.canvas_saved_states += 1;
         self.canvas_saved_dash_values += dash_len;
@@ -709,6 +722,10 @@ impl Interpreter {
         self.canvas_saved_states -= 1;
         self.canvas_saved_dash_values -= saved.dash.len();
 
+        if let Some(canvas) = self.canvas_surfaces.get_mut(&node_id) {
+            canvas.restore_transform(saved.transform);
+        }
+
         {
             let mut context = context.borrow_mut();
 
@@ -733,6 +750,36 @@ impl Interpreter {
             self.canvas_saved_dash_values -=
                 stack.iter().map(|state| state.dash.len()).sum::<usize>();
         }
+    }
+
+    pub(super) fn canvas_translate(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        self.canvas_context_receiver(node_id, receiver, "translate")?;
+
+        if arguments.len() < 2 {
+            return Err(JsError::type_error("translate requires two arguments"));
+        }
+
+        let x = self
+            .to_number(&arguments[0])
+            .ok_or_else(|| JsError::type_error("translate: unsupported number conversion"))?;
+
+        let y = self
+            .to_number(&arguments[1])
+            .ok_or_else(|| JsError::type_error("translate: unsupported number conversion"))?;
+
+        if self.ensure_canvas_surface(node_id) {
+            self.canvas_surfaces
+                .get_mut(&node_id)
+                .expect("surface was initialized")
+                .translate(x, y);
+        }
+
+        Ok(Value::Undefined)
     }
 }
 

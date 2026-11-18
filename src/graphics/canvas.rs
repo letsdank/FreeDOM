@@ -7,7 +7,7 @@
 
 use super::{
     flatten::flatten_path,
-    geometry::{Path, Point},
+    geometry::{Path, Point, Transform},
     raster::{Color, FillRule, StrokeStyle, Surface, fill_path, stroke_path},
 };
 
@@ -24,6 +24,7 @@ pub struct Canvas2D {
     fill_style: Color,
     current_path: Path,
     has_subpath: bool,
+    transform: Transform,
 }
 
 impl Canvas2D {
@@ -38,6 +39,7 @@ impl Canvas2D {
             fill_style: Color::BLACK,
             current_path: Path::new(),
             has_subpath: false,
+            transform: Transform::IDENTITY,
         })
     }
 
@@ -64,6 +66,9 @@ impl Canvas2D {
     }
 
     pub fn fill_rect(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        let x = x + f64::from(self.transform.e);
+        let y = y + f64::from(self.transform.f);
+
         let Some(rect) = self.clipped_rect(x, y, width, height) else {
             return;
         };
@@ -87,6 +92,9 @@ impl Canvas2D {
     }
 
     pub fn clear_rect(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        let x = x + f64::from(self.transform.e);
+        let y = y + f64::from(self.transform.f);
+
         let Some(rect) = self.clipped_rect(x, y, width, height) else {
             return;
         };
@@ -153,7 +161,7 @@ impl Canvas2D {
     }
 
     pub fn move_to(&mut self, x: f64, y: f64) {
-        let Some(point) = canvas_point(x, y) else {
+        let Some(point) = self.canvas_point(x, y) else {
             return;
         };
 
@@ -166,7 +174,7 @@ impl Canvas2D {
     }
 
     pub fn line_to(&mut self, x: f64, y: f64) {
-        let Some(point) = canvas_point(x, y) else {
+        let Some(point) = self.canvas_point(x, y) else {
             return;
         };
 
@@ -184,7 +192,7 @@ impl Canvas2D {
 
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-quadraticcurveto-dev
     pub fn quadratic_curve_to(&mut self, cx: f64, cy: f64, x: f64, y: f64) {
-        let (Some(control), Some(to)) = (canvas_point(cx, cy), canvas_point(x, y)) else {
+        let (Some(control), Some(to)) = (self.canvas_point(cx, cy), self.canvas_point(x, y)) else {
             return;
         };
 
@@ -205,9 +213,9 @@ impl Canvas2D {
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beziercurveto-dev
     pub fn bezier_curve_to(&mut self, c1x: f64, c1y: f64, c2x: f64, c2y: f64, x: f64, y: f64) {
         let (Some(control_one), Some(control_two), Some(to)) = (
-            canvas_point(c1x, c1y),
-            canvas_point(c2x, c2y),
-            canvas_point(x, y),
+            self.canvas_point(c1x, c1y),
+            self.canvas_point(c2x, c2y),
+            self.canvas_point(x, y),
         ) else {
             return;
         };
@@ -247,12 +255,51 @@ impl Canvas2D {
 
         stroke_path(&mut self.surface, &flattened, style, color);
     }
-}
 
-fn canvas_point(x: f64, y: f64) -> Option<Point> {
-    let (x, y) = (x as f32, y as f32);
+    pub(crate) fn current_transform(&self) -> Transform {
+        self.transform
+    }
 
-    (x.is_finite() && y.is_finite()).then_some(Point::new(x, y))
+    pub(crate) fn restore_transform(&mut self, transform: Transform) {
+        self.transform = transform;
+    }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-translate-dev
+    pub fn translate(&mut self, x: f64, y: f64) {
+        let (x, y) = (x as f32, y as f32);
+
+        if !x.is_finite() || !y.is_finite() {
+            return;
+        }
+
+        let transform = Transform::translate(x, y).then(self.transform);
+
+        if [
+            transform.a,
+            transform.b,
+            transform.c,
+            transform.d,
+            transform.e,
+            transform.f,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+        {
+            self.transform = transform;
+        }
+    }
+
+    fn canvas_point(&self, x: f64, y: f64) -> Option<Point> {
+        let (x, y) = (x as f32, y as f32);
+
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+
+        let point = self.transform.apply_point(Point::new(x, y));
+
+        (point.x.is_finite() && point.y.is_finite()).then_some(point)
+    }
 }
 
 struct Rect {

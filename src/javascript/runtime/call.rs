@@ -326,6 +326,10 @@ impl Interpreter {
                 self.canvas_restore(node_id, receiver)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasTranslate(node_id)) => {
+                self.canvas_translate(node_id, receiver, values)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {

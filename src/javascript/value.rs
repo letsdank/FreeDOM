@@ -85,6 +85,7 @@ pub(crate) enum ElementMethod {
     CanvasGetLineDash(u64),
     CanvasSave(u64),
     CanvasRestore(u64),
+    CanvasTranslate(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
