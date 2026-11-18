@@ -67,9 +67,13 @@ impl Interpreter {
 
                 PostfixStep::Index(index) => {
                     let object = result.into_value(self)?;
-                    let index = self.evaluate_expression(index)?;
 
-                    PostfixResult::Reference(Reference::Index { object, index })
+                    self.with_temporary_value(object, |interpreter, object_index| {
+                        let index = interpreter.evaluate_expression(index)?;
+                        let object = interpreter.temporary_values[object_index].clone();
+
+                        Ok(PostfixResult::Reference(Reference::Index { object, index }))
+                    })?
                 }
 
                 PostfixStep::Call(arguments) => {

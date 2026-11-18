@@ -101,18 +101,26 @@ impl Interpreter {
         prefix: bool,
     ) -> Result<Value, JsError> {
         let reference = self.prepare_reference(target)?;
-        let previous = self.read_reference(&reference)?;
 
-        let number = self.to_number(&previous)?;
-        let updated = Value::Number(number + delta);
+        self.with_active_reference(reference, |interpreter, reference_index| {
+            let reference = interpreter.active_references[reference_index].clone();
+            let previous = interpreter.read_reference(&reference)?;
 
-        self.write_reference(reference, updated.clone())?;
+            interpreter.with_temporary_value(previous, |interpreter, previous_index| {
+                let previous = interpreter.temporary_values[previous_index].clone();
+                let number = interpreter.to_number(&previous)?;
+                let updated = Value::Number(number + delta);
+                let reference = interpreter.active_references[reference_index].clone();
 
-        if prefix {
-            Ok(updated)
-        } else {
-            Ok(Value::Number(number))
-        }
+                interpreter.write_reference(reference, updated.clone())?;
+
+                if prefix {
+                    Ok(updated)
+                } else {
+                    Ok(Value::Number(number))
+                }
+            })
+        })
     }
 
     pub(super) fn evaluate_unary_number(

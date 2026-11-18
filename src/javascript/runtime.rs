@@ -521,6 +521,22 @@ impl Interpreter {
 
         result
     }
+
+    fn with_temporary_value<T>(
+        &mut self,
+        value: Value,
+        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.temporary_values.len();
+
+        self.temporary_values.push(value);
+
+        let result = operation(self, index);
+
+        self.temporary_values.truncate(index);
+
+        result
+    }
 }
 
 #[cfg(test)]
@@ -771,6 +787,57 @@ mod tests {
             assert!(interpreter.execute_script(&program).is_err());
             assert!(interpreter.active_references.is_empty());
             assert!(interpreter.temporary_values.is_empty());
+        }
+    }
+
+    #[test]
+    fn indexed_updates_restore_temporary_roots_after_calls_and_errors() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let calls = 0;
+            let target = {
+                x: {
+                    valueOf: function() {
+                        calls = calls + 1;
+                        return 4;
+                    }
+                }
+            };
+            let original = target;
+
+            function choose() {
+                calls = calls + 1;
+                target = {x: 99};
+                return 'x';
+            }
+
+            let before = target[choose()]++;
+
+            before === 4 &&
+                original.x === 5 &&
+                target.x === 99 &&
+                calls === 2;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.temporary_values.is_empty());
+        assert!(interpreter.active_references.is_empty());
+
+        for source in [
+            "original[missing]++;",
+            "({x: {valueOf: function() { throw 'error'; }}}).x++;",
+        ] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err());
+            assert!(interpreter.temporary_values.is_empty());
+            assert!(interpreter.active_references.is_empty());
         }
     }
 }
