@@ -308,6 +308,13 @@ enum StylesheetSource {
     External(Url),
 }
 
+/// Main document and author stylesheets, loaded before script execution.
+struct PreparedPage {
+    final_url: Url,
+    document: HtmlDocument,
+    stylesheets: Vec<Stylesheet>,
+}
+
 pub(crate) fn load_page(input: &str) -> Result<Page> {
     let input = if input.contains("://") {
         input.to_owned()
@@ -317,21 +324,36 @@ pub(crate) fn load_page(input: &str) -> Result<Page> {
 
     let url = Url::parse(&input)?;
     let fetcher = Fetcher::new()?;
-    let response = fetcher.get(&url)?;
+
+    let prepared = prepare_page(&fetcher, &url)?;
+
+    Ok(build_prepared_page(prepared, Some(&fetcher)))
+}
+
+fn prepare_page(fetcher: &Fetcher, url: &Url) -> Result<PreparedPage> {
+    let response = fetcher.get(url)?;
 
     let html = response.text_lossy();
     let final_url = response.url;
 
     let document = HtmlDocument::parse(&html);
-    let stylesheets = load_author_stylesheets(&fetcher, &final_url, &document);
-    let final_url_text = final_url.to_string();
+    let stylesheets = load_author_stylesheets(fetcher, &final_url, &document);
 
-    Ok(parse_dom_with_fetcher(
-        &final_url_text,
-        &document,
-        &stylesheets,
-        Some(&fetcher),
-    ))
+    Ok(PreparedPage {
+        final_url,
+        document,
+        stylesheets,
+    })
+}
+
+fn build_prepared_page(prepared: PreparedPage, fetcher: Option<&Fetcher>) -> Page {
+    let PreparedPage {
+        final_url,
+        document,
+        stylesheets,
+    } = prepared;
+
+    parse_dom_with_fetcher(&final_url.to_string(), &document, &stylesheets, fetcher)
 }
 
 #[cfg(test)]
@@ -6014,5 +6036,38 @@ mod tests {
         assert_eq!(surface.pixel(0, 0), Some(Color::rgba(0, 0, 255, 255)));
         assert_eq!(surface.pixel(5, 2), Some(Color::rgba(0, 128, 0, 255)));
         assert_eq!(surface.pixel(0, 7), Some(Color::rgba(255, 0, 0, 255)));
+    }
+
+    #[test]
+    fn builds_page_from_prepend_navigation() {
+        fn require_send<T: Send>() {}
+
+        require_send::<PreparedPage>();
+
+        let url = Url::parse("https://example.test/final").unwrap();
+
+        let document = HtmlDocument::parse(
+            "<title>Before</title>\
+             <p>Hello</p>\
+             <script>document.title = 'After';</script>",
+        );
+
+        let stylesheets = vec![Stylesheet {
+            source: "p { color: #123456; }".to_owned(),
+            base_url: url.clone(),
+        }];
+
+        let prepared = PreparedPage {
+            final_url: url,
+            document,
+            stylesheets,
+        };
+
+        let page = build_prepared_page(prepared, None);
+
+        assert_eq!(page.url, "https://example.test/final");
+        assert_eq!(page.title, "After");
+        assert_eq!(page.blocks[0].text(), Some("Hello"));
+        assert_eq!(page.blocks[0].style.color, 0x00_12_34_56);
     }
 }
