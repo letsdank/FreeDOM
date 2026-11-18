@@ -101,13 +101,13 @@ impl Interpreter {
         document: DocumentStorage,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
-        if arguments.len() != 1 {
-            return Err(JsError::runtime(
-                "TypeError: document.getElementById expects one argument",
-            ));
-        }
+        let argument = arguments
+            .first()
+            .ok_or_else(|| JsError::type_error("document.getElementById requires an argument"))?;
 
-        let id = arguments[0].to_js_string();
+        let id = Self::webidl_dom_string(argument).ok_or_else(|| {
+            JsError::unsupported("document.getElementById argument conversion is not implemented")
+        })?;
 
         let result = document
             .borrow()

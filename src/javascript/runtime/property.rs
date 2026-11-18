@@ -845,4 +845,60 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
     }
+
+    #[test]
+    fn get_element_by_id_uses_webidl_arguments_and_document_receiver() {
+        let mut document = DocumentState::default();
+
+        for id in ["0", "null", "undefined", "true", "NaN", "Infinity"] {
+            document.register_element(id, "div", String::new());
+        }
+
+        let result = evaluate_with_document(
+            r#"
+                let calls = 0;
+                let omitted = false;
+                let wrongThis = false;
+                let detached = false;
+
+                let method = document.getElementById;
+
+                try { document.getElementById(); }
+                catch (e) { omitted = e.name === 'TypeError'; }
+
+                try { method.call({}, '0'); }
+                catch (e) { wrongThis = e.name === 'TypeError'; }
+
+                try { method('0'); }
+                catch (e) { detached = e.name === 'TypeError'; }
+
+                document.getElementById(-0, calls = 1).id === '0'
+                    && calls === 1
+                    && document.getElementById(null).id === 'null'
+                    && document.getElementById(undefined).id === 'undefined'
+                    && document.getElementById(true).id === 'true'
+                    && document.getElementById(0 / 0).id === 'NaN'
+                    && document.getElementById(1 / 0).id === 'Infinity'
+                    && method.call(document, '0').id === '0'
+                    && document.getElementById('missing') === null
+                    && omitted && wrongThis && detached;
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        for source in [
+            "document.getElementById({});",
+            "document.getElementById(1.5);",
+        ] {
+            let error = evaluate_with_document(source, &mut document).unwrap_err();
+
+            assert_eq!(
+                error.kind,
+                crate::javascript::JsErrorKind::UnsupportedFeature
+            );
+        }
+    }
 }
