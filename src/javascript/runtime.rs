@@ -535,9 +535,18 @@ impl Interpreter {
         value: Value,
         operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
     ) -> Result<T, JsError> {
-        let index = self.temporary_values.len();
+        self.with_temporary_values_scope(|interpreter, index| {
+            interpreter.temporary_values.push(value);
 
-        self.temporary_values.push(value);
+            operation(interpreter, index)
+        })
+    }
+
+    fn with_temporary_values_scope<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.temporary_values.len();
 
         let result = operation(self, index);
 
@@ -900,6 +909,51 @@ mod tests {
 
             assert!(interpreter.execute_script(&program).is_err());
             assert!(interpreter.pending_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn literal_temporaries_are_scoped_and_preserve_holes() {
+        let mut interpreter = Interpreter::new();
+
+        interpreter.temporary_values.push(Value::Number(77.0));
+
+        let program = parse_program(
+            r#"
+            let trace = '';
+
+            function next() {
+                trace = trace + 'n';
+                return {value:2};
+            }
+
+            let array = [{value: 1},, next()];
+            let object = {
+                first: array[0],
+                second: next(),
+                first: array[2]
+            };
+
+            array.length === 3 &&
+                !array.hasOwnProperty(1) &&
+                array[0].value === 1 &&
+                object.first.value === 2 &&
+                object.second.value === 2 &&
+                trace === 'nn';
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+
+        for source in ["[{x: 1}, missing];", "({x: {a: 1}, y: missing});"] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err());
+            assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
         }
     }
 }

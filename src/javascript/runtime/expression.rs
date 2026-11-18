@@ -75,29 +75,47 @@ impl Interpreter {
             Expression::RegExpLiteral { pattern, flags } => Self::create_regexp(pattern, flags),
 
             Expression::Array(expressions) => {
-                let mut slots = Vec::with_capacity(expressions.len());
+                self.with_temporary_values_scope(|interpreter, base| {
+                    for expression in expressions {
+                        let value = match expression {
+                            Some(expression) => interpreter.evaluate_expression(expression)?,
+                            None => Value::Undefined,
+                        };
 
-                for expression in expressions {
-                    slots.push(match expression {
-                        Some(expression) => Some(self.evaluate_expression(expression)?),
-                        None => None,
-                    });
-                }
+                        interpreter.temporary_values.push(value);
+                    }
 
-                Ok(Value::array_from_slots(slots))
+                    let values = interpreter.temporary_values.drain(base..);
+
+                    let slots = expressions
+                        .iter()
+                        .zip(values)
+                        .map(|(expression, value)| expression.as_ref().map(|_| value))
+                        .collect();
+
+                    Ok(Value::array_from_slots(slots))
+                })
             }
 
             Expression::Object(properties) => {
-                let mut values = Vec::with_capacity(properties.len());
+                self.with_temporary_values_scope(|interpreter, base| {
+                    for (_, expression) in properties {
+                        let value = interpreter.evaluate_expression(expression)?;
 
-                for (name, expression) in properties {
-                    values.push((name.clone(), self.evaluate_expression(expression)?));
-                }
+                        interpreter.temporary_values.push(value);
+                    }
 
-                Ok(Value::object_with_entries_and_prototype(
-                    values,
-                    self.object_prototype.clone(),
-                ))
+                    let values: Vec<_> = properties
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .zip(interpreter.temporary_values.drain(base..))
+                        .collect();
+
+                    Ok(Value::object_with_entries_and_prototype(
+                        values,
+                        interpreter.object_prototype.clone(),
+                    ))
+                })
             }
 
             Expression::Identifier(name) => self
@@ -232,22 +250,18 @@ impl Interpreter {
         operator: BinaryOperator,
         right_expression: &Expression,
     ) -> Result<Value, JsError> {
-        let base = self.temporary_values.len();
-        self.temporary_values.push(left);
+        self.with_temporary_values_scope(|interpreter, base| {
+            interpreter.temporary_values.push(left);
 
-        let result = (|| {
-            let right = self.evaluate_expression(right_expression)?;
-            self.temporary_values.push(right);
+            let right = interpreter.evaluate_expression(right_expression)?;
 
-            let left = self.temporary_values[base].clone();
-            let right = self.temporary_values[base + 1].clone();
+            interpreter.temporary_values.push(right);
 
-            self.evaluate_binary(left, operator, right)
-        })();
+            let left = interpreter.temporary_values[base].clone();
+            let right = interpreter.temporary_values[base + 1].clone();
 
-        self.temporary_values.truncate(base);
-
-        result
+            interpreter.evaluate_binary(left, operator, right)
+        })
     }
 
     fn construct(&mut self, constructor: &str, arguments: &[Expression]) -> Result<Value, JsError> {
