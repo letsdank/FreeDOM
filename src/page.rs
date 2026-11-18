@@ -5556,4 +5556,64 @@ mod tests {
 
         assert!(closed.canvas.surface().pixel(6, 0).unwrap().alpha > 0);
     }
+
+    #[test]
+    fn connects_canvas_dashes_across_closed_path_seam() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='wrap' width='16' height='16'></canvas>
+                <canvas id='full' width='16' height='16'></canvas>
+                <canvas id='gap' width='16' height='16'></canvas>
+                <canvas id='zero' width='16' height='16'></canvas>
+
+                <script>
+                    function draw(ctx) {
+                        ctx.lineWidth = 4;
+
+                        ctx.beginPath();
+                        ctx.moveTo(3, 3);
+                        ctx.lineTo(13, 3);
+                        ctx.lineTo(13, 13);
+                        ctx.lineTo(3, 13);
+                        ctx.closePath();
+                        ctx.stroke();
+                    }
+
+                    let a = document.getElementById('wrap').getContext('2d');
+                    a.setLineDash([30, 10]);
+                    a.lineDashOffset = 5;
+                    draw(a);
+
+                    let b = document.getElementById('full').getContext('2d');
+                    b.setLineDash([100, 10]);
+                    b.lineDashOffset = 5;
+                    draw(b);
+
+                    let c = document.getElementById('gap').getContext('2d');
+                    c.setLineDash([10, 50]);
+                    c.lineDashOffset = 5;
+                    draw(c);
+
+                    let d = document.getElementById('zero').getContext('2d');
+                    d.setLineDash([40, 0]);
+                    draw(d);
+                </script>
+            "#,
+        );
+
+        let pixel = |index: usize| match &page.blocks[index].content {
+            BlockContent::Canvas(canvas) => canvas.canvas.surface().pixel(1, 1).unwrap(),
+
+            _ => panic!("canvas expected"),
+        };
+
+        assert!(pixel(0).alpha > 0);
+        assert!(pixel(1).alpha > 0);
+
+        assert_eq!(pixel(2), Color::TRANSPARENT);
+        assert_eq!(pixel(3), Color::TRANSPARENT);
+    }
 }

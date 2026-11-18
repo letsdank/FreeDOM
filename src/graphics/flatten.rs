@@ -14,15 +14,12 @@ impl FlattenedPath {
         &self.contours
     }
 
-    pub(crate) fn from_open_contours(contours: Vec<Vec<Point>>) -> Self {
+    pub(crate) fn from_stroke_contours(contours: Vec<(Vec<Point>, bool)>) -> Self {
         Self {
             contours: contours
                 .into_iter()
-                .filter(|points| points.len() >= 2)
-                .map(|points| FlattenedContour {
-                    points,
-                    closed: false,
-                })
+                .filter(|(points, _)| points.len() >= 2)
+                .map(|(points, closed)| FlattenedContour { points, closed })
                 .collect(),
         }
     }

@@ -524,6 +524,8 @@ fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Opti
 
         let mut state = DashState::new(&dash_array, dash_offset);
         let mut visible_contour = Vec::new();
+        let first_output = output.len();
+        let seam_started_on = contour.is_closed() && state.is_visible() && state.remaining > 0.0;
 
         let segment_count = points.len() - 1 + usize::from(contour.is_closed());
 
@@ -550,9 +552,35 @@ fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Opti
             ) {
                 eprintln!("FreeDOM: dashed path exceeds rasterization limits");
                 return Some(DashedPath {
-                    path: FlattenedPath::from_open_contours(Vec::new()),
+                    path: FlattenedPath::from_stroke_contours(Vec::new()),
                     dots: Vec::new(),
                 });
+            }
+        }
+
+        if seam_started_on
+            && state.is_visible()
+            && state.remaining > 0.0
+            && visible_contour.last() == Some(&points[0])
+        {
+            if output.len() == first_output && visible_contour.first() == Some(&points[0]) {
+                visible_contour.pop();
+
+                if visible_contour.len() >= 2 {
+                    output.push((std::mem::take(&mut visible_contour), true));
+                }
+
+                continue;
+            }
+
+            if output.get(first_output).is_some_and(|(first, closed)| {
+                !*closed
+                    && first.first() == Some(&points[0])
+                    && first.len() >= 2
+                    && first[0] != first[1]
+            }) {
+                let (first, _) = output.remove(first_output);
+                visible_contour.extend(first.into_iter().skip(1));
             }
         }
 
@@ -560,7 +588,7 @@ fn dash_path(path: &FlattenedPath, dash_array: &[f32], dash_offset: f32) -> Opti
     }
 
     Some(DashedPath {
-        path: FlattenedPath::from_open_contours(output),
+        path: FlattenedPath::from_stroke_contours(output),
         dots,
     })
 }
@@ -646,7 +674,7 @@ fn append_dashed_segment(
     to: Point,
     state: &mut DashState<'_>,
     visible_contour: &mut Vec<Point>,
-    output: &mut Vec<Vec<Point>>,
+    output: &mut Vec<(Vec<Point>, bool)>,
     dots: &mut Vec<DashDot>,
     include_end: bool,
     pieces_left: &mut usize,
@@ -684,7 +712,7 @@ fn append_dashed_segment(
                 finish_dash_contour(visible_contour, output);
 
                 // Keeps the point in the flattened path for bounds and round caps.
-                output.push(vec![position, position]);
+                output.push((vec![position, position], false));
 
                 // Square caps also need the direction of the original segment.
                 dots.push(DashDot {
@@ -711,10 +739,14 @@ fn append_dashed_segment(
             from.y + direction_y * consumed,
         );
 
-        let piece_end = Point::new(
-            from.x + direction_x * (consumed + piece_length),
-            from.y + direction_y * (consumed + piece_length),
-        );
+        let piece_end = if piece_length == length - consumed {
+            to
+        } else {
+            Point::new(
+                from.x + direction_x * (consumed + piece_length),
+                from.y + direction_y * (consumed + piece_length),
+            )
+        };
 
         if state.is_visible() {
             if visible_contour.last().copied() != Some(piece_start) {
@@ -746,9 +778,9 @@ fn sample_is_on_dash_square(sample: Point, dot: DashDot, radius: f32) -> bool {
     along.abs() <= radius && across.abs() <= radius
 }
 
-fn finish_dash_contour(contour: &mut Vec<Point>, output: &mut Vec<Vec<Point>>) {
+fn finish_dash_contour(contour: &mut Vec<Point>, output: &mut Vec<(Vec<Point>, bool)>) {
     if contour.len() >= 2 {
-        output.push(std::mem::take(contour));
+        output.push((std::mem::take(contour), false));
     } else {
         contour.clear();
     }
