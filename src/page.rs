@@ -749,23 +749,29 @@ fn load_image(fetcher: &Fetcher, page_url: &Url, source: &str) -> Option<BlockCo
         return None;
     }
 
-    match response
+    let mime_type = response
         .content_type
         .as_ref()
-        .map(|content_type| content_type.mime_type.as_str())
-    {
+        .map(|content_type| content_type.mime_type.as_str());
+
+    decode_image_resource(response.bytes(), mime_type, &response.url)
+}
+
+fn decode_image_resource(
+    bytes: &[u8],
+    mime_type: Option<&str>,
+    base_url: &Url,
+) -> Option<BlockContent> {
+    match mime_type {
         Some("image/svg+xml") => {
-            let source = response.text_lossy();
-            parse_svg_at(&source, &response.url)
-                .ok()
-                .map(BlockContent::Svg)
+            let source = String::from_utf8_lossy(bytes);
+
+            parse_svg_at(&source, base_url).ok().map(BlockContent::Svg)
         }
 
-        Some("image/png") => decode_png_for_display(response.bytes())
-            .ok()
-            .map(BlockContent::Bitmap),
+        Some("image/png") => decode_png_for_display(bytes).ok().map(BlockContent::Bitmap),
 
-        Some("image/jpeg") => decode_jpeg(response.bytes()).ok().map(BlockContent::Bitmap),
+        Some("image/jpeg") => decode_jpeg(bytes).ok().map(BlockContent::Bitmap),
 
         _ => None,
     }
@@ -6096,5 +6102,51 @@ mod tests {
             page.font_data_for(Some("Test"), FontWeight::Normal, FontStyle::Normal),
             Some([1, 2, 3].as_slice())
         );
+    }
+
+    #[test]
+    fn decodes_image_resource_without_network() {
+        use crate::graphics::raster::Color;
+
+        let url = Url::parse("https://example.test/assets/icon.svg").unwrap();
+
+        let mut image = RasterSurface::new(1, 1, Color::TRANSPARENT);
+        image.set_pixel(0, 0, Color::rgba(255, 0, 0, 255));
+
+        let png = crate::graphics::image::encode_png(&image).unwrap();
+
+        let Some(BlockContent::Bitmap(decoded)) =
+            decode_image_resource(&png, Some("image/png"), &url)
+        else {
+            panic!("PNG expected");
+        };
+
+        assert_eq!(decoded.pixel(0, 0), Some(Color::rgba(255, 0, 0, 255)));
+
+        let svg = br##"
+            <svg>
+                <defs>
+                    <rect
+                        id="tile%20one"
+                        width="4"
+                        height="5"
+                        fill="green"
+                    />
+                </defs>
+                <use href="#tile%2520one"/>
+            </svg>
+        "##;
+
+        let Some(BlockContent::Svg(decoded)) =
+            decode_image_resource(svg, Some("image/svg+xml"), &url)
+        else {
+            panic!("SVG expected");
+        };
+
+        assert_eq!(decoded.shapes.len(), 1);
+        assert_eq!(decoded.shapes[0].fill, Some(Color::rgba(0, 128, 0, 255)));
+
+        assert!(decode_image_resource(&png, Some("application/octet-stream"), &url).is_none());
+        assert!(decode_image_resource(b"bad png", Some("image/png"), &url).is_none());
     }
 }
