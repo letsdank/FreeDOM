@@ -376,58 +376,40 @@ impl Interpreter {
             ));
         }
 
-        if matches!(object, Value::ObjectConstructor) {
-            return self.member_value(Value::ObjectConstructor, &index.to_js_string());
+        if matches!(
+            &object,
+            Value::ObjectConstructor
+                | Value::Document(_)
+                | Value::Element(_)
+                | Value::Array(_)
+                | Value::Object(_)
+                | Value::Function(_)
+                | Value::NativeFunction(_)
+                | Value::NativeError(_)
+                | Value::RegExp(_)
+                | Value::Url(_)
+                | Value::Attribute { .. }
+                | Value::DocumentMethod(_)
+                | Value::TestContext
+                | Value::ClassList(_)
+        ) {
+            return self.member_value(object, &index.to_js_string());
         }
 
-        if let Value::Document(document) = object {
-            return self.member_value(Value::Document(document), &index.to_js_string());
-        }
+        if let Value::String(name) = &index {
+            let is_named_property = match &object {
+                Value::String(_) => matches!(name.as_str(), "split" | "replace"),
 
-        if let Value::Element(node_id) = object {
-            return self.member_value(Value::Element(node_id), &index.to_js_string());
-        }
+                Value::NodeList(_) | Value::HtmlCollection(_) | Value::ElementChildren(_) => {
+                    name == "length"
+                }
 
-        if let Value::Array(values) = object {
-            return Ok(self.array_property(values, &index.to_js_string()));
-        }
-
-        if let Value::Object(values) = object {
-            return Ok(match ObjectState::lookup(&values, &index.to_js_string()) {
-                PropertyLookup::Found(value) => value,
-
-                PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
-            });
-        }
-
-        if let Value::Function(function) = object {
-            return Ok(function.get(&index.to_js_string()));
-        }
-
-        if let Value::NativeFunction(function) = object {
-            return self.member_value(Value::NativeFunction(function), &index.to_js_string());
-        }
-
-        if let Value::NativeError(error) = object {
-            return Ok(error.get(&index.to_js_string()));
-        }
-
-        if let Value::RegExp(regexp) = object {
-            return match index.to_js_string().as_str() {
-                "lastIndex" => Ok(regexp.inner.borrow().last_index.clone()),
-
-                "test" => Ok(Value::RegExpTest(regexp)),
-
-                "exec" => Ok(Value::RegExpExec(regexp)),
-
-                property => Err(JsError::runtime(format!(
-                    "cannot read property {property:?} from this value"
-                ))),
+                _ => false,
             };
-        }
 
-        if matches!((&object,&index),(Value::String(_),Value::String(name))if name == "split") {
-            return self.member_value(object, "split");
+            if is_named_property {
+                return self.member_value(object, name);
+            }
         }
 
         let Some(index) = self.to_number(&index) else {
@@ -617,5 +599,30 @@ mod tests {
             evaluate("let object = {}; object.missing;").unwrap(),
             Value::Undefined,
         );
+    }
+
+    #[test]
+    fn reads_supported_named_properties_through_brackets() {
+        let result = evaluate(
+            "let url = new URL('https://example.org/'); \
+            url['protocol'] === url.protocol \
+            && 'aba'['replace']('a', 'x') === 'xba';",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let mut document = DocumentState::default();
+        document.register_element("welcome", "h1", "Hello".to_owned());
+
+        let result = evaluate_with_document(
+            "let elements = document.getElementsByTagName('h1'); \
+            elements['length'] === elements.length \
+            && elements[0].id === 'welcome';",
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }
