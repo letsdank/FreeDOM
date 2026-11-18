@@ -8,7 +8,7 @@
 use super::{
     flatten::flatten_path,
     geometry::{Path, Point, Transform},
-    raster::{Color, FillRule, StrokeStyle, Surface, fill_path, stroke_path},
+    raster::{Color, FillRule, StrokeStyle, Surface, fill_path, stroke_path_transformed},
 };
 
 const MAX_CANVAS_DIMENSION: usize = 16_384;
@@ -273,7 +273,7 @@ impl Canvas2D {
         let flattened =
             flatten_path(&self.current_path, 0.25).expect("constant flattening tolerance is valid");
 
-        stroke_path(&mut self.surface, &flattened, style, color);
+        stroke_path_transformed(&mut self.surface, &flattened, style, color, self.transform);
     }
 
     pub(crate) fn current_transform(&self) -> Transform {
@@ -318,6 +318,31 @@ impl Canvas2D {
         }
 
         let transform = Transform::rotate(angle).then(self.transform);
+
+        if [
+            transform.a,
+            transform.b,
+            transform.c,
+            transform.d,
+            transform.e,
+            transform.f,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+        {
+            self.transform = transform;
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-scale-dev
+    pub fn scale(&mut self, x: f64, y: f64) {
+        let (x, y) = (x as f32, y as f32);
+
+        if !x.is_finite() || !y.is_finite() {
+            return;
+        }
+
+        let transform = Transform::scale(x, y).then(self.transform);
 
         if [
             transform.a,

@@ -1,5 +1,5 @@
 use crate::graphics::flatten::FlattenedPath;
-use crate::graphics::geometry::Point;
+use crate::graphics::geometry::{Point, Transform};
 
 const SAMPLE_OFFSETS: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
 
@@ -430,10 +430,60 @@ pub fn stroke_path_clipped(
     color: Color,
     clips: &[(FlattenedPath, FillRule)],
 ) {
+    stroke_path_transformed_clipped(surface, path, style, color, clips, Transform::IDENTITY);
+}
+
+pub(crate) fn stroke_path_transformed(
+    surface: &mut Surface,
+    path: &FlattenedPath,
+    style: StrokeStyle,
+    color: Color,
+    transform: Transform,
+) {
+    stroke_path_transformed_clipped(surface, path, style, color, &[], transform)
+}
+
+fn stroke_path_transformed_clipped(
+    surface: &mut Surface,
+    device_path: &FlattenedPath,
+    style: StrokeStyle,
+    color: Color,
+    clips: &[(FlattenedPath, FillRule)],
+    transform: Transform,
+) {
     if color.alpha == 0 || !style.width.is_finite() || style.width <= 0.0 {
         return;
     }
 
+    let Some(inverse) = transform.inverse() else {
+        return;
+    };
+
+    let local_path = if transform != Transform::IDENTITY {
+        let mut contours = Vec::new();
+
+        for contour in device_path.contours() {
+            let mut points = Vec::with_capacity(contour.points().len());
+
+            for point in contour.points() {
+                let point = inverse.apply_point(*point);
+
+                if !point.x.is_finite() || !point.y.is_finite() {
+                    return;
+                }
+
+                points.push(point);
+            }
+
+            contours.push((points, contour.is_closed()));
+        }
+
+        Some(FlattenedPath::from_stroke_contours(contours))
+    } else {
+        None
+    };
+
+    let path = local_path.as_ref().unwrap_or(device_path);
     let dashed_path = dash_path(path, &style.dash_array, style.dash_offset);
 
     let (path, dots): (&FlattenedPath, &[DashDot]) = match dashed_path.as_ref() {
@@ -455,9 +505,13 @@ pub fn stroke_path_clipped(
         radius
     };
 
-    let Some((start_x, end_x, start_y, end_y)) =
-        pixel_bounds(surface, path, join_padding.max(cap_padding) + 1.0)
-    else {
+    let scale_x = f64::from(transform.a).hypot(f64::from(transform.c));
+    let scale_y = f64::from(transform.b).hypot(f64::from(transform.d));
+
+    let padding = (f64::from(join_padding.max(cap_padding)) * scale_x.max(scale_y) + 1.0)
+        .min(f64::from(f32::MAX) / 4.0) as f32;
+
+    let Some((start_x, end_x, start_y, end_y)) = pixel_bounds(surface, device_path, padding) else {
         return;
     };
 
@@ -467,10 +521,11 @@ pub fn stroke_path_clipped(
                 .iter()
                 .filter(|(offset_x, offset_y)| {
                     let sample = Point::new(x as f32 + offset_x, y as f32 + offset_y);
+                    let local_sample = inverse.apply_point(sample);
 
                     let on_stroke = sample_is_on_stroke(
                         path,
-                        sample,
+                        local_sample,
                         radius,
                         style.line_cap,
                         style.line_join,
@@ -480,7 +535,7 @@ pub fn stroke_path_clipped(
                     let on_square_dot = style.line_cap == StrokeLineCap::Square
                         && dots
                             .iter()
-                            .any(|dot| sample_is_on_dash_square(sample, *dot, radius));
+                            .any(|dot| sample_is_on_dash_square(local_sample, *dot, radius));
 
                     (on_stroke || on_square_dot)
                         && clips

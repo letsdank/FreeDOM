@@ -223,6 +223,7 @@ impl Interpreter {
             ("restore", ElementMethod::CanvasRestore(node_id)),
             ("translate", ElementMethod::CanvasTranslate(node_id)),
             ("rotate", ElementMethod::CanvasRotate(node_id)),
+            ("scale", ElementMethod::CanvasScale(node_id)),
         ] {
             context.borrow_mut().define_own_data_property(
                 name.to_owned(),
@@ -804,6 +805,36 @@ impl Interpreter {
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .rotate(angle);
+        }
+
+        Ok(Value::Undefined)
+    }
+
+    pub(super) fn canvas_scale(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        self.canvas_context_receiver(node_id, receiver, "scale")?;
+
+        if arguments.len() < 2 {
+            return Err(JsError::type_error("scale requires two arguments"));
+        }
+
+        let x = self
+            .to_number(&arguments[0])
+            .ok_or_else(|| JsError::type_error("scale: unsupported number conversion"))?;
+
+        let y = self
+            .to_number(&arguments[1])
+            .ok_or_else(|| JsError::type_error("scale: unsupported number conversion"))?;
+
+        if self.ensure_canvas_surface(node_id) {
+            self.canvas_surfaces
+                .get_mut(&node_id)
+                .expect("surface was initialized")
+                .scale(x, y);
         }
 
         Ok(Value::Undefined)

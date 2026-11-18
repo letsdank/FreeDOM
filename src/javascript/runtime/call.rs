@@ -334,6 +334,10 @@ impl Interpreter {
                 self.canvas_rotate(node_id, receiver, values)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasScale(node_id)) => {
+                self.canvas_scale(node_id, receiver, values)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {
