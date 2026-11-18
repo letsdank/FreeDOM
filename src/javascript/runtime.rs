@@ -1,13 +1,12 @@
 use crate::url::Url;
 use std::collections::{HashMap, VecDeque};
 
+use self::bindings::{BindingSnapshot, Bindings, CapturedBindings};
 use super::value::{ArrayStorage, DocumentStorage, FunctionValue, ObjectStorage};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
     JsError, NativeFunction, PostfixStep, Statement, TestContextMethod, UserFunction, Value,
 };
-
-use self::bindings::{Bindings, CapturedBindings};
 
 const DEFAULT_EXECUTION_STEPS: usize = 1_000_000;
 const MAX_EXECUTION_DEPTH: usize = 32;
@@ -142,6 +141,13 @@ pub(super) enum Completion {
     Continue,
 }
 
+struct ActiveCallFrame {
+    // Retain the callee and its properties for the duration of the call.
+    _callee: FunctionValue,
+    arguments: Vec<Value>,
+    replaced_bindings: Vec<BindingSnapshot>,
+}
+
 impl Completion {
     pub(super) fn into_value(self) -> Value {
         match self {
@@ -177,6 +183,7 @@ pub(super) struct Interpreter {
     execution_limit: usize,
     steps_remaining: usize,
     execution_depth: usize,
+    active_call_frames: Vec<ActiveCallFrame>,
 }
 
 impl Interpreter {
@@ -407,6 +414,7 @@ impl Interpreter {
             execution_limit: DEFAULT_EXECUTION_STEPS,
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
+            active_call_frames: Vec::new(),
         }
     }
 
@@ -638,5 +646,37 @@ mod tests {
         );
 
         assert!(interpreter.pending_script_results.is_empty());
+    }
+
+    #[test]
+    fn active_call_frames_are_restored_after_nested_calls_and_errors() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let x = 42;
+            function inner(x) { return x + 1; }
+            function outer(x = inner(4), ...rest) { return x + rest[0]; }
+            outer(undefined, 3) === 8 && x === 42;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.active_call_frames.is_empty());
+
+        let program = parse_program("function tail(x = missing) {} fail();").unwrap();
+
+        assert!(interpreter.execute_script(&program).is_err());
+        assert!(interpreter.active_call_frames.is_empty());
+
+        let program = parse_program("x;").unwrap();
+
+        assert_eq!(
+            interpreter.execute_script(&program).unwrap().into_value(),
+            Value::Number(42.0)
+        );
     }
 }

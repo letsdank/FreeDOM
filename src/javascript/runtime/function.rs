@@ -136,29 +136,7 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
 }
 
 impl Interpreter {
-    pub(super) fn call_function_with_receiver(
-        &mut self,
-        function: &UserFunction,
-        arguments: Vec<Value>,
-        receiver: Option<Value>,
-    ) -> Result<Value, JsError> {
-        let Some(receiver) = receiver.filter(|_| function.kind == FunctionKind::Ordinary) else {
-            return self.call_function(function, arguments);
-        };
-
-        let previous_this = self.variables.shadow("this".to_owned(), receiver);
-        let result = self.call_function(function, arguments);
-
-        self.variables.restore(previous_this);
-
-        result
-    }
-
-    pub(super) fn call_function(
-        &mut self,
-        function: &UserFunction,
-        arguments: Vec<Value>,
-    ) -> Result<Value, JsError> {
+    fn call_function(&mut self, function: &UserFunction) -> Result<Value, JsError> {
         let body_locals = function_local_names(&function.body);
 
         if function.kind == FunctionKind::Ordinary
@@ -173,7 +151,6 @@ impl Interpreter {
             ));
         }
 
-        let mut replaced_bindings = Vec::new();
         let mut local_names = Vec::new();
 
         for parameter in &function.parameters {
@@ -185,7 +162,11 @@ impl Interpreter {
                 .variables
                 .shadow(parameter.name.clone(), Value::Undefined);
 
-            replaced_bindings.push(previous);
+            self.active_call_frames
+                .last_mut()
+                .expect("call frame must exist")
+                .replaced_bindings
+                .push(previous);
             local_names.push(parameter.name.clone());
         }
 
@@ -202,12 +183,23 @@ impl Interpreter {
                 0
             };
 
+            let arguments = self
+                .active_call_frames
+                .last()
+                .expect("call frame must exist")
+                .arguments
+                .clone();
+
             let previous = self.variables.shadow(
                 "arguments".to_owned(),
                 Value::arguments(arguments.clone(), potentially_mapped),
             );
 
-            replaced_bindings.push(previous);
+            self.active_call_frames
+                .last_mut()
+                .expect("call frame must exist")
+                .replaced_bindings
+                .push(previous);
             local_names.push("arguments".to_owned());
         }
 
@@ -216,9 +208,22 @@ impl Interpreter {
         let result = (|| -> Result<Completion, JsError> {
             for (index, parameter) in function.parameters.iter().enumerate() {
                 let value = if parameter.is_rest {
+                    let arguments = &self
+                        .active_call_frames
+                        .last()
+                        .expect("call frame must exist")
+                        .arguments;
+
                     Value::array(arguments.iter().skip(index).cloned().collect())
                 } else {
-                    let argument = arguments.get(index).cloned().unwrap_or(Value::Undefined);
+                    let argument = self
+                        .active_call_frames
+                        .last()
+                        .expect("call frame must exist")
+                        .arguments
+                        .get(index)
+                        .cloned()
+                        .unwrap_or(Value::Undefined);
 
                     match (argument, &parameter.default) {
                         (Value::Undefined, Some(default)) => self.evaluate_expression(default)?,
@@ -241,7 +246,11 @@ impl Interpreter {
 
                 let previous = self.variables.shadow(name.clone(), Value::Undefined);
 
-                replaced_bindings.push(previous);
+                self.active_call_frames
+                    .last_mut()
+                    .expect("call frame must exist")
+                    .replaced_bindings
+                    .push(previous);
                 local_names.push(name);
             }
 
@@ -254,10 +263,6 @@ impl Interpreter {
         })();
 
         self.function_locals.pop();
-
-        for previous in replaced_bindings.into_iter().rev() {
-            self.variables.restore(previous);
-        }
 
         result.map(|completion| match completion {
             Completion::Normal(_) => Value::Undefined,
@@ -302,13 +307,36 @@ impl Interpreter {
 
         let previous = self.variables.install_captures(function.captures());
 
+        self.active_call_frames.push(super::ActiveCallFrame {
+            _callee: function.clone(),
+            arguments,
+            replaced_bindings: previous,
+        });
+
         self.capture_frames.push(function.captures().clone());
 
-        let result = self.call_function_with_receiver(function.definition(), arguments, receiver);
+        if let Some(receiver) =
+            receiver.filter(|_| function.definition().kind == FunctionKind::Ordinary)
+        {
+            let previous = self.variables.shadow("this".to_owned(), receiver);
+
+            self.active_call_frames
+                .last_mut()
+                .expect("call frame must exist")
+                .replaced_bindings
+                .push(previous);
+        }
+
+        let result = self.call_function(function.definition());
 
         self.capture_frames.pop();
 
-        for binding in previous.into_iter().rev() {
+        let frame = self
+            .active_call_frames
+            .pop()
+            .expect("call frame must exist");
+
+        for binding in frame.replaced_bindings.into_iter().rev() {
             self.variables.restore(binding);
         }
 
