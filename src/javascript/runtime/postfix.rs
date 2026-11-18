@@ -4,7 +4,7 @@
 //!
 //! This module implements only the interpreter's supported expression subset.
 
-use super::assignment::Reference;
+use super::reference::Reference;
 use super::{Expression, Interpreter, JsError, PostfixStep, Value};
 
 enum PostfixResult {

@@ -266,7 +266,7 @@ impl Interpreter {
     }
 
     pub(super) fn create_function(&self, function: &UserFunction) -> Value {
-        let referenced = super::references::referenced_names(function);
+        let referenced = super::identifier_analysis::referenced_names(function);
 
         let mut captures = self.capture_frames.last().cloned().unwrap_or_default();
 

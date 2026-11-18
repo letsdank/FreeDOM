@@ -36,7 +36,8 @@ impl Interpreter {
                 );
 
                 let unused_nullish_receiver = matches!(this_arg, Value::Undefined | Value::Null)
-                    && !super::references::referenced_names(function.definition()).contains("this");
+                    && !super::identifier_analysis::referenced_names(function.definition())
+                        .contains("this");
 
                 if !object_receiver && !unused_nullish_receiver {
                     return Err(JsError::unsupported(

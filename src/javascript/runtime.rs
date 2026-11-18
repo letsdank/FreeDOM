@@ -45,8 +45,8 @@ mod instanceof;
 #[path = "runtime/function.rs"]
 mod function;
 
-#[path = "runtime/references.rs"]
-mod references;
+#[path = "runtime/identifier_analysis.rs"]
+mod identifier_analysis;
 
 #[path = "runtime/construct.rs"]
 mod construct;
@@ -75,8 +75,8 @@ mod expression;
 #[path = "runtime/try_statement.rs"]
 mod try_statement;
 
-#[path = "runtime/assignment.rs"]
-mod assignment;
+#[path = "runtime/reference.rs"]
+mod reference;
 
 #[path = "runtime/postfix.rs"]
 mod postfix;

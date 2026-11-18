@@ -62,7 +62,8 @@ impl Interpreter {
 
         if let Value::Function(function) = &callback {
             let references_this =
-                super::references::referenced_names(function.definition()).contains("this");
+                super::identifier_analysis::referenced_names(function.definition())
+                    .contains("this");
 
             if !function.is_bound() && references_this {
                 let supported_receiver = matches!(

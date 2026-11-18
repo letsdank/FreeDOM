@@ -173,7 +173,7 @@ impl Interpreter {
 
                     if let Value::Function(function) = function {
                         if !function.is_bound()
-                            && super::references::referenced_names(function.definition())
+                            && super::identifier_analysis::referenced_names(function.definition())
                                 .contains("this")
                         {
                             return Err(JsError::unsupported(

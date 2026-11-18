@@ -1,4 +1,4 @@
-//! Conservative identifier collection for function bodies.
+//! Conservative identifier collection for functions.
 //!
 //! This is not free-variable analysis: locally declared names and names inside
 //! nested functions are included. Property names are not identifier reads.

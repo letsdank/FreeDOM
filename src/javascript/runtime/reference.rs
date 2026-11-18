@@ -1,4 +1,4 @@
-//! Partial references for the JavaScript interpreter.
+//! Reference preparation, reading, and writing for the JavaScript interpreter.
 //!
 //! <https://tc39.es/ecma262/#sec-reference-record-specification-type>
 //!
