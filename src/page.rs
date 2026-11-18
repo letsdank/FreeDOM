@@ -308,11 +308,12 @@ enum StylesheetSource {
     External(Url),
 }
 
-/// Main document and author stylesheets, loaded before script execution.
+/// Main document, author stylesheets and fonts, loaded before script execution.
 struct PreparedPage {
     final_url: Url,
     document: HtmlDocument,
     stylesheets: Vec<Stylesheet>,
+    font_faces: Vec<LoadedFontFace>,
 }
 
 pub(crate) fn load_page(input: &str) -> Result<Page> {
@@ -338,11 +339,13 @@ fn prepare_page(fetcher: &Fetcher, url: &Url) -> Result<PreparedPage> {
 
     let document = HtmlDocument::parse(&html);
     let stylesheets = load_author_stylesheets(fetcher, &final_url, &document);
+    let font_faces = load_author_fonts(fetcher, &stylesheets);
 
     Ok(PreparedPage {
         final_url,
         document,
         stylesheets,
+        font_faces,
     })
 }
 
@@ -351,9 +354,16 @@ fn build_prepared_page(prepared: PreparedPage, fetcher: Option<&Fetcher>) -> Pag
         final_url,
         document,
         stylesheets,
+        font_faces,
     } = prepared;
 
-    parse_dom_with_fetcher(&final_url.to_string(), &document, &stylesheets, fetcher)
+    parse_dom_with_resources(
+        &final_url.to_string(),
+        &document,
+        &stylesheets,
+        font_faces,
+        fetcher,
+    )
 }
 
 #[cfg(test)]
@@ -389,13 +399,14 @@ fn parse_dom(url: &str, document: &HtmlDocument, stylesheet_sources: &[String]) 
         })
         .unwrap_or_default();
 
-    parse_dom_with_fetcher(url, document, &stylesheets, None)
+    parse_dom_with_resources(url, document, &stylesheets, Vec::new(), None)
 }
 
-fn parse_dom_with_fetcher(
+fn parse_dom_with_resources(
     url: &str,
     document: &HtmlDocument,
     stylesheets: &[Stylesheet],
+    font_faces: Vec<LoadedFontFace>,
     fetcher: Option<&Fetcher>,
 ) -> Page {
     let mut document_state = DocumentState::with_title(find_title(document).unwrap_or_default());
@@ -416,9 +427,6 @@ fn parse_dom_with_fetcher(
 
     let rules = build_author_rules(&stylesheets_texts);
     let styled_tree = StyledTree::build(document, &rules, &document_state);
-    let font_faces = fetcher
-        .map(|fetcher| load_author_fonts(fetcher, stylesheets))
-        .unwrap_or_default();
     let base_style = TextStyle::initial();
 
     let mut blocks = Vec::new();
@@ -1530,10 +1538,11 @@ mod tests {
         let document = HtmlDocument::parse(r#"<img src="assets/icon.svg">"#);
         let fetcher = Fetcher::new().unwrap();
 
-        let page = parse_dom_with_fetcher(
+        let page = parse_dom_with_resources(
             &format!("http://{address}/page.html"),
             &document,
             &[],
+            Vec::new(),
             Some(&fetcher),
         );
 
@@ -1582,10 +1591,11 @@ mod tests {
         let document = HtmlDocument::parse(r#"<img src="images/pixel.png">"#);
         let fetcher = Fetcher::new().unwrap();
 
-        let page = parse_dom_with_fetcher(
+        let page = parse_dom_with_resources(
             &format!("http://{address}/page.html"),
             &document,
             &[],
+            Vec::new(),
             Some(&fetcher),
         );
 
@@ -1738,8 +1748,15 @@ mod tests {
             base_url,
         }];
         let fetcher = Fetcher::new().unwrap();
+        let font_faces = load_author_fonts(&fetcher, &stylesheets);
 
-        let page = parse_dom_with_fetcher(&page_url, &document, &stylesheets, Some(&fetcher));
+        let page = parse_dom_with_resources(
+            &page_url,
+            &document,
+            &stylesheets,
+            font_faces,
+            Some(&fetcher),
+        );
 
         server.join().unwrap();
 
@@ -6061,6 +6078,12 @@ mod tests {
             final_url: url,
             document,
             stylesheets,
+            font_faces: vec![LoadedFontFace {
+                family: "Test".into(),
+                font_weight: FontWeight::Normal,
+                font_style: FontStyle::Normal,
+                data: vec![1, 2, 3],
+            }],
         };
 
         let page = build_prepared_page(prepared, None);
@@ -6069,5 +6092,9 @@ mod tests {
         assert_eq!(page.title, "After");
         assert_eq!(page.blocks[0].text(), Some("Hello"));
         assert_eq!(page.blocks[0].style.color, 0x00_12_34_56);
+        assert_eq!(
+            page.font_data_for(Some("Test"), FontWeight::Normal, FontStyle::Normal),
+            Some([1, 2, 3].as_slice())
+        );
     }
 }
