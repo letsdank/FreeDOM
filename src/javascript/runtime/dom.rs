@@ -584,19 +584,11 @@ impl Interpreter {
             .first()
             .ok_or_else(|| JsError::type_error("HTMLCollection.item requires an argument"))?;
 
-        let number = self.to_number(argument).ok_or_else(|| {
+        let index = self.webidl_unsigned_long(argument).ok_or_else(|| {
             JsError::unsupported(
                 "HTMLCollection.item object-to-number conversion is not implemented",
             )
         })?;
-
-        // Web IDL unsigned long conversion wraps modulo 2^32.
-        // https://webidl.spec.whatwg.org/#es-unsigned-long
-        let index = if !number.is_finite() || number == 0.0 {
-            0
-        } else {
-            number.trunc().rem_euclid(4_294_967_296.0) as u32
-        };
 
         Ok(usize::try_from(index)
             .ok()
@@ -616,37 +608,13 @@ impl Interpreter {
             .first()
             .ok_or_else(|| JsError::type_error("HTMLCollection.namedItem requires an argument"))?;
 
-        let key = match argument {
-            Value::Number(number) if *number == 0.0 => "0".to_owned(),
-
-            Value::Number(number) if number.is_nan() => "NaN".to_owned(),
-
-            Value::Number(number) if *number == f64::INFINITY => "Infinity".to_owned(),
-
-            Value::Number(number) if *number == f64::NEG_INFINITY => "-Infinity".to_owned(),
-
-            Value::Number(number)
-                if number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0 =>
-            {
-                number.to_string()
-            }
-
-            Value::Number(_) => {
-                return Err(JsError::unsupported(
-                    "HTMLCollection.namedItem number-to-string conversion is not implemented",
-                ));
-            }
-
-            Value::String(_) | Value::Boolean(_) | Value::Undefined | Value::Null => {
-                argument.to_js_string()
-            }
-
-            _ => {
-                return Err(JsError::unsupported(
-                    "HTMLCollection.namedItem object-to-string conversion is not implemented",
-                ));
-            }
-        };
+        let key = Self::webidl_dom_string(argument).ok_or_else(|| {
+            JsError::unsupported(if matches!(argument, Value::Number(_)) {
+                "HTMLCollection.namedItem number-to-string conversion is not implemented"
+            } else {
+                "HTMLCollection.namedItem object-to-string conversion is not implemented"
+            })
+        })?;
 
         Ok(self
             .current_document()

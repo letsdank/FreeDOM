@@ -126,6 +126,9 @@ mod error;
 #[path = "runtime/canvas.rs"]
 mod canvas;
 
+#[path = "runtime/webidl.rs"]
+mod webidl;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: FunctionValue,

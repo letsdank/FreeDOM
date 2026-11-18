@@ -412,15 +412,9 @@ impl Interpreter {
         name: &str,
         value: Value,
     ) -> Result<(), JsError> {
-        let number = self.to_number(&value).ok_or_else(|| {
+        let value = self.webidl_unsigned_long(&value).ok_or_else(|| {
             JsError::type_error("canvas dimension: unsupported number conversion")
         })?;
-
-        let value = if number.is_finite() {
-            number.trunc().rem_euclid(4_294_967_296.0) as u32
-        } else {
-            0
-        };
 
         self.set_document_element_attribute(
             node_id,
