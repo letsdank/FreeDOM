@@ -3,8 +3,8 @@
 //! <https://webidl.spec.whatwg.org/#es-unsigned-long>
 //! <https://webidl.spec.whatwg.org/#es-DOMString>
 //!
-//! Object conversion is limited to ordinary objects; symbols and complete
-//! number formatting are not implemented.
+//! Object conversion is limited to ordinary objects, native errors, and arrays;
+//! symbols and complete number formatting are not implemented.
 
 use super::value_ops::PrimitiveHint;
 use super::{Interpreter, JsError, Value};
@@ -89,10 +89,11 @@ mod tests {
             "Infinity"
         );
 
-        assert!(
+        assert_eq!(
             interpreter
                 .webidl_unsigned_long(&Value::array(vec![]))
-                .is_err()
+                .unwrap(),
+            0
         );
 
         assert!(interpreter.webidl_dom_string(&Value::Number(1.5)).is_err());

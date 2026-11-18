@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn unary_object_conversion_is_explicitly_unsupported() {
-        let error = evaluate("+[];").unwrap_err();
+        let error = evaluate("+new URL('https://example.org');").unwrap_err();
 
         assert_eq!(
             error.kind,
@@ -282,5 +282,61 @@ mod tests {
 
         assert_eq!(number, 0.0);
         assert!(number.is_sign_negative());
+    }
+
+    #[test]
+    fn arrays_use_value_of_then_to_string_for_primitive_conversion() {
+        let result = evaluate(
+            r#"
+                let trace = '';
+                let array = [1, 2];
+
+                let first = 'x' + array === 'x1,2'
+                    && +[] === 0
+                    && +[7] === 7;
+
+                let other = [3];
+
+                other.valueOf = function() {
+                    trace = trace + 'v';
+                    return {};
+                };
+
+                other.toString = function() {
+                    trace = trace + 's';
+                    return '8';
+                };
+
+                let second = +other === 8 && trace === 'vs';
+
+                let element = {
+                    toString: function() { return 'object'; }
+                };
+
+                let joined = '' + [element, [1, 2], null] === 'object,1,2,';
+
+                let error = false;
+
+                try {
+                    +[{
+                        toString: function() { throw 'boom'; }
+                    }];
+                } catch (e) {
+                    error = e === 'boom';
+                }
+
+                first && second && joined && error;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn cyclic_array_coercion_is_bounded() {
+        let error = evaluate("let a = []; a.push(a); '' + a;").unwrap_err();
+
+        assert_eq!(error.kind, crate::javascript::JsErrorKind::ResourceLimit);
     }
 }

@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn reports_unsupported_lengths_and_excessive_sizes() {
         for source in [
-            "function f() {} f.apply({}, {length: []});",
+            "function f() {} f.apply({}, {length: new URL('https://example.org')});",
             "function f() {} f.apply({}, {length: 65537});",
             "function f() {} f.apply({}, {length: 'Infinity'});",
         ] {

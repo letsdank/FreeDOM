@@ -255,7 +255,7 @@ mod tests {
         for source in [
             "'a,b'.split(/,/);",
             "'abc'.split({});",
-            "'abc'.split(',', []);",
+            "'abc'.split(',', new URL('https://example.org'));",
             "'😀'.split('');",
         ] {
             assert_eq!(
@@ -359,7 +359,7 @@ mod tests {
         for source in [
             "String({});",
             "String(1.5);",
-            "String.fromCharCode([]);",
+            "String.fromCharCode(new URL('https://example.org'));",
             "new String('x');",
         ] {
             assert_eq!(

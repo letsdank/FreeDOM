@@ -182,7 +182,7 @@ impl Interpreter {
         Ok(comparison(left, right))
     }
 
-    // OrdinaryToPrimitive for ordinary objects; @@toPrimitive is not implemented.
+    // Partial OrdinaryToPrimitive; @@toPrimitive is not implemented.
     // https://tc39.es/ecma262/#sec-ordinarytoprimitive
     pub(super) fn ordinary_to_primitive(
         &mut self,
@@ -196,7 +196,7 @@ impl Interpreter {
             | Value::Number(_)
             | Value::String(_) => return Ok(value.clone()),
 
-            Value::Object(_) | Value::NativeError(_) => {}
+            Value::Object(_) | Value::NativeError(_) | Value::Array(_) => {}
 
             _ => {
                 return Err(JsError::unsupported(
@@ -214,6 +214,13 @@ impl Interpreter {
             let lookup = match value {
                 Value::Object(object) => ObjectState::lookup(object, name),
                 Value::NativeError(error) => error.lookup_method(name),
+
+                Value::Array(array) => match Self::array_get(array.clone(), name) {
+                    Some(method) => PropertyLookup::Found(method),
+
+                    None => ObjectState::lookup(&self.object_prototype, name),
+                },
+
                 _ => unreachable!(),
             };
             let method = match lookup {

@@ -224,7 +224,15 @@ impl Interpreter {
     }
 
     pub(super) fn array_join(
-        &self,
+        &mut self,
+        receiver: ArrayStorage,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        self.with_execution_frame(|interpreter| interpreter.array_join_inner(receiver, arguments))
+    }
+
+    fn array_join_inner(
+        &mut self,
         receiver: ArrayStorage,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
@@ -236,7 +244,7 @@ impl Interpreter {
 
         let separator = match arguments.first() {
             None | Some(Value::Undefined) => ",".to_owned(),
-            Some(value) => value.to_js_string(),
+            Some(value) => self.array_join_string(value)?,
         };
 
         let length = receiver.borrow().values.len();
@@ -247,11 +255,27 @@ impl Interpreter {
 
             parts.push(match value {
                 Value::Undefined | Value::Null => String::new(),
-                value => value.to_js_string(),
+                value => self.array_join_string(&value)?,
             });
         }
 
         Ok(Value::String(parts.join(&separator)))
+    }
+
+    fn array_join_string(&mut self, value: &Value) -> Result<String, JsError> {
+        match value {
+            Value::Number(number) if *number == 0.0 => Ok("0".to_owned()),
+
+            Value::Number(number) if number.is_nan() => Ok("NaN".to_owned()),
+
+            Value::Number(number) if *number == f64::INFINITY => Ok("Infinity".to_owned()),
+
+            Value::Number(number) if *number == f64::NEG_INFINITY => Ok("-Infinity".to_owned()),
+
+            Value::Number(_) => Ok(value.to_js_string()),
+
+            _ => self.webidl_dom_string(value),
+        }
     }
 
     pub(super) fn array_property(&self, receiver: ArrayStorage, name: &str) -> Value {
