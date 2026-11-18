@@ -148,6 +148,12 @@ struct ActiveCallFrame {
     replaced_bindings: Vec<BindingSnapshot>,
 }
 
+struct PendingCall {
+    callee: Value,
+    receiver: Option<Value>,
+    arguments: Vec<Value>,
+}
+
 impl Completion {
     pub(super) fn into_value(self) -> Value {
         match self {
@@ -186,6 +192,7 @@ pub(super) struct Interpreter {
     active_call_frames: Vec<ActiveCallFrame>,
     temporary_values: Vec<Value>,
     active_references: Vec<reference::Reference>,
+    pending_calls: Vec<PendingCall>,
 }
 
 impl Interpreter {
@@ -419,6 +426,7 @@ impl Interpreter {
             active_call_frames: Vec::new(),
             temporary_values: Vec::new(),
             active_references: Vec::new(),
+            pending_calls: Vec::new(),
         }
     }
 
@@ -838,6 +846,60 @@ mod tests {
             assert!(interpreter.execute_script(&program).is_err());
             assert!(interpreter.temporary_values.is_empty());
             assert!(interpreter.active_references.is_empty());
+        }
+    }
+
+    #[test]
+    fn pending_postfix_calls_are_scoped_nested_calls_and_errors() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let trace = '';
+            let target = {
+                factor: 10,
+                method: function(a, b) {
+                    return this.factor + a.value + b;
+                }
+            };
+            let original = target;
+
+            function first() {
+                trace = trace + 'a';
+                return {value: 3};
+            }
+
+            function second() {
+                trace = trace + 'b';
+                target = {};
+                return 2;
+            }
+
+            function fail() {
+                throw 'error';
+            }
+
+            let result = target.method(first(), second());
+
+            result === 15 && trace === 'ab' && target !== original;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.pending_calls.is_empty());
+
+        for source in [
+            "original.method({}, missing);",
+            "original.method({}, fail());",
+            "original.factor();",
+        ] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err());
+            assert!(interpreter.pending_calls.is_empty());
         }
     }
 }

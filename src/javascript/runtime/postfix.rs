@@ -5,7 +5,7 @@
 //! This module implements only the interpreter's supported expression subset.
 
 use super::reference::Reference;
-use super::{Expression, Interpreter, JsError, PostfixStep, Value};
+use super::{Expression, Interpreter, JsError, PendingCall, PostfixStep, Value};
 
 enum PostfixResult {
     Value(Value),
@@ -83,17 +83,46 @@ impl Interpreter {
                     };
 
                     let callee = result.into_value(self)?;
-                    let mut values = Vec::with_capacity(arguments.len());
 
-                    for argument in arguments {
-                        values.push(self.evaluate_expression(argument)?);
-                    }
-
-                    PostfixResult::Value(self.dispatch_call(callee, receiver, values)?)
+                    PostfixResult::Value(self.evaluate_postfix_call(callee, receiver, arguments)?)
                 }
             };
         }
 
         Ok(result)
+    }
+
+    fn evaluate_postfix_call(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        expressions: &[Expression],
+    ) -> Result<Value, JsError> {
+        let index = self.pending_calls.len();
+
+        self.pending_calls.push(PendingCall {
+            callee,
+            receiver,
+            arguments: Vec::with_capacity(expressions.len()),
+        });
+
+        let result = (|| {
+            for expression in expressions {
+                let argument = self.evaluate_expression(expression)?;
+
+                self.pending_calls[index].arguments.push(argument);
+            }
+
+            let call = &self.pending_calls[index];
+            let callee = call.callee.clone();
+            let receiver = call.receiver.clone();
+            let arguments = call.arguments.clone();
+
+            self.dispatch_call(callee, receiver, arguments)
+        })();
+
+        self.pending_calls.truncate(index);
+
+        result
     }
 }
