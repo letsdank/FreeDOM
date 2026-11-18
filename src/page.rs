@@ -23,6 +23,13 @@ pub(crate) enum BlockContent {
     Svg(SvgDocument),
     Bitmap(RasterSurface),
     Canvas(CanvasBlock),
+    PendingImage(ImageRequest),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ImageRequest {
+    pub(crate) id: usize,
+    pub(crate) url: Url,
 }
 
 pub(crate) struct CanvasBlock {
@@ -52,21 +59,30 @@ impl Block {
     fn text(&self) -> Option<&str> {
         match &self.content {
             BlockContent::Text(text) => Some(&text.text),
-            BlockContent::Svg(_) | BlockContent::Bitmap(_) | BlockContent::Canvas(_) => None,
+            BlockContent::Svg(_)
+            | BlockContent::Bitmap(_)
+            | BlockContent::Canvas(_)
+            | BlockContent::PendingImage(_) => None,
         }
     }
 
     fn svg(&self) -> Option<&SvgDocument> {
         match &self.content {
             BlockContent::Svg(svg) => Some(svg),
-            BlockContent::Text(_) | BlockContent::Bitmap(_) | BlockContent::Canvas(_) => None,
+            BlockContent::Text(_)
+            | BlockContent::Bitmap(_)
+            | BlockContent::Canvas(_)
+            | BlockContent::PendingImage(_) => None,
         }
     }
 
     fn bitmap(&self) -> Option<&RasterSurface> {
         match &self.content {
             BlockContent::Bitmap(bitmap) => Some(bitmap),
-            BlockContent::Text(_) | BlockContent::Svg(_) | BlockContent::Canvas(_) => None,
+            BlockContent::Text(_)
+            | BlockContent::Svg(_)
+            | BlockContent::Canvas(_)
+            | BlockContent::PendingImage(_) => None,
         }
     }
 }
@@ -175,6 +191,7 @@ impl Page {
             BlockContent::Svg(_) => "svg",
             BlockContent::Bitmap(_) => "image",
             BlockContent::Canvas(_) => "canvas",
+            BlockContent::PendingImage(_) => "pending image",
         };
 
         let mut output = format!("FreeDOM block #{index} ({kind}) - source contributors:\n");
@@ -280,6 +297,46 @@ impl Page {
             })
             .collect()
     }
+
+    pub(crate) fn image_requests(&self) -> Vec<ImageRequest> {
+        self.blocks
+            .iter()
+            .filter_map(|block| match &block.content {
+                BlockContent::PendingImage(request) => Some(request.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn apply_image_result(&mut self, id: usize, result: Option<BlockContent>) -> bool {
+        if result.as_ref().is_some_and(|content| {
+            !matches!(content, BlockContent::Svg(_) | BlockContent::Bitmap(_))
+        }) {
+            return false;
+        }
+
+        let Some(index) = self.blocks.iter().position(
+            |block| matches!(&block.content,BlockContent::PendingImage(request) if request.id==id),
+        ) else {
+            return false;
+        };
+
+        if let Some(content) = result {
+            self.blocks[index].content = content;
+        } else {
+            self.blocks.remove(index);
+        }
+
+        true
+    }
+
+    fn resolve_images(&mut self, fetcher: &Fetcher) {
+        for request in self.image_requests() {
+            let result = load_image(fetcher, &request.url);
+
+            self.apply_image_result(request.id, result);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -327,8 +384,10 @@ pub(crate) fn load_page(input: &str) -> Result<Page> {
     let fetcher = Fetcher::new()?;
 
     let prepared = prepare_page(&fetcher, &url)?;
+    let mut page = build_prepared_page(prepared);
+    page.resolve_images(&fetcher);
 
-    Ok(build_prepared_page(prepared, Some(&fetcher)))
+    Ok(page)
 }
 
 fn prepare_page(fetcher: &Fetcher, url: &Url) -> Result<PreparedPage> {
@@ -349,7 +408,7 @@ fn prepare_page(fetcher: &Fetcher, url: &Url) -> Result<PreparedPage> {
     })
 }
 
-fn build_prepared_page(prepared: PreparedPage, fetcher: Option<&Fetcher>) -> Page {
+fn build_prepared_page(prepared: PreparedPage) -> Page {
     let PreparedPage {
         final_url,
         document,
@@ -357,13 +416,7 @@ fn build_prepared_page(prepared: PreparedPage, fetcher: Option<&Fetcher>) -> Pag
         font_faces,
     } = prepared;
 
-    parse_dom_with_resources(
-        &final_url.to_string(),
-        &document,
-        &stylesheets,
-        font_faces,
-        fetcher,
-    )
+    parse_dom_with_resources(&final_url.to_string(), &document, &stylesheets, font_faces)
 }
 
 #[cfg(test)]
@@ -399,7 +452,7 @@ fn parse_dom(url: &str, document: &HtmlDocument, stylesheet_sources: &[String]) 
         })
         .unwrap_or_default();
 
-    parse_dom_with_resources(url, document, &stylesheets, Vec::new(), None)
+    parse_dom_with_resources(url, document, &stylesheets, Vec::new())
 }
 
 fn parse_dom_with_resources(
@@ -407,7 +460,6 @@ fn parse_dom_with_resources(
     document: &HtmlDocument,
     stylesheets: &[Stylesheet],
     font_faces: Vec<LoadedFontFace>,
-    fetcher: Option<&Fetcher>,
 ) -> Page {
     let mut document_state = DocumentState::with_title(find_title(document).unwrap_or_default());
 
@@ -454,7 +506,6 @@ fn parse_dom_with_resources(
             &mut current_text,
             base_style.clone(),
             page_url.as_ref(),
-            fetcher,
             &document_state,
             &mut trace,
         );
@@ -741,9 +792,8 @@ fn load_font_face(
     None
 }
 
-fn load_image(fetcher: &Fetcher, page_url: &Url, source: &str) -> Option<BlockContent> {
-    let resource_url = page_url.join(source.trim()).ok()?;
-    let response = fetcher.get(&resource_url).ok()?;
+fn load_image(fetcher: &Fetcher, resource_url: &Url) -> Option<BlockContent> {
+    let response = fetcher.get(resource_url).ok()?;
 
     if response.status >= 400 {
         return None;
@@ -888,6 +938,7 @@ struct ExtractionTrace {
     canvas_pixels: usize,
     canvas_count: usize,
     canvas_surfaces: std::collections::HashMap<u64, Canvas2D>,
+    next_image_id: usize,
 }
 
 impl ExtractionTrace {
@@ -939,7 +990,6 @@ fn extract_blocks(
     current: &mut String,
     inherited_style: TextStyle,
     page_url: Option<&Url>,
-    fetcher: Option<&Fetcher>,
     document: &DocumentState,
     trace: &mut ExtractionTrace,
 ) {
@@ -1047,14 +1097,23 @@ fn extract_blocks(
     }
 
     if element.tag == "img" {
-        let content = match (fetcher, page_url, element.src.as_deref()) {
-            (Some(fetcher), Some(page_url), Some(source)) => load_image(fetcher, page_url, source),
+        let url = match (page_url, element.src.as_deref()) {
+            (Some(page_url), Some(source)) => page_url.join(source.trim()).ok(),
+
             _ => None,
         };
 
-        if let Some(content) = content {
+        if let Some(url) = url {
+            let id = trace.next_image_id;
+
+            let Some(next_id) = id.checked_add(1) else {
+                return;
+            };
+
+            trace.next_image_id = next_id;
+
             blocks.push(Block {
-                content,
+                content: BlockContent::PendingImage(ImageRequest { id, url }),
                 style,
                 link: None,
                 sources: vec![trace.current_source()],
@@ -1208,7 +1267,6 @@ fn extract_blocks(
             current,
             style.clone(),
             page_url,
-            fetcher,
             document,
             trace,
         );
@@ -1335,6 +1393,7 @@ fn flush(
 mod tests {
     use super::*;
     use crate::css::{FontStyle, FontWeight};
+    use crate::graphics::raster::Color;
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -1544,13 +1603,14 @@ mod tests {
         let document = HtmlDocument::parse(r#"<img src="assets/icon.svg">"#);
         let fetcher = Fetcher::new().unwrap();
 
-        let page = parse_dom_with_resources(
+        let mut page = parse_dom_with_resources(
             &format!("http://{address}/page.html"),
             &document,
             &[],
             Vec::new(),
-            Some(&fetcher),
         );
+
+        page.resolve_images(&fetcher);
 
         server.join().unwrap();
 
@@ -1597,13 +1657,14 @@ mod tests {
         let document = HtmlDocument::parse(r#"<img src="images/pixel.png">"#);
         let fetcher = Fetcher::new().unwrap();
 
-        let page = parse_dom_with_resources(
+        let mut page = parse_dom_with_resources(
             &format!("http://{address}/page.html"),
             &document,
             &[],
             Vec::new(),
-            Some(&fetcher),
         );
+
+        page.resolve_images(&fetcher);
 
         server.join().unwrap();
 
@@ -1756,13 +1817,7 @@ mod tests {
         let fetcher = Fetcher::new().unwrap();
         let font_faces = load_author_fonts(&fetcher, &stylesheets);
 
-        let page = parse_dom_with_resources(
-            &page_url,
-            &document,
-            &stylesheets,
-            font_faces,
-            Some(&fetcher),
-        );
+        let page = parse_dom_with_resources(&page_url, &document, &stylesheets, font_faces);
 
         server.join().unwrap();
 
@@ -6092,7 +6147,7 @@ mod tests {
             }],
         };
 
-        let page = build_prepared_page(prepared, None);
+        let page = build_prepared_page(prepared);
 
         assert_eq!(page.url, "https://example.test/final");
         assert_eq!(page.title, "After");
@@ -6148,5 +6203,62 @@ mod tests {
 
         assert!(decode_image_resource(&png, Some("application/octet-stream"), &url).is_none());
         assert!(decode_image_resource(b"bad png", Some("image/png"), &url).is_none());
+    }
+
+    #[test]
+    fn queues_visible_image_requests_and_applies_out_of_order_results() {
+        let mut page = parse_html(
+            "https://example.test/a/page.html",
+            r#"
+                <p>Before</p>
+                <img src='../one.png'>
+                <img style='display:none' src='hidden.png'>
+                <img src='two.png'>
+                <p>After</p>
+            "#,
+        );
+
+        let requests = page.image_requests();
+
+        assert_eq!(requests.len(), 2);
+
+        assert_eq!(requests[0].url.to_string(), "https://example.test/one.png");
+        assert_eq!(
+            requests[1].url.to_string(),
+            "https://example.test/a/two.png"
+        );
+
+        assert_ne!(requests[0].id, requests[1].id);
+
+        let layout = crate::page_layout::PageLayout::build(&page, 200, None);
+
+        let first = page
+            .blocks
+            .iter()
+            .position(|block| {
+                matches!(
+                    &block.content,
+                    BlockContent::PendingImage(request)
+                        if request.id == requests[0].id
+                )
+            })
+            .unwrap();
+
+        assert_eq!(layout.block_height(first), 0);
+
+        let image = RasterSurface::new(1, 1, Color::BLACK);
+
+        assert!(page.apply_image_result(requests[1].id, Some(BlockContent::Bitmap(image))));
+
+        assert!(page.apply_image_result(requests[0].id, None));
+
+        // A completed request cannot be applied twice.
+        assert!(!page.apply_image_result(requests[1].id, None));
+
+        assert!(page.image_requests().is_empty());
+        assert_eq!(page.blocks.len(), 3);
+        assert_eq!(page.blocks[0].text(), Some("Before"));
+        assert!(page.blocks[1].bitmap().is_some());
+        assert_eq!(page.blocks[2].text(), Some("After"));
     }
 }

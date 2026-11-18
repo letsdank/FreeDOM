@@ -207,6 +207,8 @@ impl PageLayout {
                     i32::try_from(canvas.canvas.surface().height()).unwrap_or(i32::MAX),
                     None,
                 ),
+
+                BlockContent::PendingImage(_) => (0, 0, None),
             };
 
             blocks.push(BlockLayout {
@@ -216,9 +218,11 @@ impl PageLayout {
                 text_runs,
             });
 
-            top = top
-                .saturating_add(height)
-                .saturating_add(block.style.margin_after);
+            if !matches!(&block.content, BlockContent::PendingImage(_)) {
+                top = top
+                    .saturating_add(height)
+                    .saturating_add(block.style.margin_after);
+            }
         }
 
         Self {

@@ -584,7 +584,7 @@ fn cache_visual_block<'cache>(
             )
         }
 
-        BlockContent::Text(_) | BlockContent::Canvas(_) => None,
+        BlockContent::Text(_) | BlockContent::Canvas(_) | BlockContent::PendingImage(_) => None,
     }
 }
 
@@ -740,6 +740,8 @@ pub(crate) fn paint(
             BlockContent::Canvas(canvas) => {
                 blit_canvas(canvas.canvas.surface(), pixels, width, height, 16, y);
             }
+
+            BlockContent::PendingImage(_) => {}
         }
 
         if let Some(block_started) = block_started {
@@ -751,6 +753,7 @@ pub(crate) fn paint(
                     BlockContent::Svg(_) => "svg",
                     BlockContent::Bitmap(_) => "bitmap",
                     BlockContent::Canvas(_) => "canvas",
+                    BlockContent::PendingImage(_) => "pending image",
                 };
 
                 eprintln!(
