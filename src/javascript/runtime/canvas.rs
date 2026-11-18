@@ -229,6 +229,7 @@ impl Interpreter {
                 "resetTransform",
                 ElementMethod::CanvasResetTransform(node_id),
             ),
+            ("setTransform", ElementMethod::CanvasSetTransform(node_id)),
         ] {
             context.borrow_mut().define_own_data_property(
                 name.to_owned(),
@@ -845,6 +846,22 @@ impl Interpreter {
         Ok(Value::Undefined)
     }
 
+    fn canvas_matrix_arguments(
+        &self,
+        arguments: &[Value],
+        method: &str,
+    ) -> Result<[f64; 6], JsError> {
+        let mut values = [0.0; 6];
+
+        for (output, value) in values.iter_mut().zip(arguments) {
+            *output = self.to_number(value).ok_or_else(|| {
+                JsError::type_error(format!("{method}: unsupported number conversion"))
+            })?;
+        }
+
+        Ok(values)
+    }
+
     pub(super) fn canvas_transform(
         &mut self,
         node_id: u64,
@@ -857,13 +874,7 @@ impl Interpreter {
             return Err(JsError::type_error("transform requires six arguments"));
         }
 
-        let mut values = [0.0; 6];
-
-        for (output, value) in values.iter_mut().zip(&arguments) {
-            *output = self
-                .to_number(value)
-                .ok_or_else(|| JsError::type_error("transform: unsupported number conversion"))?;
-        }
+        let values = self.canvas_matrix_arguments(&arguments, "transform")?;
 
         if self.ensure_canvas_surface(node_id) {
             self.canvas_surfaces
@@ -887,6 +898,44 @@ impl Interpreter {
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .reset_transform();
+        }
+
+        Ok(Value::Undefined)
+    }
+
+    pub(super) fn canvas_set_transform(
+        &mut self,
+        node_id: u64,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        self.canvas_context_receiver(node_id, receiver, "setTransform")?;
+
+        let values = match arguments.as_slice() {
+            [] | [Value::Undefined] | [Value::Null] => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+
+            [Value::Object(_)] => {
+                return Err(JsError::unsupported(
+                    "setTransform: matrix dictionaries are not supported yet",
+                ));
+            }
+
+            _ if arguments.len() >= 6 => {
+                self.canvas_matrix_arguments(&arguments, "setTransform")?
+            }
+
+            _ => {
+                return Err(JsError::type_error(
+                    "setTransform: requires zero, one object, or six arguments",
+                ));
+            }
+        };
+
+        if self.ensure_canvas_surface(node_id) {
+            self.canvas_surfaces
+                .get_mut(&node_id)
+                .expect("surface was initialized")
+                .set_transform(values);
         }
 
         Ok(Value::Undefined)

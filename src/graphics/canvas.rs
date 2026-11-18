@@ -324,6 +324,15 @@ impl Canvas2D {
         self.concat_transform(Transform { a, b, c, d, e, f });
     }
 
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-settransform-dev
+    pub fn set_transform(&mut self, values: [f64; 6]) {
+        let [a, b, c, d, e, f] = values.map(|value| value as f32);
+
+        if [a, b, c, d, e, f].iter().all(|value| value.is_finite()) {
+            self.transform = Transform { a, b, c, d, e, f };
+        }
+    }
+
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-resettransform-dev
     pub fn reset_transform(&mut self) {
         self.transform = Transform::IDENTITY;

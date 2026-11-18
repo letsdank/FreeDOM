@@ -90,6 +90,7 @@ pub(crate) enum ElementMethod {
     CanvasScale(u64),
     CanvasTransform(u64),
     CanvasResetTransform(u64),
+    CanvasSetTransform(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -5961,4 +5961,58 @@ mod tests {
 
         assert_eq!(surface.pixel(8, 1), Some(Color::TRANSPARENT));
     }
+
+    #[test]
+    fn canvas_set_transform_replaces_and_restores_matrix() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='a' width='12' height='10'></canvas>
+
+                <script>
+                    let ctx = document.getElementById('a').getContext('2d');
+
+                    ctx.translate(7, 0);
+                    ctx.fillStyle = 'blue';
+                    ctx.fillRect(0, 0, 1, 1);
+
+                    ctx.setTransform(2, 0, 0, 3, 1, 2);
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(0, 0, 1, 1);
+
+                    ctx.setTransform(1, 0, 0, 1, undefined, 0);
+                    ctx.fillStyle = 'green';
+                    ctx.fillRect(1, 0, 1, 1);
+
+                    ctx.save();
+                    ctx.setTransform();
+                    ctx.fillStyle = 'blue';
+                    ctx.fillRect(0, 0, 1, 1);
+
+                    ctx.restore();
+                    ctx.fillStyle = 'green';
+                    ctx.fillRect(2, 0, 1, 1);
+
+                    ctx.setTransform(null);
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(0, 7, 1, 1);
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(a) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        let surface = a.canvas.surface();
+
+        assert_eq!(surface.pixel(7, 0), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(surface.pixel(1, 2), Some(Color::rgba(255, 0, 0, 255)));
+        assert_eq!(surface.pixel(3, 2), Some(Color::rgba(0, 128, 0, 255)));
+        assert_eq!(surface.pixel(0, 0), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(surface.pixel(5, 2), Some(Color::rgba(0, 128, 0, 255)));
+        assert_eq!(surface.pixel(0, 7), Some(Color::rgba(255, 0, 0, 255)));
+    }
 }

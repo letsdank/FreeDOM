@@ -346,6 +346,10 @@ impl Interpreter {
                 self.canvas_reset_transform(node_id, receiver)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasSetTransform(node_id)) => {
+                self.canvas_set_transform(node_id, receiver, values)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {
