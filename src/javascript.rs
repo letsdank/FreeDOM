@@ -88,6 +88,7 @@ pub enum JsErrorKind {
     UnsupportedFeature,
     Thrown(Value),
     NativeException(Value),
+    ResourceLimit,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +147,14 @@ impl JsError {
 
     fn type_error(message: impl Into<String>) -> Self {
         Self::native_exception("TypeError", message)
+    }
+
+    fn resource_limit(message: impl Into<String>) -> Self {
+        Self {
+            offset: None,
+            message: message.into(),
+            kind: JsErrorKind::ResourceLimit,
+        }
     }
 }
 

@@ -9,6 +9,8 @@ use super::{
 
 use self::bindings::{Bindings, CapturedBindings};
 
+const DEFAULT_EXECUTION_STEPS: usize = 1_000_000;
+
 #[path = "runtime/bindings.rs"]
 pub(super) mod bindings;
 
@@ -163,6 +165,8 @@ pub(super) struct Interpreter {
     canvas_state_stacks: HashMap<u64, Vec<canvas::CanvasSavedState>>,
     canvas_saved_states: usize,
     canvas_saved_dash_values: usize,
+    execution_limit: usize,
+    steps_remaining: usize,
 }
 
 impl Interpreter {
@@ -382,6 +386,8 @@ impl Interpreter {
             canvas_state_stacks: HashMap::new(),
             canvas_saved_states: 0,
             canvas_saved_dash_values: 0,
+            execution_limit: DEFAULT_EXECUTION_STEPS,
+            steps_remaining: DEFAULT_EXECUTION_STEPS,
         }
     }
 
@@ -399,6 +405,7 @@ impl Interpreter {
     }
 
     pub(super) fn execute(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
+        self.consume_step()?;
         let mut result = self.execute_statements(program);
 
         if let Err(error) = &mut result {
@@ -411,6 +418,7 @@ impl Interpreter {
     }
 
     pub(super) fn execute_script(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
+        self.steps_remaining = self.execution_limit;
         let result = self.execute(program);
 
         if let Err(error) = &result {
@@ -429,5 +437,49 @@ impl Interpreter {
         }
 
         result
+    }
+
+    fn consume_step(&mut self) -> Result<(), JsError> {
+        self.steps_remaining = self
+            .steps_remaining
+            .checked_sub(1)
+            .ok_or_else(|| JsError::resource_limit("JavaScript execution budget exceeded"))?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Interpreter;
+    use crate::javascript::{JsErrorKind, Value, parse_program};
+
+    #[test]
+    fn execution_guard_bounds_loops_and_microtasks() {
+        let mut interpreter = Interpreter::new();
+
+        // Keep the test fast; normal execution uses the default limit.
+        interpreter.execution_limit = 256;
+
+        for source in [
+            "for (;;) {}",
+            "function again() { queueMicrotask(again); } queueMicrotask(again);",
+        ] {
+            let program = parse_program(source).unwrap();
+
+            let error = interpreter.execute_script(&program).err().unwrap();
+
+            assert!(matches!(error.kind, JsErrorKind::ResourceLimit));
+            assert!(error.message.contains("execution budget"));
+
+            let next_program = parse_program("42;").unwrap();
+
+            let result = interpreter
+                .execute_script(&next_program)
+                .unwrap()
+                .into_value();
+
+            assert_eq!(result, Value::Number(42.0));
+        }
     }
 }

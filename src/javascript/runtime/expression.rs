@@ -12,6 +12,7 @@ impl Interpreter {
         &mut self,
         expression: &Expression,
     ) -> Result<Value, JsError> {
+        self.consume_step()?;
         match expression {
             Expression::Literal(value) => Ok(value.clone()),
 

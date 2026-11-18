@@ -52,6 +52,7 @@ impl Interpreter {
 
         let result = (|| {
             while let Some(job) = self.microtasks.pop_front() {
+                self.consume_step()?;
                 let job_result = match job {
                     Microtask::Callback(callback) => {
                         self.dispatch_call(callback, None, Vec::new()).map(|_| ())
