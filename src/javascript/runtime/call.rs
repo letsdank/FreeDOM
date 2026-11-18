@@ -338,6 +338,14 @@ impl Interpreter {
                 self.canvas_scale(node_id, receiver, values)
             }
 
+            Value::ElementMethod(ElementMethod::CanvasTransform(node_id)) => {
+                self.canvas_transform(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasResetTransform(node_id)) => {
+                self.canvas_reset_transform(node_id, receiver)
+            }
+
             Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
 
             Value::Function(function) => {

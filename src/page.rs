@@ -5904,4 +5904,61 @@ mod tests {
 
         assert_eq!(b.canvas.surface().pixel(3, 6), Some(Color::TRANSPARENT));
     }
+
+    #[test]
+    fn canvas_composes_and_resets_transforms() {
+        use crate::graphics::raster::Color;
+
+        let page = parse_html(
+            "https://example.test/",
+            r#"
+                <canvas id='a' width='12' height='10'></canvas>
+
+                <script>
+                    let ctx = document.getElementById('a').getContext('2d');
+
+                    ctx.translate(3, 1);
+                    ctx.save();
+
+                    ctx.transform(1, 0, 1, 1, 2, 0);
+
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(0, 0, 2, 2);
+
+                    ctx.beginPath();
+                    ctx.moveTo(0, 3);
+                    ctx.lineTo(2, 3);
+                    ctx.lineTo(0, 5);
+                    ctx.closePath();
+
+                    ctx.resetTransform();
+
+                    ctx.fillStyle = 'blue';
+                    ctx.fill();
+                    ctx.fillRect(0, 0, 1, 1);
+
+                    ctx.restore();
+
+                    ctx.transform(1, 0, 0, 1, 99, undefined);
+
+                    ctx.fillStyle = 'green';
+                    ctx.fillRect(0, 0, 1, 1);
+                </script>
+            "#,
+        );
+
+        let BlockContent::Canvas(a) = &page.blocks[0].content else {
+            panic!("canvas expected");
+        };
+
+        let surface = a.canvas.surface();
+
+        assert_eq!(surface.pixel(6, 1), Some(Color::rgba(255, 0, 0, 255)));
+
+        assert_eq!(surface.pixel(9, 4), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(surface.pixel(0, 0), Some(Color::rgba(0, 0, 255, 255)));
+        assert_eq!(surface.pixel(3, 1), Some(Color::rgba(0, 128, 0, 255)));
+
+        assert_eq!(surface.pixel(8, 1), Some(Color::TRANSPARENT));
+    }
 }

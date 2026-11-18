@@ -292,21 +292,7 @@ impl Canvas2D {
             return;
         }
 
-        let transform = Transform::translate(x, y).then(self.transform);
-
-        if [
-            transform.a,
-            transform.b,
-            transform.c,
-            transform.d,
-            transform.e,
-            transform.f,
-        ]
-        .iter()
-        .all(|value| value.is_finite())
-        {
-            self.transform = transform;
-        }
+        self.concat_transform(Transform::translate(x, y));
     }
 
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-rotate-dev
@@ -317,21 +303,7 @@ impl Canvas2D {
             return;
         }
 
-        let transform = Transform::rotate(angle).then(self.transform);
-
-        if [
-            transform.a,
-            transform.b,
-            transform.c,
-            transform.d,
-            transform.e,
-            transform.f,
-        ]
-        .iter()
-        .all(|value| value.is_finite())
-        {
-            self.transform = transform;
-        }
+        self.concat_transform(Transform::rotate(angle));
     }
 
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-scale-dev
@@ -342,20 +314,36 @@ impl Canvas2D {
             return;
         }
 
-        let transform = Transform::scale(x, y).then(self.transform);
+        self.concat_transform(Transform::scale(x, y));
+    }
 
-        if [
-            transform.a,
-            transform.b,
-            transform.c,
-            transform.d,
-            transform.e,
-            transform.f,
-        ]
-        .iter()
-        .all(|value| value.is_finite())
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-transform-dev
+    pub fn transform(&mut self, values: [f64; 6]) {
+        let [a, b, c, d, e, f] = values.map(|value| value as f32);
+
+        self.concat_transform(Transform { a, b, c, d, e, f });
+    }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-resettransform-dev
+    pub fn reset_transform(&mut self) {
+        self.transform = Transform::IDENTITY;
+    }
+
+    fn concat_transform(&mut self, next: Transform) {
+        if ![next.a, next.b, next.c, next.d, next.e, next.f]
+            .iter()
+            .all(|value| value.is_finite())
         {
-            self.transform = transform;
+            return;
+        }
+
+        let result = next.then(self.transform);
+
+        if [result.a, result.b, result.c, result.d, result.e, result.f]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            self.transform = result;
         }
     }
 
