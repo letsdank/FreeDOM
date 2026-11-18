@@ -412,15 +412,59 @@ impl Interpreter {
             }
         }
 
-        let Some(index) = self.to_number(&index) else {
-            return Err(JsError::runtime(
-                "TypeError: collection index must be numeric",
-            ));
-        };
+        let index = if matches!(
+            &object,
+            Value::Attributes(_)
+                | Value::HtmlCollection(_)
+                | Value::ElementChildren(_)
+                | Value::NodeList(_)
+        ) {
+            let key = match &index {
+                Value::String(value) => value.clone(),
 
-        if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
-            return Ok(Value::Undefined);
-        }
+                Value::Number(number) => {
+                    if let Some(key) = crate::javascript::number::integer_property_key(*number) {
+                        key
+                    } else {
+                        index.to_js_string()
+                    }
+                }
+
+                Value::Undefined | Value::Null | Value::Boolean(_) => index.to_js_string(),
+
+                _ => {
+                    return Err(JsError::unsupported(
+                        "collection object property key conversion is not implemented",
+                    ));
+                }
+            };
+
+            match crate::javascript::number::array_index(&key) {
+                Some(index) => index,
+
+                None if matches!(&object, Value::NodeList(_)) => {
+                    return Ok(Value::Undefined);
+                }
+
+                None => {
+                    return Err(JsError::unsupported(
+                        "named collection properties are not implemented",
+                    ));
+                }
+            }
+        } else {
+            let Some(index) = self.to_number(&index) else {
+                return Err(JsError::runtime(
+                    "TypeError: collection index must be numeric",
+                ));
+            };
+
+            if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
+                return Ok(Value::Undefined);
+            }
+
+            index as usize
+        };
 
         match object {
             Value::Attributes(node_id) => Ok(self
@@ -428,7 +472,7 @@ impl Interpreter {
                 .and_then(|element| {
                     element
                         .attributes
-                        .get(index as usize)
+                        .get(index)
                         .map(|attribute| Value::Attribute {
                             node_id,
                             name: attribute.name.clone(),
@@ -441,7 +485,7 @@ impl Interpreter {
                 .and_then(|document| {
                     document
                         .get_elements_by_tag_name(&tag_name)
-                        .get(index as usize)
+                        .get(index)
                         .copied()
                 })
                 .map(Value::Element)
@@ -449,12 +493,12 @@ impl Interpreter {
 
             Value::ElementChildren(node_id) => Ok(self
                 .current_document_element(node_id)
-                .and_then(|element| element.children.get(index as usize).copied())
+                .and_then(|element| element.children.get(index).copied())
                 .map(Value::Element)
                 .unwrap_or(Value::Undefined)),
 
             Value::NodeList(nodes) => Ok(nodes
-                .get(index as usize)
+                .get(index)
                 .copied()
                 .map(Value::Element)
                 .unwrap_or(Value::Undefined)),
@@ -624,5 +668,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn node_list_indices_require_canonical_property_keys() {
+        let mut document = DocumentState::default();
+        document.register_element("first", "h1", "First".to_owned());
+        document.register_element("second", "h1", "Second".to_owned());
+
+        let result = evaluate_with_document(
+            r#"
+                let nodes = document.querySelectorAll('h1');
+
+                nodes[0].id === 'first'
+                    && nodes['1'].id === 'second'
+                    && nodes[-0].id === 'first'
+                    && nodes['01'] === undefined
+                    && nodes['1.0'] === undefined
+                    && nodes['1e0'] === undefined
+                    && nodes[''] === undefined
+                    && nodes[' 1 '] === undefined
+                    && nodes[true] === undefined
+                    && nodes[null] === undefined
+                    && nodes['-0'] === undefined
+                    && nodes['4294967295'] === undefined;
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let error =
+            evaluate_with_document("document.getElementsByTagName('h1')['01'];", &mut document)
+                .unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            crate::javascript::JsErrorKind::UnsupportedFeature
+        );
     }
 }

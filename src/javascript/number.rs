@@ -4,6 +4,25 @@
 //!
 //! The caller is responsible for converting non-string JavaScript values.
 
+/// ECMAScript array indices exclude 2^32 - 1 and non-canonical strings.
+/// <https://tc39.es/ecma262/#array-index>
+pub(super) fn array_index(name: &str) -> Option<usize> {
+    if name.is_empty()
+        || (name.len() > 1 && name.starts_with('0'))
+        || !name.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let index = name.parse::<u32>().ok()?;
+
+    if index == u32::MAX {
+        return None;
+    }
+
+    usize::try_from(index).ok()
+}
+
 // Partial Number::toString for numeric property names.
 // https://tc39.es/ecma262/#sec-numeric-types-number-tostring
 pub(super) fn integer_property_key(number: f64) -> Option<String> {

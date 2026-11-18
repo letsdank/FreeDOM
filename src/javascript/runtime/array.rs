@@ -6,6 +6,7 @@
 //! Array property descriptors and object-to-number conversion are incomplete.
 
 use super::{Interpreter, JsError, NativeFunction, Value};
+use crate::javascript::number::array_index;
 use crate::javascript::{ArrayMethodKind, ArrayStorage};
 
 const MAX_ARRAY_LENGTH: usize = 65_536;
@@ -36,31 +37,12 @@ impl Interpreter {
         Ok(Value::array(arguments))
     }
 
-    // ECMAScript array indices exclude 2^32 - 1 and non-canonical strings.
-    // https://tc39.es/ecma262/#array-index
-    fn array_index(name: &str) -> Option<usize> {
-        if name.is_empty()
-            || (name.len() > 1 && name.starts_with('0'))
-            || !name.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return None;
-        }
-
-        let index = name.parse::<u32>().ok()?;
-
-        if index == u32::MAX {
-            return None;
-        }
-
-        usize::try_from(index).ok()
-    }
-
     pub(super) fn array_get(receiver: ArrayStorage, name: &str) -> Option<Value> {
         if name == "length" {
             return Some(Value::Number(receiver.borrow().values.len() as f64));
         }
 
-        if let Some(index) = Self::array_index(name) {
+        if let Some(index) = array_index(name) {
             let array = receiver.borrow();
 
             return array
@@ -120,7 +102,7 @@ impl Interpreter {
 
         let mut array = receiver.borrow_mut();
 
-        if let Some(index) = Self::array_index(name) {
+        if let Some(index) = array_index(name) {
             let length = index
                 .checked_add(1)
                 .ok_or_else(|| JsError::runtime("array index is too large"))?;
@@ -294,7 +276,7 @@ impl Interpreter {
 
         let array = receiver.borrow();
 
-        if let Some(index) = Self::array_index(name) {
+        if let Some(index) = array_index(name) {
             return array.present.get(index).copied().unwrap_or(false);
         }
 
@@ -304,7 +286,7 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Interpreter, Value};
+    use super::{Interpreter, Value, array_index};
     use crate::javascript::{JsErrorKind, evaluate};
 
     #[test]
@@ -318,11 +300,11 @@ mod tests {
             ("4294967295", None),
             ("", None),
         ] {
-            assert_eq!(Interpreter::array_index(name), expected, "{name:?}");
+            assert_eq!(array_index(name), expected, "{name:?}");
         }
 
         assert_eq!(
-            Interpreter::array_index("4294967294"),
+            array_index("4294967294"),
             usize::try_from(u32::MAX - 1).ok(),
         );
     }
