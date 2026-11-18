@@ -126,30 +126,22 @@ impl Interpreter {
 
             (Value::NodeList(nodes), "length") => Ok(Value::Number(nodes.len() as f64)),
 
-            (Value::ElementChildren(node_id), "length") => {
-                let length = self
-                    .current_document_element(node_id)
-                    .map(|element| element.children.len())
-                    .unwrap_or(0);
+            (collection @ (Value::HtmlCollection(_) | Value::ElementChildren(_)), "length") => Ok(
+                Value::Number(self.html_collection_nodes(&collection)?.len() as f64),
+            ),
 
-                Ok(Value::Number(length as f64))
+            (Value::HtmlCollection(_) | Value::ElementChildren(_), "item") => {
+                Ok(Value::NativeFunction(NativeFunction::HtmlCollectionItem))
             }
 
-            (Value::HtmlCollection(tag_name), "length") => {
-                let length = self
-                    .current_document()
-                    .map(|document| document.get_elements_by_tag_name(&tag_name).len())
-                    .unwrap_or(0);
-
-                Ok(Value::Number(length as f64))
-            }
+            (Value::HtmlCollection(_) | Value::ElementChildren(_), "namedItem") => Ok(
+                Value::NativeFunction(NativeFunction::HtmlCollectionNamedItem),
+            ),
 
             (collection @ (Value::HtmlCollection(_) | Value::ElementChildren(_)), property) => {
                 if matches!(
                     property,
-                    "item"
-                        | "namedItem"
-                        | "constructor"
+                    "constructor"
                         | "toString"
                         | "toLocaleString"
                         | "valueOf"
@@ -167,19 +159,10 @@ impl Interpreter {
                     ));
                 }
 
+                let nodes = self.html_collection_nodes(&collection)?;
+
                 let Some(document) = self.current_document() else {
                     return Ok(Value::Undefined);
-                };
-
-                let nodes = match collection {
-                    Value::HtmlCollection(tag_name) => document.get_elements_by_tag_name(&tag_name),
-
-                    Value::ElementChildren(node_id) => document
-                        .element(node_id)
-                        .map(|element| element.children.clone())
-                        .unwrap_or_default(),
-
-                    _ => unreachable!(),
                 };
 
                 Ok(document
@@ -794,6 +777,67 @@ mod tests {
                     && collection.shared.id === 'shared'
                     && collection.changed.id === 'first'
                     && children.changed.id === 'first';
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn html_collection_methods_use_live_receivers_and_webidl_arguments() {
+        let mut document = DocumentState::default();
+
+        let parent = document.register_parsed_element("div", "parent", String::new(), None);
+
+        let first = document.register_parsed_element("span", "first", String::new(), Some(parent));
+
+        document.register_parsed_element("span", "length", String::new(), Some(parent));
+        document.register_element_attribute(first, "name", "shared".to_owned());
+
+        let result = evaluate_with_document(
+            r#"
+                let collection = document.getElementsByTagName('span');
+                let children = document.getElementById('parent').children;
+                let item = collection.item;
+                let named = collection.namedItem;
+
+                let detached = false;
+                let missing = false;
+                let missingName = false;
+                let wrongThis = false;
+
+                try { item(0); }
+                catch (e) { detached = e.name === 'TypeError'; }
+
+                try { collection.item(); }
+                catch (e) { missing = e.name === 'TypeError'; }
+
+                try { collection.namedItem(); }
+                catch (e) { missingName = e.name === 'TypeError'; }
+
+                try { named.call({}, 'shared'); }
+                catch (e) { wrongThis = e.name === 'TypeError'; }
+
+                let before = collection.item(0).id === 'first'
+                    && collection.item(1.9).id === 'length'
+                    && collection.item(4294967296).id === 'first'
+                    && collection.item(undefined).id === 'first'
+                    && collection.item(-1) === null
+                    && collection.item(5) === null
+                    && collection.namedItem('missing') === null
+                    && collection['missing'] === undefined
+                    && collection.namedItem('length').id === 'length'
+                    && item.call(children, 0).id === 'first'
+                    && named.call(children, 'shared').id === 'first';
+
+                collection.first.setAttribute('name', 'changed');
+
+                before
+                    && collection.namedItem('shared') === null
+                    && named.call(children, 'changed').id === 'first'
+                    && detached && missing && missingName && wrongThis;
             "#,
             &mut document,
         )

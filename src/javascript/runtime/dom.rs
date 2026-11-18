@@ -545,4 +545,113 @@ impl Interpreter {
             Err(JsError::runtime("TypeError: cannot remove this element"))
         }
     }
+
+    // https://dom.spec.whatwg.org/#interface-htmlcollection
+    pub(super) fn html_collection_nodes(&self, collection: &Value) -> Result<Vec<u64>, JsError> {
+        if !matches!(
+            collection,
+            Value::HtmlCollection(_) | Value::ElementChildren(_)
+        ) {
+            return Err(JsError::type_error(
+                "HTMLCollection method: invalid receiver",
+            ));
+        }
+
+        let Some(document) = self.current_document() else {
+            return Ok(Vec::new());
+        };
+
+        Ok(match collection {
+            Value::HtmlCollection(tag_name) => document.get_elements_by_tag_name(tag_name),
+
+            Value::ElementChildren(node_id) => document
+                .element(*node_id)
+                .map(|element| element.children.clone())
+                .unwrap_or_default(),
+
+            _ => unreachable!(),
+        })
+    }
+
+    pub(super) fn html_collection_item(
+        &self,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        let nodes = self.html_collection_nodes(receiver.as_ref().unwrap_or(&Value::Undefined))?;
+
+        let argument = arguments
+            .first()
+            .ok_or_else(|| JsError::type_error("HTMLCollection.item requires an argument"))?;
+
+        let number = self.to_number(argument).ok_or_else(|| {
+            JsError::unsupported(
+                "HTMLCollection.item object-to-number conversion is not implemented",
+            )
+        })?;
+
+        // Web IDL unsigned long conversion wraps modulo 2^32.
+        // https://webidl.spec.whatwg.org/#es-unsigned-long
+        let index = if !number.is_finite() || number == 0.0 {
+            0
+        } else {
+            number.trunc().rem_euclid(4_294_967_296.0) as u32
+        };
+
+        Ok(usize::try_from(index)
+            .ok()
+            .and_then(|index| nodes.get(index).copied())
+            .map(Value::Element)
+            .unwrap_or(Value::Null))
+    }
+
+    pub(super) fn html_collection_named_item(
+        &self,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        let nodes = self.html_collection_nodes(receiver.as_ref().unwrap_or(&Value::Undefined))?;
+
+        let argument = arguments
+            .first()
+            .ok_or_else(|| JsError::type_error("HTMLCollection.namedItem requires an argument"))?;
+
+        let key = match argument {
+            Value::Number(number) if *number == 0.0 => "0".to_owned(),
+
+            Value::Number(number) if number.is_nan() => "NaN".to_owned(),
+
+            Value::Number(number) if *number == f64::INFINITY => "Infinity".to_owned(),
+
+            Value::Number(number) if *number == f64::NEG_INFINITY => "-Infinity".to_owned(),
+
+            Value::Number(number)
+                if number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0 =>
+            {
+                number.to_string()
+            }
+
+            Value::Number(_) => {
+                return Err(JsError::unsupported(
+                    "HTMLCollection.namedItem number-to-string conversion is not implemented",
+                ));
+            }
+
+            Value::String(_) | Value::Boolean(_) | Value::Undefined | Value::Null => {
+                argument.to_js_string()
+            }
+
+            _ => {
+                return Err(JsError::unsupported(
+                    "HTMLCollection.namedItem object-to-string conversion is not implemented",
+                ));
+            }
+        };
+
+        Ok(self
+            .current_document()
+            .and_then(|document| document.collection_named_element(&nodes, &key))
+            .map(Value::Element)
+            .unwrap_or(Value::Null))
+    }
 }

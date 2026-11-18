@@ -159,6 +159,14 @@ impl Interpreter {
                 self.construct_error_with_prototype(values, self.reference_error_prototype.clone())
             }
 
+            Value::NativeFunction(NativeFunction::HtmlCollectionItem) => {
+                self.html_collection_item(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::HtmlCollectionNamedItem) => {
+                self.html_collection_named_item(receiver, values)
+            }
+
             Value::DocumentMethod(DocumentMethod::GetElementById) => {
                 let Some(Value::Document(document)) = receiver else {
                     return Err(JsError::type_error("getElementById: invalid receiver"));

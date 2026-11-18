@@ -45,6 +45,8 @@ pub enum NativeFunction {
     ErrorToString,
     TypeErrorConstructor,
     ReferenceErrorConstructor,
+    HtmlCollectionItem,
+    HtmlCollectionNamedItem,
 }
 
 #[derive(Clone, Debug, PartialEq)]
