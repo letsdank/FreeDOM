@@ -78,6 +78,9 @@ mod try_statement;
 #[path = "runtime/assignment.rs"]
 mod assignment;
 
+#[path = "runtime/postfix.rs"]
+mod postfix;
+
 #[path = "runtime/object.rs"]
 mod object;
 
