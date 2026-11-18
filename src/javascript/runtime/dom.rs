@@ -105,9 +105,7 @@ impl Interpreter {
             .first()
             .ok_or_else(|| JsError::type_error("document.getElementById requires an argument"))?;
 
-        let id = Self::webidl_dom_string(argument).ok_or_else(|| {
-            JsError::unsupported("document.getElementById argument conversion is not implemented")
-        })?;
+        let id = self.webidl_dom_string(argument)?;
 
         let result = document
             .borrow()
@@ -546,8 +544,7 @@ impl Interpreter {
         }
     }
 
-    // https://dom.spec.whatwg.org/#interface-htmlcollection
-    pub(super) fn html_collection_nodes(&self, collection: &Value) -> Result<Vec<u64>, JsError> {
+    fn validate_html_collection_receiver(collection: &Value) -> Result<(), JsError> {
         if !matches!(
             collection,
             Value::HtmlCollection(_) | Value::ElementChildren(_)
@@ -556,6 +553,13 @@ impl Interpreter {
                 "HTMLCollection method: invalid receiver",
             ));
         }
+
+        Ok(())
+    }
+
+    // https://dom.spec.whatwg.org/#interface-htmlcollection
+    pub(super) fn html_collection_nodes(&self, collection: &Value) -> Result<Vec<u64>, JsError> {
+        Self::validate_html_collection_receiver(collection)?;
 
         let Some(document) = self.current_document() else {
             return Ok(Vec::new());
@@ -578,7 +582,9 @@ impl Interpreter {
         receiver: Option<Value>,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
-        let nodes = self.html_collection_nodes(receiver.as_ref().unwrap_or(&Value::Undefined))?;
+        let collection = receiver.as_ref().unwrap_or(&Value::Undefined);
+
+        Self::validate_html_collection_receiver(collection)?;
 
         let argument = arguments
             .first()
@@ -590,6 +596,8 @@ impl Interpreter {
             )
         })?;
 
+        let nodes = self.html_collection_nodes(collection)?;
+
         Ok(usize::try_from(index)
             .ok()
             .and_then(|index| nodes.get(index).copied())
@@ -598,23 +606,20 @@ impl Interpreter {
     }
 
     pub(super) fn html_collection_named_item(
-        &self,
+        &mut self,
         receiver: Option<Value>,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
-        let nodes = self.html_collection_nodes(receiver.as_ref().unwrap_or(&Value::Undefined))?;
+        let collection = receiver.as_ref().unwrap_or(&Value::Undefined);
+
+        Self::validate_html_collection_receiver(collection)?;
 
         let argument = arguments
             .first()
             .ok_or_else(|| JsError::type_error("HTMLCollection.namedItem requires an argument"))?;
 
-        let key = Self::webidl_dom_string(argument).ok_or_else(|| {
-            JsError::unsupported(if matches!(argument, Value::Number(_)) {
-                "HTMLCollection.namedItem number-to-string conversion is not implemented"
-            } else {
-                "HTMLCollection.namedItem object-to-string conversion is not implemented"
-            })
-        })?;
+        let key = self.webidl_dom_string(argument)?;
+        let nodes = self.html_collection_nodes(collection)?;
 
         Ok(self
             .current_document()

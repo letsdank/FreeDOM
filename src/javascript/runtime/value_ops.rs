@@ -6,6 +6,7 @@
 //! These operations currently implement only a subset of ECMAScript semantics.
 
 use super::{Interpreter, JsError, Value};
+use crate::javascript::value::{ObjectState, PropertyLookup};
 
 impl Interpreter {
     // The heap-backed Array and Object variants compare by identity.
@@ -164,6 +165,61 @@ impl Interpreter {
         let (left, right) = self.numeric_operands(left, right)?;
 
         Ok(comparison(left, right))
+    }
+
+    // OrdinaryToPrimitive with the string hint, for ordinary objects only.
+    // https://tc39.es/ecma262/#sec-ordinarytoprimitive
+    pub(super) fn ordinary_to_primitive_string(&mut self, value: &Value) -> Result<Value, JsError> {
+        let object = match value {
+            Value::Undefined
+            | Value::Null
+            | Value::Boolean(_)
+            | Value::Number(_)
+            | Value::String(_) => return Ok(value.clone()),
+
+            Value::Object(object) => object,
+
+            _ => {
+                return Err(JsError::unsupported(
+                    "object-to-primitive conversion for this value is not implemented",
+                ));
+            }
+        };
+
+        for name in ["toString", "valueOf"] {
+            let method = match ObjectState::lookup(object, name) {
+                PropertyLookup::Found(method) => method,
+
+                PropertyLookup::Absent => continue,
+
+                PropertyLookup::Unknown => {
+                    return Err(JsError::unsupported(
+                        "object-to-primitive method lookup is not implemented",
+                    ));
+                }
+            };
+
+            if Self::type_of(&method) != "function" {
+                continue;
+            }
+
+            let result = self.dispatch_call(method, Some(value.clone()), Vec::new())?;
+
+            if matches!(
+                result,
+                Value::Undefined
+                    | Value::Null
+                    | Value::Boolean(_)
+                    | Value::Number(_)
+                    | Value::String(_)
+            ) {
+                return Ok(result);
+            }
+        }
+
+        Err(JsError::type_error(
+            "cannot convert object to primitive value",
+        ))
     }
 }
 

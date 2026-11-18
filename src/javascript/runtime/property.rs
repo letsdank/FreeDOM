@@ -889,10 +889,7 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
 
-        for source in [
-            "document.getElementById({});",
-            "document.getElementById(1.5);",
-        ] {
+        for source in ["document.getElementById(1.5);"] {
             let error = evaluate_with_document(source, &mut document).unwrap_err();
 
             assert_eq!(
@@ -900,5 +897,89 @@ mod tests {
                 crate::javascript::JsErrorKind::UnsupportedFeature
             );
         }
+    }
+
+    #[test]
+    fn dom_string_calls_user_conversion_and_refreshes_live_collections() {
+        let mut document = DocumentState::default();
+
+        document.register_element("parent", "div", String::new());
+        document.register_element("target", "div", String::new());
+        document.register_element("[object Object]", "div", String::new());
+
+        let result = evaluate_with_document(
+            r#"
+                let trace = '';
+
+                let key = {
+                    value: 'target',
+                    toString: function() {
+                        trace = trace + 's';
+                        return this.value;
+                    }
+                };
+
+                let fallback = {
+                    toString: function() {
+                        trace = trace + 'a';
+                        return {};
+                    },
+                    valueOf: function() {
+                        trace = trace + 'b';
+                        return 'target';
+                    }
+                };
+
+                let plain =
+                    document.getElementById({}).id === '[object Object]';
+
+                    let first = document.getElementById(key).id === 'target';
+                    let second = document.getElementById(fallback).id === 'target';
+
+                    let caught = false;
+
+                    try {
+                        document.getElementById({
+                            toString: function() { throw 'boom'; }
+                        });
+                    } catch (e) {
+                        caught = e === 'boom';
+                    }
+
+                    let invalid = Object.create(null);
+                    invalid.toString = 1;
+                    invalid.valueOf = 2;
+
+                    let typeError = false;
+
+                    try {
+                        document.getElementById(invalid);
+                    } catch (e) {
+                        typeError = e.name === 'TypeError';
+                    }
+
+                    let collection = document.getElementsByTagName('span');
+
+                    let dynamic = {
+                        toString: function() {
+                            let element = document.createElement('span');
+                            element.id = 'late';
+
+                            document.getElementById('parent').appendChild(element);
+
+                            return 'late';
+                        }
+                    };
+
+                    plain && first && second
+                        && trace === 'sab'
+                        && caught && typeError
+                        && collection.namedItem(dynamic).id === 'late';
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }

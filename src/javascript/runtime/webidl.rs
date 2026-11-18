@@ -3,10 +3,10 @@
 //! <https://webidl.spec.whatwg.org/#es-unsigned-long>
 //! <https://webidl.spec.whatwg.org/#es-DOMString>
 //!
-//! Object-to-primitive conversion, symbols, and complete number formatting
-//! are not implemented.
+//! Object conversion is limited to ordinary objects; symbols and complete
+//! number formatting are not implemented.
 
-use super::{Interpreter, Value};
+use super::{Interpreter, JsError, Value};
 
 impl Interpreter {
     pub(super) fn webidl_unsigned_long(&self, value: &Value) -> Option<u32> {
@@ -19,8 +19,10 @@ impl Interpreter {
         })
     }
 
-    pub(super) fn webidl_dom_string(value: &Value) -> Option<String> {
-        match value {
+    pub(super) fn webidl_dom_string(&mut self, value: &Value) -> Result<String, JsError> {
+        let value = self.ordinary_to_primitive_string(value)?;
+
+        let result = match &value {
             Value::Number(number) if *number == 0.0 => Some("0".to_owned()),
 
             Value::Number(number) if number.is_nan() => Some("NaN".to_owned()),
@@ -40,7 +42,13 @@ impl Interpreter {
             }
 
             _ => None,
-        }
+        };
+
+        result.ok_or_else(|| {
+            JsError::unsupported(
+                "Web IDL DOMString conversion for this primitive is not implemented",
+            )
+        })
     }
 }
 
@@ -50,7 +58,7 @@ mod tests {
 
     #[test]
     fn converts_supported_webidl_primitive_values() {
-        let interpreter = Interpreter::new();
+        let mut interpreter = Interpreter::new();
 
         for (input, expected) in [
             (Value::Number(1.9), 1),
@@ -64,18 +72,20 @@ mod tests {
         }
 
         assert_eq!(
-            Interpreter::webidl_dom_string(&Value::Number(-0.0)).as_deref(),
-            Some("0")
+            interpreter.webidl_dom_string(&Value::Number(-0.0)).unwrap(),
+            "0"
         );
 
         assert_eq!(
-            Interpreter::webidl_dom_string(&Value::Undefined).as_deref(),
-            Some("undefined")
+            interpreter.webidl_dom_string(&Value::Undefined).unwrap(),
+            "undefined"
         );
 
         assert_eq!(
-            Interpreter::webidl_dom_string(&Value::Number(f64::INFINITY)).as_deref(),
-            Some("Infinity")
+            interpreter
+                .webidl_dom_string(&Value::Number(f64::INFINITY))
+                .unwrap(),
+            "Infinity"
         );
 
         assert!(
@@ -84,6 +94,6 @@ mod tests {
                 .is_none()
         );
 
-        assert!(Interpreter::webidl_dom_string(&Value::Number(1.5)).is_none());
+        assert!(interpreter.webidl_dom_string(&Value::Number(1.5)).is_err());
     }
 }
