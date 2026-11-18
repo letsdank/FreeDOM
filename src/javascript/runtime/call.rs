@@ -41,19 +41,12 @@ impl Interpreter {
         arguments: &[Expression],
     ) -> Result<Value, JsError> {
         let (callee, receiver) = match callee {
-            Expression::Member { object, property } => {
-                let receiver = self.evaluate_expression(object)?;
-                let callee = self.member_value(receiver.clone(), property)?;
+            Expression::Member { .. } | Expression::Index { .. } => {
+                let reference = self.prepare_reference(callee)?;
+                let receiver = reference.receiver();
+                let callee = self.read_reference(&reference)?;
 
-                (callee, Some(receiver))
-            }
-
-            Expression::Index { object, index } => {
-                let receiver = self.evaluate_expression(object)?;
-                let index = self.evaluate_expression(index)?;
-                let callee = self.index_value(receiver.clone(), index)?;
-
-                (callee, Some(receiver))
+                (callee, receiver)
             }
 
             _ => (self.evaluate_expression(callee)?, None),

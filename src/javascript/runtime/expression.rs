@@ -111,16 +111,9 @@ impl Interpreter {
                 arguments,
             } => self.construct(constructor, arguments),
 
-            Expression::Member { object, property } => {
-                let object = self.evaluate_expression(object)?;
-                self.member_value(object, property)
-            }
-
-            Expression::Index { object, index } => {
-                let object = self.evaluate_expression(object)?;
-                let index = self.evaluate_expression(index)?;
-
-                self.index_value(object, index)
+            Expression::Member { .. } | Expression::Index { .. } => {
+                let reference = self.prepare_reference(expression)?;
+                self.read_reference(&reference)
             }
 
             Expression::Function(function) => Ok(self.create_function(function)),
@@ -135,10 +128,10 @@ impl Interpreter {
             Expression::UnaryMinus(operand) => self.evaluate_unary_number(operand, true),
 
             Expression::Assignment { target, value } => {
-                let reference = self.prepare_assignment(target)?;
+                let reference = self.prepare_reference(target)?;
                 let value = self.evaluate_expression(value)?;
 
-                self.write_assignment(reference, value.clone())?;
+                self.write_reference(reference, value.clone())?;
                 Ok(value)
             }
 
@@ -147,14 +140,14 @@ impl Interpreter {
                 operator,
                 value,
             } => {
-                let reference = self.prepare_assignment(target)?;
+                let reference = self.prepare_reference(target)?;
 
-                let left = self.read_assignment(&reference)?;
+                let left = self.read_reference(&reference)?;
                 let right = self.evaluate_expression(value)?;
 
                 let result = self.evaluate_binary(left, *operator, right)?;
 
-                self.write_assignment(reference, result.clone())?;
+                self.write_reference(reference, result.clone())?;
 
                 Ok(result)
             }

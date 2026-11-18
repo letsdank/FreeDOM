@@ -97,8 +97,8 @@ impl Interpreter {
         delta: f64,
         prefix: bool,
     ) -> Result<Value, JsError> {
-        let reference = self.prepare_assignment(target)?;
-        let previous = self.read_assignment(&reference)?;
+        let reference = self.prepare_reference(target)?;
+        let previous = self.read_reference(&reference)?;
 
         let Some(number) = self.to_number(&previous) else {
             return Err(JsError::runtime(
@@ -108,7 +108,7 @@ impl Interpreter {
 
         let updated = Value::Number(number + delta);
 
-        self.write_assignment(reference, updated.clone())?;
+        self.write_reference(reference, updated.clone())?;
 
         if prefix {
             Ok(updated)

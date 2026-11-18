@@ -1,29 +1,36 @@
-//! Partial assignment references for the JavaScript interpreter.
+//! Partial references for the JavaScript interpreter.
 //!
-//! <https://tc39.es/ecma262/#sec-assignment-operators>
+//! <https://tc39.es/ecma262/#sec-reference-record-specification-type>
 //!
 //! This is not a complete ECMAScript Reference Record implementation.
 
 use super::{Expression, Interpreter, JsError, Value};
 
-pub(super) enum AssignmentReference {
+pub(super) enum Reference {
     Binding(String),
     Member { object: Value, property: String },
     Index { object: Value, index: Value },
 }
 
+impl Reference {
+    pub(super) fn receiver(&self) -> Option<Value> {
+        match self {
+            Self::Binding(_) => None,
+
+            Self::Member { object, .. } | Self::Index { object, .. } => Some(object.clone()),
+        }
+    }
+}
+
 impl Interpreter {
-    pub(super) fn prepare_assignment(
-        &mut self,
-        target: &Expression,
-    ) -> Result<AssignmentReference, JsError> {
+    pub(super) fn prepare_reference(&mut self, target: &Expression) -> Result<Reference, JsError> {
         match target {
-            Expression::Identifier(name) => Ok(AssignmentReference::Binding(name.clone())),
+            Expression::Identifier(name) => Ok(Reference::Binding(name.clone())),
 
             Expression::Member { object, property } => {
                 let object = self.evaluate_expression(object)?;
 
-                Ok(AssignmentReference::Member {
+                Ok(Reference::Member {
                     object,
                     property: property.clone(),
                 })
@@ -33,7 +40,7 @@ impl Interpreter {
                 let object = self.evaluate_expression(object)?;
                 let index = self.evaluate_expression(index)?;
 
-                Ok(AssignmentReference::Index { object, index })
+                Ok(Reference::Index { object, index })
             }
 
             _ => Err(JsError::runtime(
@@ -42,41 +49,36 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn read_assignment(
-        &mut self,
-        reference: &AssignmentReference,
-    ) -> Result<Value, JsError> {
+    pub(super) fn read_reference(&mut self, reference: &Reference) -> Result<Value, JsError> {
         match reference {
-            AssignmentReference::Binding(name) => self
+            Reference::Binding(name) => self
                 .variables
                 .get(name)
                 .map(|value| value.clone())
                 .ok_or_else(|| JsError::reference_error(name)),
 
-            AssignmentReference::Member {
+            Reference::Member {
                 object, property, ..
             } => self.member_value(object.clone(), property),
 
-            AssignmentReference::Index { object, index } => {
-                self.index_value(object.clone(), index.clone())
-            }
+            Reference::Index { object, index } => self.index_value(object.clone(), index.clone()),
         }
     }
 
-    pub(super) fn write_assignment(
+    pub(super) fn write_reference(
         &mut self,
-        reference: AssignmentReference,
+        reference: Reference,
         value: Value,
     ) -> Result<(), JsError> {
         match reference {
-            AssignmentReference::Binding(name) => {
+            Reference::Binding(name) => {
                 // Preserve the current implicit-global behavior for unresolved names.
                 self.variables.assign_or_insert(name, value);
 
                 Ok(())
             }
 
-            AssignmentReference::Member { object, property } => match object {
+            Reference::Member { object, property } => match object {
                 Value::Document(document) if property == "title" => {
                     document.borrow_mut().title = value.to_js_string();
                     Ok(())
@@ -181,7 +183,7 @@ impl Interpreter {
                 )),
             },
 
-            AssignmentReference::Index { object, index } => match object {
+            Reference::Index { object, index } => match object {
                 Value::Document(document) if index.to_js_string() == "title" => {
                     document.borrow_mut().title = value.to_js_string();
                     Ok(())
