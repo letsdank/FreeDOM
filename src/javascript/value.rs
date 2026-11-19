@@ -424,7 +424,6 @@ pub type DocumentStorage = Rc<RefCell<DocumentState>>;
 pub struct NativeErrorValue {
     default_name: String,
     properties: ObjectStorage,
-    prototype: Option<ObjectStorage>,
 }
 
 impl NativeErrorValue {
@@ -432,8 +431,9 @@ impl NativeErrorValue {
         if let Some(value) = self.properties.borrow().get(name) {
             return PropertyLookup::Found(value.clone());
         }
-        match &self.prototype {
-            Some(prototype) => ObjectState::lookup(prototype, name),
+
+        match self.prototype() {
+            Some(prototype) => ObjectState::lookup(&prototype, name),
             None => PropertyLookup::Unknown,
         }
     }
@@ -450,12 +450,13 @@ impl NativeErrorValue {
         Self {
             default_name: name.to_owned(),
             properties: Rc::new(RefCell::new(properties)),
-            prototype: None,
         }
     }
 
     fn new_with_prototype(message: Option<String>, prototype: ObjectStorage) -> Self {
         let mut properties = ObjectState::default();
+
+        properties.prototype = ObjectPrototype::Object(prototype);
 
         if let Some(message) = message {
             properties.define_own_data_property(
@@ -468,7 +469,16 @@ impl NativeErrorValue {
         Self {
             default_name: "Error".to_owned(),
             properties: Rc::new(RefCell::new(properties)),
-            prototype: Some(prototype),
+        }
+    }
+
+    fn prototype(&self) -> Option<ObjectStorage> {
+        match &self.properties.borrow().prototype {
+            ObjectPrototype::Object(prototype) => Some(prototype.clone()),
+
+            ObjectPrototype::Unknown
+            | ObjectPrototype::IntrinsicObjectRoot
+            | ObjectPrototype::Null => None,
         }
     }
 
@@ -477,10 +487,9 @@ impl NativeErrorValue {
             return value.clone();
         }
 
-        if let Some(prototype) = &self.prototype {
-            return match ObjectState::lookup(prototype, name) {
+        if let Some(prototype) = self.prototype() {
+            return match ObjectState::lookup(&prototype, name) {
                 PropertyLookup::Found(value) => value,
-
                 PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
             };
         }
@@ -501,12 +510,12 @@ impl NativeErrorValue {
     }
 
     pub(super) fn has_prototype(&self, target: &ObjectStorage) -> Option<bool> {
-        let prototype = self.prototype.as_ref()?;
+        let prototype = self.prototype()?;
 
-        if Rc::ptr_eq(prototype, target) {
+        if Rc::ptr_eq(&prototype, target) {
             Some(true)
         } else {
-            ObjectState::has_prototype(prototype, target)
+            ObjectState::has_prototype(&prototype, target)
         }
     }
 
@@ -515,8 +524,10 @@ impl NativeErrorValue {
     }
 
     pub(super) fn attach_prototype_if_missing(&mut self, prototype: ObjectStorage) {
-        if self.prototype.is_none() {
-            self.prototype = Some(prototype);
+        let mut properties = self.properties.borrow_mut();
+
+        if matches!(properties.prototype, ObjectPrototype::Unknown) {
+            properties.prototype = ObjectPrototype::Object(prototype);
         }
     }
 
@@ -525,10 +536,6 @@ impl NativeErrorValue {
     #[allow(dead_code)]
     pub(super) fn visit_references(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
         visit(RuntimeRoot::Object(&self.properties));
-
-        if let Some(prototype) = &self.prototype {
-            visit(RuntimeRoot::Object(prototype));
-        }
     }
 }
 
@@ -1259,22 +1266,27 @@ mod tests {
         error.visit_references(&mut |root| {
             if let RuntimeRoot::Object(found) = root {
                 saw_properties |= Rc::ptr_eq(found, &error.properties);
-                saw_prototype |= Rc::ptr_eq(found, &prototype);
             }
         });
 
-        assert!(saw_properties && saw_prototype);
+        assert!(saw_properties);
 
         let mut saw_cause = false;
 
-        ObjectState::visit_references(&error.properties, &mut |root| {
-            if let RuntimeRoot::Value(Value::Object(found)) = root {
+        ObjectState::visit_references(&error.properties, &mut |root| match root {
+            RuntimeRoot::Value(Value::Object(found)) => {
                 saw_cause = Rc::ptr_eq(found, &object);
             }
+
+            RuntimeRoot::Object(found) => {
+                saw_prototype = Rc::ptr_eq(found, &prototype);
+            }
+
+            _ => {}
         })
         .unwrap();
 
-        assert!(saw_cause);
+        assert!(saw_cause && saw_prototype);
     }
 
     #[test]
@@ -1371,5 +1383,33 @@ mod tests {
             values[7].visit_references(&mut |_| {}),
             Err(RootVisitError::RegExpBorrowed)
         );
+    }
+
+    #[test]
+    fn native_error_aliases_share_a_late_attached_prototype() {
+        let Value::NativeError(mut error) = Value::native_error("TypeError", "test") else {
+            unreachable!();
+        };
+
+        let alias = error.clone();
+
+        let Value::Object(prototype) = Value::object([("custom".into(), Value::Number(42.0))])
+        else {
+            unreachable!();
+        };
+
+        error.attach_prototype_if_missing(prototype.clone());
+
+        assert_eq!(error, alias);
+        assert_eq!(alias.get("custom"), Value::Number(42.0));
+        assert_eq!(alias.has_prototype(&prototype), Some(true));
+
+        let Value::Object(other) = Value::object([]) else {
+            unreachable!();
+        };
+
+        error.attach_prototype_if_missing(other);
+
+        assert_eq!(alias.get("custom"), Value::Number(42.0));
     }
 }
