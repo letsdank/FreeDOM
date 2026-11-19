@@ -924,6 +924,58 @@ impl Value {
             _ => None,
         }
     }
+
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(super) fn visit_references(
+        &self,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
+        match self {
+            Self::Array(array)
+            | Self::ArrayMethod {
+                receiver: array, ..
+            } => {
+                visit(RuntimeRoot::Array(array));
+            }
+
+            Self::Object(object) => visit(RuntimeRoot::Object(object)),
+            Self::Function(function) => visit(RuntimeRoot::Function(function)),
+            Self::Document(document) => visit(RuntimeRoot::Document(document)),
+
+            Self::NativeError(error) => error.visit_references(visit),
+
+            Self::RegExp(regexp) | Self::RegExpTest(regexp) | Self::RegExpExec(regexp) => {
+                regexp.visit_references(visit)?;
+            }
+
+            Self::Arguments(arguments) => arguments.visit_references(visit),
+
+            Self::Undefined
+            | Self::Null
+            | Self::Boolean(_)
+            | Self::Number(_)
+            | Self::String(_)
+            | Self::Url(_)
+            | Self::NativeFunction(_)
+            | Self::Element(_)
+            | Self::HtmlCollection(_)
+            | Self::ElementChildren(_)
+            | Self::Attributes(_)
+            | Self::Attribute { .. }
+            | Self::ElementMethod(_)
+            | Self::DocumentMethod(_)
+            | Self::TestContext
+            | Self::ElementConstructor(_)
+            | Self::TestContextMethod(_)
+            | Self::NodeList(_)
+            | Self::ClassList(_)
+            | Self::ObjectConstructor => {}
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1223,5 +1275,101 @@ mod tests {
         .unwrap();
 
         assert!(saw_cause);
+    }
+
+    #[test]
+    fn value_reference_dispatch_covers_wrappers_and_borrow_errors() {
+        let Value::Array(array) = Value::array(vec![]) else {
+            unreachable!();
+        };
+
+        let Value::Object(object) = Value::object([]) else {
+            unreachable!();
+        };
+
+        let document = Rc::new(RefCell::new(super::DocumentState::default()));
+
+        let function = crate::javascript::evaluate("function f() {} f;")
+            .unwrap()
+            .into_test_value();
+
+        let regexp = super::RegExpValue {
+            inner: Rc::new(RefCell::new(super::RegExpState {
+                regexp: super::regexp::object::RegExp::compile("a", "").unwrap(),
+                last_index: Value::Object(object.clone()),
+            })),
+        };
+
+        let values = [
+            Value::Array(array.clone()),
+            Value::ArrayMethod {
+                receiver: array.clone(),
+                method: super::ArrayMethodKind::Push,
+            },
+            Value::Object(object.clone()),
+            Value::Document(document.clone()),
+            function,
+            Value::RegExp(regexp.clone()),
+            Value::RegExpTest(regexp.clone()),
+            Value::RegExpExec(regexp.clone()),
+            Value::arguments(vec![Value::Number(7.0)], 0),
+            Value::native_error("Error", "oops"),
+            Value::Null,
+        ];
+
+        let mut kinds = Vec::new();
+
+        for value in &values {
+            value
+                .visit_references(&mut |root| match root {
+                    RuntimeRoot::Array(found) if Rc::ptr_eq(found, &array) => {
+                        kinds.push("array");
+                    }
+
+                    RuntimeRoot::Object(found) if Rc::ptr_eq(found, &object) => {
+                        kinds.push("object");
+                    }
+
+                    RuntimeRoot::Document(found) if Rc::ptr_eq(found, &document) => {
+                        kinds.push("document");
+                    }
+
+                    RuntimeRoot::Function(_) => kinds.push("function"),
+
+                    RuntimeRoot::Value(Value::Object(found)) if Rc::ptr_eq(found, &object) => {
+                        kinds.push("lastIndex");
+                    }
+
+                    RuntimeRoot::Value(Value::Number(7.0)) => kinds.push("argument"),
+
+                    RuntimeRoot::Object(_) => kinds.push("error properties"),
+
+                    _ => panic!("unexpected reference"),
+                })
+                .unwrap();
+        }
+
+        assert_eq!(
+            kinds,
+            [
+                "array",
+                "array",
+                "object",
+                "document",
+                "function",
+                "lastIndex",
+                "lastIndex",
+                "lastIndex",
+                "argument",
+                "error properties"
+            ]
+        );
+
+        let _guard = regexp.inner.borrow_mut();
+
+        assert_eq!(
+            values[7].visit_references(&mut |_| {}),
+            Err(RootVisitError::RegExpBorrowed)
+        );
     }
 }
