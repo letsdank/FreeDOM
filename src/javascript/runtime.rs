@@ -152,6 +152,98 @@ enum ExecutionFrame {
     Microtask(microtasks::Microtask),
 }
 
+// These roots still use Rc-backed values and cannot be passed to the heap tracer.
+#[allow(dead_code)]
+enum FrameRoot<'a> {
+    Value(&'a Value),
+    Function(&'a FunctionValue),
+    Promise(&'a promise::PromiseHandle),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FrameRootError {
+    BindingBorrowed,
+}
+
+impl ExecutionFrame {
+    #[allow(dead_code)]
+    fn visit_roots(&self, visit: &mut impl FnMut(FrameRoot<'_>)) -> Result<(), FrameRootError> {
+        match self {
+            Self::PendingCompletion(result) => match result {
+                Ok(Completion::Normal(value) | Completion::Return(value)) => {
+                    visit(FrameRoot::Value(value));
+                }
+
+                Ok(Completion::Break | Completion::Continue) => {}
+
+                Err(error) => match &error.kind {
+                    super::JsErrorKind::Thrown(value)
+                    | super::JsErrorKind::NativeException(value) => {
+                        visit(FrameRoot::Value(value));
+                    }
+
+                    super::JsErrorKind::Syntax
+                    | super::JsErrorKind::UnclassifiedRuntime
+                    | super::JsErrorKind::UnsupportedFeature
+                    | super::JsErrorKind::ResourceLimit => {}
+                },
+            },
+
+            Self::ShadowedBindings(bindings) => {
+                for binding in bindings {
+                    binding.visit_root(visit)?;
+                }
+            }
+
+            Self::ForOfItems(items) => {
+                for value in items.as_slice() {
+                    visit(FrameRoot::Value(value));
+                }
+            }
+
+            Self::TemporaryValues(values) => {
+                for value in values {
+                    visit(FrameRoot::Value(value));
+                }
+            }
+
+            Self::Reference(reference) => {
+                reference.visit_roots(visit);
+            }
+
+            Self::PendingCall(call) => {
+                visit(FrameRoot::Value(&call.callee));
+
+                if let Some(receiver) = &call.receiver {
+                    visit(FrameRoot::Value(receiver));
+                }
+
+                for argument in &call.arguments {
+                    visit(FrameRoot::Value(argument));
+                }
+            }
+
+            Self::ActiveCall(call) => {
+                visit(FrameRoot::Function(&call.callee));
+
+                for argument in &call.arguments {
+                    visit(FrameRoot::Value(argument));
+                }
+
+                for binding in &call.replaced_bindings {
+                    binding.visit_root(visit)?;
+                }
+            }
+
+            Self::Microtask(job) => {
+                job.visit_roots(visit);
+            }
+        }
+
+        Ok(())
+    }
+}
+
 struct ActiveCallFrame {
     callee: FunctionValue,
     arguments: Vec<Value>,
@@ -751,7 +843,7 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Completion, ExecutionFrame, Interpreter};
+    use super::{Completion, ExecutionFrame, FrameRoot, FrameRootError, Interpreter};
     use crate::javascript::{JsError, JsErrorKind, Value, parse_program};
 
     #[test]
@@ -1783,5 +1875,104 @@ mod tests {
         drop(roots);
 
         assert!(owner.upgrade().is_none());
+    }
+
+    #[test]
+    fn visits_frame_roots_and_rejects_borrowed_bindings() {
+        use std::collections::HashSet;
+
+        let mut interpreter = Interpreter::new();
+
+        interpreter
+            .variables
+            .insert("x".to_owned(), Value::Number(2.0));
+
+        let names = vec!["x".to_owned()];
+
+        let captured = interpreter
+            .variables
+            .capture_names(&names, &HashSet::from(["x".to_owned()]));
+
+        let snapshot = interpreter
+            .variables
+            .shadow("x".to_owned(), Value::Undefined);
+
+        let program =
+            parse_program("function f(v) { return v; } Promise.resolve(7).then(f);").unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        let callee = interpreter.variables.get("f").unwrap().clone();
+
+        let Value::Function(callee) = callee else {
+            panic!("expected function");
+        };
+
+        let job = interpreter
+            .microtasks
+            .pop_front()
+            .expect("expected promise job");
+
+        let frames = vec![
+            ExecutionFrame::PendingCompletion(Err(JsError::thrown(Value::Number(1.0)))),
+            ExecutionFrame::ShadowedBindings(vec![snapshot]),
+            ExecutionFrame::ForOfItems(vec![Value::Number(3.0)].into_iter()),
+            ExecutionFrame::TemporaryValues(vec![Value::Number(4.0)]),
+            ExecutionFrame::Reference(super::reference::Reference::Index {
+                object: Value::Number(5.0),
+                index: Value::Number(6.0),
+            }),
+            ExecutionFrame::PendingCall(super::PendingCall {
+                callee: Value::Number(7.0),
+                receiver: Some(Value::Number(8.0)),
+                arguments: vec![Value::Number(9.0)],
+            }),
+            ExecutionFrame::ActiveCall(super::ActiveCallFrame {
+                callee,
+                arguments: vec![Value::Number(10.0)],
+                replaced_bindings: Vec::new(),
+                local_names: None,
+            }),
+            ExecutionFrame::Microtask(super::microtasks::Microtask::Callback(Value::Number(11.0))),
+            ExecutionFrame::Microtask(job),
+        ];
+
+        let mut numbers = Vec::new();
+        let mut functions = 0;
+        let mut promises = 0;
+        let mut handler_values = 0;
+
+        for frame in &frames {
+            frame
+                .visit_roots(&mut |root| match root {
+                    FrameRoot::Value(Value::Number(number)) => {
+                        numbers.push(*number);
+                    }
+
+                    FrameRoot::Value(Value::Function(_)) => {
+                        handler_values += 1;
+                    }
+
+                    FrameRoot::Function(_) => functions += 1,
+                    FrameRoot::Promise(_) => promises += 1,
+                    FrameRoot::Value(_) => {}
+                })
+                .unwrap();
+        }
+
+        for number in 1..=11 {
+            assert!(numbers.contains(&(number as f64)));
+        }
+
+        assert_eq!(functions, 1);
+        assert_eq!(promises, 1);
+        assert_eq!(handler_values, 1);
+
+        let _guard = captured.get("x").unwrap().borrow_mut();
+
+        assert_eq!(
+            frames[1].visit_roots(&mut |_| {}),
+            Err(FrameRootError::BindingBorrowed)
+        );
     }
 }

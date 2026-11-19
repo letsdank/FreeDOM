@@ -5,6 +5,7 @@
 //! This is not yet an ECMAScript Environment Record: scopes, lexical capture,
 //! binding attributes and temporal dead zones are not implemented here.
 
+use super::{FrameRoot, FrameRootError};
 use std::{
     cell::{Ref, RefCell, RefMut},
     collections::{HashMap, HashSet},
@@ -27,6 +28,23 @@ pub(in crate::javascript) type CapturedBindings = HashMap<String, Rc<RefCell<Bin
 pub(super) struct BindingSnapshot {
     name: String,
     previous: Option<Rc<RefCell<Binding>>>,
+}
+
+impl BindingSnapshot {
+    pub(super) fn visit_root(
+        &self,
+        visit: &mut impl FnMut(FrameRoot<'_>),
+    ) -> Result<(), FrameRootError> {
+        if let Some(binding) = &self.previous {
+            let binding = binding
+                .try_borrow()
+                .map_err(|_| FrameRootError::BindingBorrowed)?;
+
+            visit(FrameRoot::Value(&binding.value));
+        }
+
+        Ok(())
+    }
 }
 
 impl Bindings {

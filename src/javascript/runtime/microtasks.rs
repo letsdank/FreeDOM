@@ -7,13 +7,22 @@
 //! An engine failure aborts the checkpoint and discards pending microtasks.
 
 use super::promise::PromiseReactionJob;
-use super::{ExecutionFrame, Interpreter, JsError, Value};
+use super::{ExecutionFrame, FrameRoot, Interpreter, JsError, Value};
 use crate::javascript::JsErrorKind;
 
 #[derive(Clone)]
 pub(super) enum Microtask {
     Callback(Value),
     PromiseReaction(PromiseReactionJob),
+}
+
+impl Microtask {
+    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(FrameRoot<'_>)) {
+        match self {
+            Self::Callback(value) => visit(FrameRoot::Value(value)),
+            Self::PromiseReaction(job) => job.visit_roots(visit),
+        }
+    }
 }
 
 impl Interpreter {
