@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     error::Error,
     fmt,
     rc::{Rc, Weak},
@@ -226,6 +226,7 @@ impl Error for HostError {}
 #[derive(Default, Debug)]
 struct HostRoots {
     roots: RefCell<Vec<Weak<HostRoot>>>,
+    heap: OnceCell<Result<RefCell<heap::Heap<heap::HeapObject>>, heap::HeapError>>,
 }
 
 #[derive(Debug)]
@@ -250,6 +251,14 @@ impl HostRoots {
         roots.push(Rc::downgrade(&root));
 
         HostValue(root)
+    }
+
+    #[allow(dead_code)]
+    fn heap(&self) -> Result<&RefCell<heap::Heap<heap::HeapObject>>, heap::HeapError> {
+        self.heap
+            .get_or_init(|| heap::Heap::new().map(RefCell::new))
+            .as_ref()
+            .map_err(|error| *error)
     }
 }
 

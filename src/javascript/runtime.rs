@@ -1696,4 +1696,56 @@ mod tests {
 
         assert!(owner.upgrade().is_none());
     }
+
+    #[test]
+    fn host_owner_keeps_its_heap_alive_and_separate() {
+        use crate::javascript::heap::HeapObject;
+        use crate::javascript::value::{ArrayState, ObjectState};
+        use std::rc::Rc;
+
+        let interpreter = Interpreter::new();
+        let weak_owner = Rc::downgrade(&interpreter.host_roots);
+
+        let host_value = interpreter.export_value(Value::Boolean(true));
+
+        let object = interpreter
+            .host_roots
+            .heap()
+            .unwrap()
+            .borrow_mut()
+            .allocate(HeapObject::Object(ObjectState::default()));
+
+        let array = interpreter
+            .host_roots
+            .heap()
+            .unwrap()
+            .borrow_mut()
+            .allocate(HeapObject::Array(ArrayState::default()));
+
+        let other = Interpreter::new();
+
+        assert!(
+            other
+                .host_roots
+                .heap()
+                .unwrap()
+                .borrow()
+                .get(object)
+                .is_none()
+        );
+
+        drop(interpreter);
+
+        let owner = weak_owner.upgrade().unwrap();
+        let heap = owner.heap().unwrap().borrow();
+
+        assert!(matches!(heap.get(object), Some(HeapObject::Object(_))));
+        assert!(matches!(heap.get(array), Some(HeapObject::Array(_))));
+
+        drop(heap);
+        drop(owner);
+        drop(host_value);
+
+        assert!(weak_owner.upgrade().is_none());
+    }
 }

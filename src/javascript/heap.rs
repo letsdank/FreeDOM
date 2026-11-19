@@ -6,7 +6,15 @@
 //! This is storage only: tracing, collection and runtime integration are not
 //! implemented. An object may be removed only when no live root can reach it.
 
+use super::value::{ArrayState, ObjectState};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+// These states still contain reference-counted values; tracing is not implemented.
+#[derive(Debug)]
+pub(super) enum HeapObject {
+    Object(ObjectState),
+    Array(ArrayState),
+}
 
 static NEXT_HEAP_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -22,11 +30,13 @@ pub(super) enum HeapError {
     IdentityExhausted,
 }
 
+#[derive(Debug)]
 struct Slot<T> {
     generation: u64,
     value: Option<T>,
 }
 
+#[derive(Debug)]
 pub(super) struct Heap<T> {
     id: usize,
     slots: Vec<Slot<T>>,
