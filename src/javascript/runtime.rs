@@ -1699,8 +1699,7 @@ mod tests {
 
     #[test]
     fn host_owner_keeps_its_heap_alive_and_separate() {
-        use crate::javascript::heap::HeapObject;
-        use crate::javascript::value::{ArrayState, ObjectState};
+        use crate::javascript::heap::{HeapArrayState, HeapObject, HeapObjectState};
         use std::rc::Rc;
 
         let interpreter = Interpreter::new();
@@ -1713,14 +1712,14 @@ mod tests {
             .heap()
             .unwrap()
             .borrow_mut()
-            .allocate(HeapObject::Object(ObjectState::default()));
+            .allocate(HeapObject::Object(HeapObjectState::default()));
 
         let array = interpreter
             .host_roots
             .heap()
             .unwrap()
             .borrow_mut()
-            .allocate(HeapObject::Array(ArrayState::default()));
+            .allocate(HeapObject::Array(HeapArrayState::default()));
 
         let other = Interpreter::new();
 
