@@ -43,18 +43,19 @@ impl Interpreter {
             }
         };
 
-        let previous = if matches!(mode, ForInBindingMode::Lexical) {
-            Some(self.variables.shadow(binding.to_owned(), Value::Undefined))
+        let bindings = if matches!(mode, ForInBindingMode::Lexical) {
+            vec![(binding.to_owned(), Value::Undefined)]
         } else {
-            None
+            Vec::new()
         };
 
-        let result = (|| -> Result<Completion, JsError> {
+        self.with_shadowed_bindings(bindings, |interpreter| {
             for key in keys {
-                self.variables
+                interpreter
+                    .variables
                     .assign_or_insert(binding.to_owned(), Value::String(key));
 
-                match self.execute(body)? {
+                match interpreter.execute(body)? {
                     Completion::Normal(_) | Completion::Continue => {}
 
                     Completion::Break => {
@@ -68,13 +69,7 @@ impl Interpreter {
             }
 
             Ok(Completion::Normal(Value::Undefined))
-        })();
-
-        if let Some(previous) = previous {
-            self.variables.restore(previous);
-        }
-
-        result
+        })
     }
 }
 

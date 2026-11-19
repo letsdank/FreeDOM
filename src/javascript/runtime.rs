@@ -143,6 +143,7 @@ pub(super) enum Completion {
 
 enum ExecutionFrame {
     PendingCompletion(Result<Completion, JsError>),
+    ShadowedBindings(Vec<BindingSnapshot>),
 }
 
 struct ActiveCallFrame {
@@ -500,12 +501,39 @@ impl Interpreter {
 
         let outcome = operation(self);
 
-        let ExecutionFrame::PendingCompletion(pending) = self
-            .execution_frames
-            .pop()
-            .expect("pending completion frame must exist");
+        let pending = match self.execution_frames.pop() {
+            Some(ExecutionFrame::PendingCompletion(pending)) => pending,
+            _ => unreachable!("pending completion frame must exist"),
+        };
 
         Ok((pending, outcome?))
+    }
+
+    fn with_shadowed_bindings<T>(
+        &mut self,
+        bindings: impl IntoIterator<Item = (String, Value)>,
+        operation: impl FnOnce(&mut Self) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let snapshots = bindings
+            .into_iter()
+            .map(|(name, value)| self.variables.shadow(name, value))
+            .collect();
+
+        self.execution_frames
+            .push(ExecutionFrame::ShadowedBindings(snapshots));
+
+        let result = operation(self);
+
+        let snapshots = match self.execution_frames.pop() {
+            Some(ExecutionFrame::ShadowedBindings(snapshots)) => snapshots,
+            _ => unreachable!("shadowed bindings frame must exist"),
+        };
+
+        for snapshot in snapshots.into_iter().rev() {
+            self.variables.restore(snapshot);
+        }
+
+        result
     }
 
     fn consume_step(&mut self) -> Result<(), JsError> {
@@ -1147,5 +1175,32 @@ mod tests {
         ));
 
         assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn shadowed_binding_frames_unwind_after_catch_and_loops() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program("let x = {value: 7};").unwrap();
+        interpreter.execute_script(&program).unwrap();
+
+        for source in [
+            "try { throw 1; } catch (x) { throw 2; }",
+            "for (let x in {a: 1}) { throw 2; }",
+            "for (let x of [1]) { throw 2; }",
+            "for (const [x, y] of [[1, 2]]) { throw 2; }",
+        ] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err(), "{source}");
+            assert!(interpreter.execution_frames.is_empty(), "{source}");
+
+            let program = parse_program("x.value;").unwrap();
+
+            assert_eq!(
+                interpreter.execute_script(&program).unwrap().into_value(),
+                Value::Number(7.0)
+            );
+        }
     }
 }

@@ -30,13 +30,13 @@ impl Interpreter {
         };
 
         let items = items.borrow().values.clone();
-        let mut previous = Vec::new();
 
-        for binding in bindings {
-            previous.push(self.variables.shadow(binding.clone(), Value::Undefined));
-        }
+        let shadows = bindings
+            .iter()
+            .cloned()
+            .map(|name| (name, Value::Undefined));
 
-        let result = (|| -> Result<Completion, JsError> {
+        self.with_shadowed_bindings(shadows, |interpreter| {
             for item in items {
                 let values = match item {
                     Value::Array(values) => values.borrow().values.clone(),
@@ -55,30 +55,24 @@ impl Interpreter {
                 for (index, binding) in bindings.iter().enumerate() {
                     let value = values.get(index).cloned().unwrap_or(Value::Undefined);
 
-                    self.variables.assign_or_insert(binding.clone(), value);
+                    interpreter
+                        .variables
+                        .assign_or_insert(binding.clone(), value);
                 }
 
-                match self.execute(body)? {
+                match interpreter.execute(body)? {
                     Completion::Normal(_) | Completion::Continue => {}
 
                     Completion::Break => {
                         return Ok(Completion::Normal(Value::Undefined));
                     }
 
-                    Completion::Return(value) => {
-                        return Ok(Completion::Return(value));
-                    }
+                    Completion::Return(value) => return Ok(Completion::Return(value)),
                 }
             }
 
             Ok(Completion::Normal(Value::Undefined))
-        })();
-
-        for previous in previous.into_iter().rev() {
-            self.variables.restore(previous);
-        }
-
-        result
+        })
     }
 }
 

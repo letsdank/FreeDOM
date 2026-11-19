@@ -60,17 +60,17 @@ impl Interpreter {
 
     fn execute_catch(&mut self, clause: &CatchClause, value: Value) -> Result<Completion, JsError> {
         if let Some(name) = &clause.binding {
-            let previous = self.variables.shadow(name.clone(), value);
+            self.with_shadowed_bindings([(name.clone(), value)], |interpreter| {
+                interpreter
+                    .catch_bindings
+                    .push((interpreter.function_locals.len(), name.clone()));
 
-            self.catch_bindings
-                .push((self.function_locals.len(), name.clone()));
+                let result = interpreter.execute(&clause.body);
 
-            let result = self.execute(&clause.body);
+                interpreter.catch_bindings.pop();
 
-            self.catch_bindings.pop();
-            self.variables.restore(previous);
-
-            result
+                result
+            })
         } else {
             self.execute(&clause.body)
         }

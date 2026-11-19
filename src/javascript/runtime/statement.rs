@@ -171,27 +171,32 @@ impl Interpreter {
                     };
                     let values = values.borrow().values.clone();
 
-                    let previous_binding = self.variables.shadow(binding.clone(), Value::Undefined);
+                    let completion = self.with_shadowed_bindings(
+                        [(binding.clone(), Value::Undefined)],
+                        |interpreter| {
+                            for value in values {
+                                interpreter
+                                    .variables
+                                    .assign_or_insert(binding.clone(), value);
 
-                    let completion = (|| -> Result<Completion, JsError> {
-                        for value in values {
-                            self.variables.assign_or_insert(binding.clone(), value);
+                                match interpreter.execute(body)? {
+                                    Completion::Normal(_) | Completion::Continue => {}
 
-                            match self.execute(body)? {
-                                Completion::Normal(_) | Completion::Continue => {}
-                                Completion::Break => {
-                                    return Ok(Completion::Normal(Value::Undefined));
+                                    Completion::Break => {
+                                        return Ok(Completion::Normal(Value::Undefined));
+                                    }
+
+                                    Completion::Return(value) => {
+                                        return Ok(Completion::Return(value));
+                                    }
                                 }
-                                Completion::Return(value) => return Ok(Completion::Return(value)),
                             }
-                        }
 
-                        Ok(Completion::Normal(Value::Undefined))
-                    })();
+                            Ok(Completion::Normal(Value::Undefined))
+                        },
+                    )?;
 
-                    self.variables.restore(previous_binding);
-
-                    match completion? {
+                    match completion {
                         Completion::Normal(value) => value,
                         Completion::Return(value) => return Ok(Completion::Return(value)),
                         Completion::Break => return Ok(Completion::Break),
