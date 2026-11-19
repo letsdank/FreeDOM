@@ -8,8 +8,9 @@ use crate::url::Url;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 use super::arguments::ArgumentsValue;
-use super::runtime::bindings::CapturedBindings;
+use super::runtime::bindings::{CapturedBindings, visit_captured_bindings};
 use super::runtime::promise::PromiseHandle;
+use super::runtime::{RootVisitError, RuntimeRoot};
 use super::{DocumentState, FunctionKind, UserFunction, regexp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -555,6 +556,27 @@ impl FunctionValue {
 
     pub(super) fn captures(&self) -> &CapturedBindings {
         &self.captures
+    }
+
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(super) fn visit_references(
+        &self,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
+        visit(RuntimeRoot::Object(&self.properties));
+
+        if let Some(bound) = &self.binding {
+            visit(RuntimeRoot::Function(&bound.target));
+            visit(RuntimeRoot::Value(&bound.this_arg));
+
+            for argument in &bound.arguments {
+                visit(RuntimeRoot::Value(argument));
+            }
+        }
+
+        visit_captured_bindings(&self.captures, visit)
     }
 }
 

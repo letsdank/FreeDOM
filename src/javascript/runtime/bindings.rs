@@ -25,6 +25,22 @@ pub(in crate::javascript) struct Binding {
 
 pub(in crate::javascript) type CapturedBindings = HashMap<String, Rc<RefCell<Binding>>>;
 
+#[allow(dead_code)]
+pub(in crate::javascript) fn visit_captured_bindings(
+    captures: &CapturedBindings,
+    visit: &mut impl FnMut(RuntimeRoot<'_>),
+) -> Result<(), RootVisitError> {
+    for binding in captures.values() {
+        let binding = binding
+            .try_borrow()
+            .map_err(|_| RootVisitError::BindingBorrowed)?;
+
+        visit(RuntimeRoot::Value(&binding.value));
+    }
+
+    Ok(())
+}
+
 pub(super) struct BindingSnapshot {
     name: String,
     previous: Option<Rc<RefCell<Binding>>>,

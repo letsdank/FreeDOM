@@ -154,7 +154,7 @@ enum ExecutionFrame {
 
 // These roots still use Rc-backed values and cannot be passed to the heap tracer.
 #[allow(dead_code)]
-enum RuntimeRoot<'a> {
+pub(super) enum RuntimeRoot<'a> {
     Value(&'a Value),
     Function(&'a FunctionValue),
     Promise(&'a promise::PromiseHandle),
@@ -164,8 +164,9 @@ enum RuntimeRoot<'a> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum RootVisitError {
+pub(super) enum RootVisitError {
     BindingBorrowed,
+    PromiseBorrowed,
 }
 
 impl ExecutionFrame {
@@ -2145,5 +2146,58 @@ mod tests {
             interpreter.visit_runtime_roots(&mut |_| {}),
             Err(RootVisitError::BindingBorrowed)
         ));
+    }
+
+    #[test]
+    fn visits_bound_function_references_and_rejects_borrowed_captures() {
+        let mut interpreter = Interpreter::new();
+        let program = parse_program(
+            "function factory(x) { return function() { return x; }; } \
+            let captured = {id: 1}; let receiver = {id: 2}; \
+            let argument = {id: 3}; let f = factory(captured); \
+            let bound = f.bind(receiver, argument);",
+        )
+        .unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        let value = interpreter.variables.get("bound").unwrap().clone();
+        let Value::Function(bound) = value else {
+            panic!("expected function");
+        };
+
+        let target = interpreter.variables.get("f").unwrap().clone();
+        let captured = interpreter.variables.get("captured").unwrap().clone();
+        let receiver = interpreter.variables.get("receiver").unwrap().clone();
+        let argument = interpreter.variables.get("argument").unwrap().clone();
+
+        let mut objects = 0;
+        let mut found_target = false;
+        let mut values = Vec::new();
+
+        bound
+            .visit_references(&mut |root| match root {
+                RuntimeRoot::Object(_) => objects += 1,
+                RuntimeRoot::Function(value) => {
+                    found_target = Value::Function(value.clone()) == target;
+                }
+                RuntimeRoot::Value(value) => values.push(value.clone()),
+                _ => {}
+            })
+            .unwrap();
+
+        assert_eq!(objects, 1);
+        assert!(found_target);
+
+        for expected in [captured, receiver, argument] {
+            assert!(values.contains(&expected));
+        }
+
+        let _guard = bound.captures().get("x").unwrap().borrow_mut();
+
+        assert_eq!(
+            bound.visit_references(&mut |_| {}),
+            Err(RootVisitError::BindingBorrowed)
+        );
     }
 }

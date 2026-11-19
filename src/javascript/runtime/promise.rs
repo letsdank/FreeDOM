@@ -8,7 +8,9 @@
 
 use std::{cell::RefCell, fmt, rc::Rc};
 
-use super::{Interpreter, JsError, NativeFunction, RuntimeRoot, Value, microtasks::Microtask};
+use super::{
+    Interpreter, JsError, NativeFunction, RootVisitError, RuntimeRoot, Value, microtasks::Microtask,
+};
 use crate::javascript::JsErrorKind;
 
 #[derive(Clone)]
@@ -56,21 +58,57 @@ pub(super) struct PromiseReactionJob {
 
 impl PromiseReactionJob {
     pub(super) fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
-        match &self.outcome {
+        self.outcome.visit_references(visit);
+        self.reaction.visit_references(visit);
+    }
+}
+
+impl Outcome {
+    fn visit_references(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        match self {
             Outcome::Fulfilled(value) | Outcome::Rejected(value) => {
                 visit(RuntimeRoot::Value(value));
             }
         }
+    }
+}
 
-        if let Some(handler) = &self.reaction.on_fulfilled {
+impl Reaction {
+    fn visit_references(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        if let Some(handler) = &self.on_fulfilled {
             visit(RuntimeRoot::Value(handler));
         }
 
-        if let Some(handler) = &self.reaction.on_rejected {
+        if let Some(handler) = &self.on_rejected {
             visit(RuntimeRoot::Value(handler));
         }
 
-        visit(RuntimeRoot::Promise(&self.reaction.target));
+        visit(RuntimeRoot::Promise(&self.target));
+    }
+}
+
+impl PromiseHandle {
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(in crate::javascript) fn visit_references(
+        &self,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
+        let state = self
+            .0
+            .try_borrow()
+            .map_err(|_| RootVisitError::PromiseBorrowed)?;
+
+        if let Some(outcome) = &state.outcome {
+            outcome.visit_references(visit);
+        }
+
+        for reaction in &state.reactions {
+            reaction.visit_references(visit);
+        }
+
+        Ok(())
     }
 }
 
@@ -291,7 +329,9 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
+    use super::{Outcome, PromiseHandle, PromiseState, Reaction, RootVisitError, RuntimeRoot};
     use crate::javascript::{DocumentScriptSession, DocumentState, JsErrorKind, Value, evaluate};
+    use std::{cell::RefCell, rc::Rc};
 
     #[test]
     fn schedules_then_as_microtasks_and_chains_values() {
@@ -471,5 +511,49 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn visits_promise_references_without_following_cycles() {
+        let promise = PromiseHandle(Rc::new(RefCell::new(PromiseState::default())));
+
+        {
+            let mut state = promise.0.borrow_mut();
+
+            state.outcome = Some(Outcome::Rejected(Value::Number(1.0)));
+            state.reactions.push(Reaction {
+                on_fulfilled: Some(Value::Number(2.0)),
+                on_rejected: Some(Value::Number(3.0)),
+                target: promise.clone(),
+            });
+        }
+
+        let mut values = Vec::new();
+        let mut self_references = 0;
+
+        promise
+            .visit_references(&mut |root| match root {
+                RuntimeRoot::Value(value) => values.push(value.clone()),
+                RuntimeRoot::Promise(target) if target == &promise => self_references += 1,
+                _ => {}
+            })
+            .unwrap();
+
+        assert_eq!(
+            values,
+            vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)]
+        );
+        assert_eq!(self_references, 1);
+
+        {
+            let _guard = promise.0.borrow_mut();
+
+            assert_eq!(
+                promise.visit_references(&mut |_| {}),
+                Err(RootVisitError::PromiseBorrowed)
+            );
+        }
+
+        promise.0.borrow_mut().reactions.clear();
     }
 }
