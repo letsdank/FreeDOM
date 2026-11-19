@@ -1,12 +1,11 @@
-use crate::url::Url;
-use std::collections::{HashMap, VecDeque};
-
 use self::bindings::{BindingSnapshot, Bindings};
 use super::value::{ArrayStorage, DocumentStorage, FunctionValue, ObjectStorage};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
     JsError, NativeFunction, PostfixStep, Statement, TestContextMethod, UserFunction, Value,
 };
+use crate::url::Url;
+use std::collections::{HashMap, VecDeque};
 
 const DEFAULT_EXECUTION_STEPS: usize = 1_000_000;
 const MAX_EXECUTION_DEPTH: usize = 32;
@@ -584,24 +583,35 @@ impl Interpreter {
         expressions: &[Expression],
         operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
     ) -> Result<T, JsError> {
-        let index = self.execution_frames.len();
-
-        self.execution_frames
-            .push(ExecutionFrame::PendingCall(PendingCall {
+        self.with_call_frame(
+            PendingCall {
                 callee,
                 receiver,
                 arguments: Vec::with_capacity(expressions.len()),
-            }));
+            },
+            |interpreter, index| {
+                for expression in expressions {
+                    let argument = interpreter.evaluate_expression(expression)?;
 
-        let result = (|| {
-            for expression in expressions {
-                let argument = self.evaluate_expression(expression)?;
+                    interpreter.pending_call_mut(index).arguments.push(argument);
+                }
 
-                self.pending_call_mut(index).arguments.push(argument);
-            }
+                operation(interpreter, index)
+            },
+        )
+    }
 
-            operation(self, index)
-        })();
+    fn with_call_frame<T>(
+        &mut self,
+        call: PendingCall,
+        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.execution_frames.len();
+
+        self.execution_frames
+            .push(ExecutionFrame::PendingCall(call));
+
+        let result = operation(self, index);
 
         match self.execution_frames.pop() {
             Some(ExecutionFrame::PendingCall(_)) => {}
@@ -1568,6 +1578,55 @@ mod tests {
             "#,
         )
         .unwrap();
+
+        assert!(interpreter.execute_script(&program).is_err());
+        assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn internal_callback_dispatch_unwinds_frames() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let trace = '';
+
+            let found = [1, 2, 3].some(function(value) {
+                trace = trace + value;
+                return value === 2;
+            });
+
+            let replaced = 'aba'.replace(/a/g, function() {
+                trace = trace + 'r';
+                return 'x';
+            });
+
+            let object = {
+                valueOf: function() {
+                    trace = trace + 'v';
+                    return {};
+                },
+
+                toString: function() {
+                    trace = trace + 's';
+                    return '4';
+                }
+            };
+
+            found &&
+                replaced === 'xbx' &&
+                object + 1 === '41' &&
+                trace === '12rrvs';
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.execution_frames.is_empty());
+
+        let program = parse_program("[1].some(function() { throw 'error'; });").unwrap();
 
         assert!(interpreter.execute_script(&program).is_err());
         assert!(interpreter.execution_frames.is_empty());

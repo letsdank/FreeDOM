@@ -41,6 +41,31 @@ impl Interpreter {
         receiver: Option<Value>,
         values: Vec<Value>,
     ) -> Result<Value, JsError> {
+        self.with_call_frame(
+            super::PendingCall {
+                callee,
+                receiver,
+                arguments: values,
+            },
+            |interpreter, index| interpreter.dispatch_call_in_frame(index),
+        )
+    }
+
+    pub(super) fn dispatch_call_in_frame(&mut self, index: usize) -> Result<Value, JsError> {
+        let call = self.pending_call(index);
+        let callee = call.callee.clone();
+        let receiver = call.receiver.clone();
+        let values = call.arguments.clone();
+
+        self.dispatch_call_inner(callee, receiver, values)
+    }
+
+    fn dispatch_call_inner(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        values: Vec<Value>,
+    ) -> Result<Value, JsError> {
         match callee {
             Value::ArrayMethod {
                 receiver,
