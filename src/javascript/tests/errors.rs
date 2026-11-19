@@ -119,3 +119,24 @@ fn classifies_uncaught_non_callable_type_error() {
         JsErrorKind::NativeException(crate::javascript::Value::NativeError(_))
     ));
 }
+
+#[test]
+fn host_error_conversion_preserves_exception_identity() {
+    use crate::javascript::{HostError, JsError, Value};
+
+    let value = Value::object([(String::from("code"), Value::Number(7.0))]);
+
+    let internal = JsError::thrown(value.clone());
+    let host = HostError::from(internal);
+
+    assert_eq!(host.message, "Uncaught JavaScript exception");
+    assert_eq!(host.offset, None);
+
+    match (host.kind, value) {
+        (JsErrorKind::Thrown(Value::Object(thrown)), Value::Object(original)) => {
+            assert!(std::rc::Rc::ptr_eq(&thrown, &original));
+        }
+
+        _ => panic!("excepted thrown value"),
+    }
+}

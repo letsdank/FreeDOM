@@ -1,9 +1,9 @@
 use crate::{
     html::{Document, Element, Node},
-    javascript::{DocumentScriptSession, DocumentState, JsError},
+    javascript::{DocumentScriptSession, DocumentState, HostError},
 };
 
-pub fn run_document_test(source: &str) -> Result<DocumentState, JsError> {
+pub fn run_document_test(source: &str) -> Result<DocumentState, HostError> {
     let document = Document::parse(source);
 
     let mut document_state = DocumentState::with_title(find_title(&document).unwrap_or_default());
@@ -68,7 +68,7 @@ fn register_elements_in_node(
 fn execute_inline_scripts(
     root: &Document,
     document_state: &mut DocumentState,
-) -> Result<(), JsError> {
+) -> Result<(), HostError> {
     let mut session = DocumentScriptSession::new(document_state);
 
     for child in &root.children {
@@ -82,7 +82,7 @@ fn execute_inline_scripts_in_node(
     node: &Node,
     document_state: &mut DocumentState,
     session: &mut DocumentScriptSession,
-) -> Result<(), JsError> {
+) -> Result<(), HostError> {
     let Node::Element(element) = node else {
         return Ok(());
     };

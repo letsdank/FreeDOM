@@ -29,7 +29,9 @@ mod parser;
 mod json;
 
 #[cfg(test)]
-pub use json::parse_json;
+pub fn parse_json(source: &str) -> Result<Value, HostError> {
+    json::parse_json(source).map_err(HostError::from)
+}
 
 use parser::parse_program;
 
@@ -93,7 +95,7 @@ pub enum JsErrorKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct JsError {
+pub(crate) struct JsError {
     pub offset: Option<usize>,
     pub message: String,
     pub kind: JsErrorKind,
@@ -161,26 +163,60 @@ impl JsError {
 
 impl fmt::Display for JsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.offset {
-            Some(offset) => write!(f, "{} at byte {offset}", self.message),
-            None => write!(f, "{}", self.message),
-        }
+        format_error(f, &self.message, self.offset)
     }
 }
 
 impl Error for JsError {}
 
-pub fn evaluate(source: &str) -> Result<Value, JsError> {
+/// An error returned to the embedding application.
+///
+/// Exception values still use the current reference-counted representation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostError {
+    pub offset: Option<usize>,
+    pub message: String,
+    pub kind: JsErrorKind,
+}
+
+impl From<JsError> for HostError {
+    fn from(error: JsError) -> Self {
+        Self {
+            offset: error.offset,
+            message: error.message,
+            kind: error.kind,
+        }
+    }
+}
+
+impl fmt::Display for HostError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        format_error(f, &self.message, self.offset)
+    }
+}
+
+impl Error for HostError {}
+
+fn format_error(f: &mut fmt::Formatter<'_>, message: &str, offset: Option<usize>) -> fmt::Result {
+    match offset {
+        Some(offset) => write!(f, "{message} at byte {offset}"),
+        None => f.write_str(message),
+    }
+}
+
+pub fn evaluate(source: &str) -> Result<Value, HostError> {
     let program = parse_program(source)?;
+
     Interpreter::new()
         .execute_script(&program)
         .map(Completion::into_value)
+        .map_err(HostError::from)
 }
 
 pub fn evaluate_with_document(
     source: &str,
     document: &mut DocumentState,
-) -> Result<Value, JsError> {
+) -> Result<Value, HostError> {
     DocumentScriptSession::new(document).evaluate(source, document)
 }
 

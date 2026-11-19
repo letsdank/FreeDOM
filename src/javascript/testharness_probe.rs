@@ -5,7 +5,7 @@
 //! This is not a WPT runner or a browser environment: `self` is an ordinary
 //! object, and the legacy native WPT assertion shim is not installed.
 
-use super::{Completion, Interpreter, JsError, Value, parse_program};
+use super::{Completion, HostError, Interpreter, JsError, Value, parse_program};
 
 fn bootstrap_testharness(source: &str) -> Result<Interpreter, JsError> {
     let mut interpreter = Interpreter::new_without_wpt_shim();
@@ -29,12 +29,14 @@ fn bootstrap_testharness(source: &str) -> Result<Interpreter, JsError> {
     Ok(interpreter)
 }
 
-pub(crate) fn probe_testharness(source: &str) -> Result<(), JsError> {
-    bootstrap_testharness(source).map(|_| ())
+pub(crate) fn probe_testharness(source: &str) -> Result<(), HostError> {
+    bootstrap_testharness(source)
+        .map(|_| ())
+        .map_err(HostError::from)
 }
 
 /// Runs one synchronous harness test in the synthetic shell.
-pub(crate) fn probe_testharness_test(source: &str) -> Result<(), JsError> {
+pub(crate) fn probe_testharness_test(source: &str) -> Result<(), HostError> {
     let report = run_harness_scripts(
         source,
         &[r#"
@@ -58,9 +60,7 @@ pub(crate) fn probe_testharness_test(source: &str) -> Result<(), JsError> {
     {
         Ok(())
     } else {
-        Err(JsError::runtime(
-            "testharness did not report exactly one passing test result",
-        ))
+        Err(JsError::runtime("testharness did not report exactly one passing test result").into())
     }
 }
 
