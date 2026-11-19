@@ -554,6 +554,36 @@ impl Interpreter {
 
         result
     }
+
+    fn with_pending_call<T>(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        expressions: &[Expression],
+        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.pending_calls.len();
+
+        self.pending_calls.push(PendingCall {
+            callee,
+            receiver,
+            arguments: Vec::with_capacity(expressions.len()),
+        });
+
+        let result = (|| {
+            for expression in expressions {
+                let argument = self.evaluate_expression(expression)?;
+
+                self.pending_calls[index].arguments.push(argument);
+            }
+
+            operation(self, index)
+        })();
+
+        self.pending_calls.truncate(index);
+
+        result
+    }
 }
 
 #[cfg(test)]
@@ -954,6 +984,51 @@ mod tests {
 
             assert!(interpreter.execute_script(&program).is_err());
             assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+        }
+    }
+
+    #[test]
+    fn constructor_arguments_are_scoped_across_nested_calls_and_errors() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let trace = '';
+
+            function A(a, b) {
+                this.result = a.value + b.value;
+            }
+
+            let Constructor = A;
+
+            function first() {
+                trace = trace + 'a';
+                return {value: 1};
+            }
+
+            function second() {
+                trace = trace + 'b';
+                Constructor = 4;
+                return {value: 2};
+            }
+
+            let instance = new Constructor(first(), second());
+
+            instance.result === 3 && trace === 'ab' && Constructor === 4;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.pending_calls.is_empty());
+
+        for source in ["new A(first(), missing);", "new Constructor(first());"] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err());
+            assert!(interpreter.pending_calls.is_empty());
         }
     }
 }

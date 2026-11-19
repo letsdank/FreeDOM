@@ -19,12 +19,19 @@ impl Interpreter {
             .map(|value| value.clone())
             .ok_or_else(|| JsError::reference_error(name))?;
 
-        let mut values = Vec::with_capacity(arguments.len());
+        self.with_pending_call(constructor, None, arguments, |interpreter, index| {
+            let constructor = interpreter.pending_calls[index].callee.clone();
+            let values = interpreter.pending_calls[index].arguments.clone();
 
-        for argument in arguments {
-            values.push(self.evaluate_expression(argument)?);
-        }
+            interpreter.construct_resolved(constructor, values)
+        })
+    }
 
+    fn construct_resolved(
+        &mut self,
+        constructor: Value,
+        values: Vec<Value>,
+    ) -> Result<Value, JsError> {
         let function = match constructor {
             Value::Function(function) if function.is_bound() => {
                 return Err(JsError::unsupported(
