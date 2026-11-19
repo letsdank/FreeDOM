@@ -84,8 +84,16 @@ impl Interpreter {
 
         let mut captured = HashMap::new();
 
-        for scope in &self.function_locals {
-            for name in scope {
+        for frame in &self.execution_frames {
+            let super::ExecutionFrame::ActiveCall(frame) = frame else {
+                continue;
+            };
+
+            let Some(names) = &frame.local_names else {
+                continue;
+            };
+
+            for name in names {
                 if let Some(value) = self.variables.get(name) {
                     captured.insert(name.clone(), value.clone());
                 }

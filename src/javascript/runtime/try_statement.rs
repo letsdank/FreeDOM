@@ -61,9 +61,9 @@ impl Interpreter {
     fn execute_catch(&mut self, clause: &CatchClause, value: Value) -> Result<Completion, JsError> {
         if let Some(name) = &clause.binding {
             self.with_shadowed_bindings([(name.clone(), value)], |interpreter| {
-                interpreter
-                    .catch_bindings
-                    .push((interpreter.function_locals.len(), name.clone()));
+                let depth = interpreter.function_depth();
+
+                interpreter.catch_bindings.push((depth, name.clone()));
 
                 let result = interpreter.execute(&clause.body);
 

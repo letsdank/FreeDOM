@@ -198,7 +198,7 @@ impl Interpreter {
             local_names.push("arguments".to_owned());
         }
 
-        self.function_locals.push(local_names.clone());
+        self.active_call_frame_mut(frame_index).local_names = Some(local_names.clone());
 
         let result = (|| -> Result<Completion, JsError> {
             for (index, parameter) in function.parameters.iter().enumerate() {
@@ -241,15 +241,9 @@ impl Interpreter {
                 local_names.push(name);
             }
 
-            *self
-                .function_locals
-                .last_mut()
-                .expect("function frame must exist") = local_names;
-
+            self.active_call_frame_mut(frame_index).local_names = Some(local_names);
             self.execute(&function.body)
         })();
-
-        self.function_locals.pop();
 
         result.map(|completion| match completion {
             Completion::Normal(_) => Value::Undefined,
@@ -260,18 +254,26 @@ impl Interpreter {
     pub(super) fn create_function(&self, function: &UserFunction) -> Value {
         let referenced = super::identifier_analysis::referenced_names(function);
 
-        let mut captures = self.capture_frames.last().cloned().unwrap_or_default();
+        let mut captures = self
+            .current_active_function()
+            .map(|frame| frame.callee.captures().clone())
+            .unwrap_or_default();
 
         captures.retain(|name, _| referenced.contains(name));
 
-        if let Some(names) = self.function_locals.last() {
+        if let Some(names) = self
+            .current_active_function()
+            .and_then(|frame| frame.local_names.as_ref())
+        {
             captures.extend(self.variables.capture_names(names, &referenced));
         }
+
+        let function_depth = self.function_depth();
 
         let catch_names: Vec<_> = self
             .catch_bindings
             .iter()
-            .filter(|(depth, _)| *depth == self.function_locals.len())
+            .filter(|(depth, _)| *depth == function_depth)
             .map(|(_, name)| name.clone())
             .collect();
 
@@ -297,12 +299,11 @@ impl Interpreter {
 
         self.execution_frames
             .push(super::ExecutionFrame::ActiveCall(super::ActiveCallFrame {
-                _callee: function.clone(),
+                callee: function.clone(),
                 arguments,
                 replaced_bindings: previous,
+                local_names: None,
             }));
-
-        self.capture_frames.push(function.captures().clone());
 
         if let Some(receiver) =
             receiver.filter(|_| function.definition().kind == FunctionKind::Ordinary)
@@ -315,8 +316,6 @@ impl Interpreter {
         }
 
         let result = self.call_function(function.definition(), frame_index);
-
-        self.capture_frames.pop();
 
         let frame = match self.execution_frames.pop() {
             Some(super::ExecutionFrame::ActiveCall(frame)) => frame,
@@ -1245,6 +1244,39 @@ mod tests {
                 let second = get('b');
 
                 first() === 'a' && second() === 'b'
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn closures_capture_nested_function_and_catch_bindings() {
+        let result = evaluate(
+            r#"
+            function outer() {
+                let a = 10;
+
+                try {
+                    throw 2;
+                } catch (x) {
+                    function inner() {
+                        try {
+                            throw 3;
+                        } catch (y) {
+                            return function() {
+                                return a + x + y;
+                            };
+                        }
+                    }
+
+                    return inner();
+                }
+            }
+
+            let get = outer();
+            get() === 15;
             "#,
         )
         .unwrap();

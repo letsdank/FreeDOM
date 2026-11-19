@@ -1,7 +1,7 @@
 use crate::url::Url;
 use std::collections::{HashMap, VecDeque};
 
-use self::bindings::{BindingSnapshot, Bindings, CapturedBindings};
+use self::bindings::{BindingSnapshot, Bindings};
 use super::value::{ArrayStorage, DocumentStorage, FunctionValue, ObjectStorage};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
@@ -152,10 +152,10 @@ enum ExecutionFrame {
 }
 
 struct ActiveCallFrame {
-    // Retain the callee and its properties for the duration of the call.
-    _callee: FunctionValue,
+    callee: FunctionValue,
     arguments: Vec<Value>,
     replaced_bindings: Vec<BindingSnapshot>,
+    local_names: Option<Vec<String>>,
 }
 
 struct PendingCall {
@@ -178,9 +178,7 @@ pub(super) struct Interpreter {
     execution_frames: Vec<ExecutionFrame>,
     document: Option<DocumentStorage>,
     cleanups: Vec<Cleanup>,
-    function_locals: Vec<Vec<String>>,
     object_prototype: ObjectStorage,
-    capture_frames: Vec<CapturedBindings>,
     catch_bindings: Vec<(usize, String)>,
     microtasks: VecDeque<microtasks::Microtask>,
     performing_microtask_checkpoint: bool,
@@ -408,9 +406,7 @@ impl Interpreter {
             execution_frames: Vec::new(),
             document: None,
             cleanups: Vec::new(),
-            function_locals: Vec::new(),
             object_prototype,
-            capture_frames: Vec::new(),
             catch_bindings: Vec::new(),
             microtasks: VecDeque::new(),
             performing_microtask_checkpoint: false,
@@ -706,6 +702,28 @@ impl Interpreter {
             Some(ExecutionFrame::ActiveCall(frame)) => frame,
             _ => unreachable!("active call frame must exist"),
         }
+    }
+
+    fn current_active_function(&self) -> Option<&ActiveCallFrame> {
+        self.execution_frames
+            .iter()
+            .rev()
+            .find_map(|frame| match frame {
+                ExecutionFrame::ActiveCall(frame) => Some(frame),
+                _ => None,
+            })
+    }
+
+    fn function_depth(&self) -> usize {
+        self.execution_frames
+            .iter()
+            .filter(|frame| {
+                matches!(
+                    frame,
+                    ExecutionFrame::ActiveCall(frame) if frame.local_names.is_some()
+                )
+            })
+            .count()
     }
 }
 
