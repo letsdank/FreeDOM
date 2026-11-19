@@ -554,6 +554,23 @@ mod tests {
             );
         }
 
+        let Value::Object(object) = Value::object([]) else {
+            unreachable!();
+        };
+
+        object.borrow_mut().promise = Some(promise.clone());
+
+        let mut found_promise = false;
+
+        crate::javascript::value::ObjectState::visit_references(&object, &mut |root| {
+            if let RuntimeRoot::Promise(found) = root {
+                found_promise = found == &promise;
+            }
+        })
+        .unwrap();
+
+        assert!(found_promise);
+
         promise.0.borrow_mut().reactions.clear();
     }
 }

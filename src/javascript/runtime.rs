@@ -167,6 +167,8 @@ pub(super) enum RuntimeRoot<'a> {
 pub(super) enum RootVisitError {
     BindingBorrowed,
     PromiseBorrowed,
+    ObjectBorrowed,
+    ArrayBorrowed,
 }
 
 impl ExecutionFrame {

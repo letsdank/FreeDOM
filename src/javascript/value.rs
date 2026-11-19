@@ -348,6 +348,41 @@ impl ObjectState {
             }
         }
     }
+
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(super) fn visit_references(
+        object: &ObjectStorage,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
+        let state = object
+            .try_borrow()
+            .map_err(|_| RootVisitError::ObjectBorrowed)?;
+
+        state.visit_contents(visit);
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn visit_contents(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        for property in &self.properties {
+            visit(RuntimeRoot::Value(&property.value));
+        }
+
+        match &self.prototype {
+            ObjectPrototype::Object(prototype) => {
+                visit(RuntimeRoot::Object(prototype));
+            }
+            ObjectPrototype::Unknown
+            | ObjectPrototype::IntrinsicObjectRoot
+            | ObjectPrototype::Null => {}
+        }
+
+        if let Some(promise) = &self.promise {
+            visit(RuntimeRoot::Promise(promise));
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -358,6 +393,29 @@ pub(crate) struct ArrayState {
 }
 
 pub(crate) type ArrayStorage = Rc<RefCell<ArrayState>>;
+
+impl ArrayState {
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(super) fn visit_references(
+        array: &ArrayStorage,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
+        let state = array
+            .try_borrow()
+            .map_err(|_| RootVisitError::ArrayBorrowed)?;
+
+        // Visit all stored values, including slots currently marked as holes.
+        for value in &state.values {
+            visit(RuntimeRoot::Value(value));
+        }
+
+        state.properties.visit_contents(visit);
+        Ok(())
+    }
+}
+
 pub(crate) type ObjectStorage = Rc<RefCell<ObjectState>>;
 pub type DocumentStorage = Rc<RefCell<DocumentState>>;
 
@@ -841,7 +899,8 @@ impl Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{ObjectState, PropertyLookup, Value};
+    use super::{ArrayState, ObjectState, PropertyLookup, RootVisitError, RuntimeRoot, Value};
+    use std::rc::Rc;
 
     #[test]
     fn object_updates_existing_properties_without_reordering() {
@@ -972,5 +1031,79 @@ mod tests {
         };
 
         assert_eq!(ObjectState::for_in_keys(&object), None);
+    }
+
+    #[test]
+    fn visits_object_and_array_references_without_following_cycles() {
+        let Value::Object(prototype) = Value::object([]) else {
+            unreachable!();
+        };
+
+        let Value::Object(object) = Value::object_with_prototype(prototype.clone()) else {
+            unreachable!();
+        };
+
+        let Value::Array(array) = Value::array(vec![Value::Object(object.clone())]) else {
+            unreachable!();
+        };
+
+        {
+            let mut state = object.borrow_mut();
+            state.define_own_data_property("hidden".into(), Value::Array(array.clone()), false);
+        }
+
+        {
+            let mut state = array.borrow_mut();
+            state.present[0] = false;
+            state.properties.set("extra".into(), Value::Number(17.0));
+        }
+
+        let mut saw_array = false;
+        let mut saw_prototype = false;
+
+        ObjectState::visit_references(&object, &mut |root| match root {
+            RuntimeRoot::Value(Value::Array(value)) => {
+                saw_array = Rc::ptr_eq(value, &array);
+            }
+            RuntimeRoot::Object(value) => {
+                saw_prototype = Rc::ptr_eq(value, &prototype);
+            }
+            _ => {}
+        })
+        .unwrap();
+
+        assert!(saw_array && saw_prototype);
+
+        let mut saw_object = false;
+        let mut saw_extra = false;
+
+        ArrayState::visit_references(&array, &mut |root| match root {
+            RuntimeRoot::Value(Value::Object(value)) => {
+                saw_object = Rc::ptr_eq(value, &object);
+            }
+            RuntimeRoot::Value(Value::Number(17.0)) => saw_extra = true,
+            _ => {}
+        })
+        .unwrap();
+
+        assert!(saw_object && saw_extra);
+
+        {
+            let _object_guard = object.borrow_mut();
+
+            assert_eq!(
+                ObjectState::visit_references(&object, &mut |_| {}),
+                Err(RootVisitError::ObjectBorrowed)
+            );
+
+            let _array_guard = array.borrow_mut();
+
+            assert_eq!(
+                ArrayState::visit_references(&array, &mut |_| {}),
+                Err(RootVisitError::ArrayBorrowed)
+            );
+        }
+
+        object.borrow_mut().properties.clear();
     }
 }
