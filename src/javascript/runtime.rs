@@ -169,6 +169,7 @@ pub(super) enum RootVisitError {
     PromiseBorrowed,
     ObjectBorrowed,
     ArrayBorrowed,
+    RegExpBorrowed,
 }
 
 impl ExecutionFrame {

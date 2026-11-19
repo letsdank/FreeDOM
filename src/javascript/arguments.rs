@@ -5,9 +5,9 @@
 //! Potentially mapped indices, missing-property lookup, descriptors, and
 //! mutation are not implemented yet.
 
-use std::{fmt, rc::Rc};
-
+use super::runtime::RuntimeRoot;
 use super::{JsError, Value};
+use std::{fmt, rc::Rc};
 
 #[derive(Clone)]
 pub struct ArgumentsValue {
@@ -47,6 +47,15 @@ impl ArgumentsValue {
         }
 
         Ok(self.inner.values[index].clone())
+    }
+
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(super) fn visit_references(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        for value in &self.inner.values {
+            visit(RuntimeRoot::Value(value));
+        }
     }
 }
 

@@ -519,6 +519,17 @@ impl NativeErrorValue {
             self.prototype = Some(prototype);
         }
     }
+
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(super) fn visit_references(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        visit(RuntimeRoot::Object(&self.properties));
+
+        if let Some(prototype) = &self.prototype {
+            visit(RuntimeRoot::Object(prototype));
+        }
+    }
 }
 
 impl PartialEq for NativeErrorValue {
@@ -536,6 +547,24 @@ pub struct RegExpValue {
 pub(super) struct RegExpState {
     pub(super) regexp: regexp::object::RegExp,
     pub(super) last_index: Value,
+}
+
+impl RegExpValue {
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(super) fn visit_references(
+        &self,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
+        let state = self
+            .inner
+            .try_borrow()
+            .map_err(|_| RootVisitError::RegExpBorrowed)?;
+
+        visit(RuntimeRoot::Value(&state.last_index));
+        Ok(())
+    }
 }
 
 impl PartialEq for RegExpValue {
@@ -900,6 +929,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::{ArrayState, ObjectState, PropertyLookup, RootVisitError, RuntimeRoot, Value};
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     #[test]
@@ -1105,5 +1135,93 @@ mod tests {
         }
 
         object.borrow_mut().properties.clear();
+    }
+
+    #[test]
+    fn visits_arguments_regexp_and_native_error_references() {
+        let Value::Object(object) = Value::object([]) else {
+            unreachable!();
+        };
+        let Value::Object(prototype) = Value::object([]) else {
+            unreachable!();
+        };
+
+        let Value::Arguments(arguments) =
+            Value::arguments(vec![Value::Object(object.clone()), Value::Number(3.0)], 1)
+        else {
+            unreachable!();
+        };
+
+        let mut values = Vec::new();
+
+        arguments.visit_references(&mut |root| {
+            if let RuntimeRoot::Value(value) = root {
+                values.push(value.clone());
+            }
+        });
+
+        assert_eq!(values.len(), 2);
+        assert!(matches!(
+            &values[0],
+            Value::Object(found) if Rc::ptr_eq(found, &object)
+        ));
+        assert_eq!(values[1], Value::Number(3.0));
+
+        let regexp = super::RegExpValue {
+            inner: Rc::new(RefCell::new(super::RegExpState {
+                regexp: super::regexp::object::RegExp::compile("a", "g").unwrap(),
+                last_index: Value::Object(object.clone()),
+            })),
+        };
+
+        let mut saw_index = false;
+
+        regexp
+            .visit_references(&mut |root| {
+                if let RuntimeRoot::Value(Value::Object(found)) = root {
+                    saw_index = Rc::ptr_eq(found, &object);
+                }
+            })
+            .unwrap();
+
+        assert!(saw_index);
+
+        {
+            let _guard = regexp.inner.borrow_mut();
+
+            assert_eq!(
+                regexp.visit_references(&mut |_| {}),
+                Err(RootVisitError::RegExpBorrowed)
+            );
+        }
+
+        let Value::NativeError(error) = Value::error_with_prototype(None, prototype.clone()) else {
+            unreachable!();
+        };
+
+        error.set("cause".into(), Value::Object(object.clone()));
+
+        let mut saw_properties = false;
+        let mut saw_prototype = false;
+
+        error.visit_references(&mut |root| {
+            if let RuntimeRoot::Object(found) = root {
+                saw_properties |= Rc::ptr_eq(found, &error.properties);
+                saw_prototype |= Rc::ptr_eq(found, &prototype);
+            }
+        });
+
+        assert!(saw_properties && saw_prototype);
+
+        let mut saw_cause = false;
+
+        ObjectState::visit_references(&error.properties, &mut |root| {
+            if let RuntimeRoot::Value(Value::Object(found)) = root {
+                saw_cause = Rc::ptr_eq(found, &object);
+            }
+        })
+        .unwrap();
+
+        assert!(saw_cause);
     }
 }
