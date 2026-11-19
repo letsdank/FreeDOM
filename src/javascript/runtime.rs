@@ -1,4 +1,5 @@
 use self::bindings::{BindingSnapshot, Bindings};
+use super::arguments::ArgumentsValue;
 use super::value::{ArrayStorage, DocumentStorage, FunctionValue, ObjectStorage, RegExpValue};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
@@ -162,6 +163,7 @@ pub(super) enum RuntimeRoot<'a> {
     Array(&'a ArrayStorage),
     Document(&'a DocumentStorage),
     RegExp(&'a RegExpValue),
+    Arguments(&'a ArgumentsValue),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2033,7 +2035,8 @@ mod tests {
                     RuntimeRoot::Object(_)
                     | RuntimeRoot::Array(_)
                     | RuntimeRoot::Document(_)
-                    | RuntimeRoot::RegExp(_) => {}
+                    | RuntimeRoot::RegExp(_)
+                    | RuntimeRoot::Arguments(_) => {}
                 })
                 .unwrap();
         }

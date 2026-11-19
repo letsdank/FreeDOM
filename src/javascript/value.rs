@@ -957,7 +957,7 @@ impl Value {
                 visit(RuntimeRoot::RegExp(regexp));
             }
 
-            Self::Arguments(arguments) => arguments.visit_references(visit),
+            Self::Arguments(arguments) => visit(RuntimeRoot::Arguments(arguments)),
 
             Self::Undefined
             | Self::Null
@@ -1312,6 +1312,19 @@ mod tests {
             })),
         };
 
+        let arguments = Value::arguments(vec![Value::Number(7.0)], 0);
+
+        let Value::Arguments(arguments_node) = &arguments else {
+            unreachable!();
+        };
+
+        let Value::Arguments(distinct_arguments) = Value::arguments(vec![Value::Number(7.0)], 0)
+        else {
+            unreachable!();
+        };
+
+        assert_ne!(arguments_node, &distinct_arguments);
+
         let values = [
             Value::Array(array.clone()),
             Value::ArrayMethod {
@@ -1324,7 +1337,7 @@ mod tests {
             Value::RegExp(regexp.clone()),
             Value::RegExpTest(regexp.clone()),
             Value::RegExpExec(regexp.clone()),
-            Value::arguments(vec![Value::Number(7.0)], 0),
+            arguments.clone(),
             Value::native_error("Error", "oops"),
             Value::Null,
         ];
@@ -1352,7 +1365,9 @@ mod tests {
                         kinds.push("regexp");
                     }
 
-                    RuntimeRoot::Value(Value::Number(7.0)) => kinds.push("argument"),
+                    RuntimeRoot::Arguments(found) if found == arguments_node => {
+                        kinds.push("arguments");
+                    }
 
                     RuntimeRoot::Object(_) => kinds.push("error properties"),
 
@@ -1372,7 +1387,7 @@ mod tests {
                 "regexp",
                 "regexp",
                 "regexp",
-                "argument",
+                "arguments",
                 "error properties"
             ]
         );
@@ -1412,6 +1427,38 @@ mod tests {
         assert!(saw_self);
 
         regexp.inner.borrow_mut().last_index = Value::Number(0.0);
+
+        let cyclic_value = Value::arguments(vec![Value::Object(object.clone())], 0);
+
+        let Value::Arguments(cyclic_arguments) = &cyclic_value else {
+            unreachable!();
+        };
+
+        object
+            .borrow_mut()
+            .set("cycle".into(), cyclic_value.clone());
+
+        let mut saw_object = false;
+
+        cyclic_arguments.visit_references(&mut |root| {
+            if let RuntimeRoot::Value(Value::Object(found)) = root {
+                saw_object = Rc::ptr_eq(found, &object);
+            }
+        });
+
+        let mut saw_arguments = false;
+
+        ObjectState::visit_references(&object, &mut |root| {
+            if let RuntimeRoot::Value(Value::Arguments(found)) = root {
+                saw_arguments = found == cyclic_arguments;
+            }
+        })
+        .unwrap();
+
+        assert!(saw_object && saw_arguments);
+        assert_ne!(cyclic_arguments, arguments_node);
+
+        object.borrow_mut().set("cycle".into(), Value::Undefined);
     }
 
     #[test]
