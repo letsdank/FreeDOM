@@ -47,7 +47,7 @@ fn preserves_thrown_primitive_values() {
 
     assert!(matches!(
         error.kind,
-        JsErrorKind::Thrown(crate::javascript::Value::Boolean(false))
+        JsErrorKind::Thrown(value) if value.as_boolean() == Some(false)
     ));
     assert_eq!(error.message, "Uncaught JavaScript exception");
 }
@@ -56,7 +56,11 @@ fn preserves_thrown_primitive_values() {
 fn preserves_thrown_object_value() {
     let error = evaluate("throw { code: 7 };").unwrap_err();
 
-    let JsErrorKind::Thrown(crate::javascript::Value::Object(object)) = error.kind else {
+    let JsErrorKind::Thrown(value) = error.kind else {
+        panic!("expected a thrown object");
+    };
+
+    let crate::javascript::Value::Object(object) = value.into_test_value() else {
         panic!("expected a thrown object");
     };
 
@@ -83,7 +87,7 @@ fn thrown_value_propagates_through_function_calls() {
 
     assert!(matches!(
         error.kind,
-        JsErrorKind::Thrown(crate::javascript::Value::Number(42.0))
+        JsErrorKind::Thrown(value) if value.as_number() == Some(42.0)
     ));
     assert_eq!(document.title, "before throw");
 }
@@ -94,7 +98,11 @@ fn throw_expression_failures_are_not_mistaken_for_explicit_throw() {
 
     assert!(matches!(
         error.kind,
-        JsErrorKind::NativeException(crate::javascript::Value::NativeError(_))
+        JsErrorKind::NativeException(value)
+            if matches!(
+                value.as_test_value(),
+                crate::javascript::Value::NativeError(_)
+            )
     ));
 }
 
@@ -105,7 +113,11 @@ fn classifies_unhandled_reference_error_as_native_exception() {
     assert_eq!(error.message, "ReferenceError: missing is not defined");
     assert!(matches!(
         error.kind,
-        JsErrorKind::NativeException(crate::javascript::Value::NativeError(_))
+        JsErrorKind::NativeException(value)
+            if matches!(
+                value.as_test_value(),
+                crate::javascript::Value::NativeError(_)
+            )
     ));
 }
 
@@ -116,7 +128,11 @@ fn classifies_uncaught_non_callable_type_error() {
     assert_eq!(error.message, "TypeError: this value is not callable");
     assert!(matches!(
         error.kind,
-        JsErrorKind::NativeException(crate::javascript::Value::NativeError(_))
+        JsErrorKind::NativeException(value)
+            if matches!(
+                value.as_test_value(),
+                crate::javascript::Value::NativeError(_)
+            )
     ));
 }
 
@@ -132,8 +148,12 @@ fn host_error_conversion_preserves_exception_identity() {
     assert_eq!(host.message, "Uncaught JavaScript exception");
     assert_eq!(host.offset, None);
 
-    match (host.kind, value) {
-        (JsErrorKind::Thrown(Value::Object(thrown)), Value::Object(original)) => {
+    let JsErrorKind::Thrown(thrown) = host.kind else {
+        panic!("expected thrown value");
+    };
+
+    match (thrown.into_test_value(), value) {
+        (Value::Object(thrown), Value::Object(original)) => {
             assert!(std::rc::Rc::ptr_eq(&thrown, &original));
         }
 

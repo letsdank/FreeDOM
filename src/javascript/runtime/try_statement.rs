@@ -148,7 +148,7 @@ mod tests {
 
         assert!(matches!(
             error.kind,
-            JsErrorKind::Thrown(Value::String(value)) if value == "bad"
+            JsErrorKind::Thrown(value) if value.as_string() == Some("bad")
         ));
         assert_eq!(document.title, "clean");
     }
@@ -171,7 +171,7 @@ mod tests {
 
         assert!(matches!(
             error.kind,
-            JsErrorKind::Thrown(Value::Number(2.0))
+            JsErrorKind::Thrown(value) if value.as_number() == Some(2.0)
         ));
     }
 
@@ -326,7 +326,8 @@ mod tests {
 
         assert!(matches!(
             error.kind,
-            JsErrorKind::NativeException(Value::NativeError(_))
+            JsErrorKind::NativeException(value)
+                if matches!(value.as_test_value(), Value::NativeError(_))
         ));
         assert_eq!(error.message, "ReferenceError: missing is not defined");
         assert_eq!(document.title, "clean");
@@ -403,7 +404,8 @@ mod tests {
 
         assert!(matches!(
             error.kind,
-            JsErrorKind::NativeException(Value::NativeError(_))
+            JsErrorKind::NativeException(value)
+                if matches!(value.as_test_value(), Value::NativeError(_))
         ));
         assert_eq!(error.message, "TypeError: this value is not callable");
         assert_eq!(document.title, "clean");

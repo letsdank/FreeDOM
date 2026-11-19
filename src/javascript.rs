@@ -85,12 +85,12 @@ pub(crate) use session::DocumentScriptSession;
 /// Explicitly thrown JavaScript values are distinct from engine failures.
 /// Other runtime failures are still unclassified.
 #[derive(Clone, Debug, PartialEq)]
-pub enum JsErrorKind {
+pub enum JsErrorKind<T> {
     Syntax,
     UnclassifiedRuntime,
     UnsupportedFeature,
-    Thrown(Value),
-    NativeException(Value),
+    Thrown(T),
+    NativeException(T),
     ResourceLimit,
 }
 
@@ -98,7 +98,7 @@ pub enum JsErrorKind {
 pub(crate) struct JsError {
     pub offset: Option<usize>,
     pub message: String,
-    pub kind: JsErrorKind,
+    pub kind: JsErrorKind<Value>,
 }
 
 impl JsError {
@@ -172,11 +172,11 @@ impl Error for JsError {}
 /// An error returned to the embedding application.
 ///
 /// Exception values still use the current reference-counted representation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct HostError {
     pub offset: Option<usize>,
     pub message: String,
-    pub kind: JsErrorKind,
+    pub kind: JsErrorKind<HostValue>,
 }
 
 impl From<JsError> for HostError {
@@ -184,7 +184,21 @@ impl From<JsError> for HostError {
         Self {
             offset: error.offset,
             message: error.message,
-            kind: error.kind,
+            kind: match error.kind {
+                JsErrorKind::Syntax => JsErrorKind::Syntax,
+
+                JsErrorKind::UnclassifiedRuntime => JsErrorKind::UnclassifiedRuntime,
+
+                JsErrorKind::UnsupportedFeature => JsErrorKind::UnsupportedFeature,
+
+                JsErrorKind::Thrown(value) => JsErrorKind::Thrown(HostValue(value)),
+
+                JsErrorKind::NativeException(value) => {
+                    JsErrorKind::NativeException(HostValue(value))
+                }
+
+                JsErrorKind::ResourceLimit => JsErrorKind::ResourceLimit,
+            },
         }
     }
 }
@@ -201,6 +215,7 @@ impl Error for HostError {}
 ///
 /// Object values still use reference-counted storage; this is not yet a GC root.
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct HostValue(Value);
 
 impl HostValue {
@@ -236,6 +251,11 @@ impl HostValue {
     #[cfg(test)]
     pub(crate) fn into_test_value(self) -> Value {
         self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_test_value(&self) -> &Value {
+        &self.0
     }
 }
 

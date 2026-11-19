@@ -687,7 +687,8 @@ mod tests {
 
         assert!(matches!(
             error.kind,
-            crate::javascript::JsErrorKind::NativeException(Value::NativeError(_))
+            crate::javascript::JsErrorKind::NativeException(value)
+                if matches!(value.as_test_value(), Value::NativeError(_))
         ));
         assert_eq!(document.title, "clean");
     }
