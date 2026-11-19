@@ -1747,4 +1747,41 @@ mod tests {
 
         assert!(weak_owner.upgrade().is_none());
     }
+
+    #[test]
+    fn host_root_snapshot_retains_live_values_and_prunes_dead_entries() {
+        use std::rc::Rc;
+
+        let interpreter = Interpreter::new();
+        let registry = interpreter.host_roots.clone();
+        let owner = Rc::downgrade(&registry);
+
+        let first = interpreter.export_value(Value::Number(1.0));
+        let clone = first.clone();
+
+        let discarded = interpreter.export_value(Value::Number(99.0));
+        drop(discarded);
+
+        let error = interpreter.export_error(JsError::thrown(Value::array(vec![])));
+
+        let roots = registry.snapshot();
+
+        // Clones share one registration; the expired entry is removed.
+        assert_eq!(roots.len(), 2);
+        assert_eq!(registry.roots.borrow().len(), 2);
+        assert!(matches!(roots[0].value, Value::Number(1.0)));
+        assert!(matches!(roots[1].value, Value::Array(_)));
+
+        drop(interpreter);
+        drop(registry);
+        drop(first);
+        drop(clone);
+        drop(error);
+
+        assert!(owner.upgrade().is_some());
+
+        drop(roots);
+
+        assert!(owner.upgrade().is_none());
+    }
 }

@@ -260,6 +260,24 @@ impl HostRoots {
             .as_ref()
             .map_err(|error| *error)
     }
+
+    /// Takes strong references to roots live at the time of the snapshot.
+    /// A future collector must prevent root mutations while using it.
+    #[allow(dead_code)]
+    fn snapshot(&self) -> Vec<Rc<HostRoot>> {
+        let mut live = Vec::new();
+
+        self.roots.borrow_mut().retain(|root| match root.upgrade() {
+            Some(root) => {
+                live.push(root);
+                true
+            }
+
+            None => false,
+        });
+
+        live
+    }
 }
 
 /// A value returned to the embedding application.
