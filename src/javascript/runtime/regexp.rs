@@ -12,10 +12,10 @@ impl Interpreter {
             for argument in arguments {
                 let value = interpreter.evaluate_expression(argument)?;
 
-                interpreter.temporary_values.push(value);
+                interpreter.frame_values_mut(base).push(value);
             }
 
-            let values = &interpreter.temporary_values[base..];
+            let values = interpreter.frame_values(base);
 
             let pattern = match values.first() {
                 None | Some(Value::Undefined) => String::new(),

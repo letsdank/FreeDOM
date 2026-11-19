@@ -106,8 +106,8 @@ impl Interpreter {
             let reference = interpreter.active_references[reference_index].clone();
             let previous = interpreter.read_reference(&reference)?;
 
-            interpreter.with_temporary_value(previous, |interpreter, previous_index| {
-                let previous = interpreter.temporary_values[previous_index].clone();
+            interpreter.with_frame_value(previous, |interpreter, previous_index| {
+                let previous = interpreter.frame_value(previous_index).clone();
                 let number = interpreter.to_number(&previous)?;
                 let updated = Value::Number(number + delta);
                 let reference = interpreter.active_references[reference_index].clone();

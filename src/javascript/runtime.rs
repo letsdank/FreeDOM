@@ -145,7 +145,7 @@ enum ExecutionFrame {
     PendingCompletion(Result<Completion, JsError>),
     ShadowedBindings(Vec<BindingSnapshot>),
     ForOfItems(std::vec::IntoIter<Value>),
-    TemporaryValue(Value),
+    TemporaryValues(Vec<Value>),
 }
 
 struct ActiveCallFrame {
@@ -197,7 +197,6 @@ pub(super) struct Interpreter {
     steps_remaining: usize,
     execution_depth: usize,
     active_call_frames: Vec<ActiveCallFrame>,
-    temporary_values: Vec<Value>,
     active_references: Vec<reference::Reference>,
     pending_calls: Vec<PendingCall>,
 }
@@ -431,7 +430,6 @@ impl Interpreter {
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
             active_call_frames: Vec::new(),
-            temporary_values: Vec::new(),
             active_references: Vec::new(),
             pending_calls: Vec::new(),
         }
@@ -566,27 +564,21 @@ impl Interpreter {
         result
     }
 
-    fn with_temporary_value<T>(
-        &mut self,
-        value: Value,
-        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
-    ) -> Result<T, JsError> {
-        self.with_temporary_values_scope(|interpreter, index| {
-            interpreter.temporary_values.push(value);
-
-            operation(interpreter, index)
-        })
-    }
-
     fn with_temporary_values_scope<T>(
         &mut self,
         operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
     ) -> Result<T, JsError> {
-        let index = self.temporary_values.len();
+        let index = self.execution_frames.len();
+
+        self.execution_frames
+            .push(ExecutionFrame::TemporaryValues(Vec::new()));
 
         let result = operation(self, index);
 
-        self.temporary_values.truncate(index);
+        match self.execution_frames.pop() {
+            Some(ExecutionFrame::TemporaryValues(_)) => {}
+            _ => unreachable!("temporary values frame must exist"),
+        }
 
         result
     }
@@ -653,33 +645,38 @@ impl Interpreter {
         value: Value,
         operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
     ) -> Result<T, JsError> {
-        let index = self.execution_frames.len();
+        self.with_temporary_values_scope(|interpreter, index| {
+            interpreter.frame_values_mut(index).push(value);
 
-        self.execution_frames
-            .push(ExecutionFrame::TemporaryValue(value));
+            operation(interpreter, index)
+        })
+    }
 
-        let result = operation(self, index);
-
-        match self.execution_frames.pop() {
-            Some(ExecutionFrame::TemporaryValue(_)) => {}
+    fn frame_values(&self, index: usize) -> &[Value] {
+        match self.execution_frames.get(index) {
+            Some(ExecutionFrame::TemporaryValues(values)) => values,
             _ => unreachable!("temporary value frame must exist"),
         }
+    }
 
-        result
+    fn frame_values_mut(&mut self, index: usize) -> &mut Vec<Value> {
+        match self.execution_frames.get_mut(index) {
+            Some(ExecutionFrame::TemporaryValues(values)) => values,
+            _ => unreachable!("temporary values frame must exist"),
+        }
     }
 
     fn frame_value(&self, index: usize) -> &Value {
-        match self.execution_frames.get(index) {
-            Some(ExecutionFrame::TemporaryValue(value)) => value,
-            _ => unreachable!("temporary value frame must exist"),
-        }
+        self.frame_values(index)
+            .first()
+            .expect("temporary value must exist")
     }
 
     fn set_frame_value(&mut self, index: usize, value: Value) {
-        match self.execution_frames.get_mut(index) {
-            Some(ExecutionFrame::TemporaryValue(slot)) => *slot = value,
-            _ => unreachable!("temporary value frame must exist"),
-        }
+        *self
+            .frame_values_mut(index)
+            .first_mut()
+            .expect("temporary value must exist") = value;
     }
 }
 
@@ -850,7 +847,9 @@ mod tests {
     fn binary_temporary_values_are_scoped_across_nested_calls_and_errors() {
         let mut interpreter = Interpreter::new();
 
-        interpreter.temporary_values.push(Value::Number(77.0));
+        interpreter
+            .execution_frames
+            .push(ExecutionFrame::TemporaryValues(vec![Value::Number(77.0)]));
 
         let program = parse_program(
             r#"
@@ -881,7 +880,8 @@ mod tests {
         let result = interpreter.execute_script(&program).unwrap().into_value();
 
         assert_eq!(result, Value::Boolean(true));
-        assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+        assert_eq!(interpreter.frame_values(0), &[Value::Number(77.0)]);
+        assert_eq!(interpreter.execution_frames.len(), 1);
 
         for source in [
             "1 + missing;",
@@ -890,7 +890,8 @@ mod tests {
             let program = parse_program(source).unwrap();
 
             assert!(interpreter.execute_script(&program).is_err());
-            assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+            assert_eq!(interpreter.frame_values(0), &[Value::Number(77.0)]);
+            assert_eq!(interpreter.execution_frames.len(), 1);
         }
     }
 
@@ -921,7 +922,7 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
         assert!(interpreter.active_references.is_empty());
-        assert!(interpreter.temporary_values.is_empty());
+        assert!(interpreter.execution_frames.is_empty());
 
         for source in [
             "original.a = missing;",
@@ -932,7 +933,7 @@ mod tests {
 
             assert!(interpreter.execute_script(&program).is_err());
             assert!(interpreter.active_references.is_empty());
-            assert!(interpreter.temporary_values.is_empty());
+            assert!(interpreter.execution_frames.is_empty());
         }
     }
 
@@ -972,7 +973,7 @@ mod tests {
         let result = interpreter.execute_script(&program).unwrap().into_value();
 
         assert_eq!(result, Value::Boolean(true));
-        assert!(interpreter.temporary_values.is_empty());
+        assert!(interpreter.execution_frames.is_empty());
         assert!(interpreter.active_references.is_empty());
 
         for source in [
@@ -982,7 +983,7 @@ mod tests {
             let program = parse_program(source).unwrap();
 
             assert!(interpreter.execute_script(&program).is_err());
-            assert!(interpreter.temporary_values.is_empty());
+            assert!(interpreter.execution_frames.is_empty());
             assert!(interpreter.active_references.is_empty());
         }
     }
@@ -1045,7 +1046,9 @@ mod tests {
     fn literal_temporaries_are_scoped_and_preserve_holes() {
         let mut interpreter = Interpreter::new();
 
-        interpreter.temporary_values.push(Value::Number(77.0));
+        interpreter
+            .execution_frames
+            .push(ExecutionFrame::TemporaryValues(vec![Value::Number(77.0)]));
 
         let program = parse_program(
             r#"
@@ -1076,13 +1079,15 @@ mod tests {
         let result = interpreter.execute_script(&program).unwrap().into_value();
 
         assert_eq!(result, Value::Boolean(true));
-        assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+        assert_eq!(interpreter.frame_values(0), &[Value::Number(77.0)]);
+        assert_eq!(interpreter.execution_frames.len(), 1);
 
         for source in ["[{x: 1}, missing];", "({x: {a: 1}, y: missing});"] {
             let program = parse_program(source).unwrap();
 
             assert!(interpreter.execute_script(&program).is_err());
-            assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+            assert_eq!(interpreter.frame_values(0), &[Value::Number(77.0)]);
+            assert_eq!(interpreter.execution_frames.len(), 1);
         }
     }
 
@@ -1135,7 +1140,9 @@ mod tests {
     fn regexp_arguments_and_apply_length_conversion_restore_temporaries() {
         let mut interpreter = Interpreter::new();
 
-        interpreter.temporary_values.push(Value::Number(77.0));
+        interpreter
+            .execution_frames
+            .push(ExecutionFrame::TemporaryValues(vec![Value::Number(77.0)]));
 
         let program = parse_program(
             r#"
@@ -1185,17 +1192,19 @@ mod tests {
         let result = interpreter.execute_script(&program).unwrap().into_value();
 
         assert_eq!(result, Value::Boolean(true));
-        assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+        assert_eq!(interpreter.frame_values(0), &[Value::Number(77.0)]);
+        assert_eq!(interpreter.execution_frames.len(), 1);
 
         for source in [
             "new RegExp('a', missing);",
-            "new RegExo('a', 'z');",
+            "new RegExp('a', 'z');",
             "first.apply(null, {length: {valueOf: function() { throw 'error'; }}});",
         ] {
             let program = parse_program(source).unwrap();
 
             assert!(interpreter.execute_script(&program).is_err());
-            assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+            assert_eq!(interpreter.frame_values(0), &[Value::Number(77.0)]);
+            assert_eq!(interpreter.execution_frames.len(), 1);
         }
     }
 

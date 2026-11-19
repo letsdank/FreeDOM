@@ -28,8 +28,8 @@ impl Interpreter {
         &mut self,
         value: &Value,
     ) -> Result<Vec<Value>, JsError> {
-        self.with_temporary_value(value.clone(), |interpreter, index| {
-            let value = interpreter.temporary_values[index].clone();
+        self.with_frame_value(value.clone(), |interpreter, index| {
+            let value = interpreter.frame_value(index).clone();
 
             interpreter.create_list_from_rooted_array_like(&value)
         })
@@ -42,8 +42,8 @@ impl Interpreter {
             Value::Object(object) => {
                 let length = ordinary_property(object, "length")?;
 
-                let number = self.with_temporary_value(length, |interpreter, index| {
-                    let length = interpreter.temporary_values[index].clone();
+                let number = self.with_frame_value(length, |interpreter, index| {
+                    let length = interpreter.frame_value(index).clone();
 
                     interpreter.to_number(&length)
                 })?;

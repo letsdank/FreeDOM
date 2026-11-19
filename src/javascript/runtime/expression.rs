@@ -82,10 +82,10 @@ impl Interpreter {
                             None => Value::Undefined,
                         };
 
-                        interpreter.temporary_values.push(value);
+                        interpreter.frame_values_mut(base).push(value);
                     }
 
-                    let values = interpreter.temporary_values.drain(base..);
+                    let values = interpreter.frame_values_mut(base).drain(..);
 
                     let slots = expressions
                         .iter()
@@ -102,13 +102,13 @@ impl Interpreter {
                     for (_, expression) in properties {
                         let value = interpreter.evaluate_expression(expression)?;
 
-                        interpreter.temporary_values.push(value);
+                        interpreter.frame_values_mut(base).push(value);
                     }
 
                     let values: Vec<_> = properties
                         .iter()
                         .map(|(name, _)| name.clone())
-                        .zip(interpreter.temporary_values.drain(base..))
+                        .zip(interpreter.frame_values_mut(base).drain(..))
                         .collect();
 
                     Ok(Value::object_with_entries_and_prototype(
@@ -251,14 +251,14 @@ impl Interpreter {
         right_expression: &Expression,
     ) -> Result<Value, JsError> {
         self.with_temporary_values_scope(|interpreter, base| {
-            interpreter.temporary_values.push(left);
+            interpreter.frame_values_mut(base).push(left);
 
             let right = interpreter.evaluate_expression(right_expression)?;
 
-            interpreter.temporary_values.push(right);
+            interpreter.frame_values_mut(base).push(right);
 
-            let left = interpreter.temporary_values[base].clone();
-            let right = interpreter.temporary_values[base + 1].clone();
+            let left = interpreter.frame_values(base)[0].clone();
+            let right = interpreter.frame_values(base)[1].clone();
 
             interpreter.evaluate_binary(left, operator, right)
         })
@@ -765,5 +765,17 @@ mod tests {
             .unwrap(),
             Value::Boolean(true)
         );
+    }
+
+    #[test]
+    fn nested_literals_keep_all_values_in_nonzero_frame() {
+        let result = evaluate(
+            "let values = [[1, 2], {a: 3, b: 4}]; \
+                values[0][0] === 1 && values[0][1] === 2 && \
+                values[1].a === 3 && values[1].b === 4;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
     }
 }
