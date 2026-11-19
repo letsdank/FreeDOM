@@ -5,7 +5,7 @@
 //! This shares one interpreter across scripts; full realms and event loops
 //! are incomplete.
 
-use super::{Completion, DocumentState, HostError, Interpreter, JsError, Value, parse_program};
+use super::{Completion, DocumentState, HostError, HostValue, Interpreter, JsError, parse_program};
 
 pub(crate) struct DocumentScriptSession {
     interpreter: Interpreter,
@@ -27,7 +27,7 @@ impl DocumentScriptSession {
         &mut self,
         source: &str,
         document: &mut DocumentState,
-    ) -> Result<Value, HostError> {
+    ) -> Result<HostValue, HostError> {
         let program = parse_program(source)?;
         let result = self.interpreter.execute_script(&program);
 
@@ -37,7 +37,10 @@ impl DocumentScriptSession {
 
         *document = updated;
 
-        result.map(Completion::into_value).map_err(HostError::from)
+        result
+            .map(Completion::into_value)
+            .map(HostValue)
+            .map_err(HostError::from)
     }
 
     pub(crate) fn into_canvas_surfaces(

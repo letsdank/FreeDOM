@@ -211,25 +211,28 @@ mod tests {
             );
         }
 
-        let Value::Number(nan) = evaluate("+undefined;").unwrap() else {
-            panic!("expected number");
-        };
+        let nan = evaluate("+undefined;")
+            .unwrap()
+            .as_number()
+            .expect("expected number");
 
         assert!(nan.is_nan());
     }
 
     #[test]
     fn unary_minus_preserves_signed_zero() {
-        let Value::Number(negative_zero) = evaluate("-0;").unwrap() else {
-            panic!("expected number");
-        };
+        let negative_zero = evaluate("-0;")
+            .unwrap()
+            .as_number()
+            .expect("expected number");
 
         assert_eq!(negative_zero, 0.0);
         assert!(negative_zero.is_sign_negative());
 
-        let Value::Number(positive_zero) = evaluate("- -0;").unwrap() else {
-            panic!("expected number");
-        };
+        let positive_zero = evaluate("- -0;")
+            .unwrap()
+            .as_number()
+            .expect("expected number");
 
         assert!(positive_zero.is_sign_positive());
     }
@@ -277,16 +280,18 @@ mod tests {
     #[test]
     fn remainder_handles_nan_infinity_and_negative_zero() {
         for source in ["0 % 0;", "1 % 0;", "(1 / 0) % 2;"] {
-            let Value::Number(number) = evaluate(source).unwrap() else {
-                panic!("expected number");
-            };
+            let number = evaluate(source)
+                .unwrap()
+                .as_number()
+                .expect("expected number");
 
             assert!(number.is_nan(), "{source}");
         }
 
-        let Value::Number(number) = evaluate("-4 % 2;").unwrap() else {
-            panic!("expected number");
-        };
+        let number = evaluate("-4 % 2;")
+            .unwrap()
+            .as_number()
+            .expect("expected number");
 
         assert_eq!(number, 0.0);
         assert!(number.is_sign_negative());

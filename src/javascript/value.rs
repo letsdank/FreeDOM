@@ -929,7 +929,7 @@ mod tests {
         )
         .unwrap();
 
-        let Value::Function(function) = value else {
+        let Value::Function(function) = value.into_test_value() else {
             panic!("expected function");
         };
 

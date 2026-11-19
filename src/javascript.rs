@@ -197,6 +197,55 @@ impl fmt::Display for HostError {
 
 impl Error for HostError {}
 
+/// A value returned to the embedding application.
+///
+/// Object values still use reference-counted storage; this is not yet a GC root.
+#[derive(Clone, Debug)]
+pub struct HostValue(Value);
+
+impl HostValue {
+    pub fn as_boolean(&self) -> Option<bool> {
+        match &self.0 {
+            Value::Boolean(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_number(&self) -> Option<f64> {
+        match &self.0 {
+            Value::Number(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_string(&self) -> Option<&str> {
+        match &self.0 {
+            Value::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self.0, Value::Null)
+    }
+
+    pub fn is_undefined(&self) -> bool {
+        matches!(self.0, Value::Undefined)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_test_value(self) -> Value {
+        self.0
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<Value> for HostValue {
+    fn eq(&self, other: &Value) -> bool {
+        self.0 == *other
+    }
+}
+
 fn format_error(f: &mut fmt::Formatter<'_>, message: &str, offset: Option<usize>) -> fmt::Result {
     match offset {
         Some(offset) => write!(f, "{message} at byte {offset}"),
@@ -204,19 +253,20 @@ fn format_error(f: &mut fmt::Formatter<'_>, message: &str, offset: Option<usize>
     }
 }
 
-pub fn evaluate(source: &str) -> Result<Value, HostError> {
+pub fn evaluate(source: &str) -> Result<HostValue, HostError> {
     let program = parse_program(source)?;
 
     Interpreter::new()
         .execute_script(&program)
         .map(Completion::into_value)
+        .map(HostValue)
         .map_err(HostError::from)
 }
 
 pub fn evaluate_with_document(
     source: &str,
     document: &mut DocumentState,
-) -> Result<Value, HostError> {
+) -> Result<HostValue, HostError> {
     DocumentScriptSession::new(document).evaluate(source, document)
 }
 

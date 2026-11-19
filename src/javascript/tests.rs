@@ -1215,3 +1215,32 @@ fn uses_string_numeric_grammar_for_arithmetic_and_regexp() {
     )
     .unwrap();
 }
+
+#[test]
+fn host_value_exposes_primitives_and_keeps_object_alive() {
+    assert_eq!(evaluate("true;").unwrap().as_boolean(), Some(true));
+    assert_eq!(evaluate("42;").unwrap().as_number(), Some(42.0));
+    assert_eq!(evaluate("'hello';").unwrap().as_string(), Some("hello"));
+    assert!(evaluate("null;").unwrap().is_null());
+    assert!(evaluate("undefined;").unwrap().is_undefined());
+
+    let value = {
+        let mut document = DocumentState::default();
+        let mut session = super::DocumentScriptSession::new(&document);
+
+        session.evaluate("({ x: 7 });", &mut document).unwrap()
+    };
+
+    assert_eq!(value.as_number(), None);
+
+    let clone = value.clone();
+
+    match (value.into_test_value(), clone.into_test_value()) {
+        (Value::Object(first), Value::Object(second)) => {
+            assert!(std::rc::Rc::ptr_eq(&first, &second));
+            assert_eq!(first.borrow().get("x"), Some(&Value::Number(7.0)));
+        }
+
+        _ => panic!("expected object"),
+    }
+}
