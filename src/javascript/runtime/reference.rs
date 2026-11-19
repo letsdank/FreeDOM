@@ -4,7 +4,7 @@
 //!
 //! This is not a complete ECMAScript Reference Record implementation.
 
-use super::{Expression, Interpreter, JsError, PostfixStep, Value};
+use super::{ExecutionFrame, Expression, Interpreter, JsError, PostfixStep, Value};
 
 #[derive(Clone)]
 pub(super) enum Reference {
@@ -196,15 +196,26 @@ impl Interpreter {
         reference: Reference,
         operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
     ) -> Result<T, JsError> {
-        let index = self.active_references.len();
+        let index = self.execution_frames.len();
 
-        self.active_references.push(reference);
+        self.execution_frames
+            .push(ExecutionFrame::Reference(reference));
 
         let result = operation(self, index);
 
-        self.active_references.truncate(index);
+        match self.execution_frames.pop() {
+            Some(ExecutionFrame::Reference(_)) => {}
+            _ => unreachable!("reference frame must exist"),
+        }
 
         result
+    }
+
+    pub(super) fn active_reference(&self, index: usize) -> &Reference {
+        match self.execution_frames.get(index) {
+            Some(ExecutionFrame::Reference(reference)) => reference,
+            _ => unreachable!("reference frame must exist"),
+        }
     }
 }
 

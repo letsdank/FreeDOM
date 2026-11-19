@@ -146,6 +146,7 @@ enum ExecutionFrame {
     ShadowedBindings(Vec<BindingSnapshot>),
     ForOfItems(std::vec::IntoIter<Value>),
     TemporaryValues(Vec<Value>),
+    Reference(reference::Reference),
 }
 
 struct ActiveCallFrame {
@@ -197,7 +198,6 @@ pub(super) struct Interpreter {
     steps_remaining: usize,
     execution_depth: usize,
     active_call_frames: Vec<ActiveCallFrame>,
-    active_references: Vec<reference::Reference>,
     pending_calls: Vec<PendingCall>,
 }
 
@@ -430,7 +430,6 @@ impl Interpreter {
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
             active_call_frames: Vec::new(),
-            active_references: Vec::new(),
             pending_calls: Vec::new(),
         }
     }
@@ -921,7 +920,6 @@ mod tests {
         let result = interpreter.execute_script(&program).unwrap().into_value();
 
         assert_eq!(result, Value::Boolean(true));
-        assert!(interpreter.active_references.is_empty());
         assert!(interpreter.execution_frames.is_empty());
 
         for source in [
@@ -932,7 +930,6 @@ mod tests {
             let program = parse_program(source).unwrap();
 
             assert!(interpreter.execute_script(&program).is_err());
-            assert!(interpreter.active_references.is_empty());
             assert!(interpreter.execution_frames.is_empty());
         }
     }
@@ -974,7 +971,6 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
         assert!(interpreter.execution_frames.is_empty());
-        assert!(interpreter.active_references.is_empty());
 
         for source in [
             "original[missing]++;",
@@ -984,7 +980,6 @@ mod tests {
 
             assert!(interpreter.execute_script(&program).is_err());
             assert!(interpreter.execution_frames.is_empty());
-            assert!(interpreter.active_references.is_empty());
         }
     }
 
@@ -1406,5 +1401,39 @@ mod tests {
             assert!(interpreter.execute_script(&program).is_err());
             assert!(interpreter.execution_frames.is_empty());
         }
+    }
+
+    #[test]
+    fn reference_frames_survive_nested_frames_and_unwind_on_error() {
+        let mut interpreter = Interpreter::new();
+        let object = Value::array(vec![Value::Number(5.0)]);
+
+        let reference = super::reference::Reference::Index {
+            object: object.clone(),
+            index: Value::Number(0.0),
+        };
+
+        let result = interpreter.with_active_reference(reference, |runtime, reference_index| {
+            runtime.with_frame_value(Value::Number(9.0), |runtime, value_index| {
+                assert_eq!(runtime.frame_value(value_index), &Value::Number(9.0));
+
+                match runtime.active_reference(reference_index) {
+                    super::reference::Reference::Index {
+                        object: actual,
+                        index,
+                    } => {
+                        assert_eq!(actual, &object);
+                        assert_eq!(index, &Value::Number(0.0));
+                    }
+
+                    _ => panic!("expected index reference"),
+                }
+
+                Err::<(), _>(JsError::resource_limit("test limit"))
+            })
+        });
+
+        assert!(result.is_err());
+        assert!(interpreter.execution_frames.is_empty());
     }
 }

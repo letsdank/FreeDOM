@@ -103,14 +103,14 @@ impl Interpreter {
         let reference = self.prepare_reference(target)?;
 
         self.with_active_reference(reference, |interpreter, reference_index| {
-            let reference = interpreter.active_references[reference_index].clone();
+            let reference = interpreter.active_reference(reference_index).clone();
             let previous = interpreter.read_reference(&reference)?;
 
             interpreter.with_frame_value(previous, |interpreter, previous_index| {
                 let previous = interpreter.frame_value(previous_index).clone();
                 let number = interpreter.to_number(&previous)?;
                 let updated = Value::Number(number + delta);
-                let reference = interpreter.active_references[reference_index].clone();
+                let reference = interpreter.active_reference(reference_index).clone();
 
                 interpreter.write_reference(reference, updated.clone())?;
 

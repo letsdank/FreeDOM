@@ -147,7 +147,7 @@ impl Interpreter {
 
                 self.with_active_reference(reference, |interpreter, index| {
                     let value = interpreter.evaluate_expression(value)?;
-                    let reference = interpreter.active_references[index].clone();
+                    let reference = interpreter.active_reference(index).clone();
 
                     interpreter.write_reference(reference, value.clone())?;
 
@@ -163,12 +163,12 @@ impl Interpreter {
                 let reference = self.prepare_reference(target)?;
 
                 self.with_active_reference(reference, |interpreter, index| {
-                    let reference = interpreter.active_references[index].clone();
+                    let reference = interpreter.active_reference(index).clone();
                     let left = interpreter.read_reference(&reference)?;
 
                     let result = interpreter.evaluate_binary_chain_step(left, *operator, value)?;
 
-                    let reference = interpreter.active_references[index].clone();
+                    let reference = interpreter.active_reference(index).clone();
 
                     interpreter.write_reference(reference, result.clone())?;
 
