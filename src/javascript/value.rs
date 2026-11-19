@@ -954,7 +954,7 @@ impl Value {
             Self::NativeError(error) => error.visit_references(visit),
 
             Self::RegExp(regexp) | Self::RegExpTest(regexp) | Self::RegExpExec(regexp) => {
-                regexp.visit_references(visit)?;
+                visit(RuntimeRoot::RegExp(regexp));
             }
 
             Self::Arguments(arguments) => arguments.visit_references(visit),
@@ -1348,8 +1348,8 @@ mod tests {
 
                     RuntimeRoot::Function(_) => kinds.push("function"),
 
-                    RuntimeRoot::Value(Value::Object(found)) if Rc::ptr_eq(found, &object) => {
-                        kinds.push("lastIndex");
+                    RuntimeRoot::RegExp(found) if found == &regexp => {
+                        kinds.push("regexp");
                     }
 
                     RuntimeRoot::Value(Value::Number(7.0)) => kinds.push("argument"),
@@ -1369,20 +1369,49 @@ mod tests {
                 "object",
                 "document",
                 "function",
-                "lastIndex",
-                "lastIndex",
-                "lastIndex",
+                "regexp",
+                "regexp",
+                "regexp",
                 "argument",
                 "error properties"
             ]
         );
 
-        let _guard = regexp.inner.borrow_mut();
+        {
+            let _guard = regexp.inner.borrow_mut();
+            let mut saw_regexp = false;
 
-        assert_eq!(
-            values[7].visit_references(&mut |_| {}),
-            Err(RootVisitError::RegExpBorrowed)
-        );
+            values[7]
+                .visit_references(&mut |root| {
+                    if let RuntimeRoot::RegExp(found) = root {
+                        saw_regexp = found == &regexp;
+                    }
+                })
+                .unwrap();
+
+            assert!(saw_regexp);
+
+            assert_eq!(
+                regexp.visit_references(&mut |_| {}),
+                Err(RootVisitError::RegExpBorrowed)
+            );
+        }
+
+        regexp.inner.borrow_mut().last_index = Value::RegExp(regexp.clone());
+
+        let mut saw_self = false;
+
+        regexp
+            .visit_references(&mut |root| {
+                if let RuntimeRoot::Value(Value::RegExp(found)) = root {
+                    saw_self = found == &regexp;
+                }
+            })
+            .unwrap();
+
+        assert!(saw_self);
+
+        regexp.inner.borrow_mut().last_index = Value::Number(0.0);
     }
 
     #[test]
