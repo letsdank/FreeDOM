@@ -3,9 +3,10 @@
 //! ECMAScript values and objects:
 //! <https://tc39.es/ecma262/#sec-ecmascript-data-types-and-values>
 //!
-//! This is storage only: tracing, collection and runtime integration are not
-//! implemented. An object may be removed only when no live root can reach it.
+//! Collection and runtime integration are not implemented. Graph tracing
+//! reports reachable objects without removing anything.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Partial values stored inside managed heap objects.
@@ -102,6 +103,12 @@ pub(super) struct ObjectId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HeapError {
     IdentityExhausted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TraceError {
+    ForeignHeap(ObjectId),
+    InvalidReference(ObjectId),
 }
 
 #[derive(Debug)]
@@ -220,10 +227,39 @@ impl<T> Heap<T> {
     }
 }
 
+impl Heap<HeapObject> {
+    /// Reports reachable objects without modifying the heap.
+    /// Rejects foreign, removed, or stale references reachable from the roots.
+    pub(super) fn trace_reachable(
+        &self,
+        roots: impl IntoIterator<Item = ObjectId>,
+    ) -> Result<HashSet<ObjectId>, TraceError> {
+        let mut pending: Vec<ObjectId> = roots.into_iter().collect();
+        let mut visited = HashSet::new();
+
+        while let Some(id) = pending.pop() {
+            if id.heap != self.id {
+                return Err(TraceError::ForeignHeap(id));
+            }
+
+            if !visited.insert(id) {
+                continue;
+            }
+
+            let object = self.get(id).ok_or(TraceError::InvalidReference(id))?;
+
+            object.visit_references(|child| pending.push(child));
+        }
+
+        Ok(visited)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Heap, HeapArrayState, HeapObject, HeapObjectState, HeapProperty, HeapPrototype, HeapValue,
+        TraceError,
     };
 
     #[test]
@@ -336,5 +372,92 @@ mod tests {
             .visit_references(|id| edges.push(id));
 
         assert_eq!(edges, vec![object_id, array_id, object_id]);
+    }
+
+    #[test]
+    fn traces_cycles_without_collecting_unreachable_objects() {
+        let mut heap = Heap::new().unwrap();
+
+        let root = heap.allocate(HeapObject::Object(HeapObjectState::default()));
+        let child = heap.allocate(HeapObject::Array(HeapArrayState::default()));
+        let unreachable = heap.allocate(HeapObject::Object(HeapObjectState::default()));
+
+        let Some(HeapObject::Object(object)) = heap.get_mut(root) else {
+            panic!("expected object");
+        };
+
+        object.properties.push(HeapProperty {
+            name: "child".into(),
+            value: HeapValue::Reference(child),
+            enumerable: true,
+        });
+
+        let Some(HeapObject::Array(array)) = heap.get_mut(child) else {
+            panic!("expected array");
+        };
+
+        array.properties.prototype = HeapPrototype::Object(root);
+        array.elements.push(Some(HeapValue::Reference(child)));
+
+        let visited = heap.trace_reachable([root, root]).unwrap();
+
+        assert_eq!(visited.len(), 2);
+        assert!(visited.contains(&root));
+        assert!(visited.contains(&child));
+        assert!(!visited.contains(&unreachable));
+
+        assert!(heap.get(unreachable).is_some());
+    }
+
+    #[test]
+    fn tracing_rejects_stale_and_foreign_references_without_mutation() {
+        let mut heap = Heap::new().unwrap();
+        let mut foreign_heap = Heap::new().unwrap();
+
+        let root = heap.allocate(HeapObject::Object(HeapObjectState::default()));
+        let old = heap.allocate(HeapObject::Object(HeapObjectState::default()));
+        let foreign = foreign_heap.allocate(HeapObject::Object(HeapObjectState::default()));
+
+        assert!(heap.remove(old).is_some());
+
+        let replacement = heap.allocate(HeapObject::Object(HeapObjectState::default()));
+
+        let Some(HeapObject::Object(object)) = heap.get_mut(root) else {
+            panic!("expected object");
+        };
+
+        object.properties.push(HeapProperty {
+            name: "bad".into(),
+            value: HeapValue::Reference(old),
+            enumerable: true,
+        });
+
+        assert_eq!(
+            heap.trace_reachable([root]),
+            Err(TraceError::InvalidReference(old))
+        );
+
+        assert!(heap.get(root).is_some());
+        assert!(heap.get(replacement).is_some());
+
+        let Some(HeapObject::Object(object)) = heap.get_mut(root) else {
+            panic!("expected object");
+        };
+
+        object.properties[0].value = HeapValue::Reference(foreign);
+
+        assert_eq!(
+            heap.trace_reachable([root]),
+            Err(TraceError::ForeignHeap(foreign))
+        );
+
+        assert_eq!(
+            heap.trace_reachable([foreign]),
+            Err(TraceError::ForeignHeap(foreign))
+        );
+
+        assert!(heap.get(root).is_some());
+        assert!(heap.get(replacement).is_some());
+        assert!(foreign_heap.get(foreign).is_some());
     }
 }
