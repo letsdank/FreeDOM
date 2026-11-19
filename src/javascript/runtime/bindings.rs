@@ -5,7 +5,7 @@
 //! This is not yet an ECMAScript Environment Record: scopes, lexical capture,
 //! binding attributes and temporal dead zones are not implemented here.
 
-use super::{FrameRoot, FrameRootError};
+use super::{RootVisitError, RuntimeRoot};
 use std::{
     cell::{Ref, RefCell, RefMut},
     collections::{HashMap, HashSet},
@@ -33,14 +33,14 @@ pub(super) struct BindingSnapshot {
 impl BindingSnapshot {
     pub(super) fn visit_root(
         &self,
-        visit: &mut impl FnMut(FrameRoot<'_>),
-    ) -> Result<(), FrameRootError> {
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
         if let Some(binding) = &self.previous {
             let binding = binding
                 .try_borrow()
-                .map_err(|_| FrameRootError::BindingBorrowed)?;
+                .map_err(|_| RootVisitError::BindingBorrowed)?;
 
-            visit(FrameRoot::Value(&binding.value));
+            visit(RuntimeRoot::Value(&binding.value));
         }
 
         Ok(())
@@ -147,6 +147,21 @@ impl Bindings {
                 }
             })
             .collect()
+    }
+
+    pub(super) fn visit_roots(
+        &self,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
+        for binding in self.values.values() {
+            let binding = binding
+                .try_borrow()
+                .map_err(|_| RootVisitError::BindingBorrowed)?;
+
+            visit(RuntimeRoot::Value(&binding.value));
+        }
+
+        Ok(())
     }
 }
 

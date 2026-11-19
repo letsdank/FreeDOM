@@ -4,7 +4,7 @@
 //!
 //! This is not a complete ECMAScript Reference Record implementation.
 
-use super::{ExecutionFrame, Expression, FrameRoot, Interpreter, JsError, PostfixStep, Value};
+use super::{ExecutionFrame, Expression, Interpreter, JsError, PostfixStep, RuntimeRoot, Value};
 
 #[derive(Clone)]
 pub(super) enum Reference {
@@ -22,17 +22,17 @@ impl Reference {
         }
     }
 
-    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(FrameRoot<'_>)) {
+    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
         match self {
             Self::Binding(_) => {}
 
             Self::Member { object, .. } => {
-                visit(FrameRoot::Value(object));
+                visit(RuntimeRoot::Value(object));
             }
 
             Self::Index { object, index } => {
-                visit(FrameRoot::Value(object));
-                visit(FrameRoot::Value(index));
+                visit(RuntimeRoot::Value(object));
+                visit(RuntimeRoot::Value(index));
             }
         }
     }

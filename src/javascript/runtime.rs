@@ -154,24 +154,27 @@ enum ExecutionFrame {
 
 // These roots still use Rc-backed values and cannot be passed to the heap tracer.
 #[allow(dead_code)]
-enum FrameRoot<'a> {
+enum RuntimeRoot<'a> {
     Value(&'a Value),
     Function(&'a FunctionValue),
     Promise(&'a promise::PromiseHandle),
+    Object(&'a ObjectStorage),
+    Array(&'a ArrayStorage),
+    Document(&'a DocumentStorage),
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum FrameRootError {
+enum RootVisitError {
     BindingBorrowed,
 }
 
 impl ExecutionFrame {
     #[allow(dead_code)]
-    fn visit_roots(&self, visit: &mut impl FnMut(FrameRoot<'_>)) -> Result<(), FrameRootError> {
+    fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) -> Result<(), RootVisitError> {
         match self {
             Self::PendingCompletion(result) => match result {
                 Ok(Completion::Normal(value) | Completion::Return(value)) => {
-                    visit(FrameRoot::Value(value));
+                    visit(RuntimeRoot::Value(value));
                 }
 
                 Ok(Completion::Break | Completion::Continue) => {}
@@ -179,7 +182,7 @@ impl ExecutionFrame {
                 Err(error) => match &error.kind {
                     super::JsErrorKind::Thrown(value)
                     | super::JsErrorKind::NativeException(value) => {
-                        visit(FrameRoot::Value(value));
+                        visit(RuntimeRoot::Value(value));
                     }
 
                     super::JsErrorKind::Syntax
@@ -197,13 +200,13 @@ impl ExecutionFrame {
 
             Self::ForOfItems(items) => {
                 for value in items.as_slice() {
-                    visit(FrameRoot::Value(value));
+                    visit(RuntimeRoot::Value(value));
                 }
             }
 
             Self::TemporaryValues(values) => {
                 for value in values {
-                    visit(FrameRoot::Value(value));
+                    visit(RuntimeRoot::Value(value));
                 }
             }
 
@@ -212,22 +215,22 @@ impl ExecutionFrame {
             }
 
             Self::PendingCall(call) => {
-                visit(FrameRoot::Value(&call.callee));
+                visit(RuntimeRoot::Value(&call.callee));
 
                 if let Some(receiver) = &call.receiver {
-                    visit(FrameRoot::Value(receiver));
+                    visit(RuntimeRoot::Value(receiver));
                 }
 
                 for argument in &call.arguments {
-                    visit(FrameRoot::Value(argument));
+                    visit(RuntimeRoot::Value(argument));
                 }
             }
 
             Self::ActiveCall(call) => {
-                visit(FrameRoot::Function(&call.callee));
+                visit(RuntimeRoot::Function(&call.callee));
 
                 for argument in &call.arguments {
-                    visit(FrameRoot::Value(argument));
+                    visit(RuntimeRoot::Value(argument));
                 }
 
                 for binding in &call.replaced_bindings {
@@ -839,12 +842,78 @@ impl Interpreter {
     pub(super) fn export_error(&self, error: JsError) -> HostError {
         HostError::from_internal(error, &self.host_roots)
     }
+
+    /// Visits the current shallow roots and returns the retained host snapshot.
+    /// The visitor must not run JavaScript or mutate the root set.
+    #[allow(dead_code)]
+    fn visit_runtime_roots(
+        &self,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<Vec<std::rc::Rc<super::HostRoot>>, RootVisitError> {
+        let host_roots = self.host_roots.snapshot();
+
+        self.variables.visit_roots(visit)?;
+
+        for frame in &self.execution_frames {
+            frame.visit_roots(visit)?;
+        }
+
+        for root in &host_roots {
+            visit(RuntimeRoot::Value(&root.value));
+        }
+
+        if let Some(document) = &self.document {
+            visit(RuntimeRoot::Document(document));
+        }
+
+        for cleanup in &self.cleanups {
+            visit(RuntimeRoot::Function(&cleanup.callback));
+
+            for value in cleanup.captured.values() {
+                visit(RuntimeRoot::Value(value));
+            }
+        }
+
+        for object in [
+            &self.object_prototype,
+            &self.promise_prototype,
+            &self.error_prototype,
+            &self.type_error_prototype,
+            &self.reference_error_prototype,
+        ] {
+            visit(RuntimeRoot::Object(object));
+        }
+
+        visit(RuntimeRoot::Array(&self.array_prototype));
+
+        for array in &self.active_array_joins {
+            visit(RuntimeRoot::Array(array));
+        }
+
+        for object in self.canvas_contexts.values() {
+            visit(RuntimeRoot::Object(object));
+        }
+
+        for stack in self.canvas_state_stacks.values() {
+            for state in stack {
+                state.visit_roots(visit);
+            }
+        }
+
+        for job in &self.microtasks {
+            job.visit_roots(visit);
+        }
+
+        Ok(host_roots)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Completion, ExecutionFrame, FrameRoot, FrameRootError, Interpreter};
+    use super::{Completion, ExecutionFrame, Interpreter, RootVisitError, RuntimeRoot};
     use crate::javascript::{JsError, JsErrorKind, Value, parse_program};
+    use std::collections::HashSet;
+    use std::rc::Rc;
 
     #[test]
     fn execution_guard_bounds_loops_and_microtasks() {
@@ -1945,17 +2014,18 @@ mod tests {
         for frame in &frames {
             frame
                 .visit_roots(&mut |root| match root {
-                    FrameRoot::Value(Value::Number(number)) => {
+                    RuntimeRoot::Value(Value::Number(number)) => {
                         numbers.push(*number);
                     }
 
-                    FrameRoot::Value(Value::Function(_)) => {
+                    RuntimeRoot::Value(Value::Function(_)) => {
                         handler_values += 1;
                     }
 
-                    FrameRoot::Function(_) => functions += 1,
-                    FrameRoot::Promise(_) => promises += 1,
-                    FrameRoot::Value(_) => {}
+                    RuntimeRoot::Function(_) => functions += 1,
+                    RuntimeRoot::Promise(_) => promises += 1,
+                    RuntimeRoot::Value(_) => {}
+                    RuntimeRoot::Object(_) | RuntimeRoot::Array(_) | RuntimeRoot::Document(_) => {}
                 })
                 .unwrap();
         }
@@ -1972,7 +2042,108 @@ mod tests {
 
         assert_eq!(
             frames[1].visit_roots(&mut |_| {}),
-            Err(FrameRootError::BindingBorrowed)
+            Err(RootVisitError::BindingBorrowed)
         );
+    }
+
+    #[test]
+    fn runtime_roots_cover_host_globals_jobs_canvas_and_reject_borrowed_bindings() {
+        use std::collections::HashMap;
+
+        let mut interpreter = Interpreter::new();
+        let mut document = crate::javascript::DocumentState::default();
+
+        document.register_parsed_element("canvas", "c", String::new(), None);
+        interpreter.set_document(document);
+
+        let program = parse_program(
+            "let marker = 22; \
+            let ctx = document.getElementById('c').getContext('2d'); \
+            ctx.fillStyle = 'red'; \
+            ctx.save(); \
+            ctx.fillStyle = 'blue'; \
+            function f() {}",
+        )
+        .unwrap();
+
+        interpreter.execute(&program).unwrap();
+
+        let callee = interpreter.variables.get("f").unwrap().clone();
+
+        let Value::Function(callee) = callee else {
+            panic!("expected function");
+        };
+
+        interpreter.cleanups.push(super::Cleanup {
+            callback: callee,
+            captured: HashMap::from([("saved".into(), Value::Number(66.0))]),
+        });
+
+        interpreter
+            .microtasks
+            .push_back(super::microtasks::Microtask::Callback(Value::Number(77.0)));
+
+        interpreter
+            .execution_frames
+            .push(ExecutionFrame::TemporaryValues(vec![Value::Number(55.0)]));
+
+        let _host = interpreter.export_value(Value::Number(44.0));
+
+        let other = Interpreter::new();
+        let _foreign = other.export_value(Value::Number(88.0));
+
+        let mut numbers = Vec::new();
+        let mut saw_red = false;
+        let mut saw_prototype = false;
+        let mut saw_document = false;
+        let mut saw_array = false;
+        let mut functions = 0;
+
+        let snapshot = interpreter
+            .visit_runtime_roots(&mut |root| match root {
+                RuntimeRoot::Value(Value::Number(number)) => {
+                    numbers.push(*number);
+                }
+
+                RuntimeRoot::Value(Value::String(value)) if value == "#ff0000" => {
+                    saw_red = true;
+                }
+
+                RuntimeRoot::Object(object)
+                    if Rc::ptr_eq(object, &interpreter.object_prototype) =>
+                {
+                    saw_prototype = true;
+                }
+
+                RuntimeRoot::Document(_) => saw_document = true,
+                RuntimeRoot::Array(_) => saw_array = true,
+                RuntimeRoot::Function(_) => functions += 1,
+                _ => {}
+            })
+            .unwrap();
+
+        for number in [22.0, 44.0, 55.0, 66.0, 77.0] {
+            assert!(numbers.contains(&number));
+        }
+
+        assert!(!numbers.contains(&88.0));
+        assert_eq!(snapshot.len(), 1);
+        assert!(saw_red);
+        assert!(saw_prototype);
+        assert!(saw_document);
+        assert!(saw_array);
+        assert_eq!(functions, 1);
+
+        let captured = interpreter.variables.capture_names(
+            &["marker".to_owned()],
+            &HashSet::from(["marker".to_owned()]),
+        );
+
+        let _guard = captured.get("marker").unwrap().borrow_mut();
+
+        assert!(matches!(
+            interpreter.visit_runtime_roots(&mut |_| {}),
+            Err(RootVisitError::BindingBorrowed)
+        ));
     }
 }

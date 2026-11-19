@@ -2,7 +2,7 @@
 //!
 //! <https://html.spec.whatwg.org/multipage/canvas.html#canvasrenderingcontext2d>
 
-use super::{ElementMethod, Interpreter, JsError, ObjectStorage, Value};
+use super::{ElementMethod, Interpreter, JsError, ObjectStorage, RuntimeRoot, Value};
 use crate::{
     css::parse_color,
     graphics::{
@@ -29,6 +29,14 @@ pub(super) struct CanvasSavedState {
     properties: [Value; 7],
     dash: Vec<f64>,
     transform: Transform,
+}
+
+impl CanvasSavedState {
+    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        for value in &self.properties {
+            visit(RuntimeRoot::Value(value));
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

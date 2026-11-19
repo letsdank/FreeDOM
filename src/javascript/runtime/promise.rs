@@ -8,7 +8,7 @@
 
 use std::{cell::RefCell, fmt, rc::Rc};
 
-use super::{FrameRoot, Interpreter, JsError, NativeFunction, Value, microtasks::Microtask};
+use super::{Interpreter, JsError, NativeFunction, RuntimeRoot, Value, microtasks::Microtask};
 use crate::javascript::JsErrorKind;
 
 #[derive(Clone)]
@@ -55,22 +55,22 @@ pub(super) struct PromiseReactionJob {
 }
 
 impl PromiseReactionJob {
-    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(FrameRoot<'_>)) {
+    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
         match &self.outcome {
             Outcome::Fulfilled(value) | Outcome::Rejected(value) => {
-                visit(FrameRoot::Value(value));
+                visit(RuntimeRoot::Value(value));
             }
         }
 
         if let Some(handler) = &self.reaction.on_fulfilled {
-            visit(FrameRoot::Value(handler));
+            visit(RuntimeRoot::Value(handler));
         }
 
         if let Some(handler) = &self.reaction.on_rejected {
-            visit(FrameRoot::Value(handler));
+            visit(RuntimeRoot::Value(handler));
         }
 
-        visit(FrameRoot::Promise(&self.reaction.target));
+        visit(RuntimeRoot::Promise(&self.reaction.target));
     }
 }
 
