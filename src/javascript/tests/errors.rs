@@ -138,12 +138,12 @@ fn classifies_uncaught_non_callable_type_error() {
 
 #[test]
 fn host_error_conversion_preserves_exception_identity() {
-    use crate::javascript::{HostError, JsError, Value};
+    use crate::javascript::{Interpreter, JsError, Value};
 
     let value = Value::object([(String::from("code"), Value::Number(7.0))]);
 
     let internal = JsError::thrown(value.clone());
-    let host = HostError::from(internal);
+    let host = Interpreter::new().export_error(internal);
 
     assert_eq!(host.message, "Uncaught JavaScript exception");
     assert_eq!(host.offset, None);

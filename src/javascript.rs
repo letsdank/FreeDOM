@@ -1,4 +1,9 @@
-use std::{error::Error, fmt};
+use std::{
+    cell::RefCell,
+    error::Error,
+    fmt,
+    rc::{Rc, Weak},
+};
 
 #[path = "javascript/lexer.rs"]
 mod lexer;
@@ -30,7 +35,9 @@ mod json;
 
 #[cfg(test)]
 pub fn parse_json(source: &str) -> Result<Value, HostError> {
-    json::parse_json(source).map_err(HostError::from)
+    let roots = Rc::new(HostRoots::default());
+
+    json::parse_json(source).map_err(|error| HostError::from_internal(error, &roots))
 }
 
 use parser::parse_program;
@@ -179,8 +186,8 @@ pub struct HostError {
     pub kind: JsErrorKind<HostValue>,
 }
 
-impl From<JsError> for HostError {
-    fn from(error: JsError) -> Self {
+impl HostError {
+    fn from_internal(error: JsError, roots: &Rc<HostRoots>) -> Self {
         Self {
             offset: error.offset,
             message: error.message,
@@ -191,10 +198,10 @@ impl From<JsError> for HostError {
 
                 JsErrorKind::UnsupportedFeature => JsErrorKind::UnsupportedFeature,
 
-                JsErrorKind::Thrown(value) => JsErrorKind::Thrown(HostValue(value)),
+                JsErrorKind::Thrown(value) => JsErrorKind::Thrown(roots.register(value)),
 
                 JsErrorKind::NativeException(value) => {
-                    JsErrorKind::NativeException(HostValue(value))
+                    JsErrorKind::NativeException(roots.register(value))
                 }
 
                 JsErrorKind::ResourceLimit => JsErrorKind::ResourceLimit,
@@ -211,58 +218,94 @@ impl fmt::Display for HostError {
 
 impl Error for HostError {}
 
+#[derive(Default, Debug)]
+struct HostRoots {
+    roots: RefCell<Vec<Weak<HostRoot>>>,
+}
+
+#[derive(Debug)]
+struct HostRoot {
+    value: Value,
+    _owner: Rc<HostRoots>,
+}
+
+impl HostRoots {
+    fn register(self: &Rc<Self>, value: Value) -> HostValue {
+        let root = Rc::new(HostRoot {
+            value,
+            _owner: self.clone(),
+        });
+
+        let mut roots = self.roots.borrow_mut();
+
+        if roots.len() >= 64 && roots.len() % 64 == 0 {
+            roots.retain(|root| root.strong_count() > 0);
+        }
+
+        roots.push(Rc::downgrade(&root));
+
+        HostValue(root)
+    }
+}
+
 /// A value returned to the embedding application.
 ///
 /// Object values still use reference-counted storage; this is not yet a GC root.
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
-pub struct HostValue(Value);
+pub struct HostValue(Rc<HostRoot>);
 
 impl HostValue {
     pub fn as_boolean(&self) -> Option<bool> {
-        match &self.0 {
+        match &self.0.value {
             Value::Boolean(value) => Some(*value),
             _ => None,
         }
     }
 
     pub fn as_number(&self) -> Option<f64> {
-        match &self.0 {
+        match &self.0.value {
             Value::Number(value) => Some(*value),
             _ => None,
         }
     }
 
     pub fn as_string(&self) -> Option<&str> {
-        match &self.0 {
+        match &self.0.value {
             Value::String(value) => Some(value),
             _ => None,
         }
     }
 
     pub fn is_null(&self) -> bool {
-        matches!(self.0, Value::Null)
+        matches!(self.0.value, Value::Null)
     }
 
     pub fn is_undefined(&self) -> bool {
-        matches!(self.0, Value::Undefined)
+        matches!(self.0.value, Value::Undefined)
     }
 
     #[cfg(test)]
     pub(crate) fn into_test_value(self) -> Value {
-        self.0
+        self.0.value.clone()
     }
 
     #[cfg(test)]
     pub(crate) fn as_test_value(&self) -> &Value {
-        &self.0
+        &self.0.value
+    }
+}
+
+#[cfg(test)]
+impl PartialEq for HostValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.value == other.0.value
     }
 }
 
 #[cfg(test)]
 impl PartialEq<Value> for HostValue {
     fn eq(&self, other: &Value) -> bool {
-        self.0 == *other
+        self.0.value == *other
     }
 }
 
@@ -274,13 +317,17 @@ fn format_error(f: &mut fmt::Formatter<'_>, message: &str, offset: Option<usize>
 }
 
 pub fn evaluate(source: &str) -> Result<HostValue, HostError> {
-    let program = parse_program(source)?;
+    let mut interpreter = Interpreter::new();
 
-    Interpreter::new()
-        .execute_script(&program)
-        .map(Completion::into_value)
-        .map(HostValue)
-        .map_err(HostError::from)
+    let program = parse_program(source).map_err(|error| interpreter.export_error(error))?;
+
+    let result = interpreter.execute_script(&program);
+
+    match result {
+        Ok(completion) => Ok(interpreter.export_value(completion.into_value())),
+
+        Err(error) => Err(interpreter.export_error(error)),
+    }
 }
 
 pub fn evaluate_with_document(

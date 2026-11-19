@@ -2,7 +2,8 @@ use self::bindings::{BindingSnapshot, Bindings};
 use super::value::{ArrayStorage, DocumentStorage, FunctionValue, ObjectStorage};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
-    JsError, NativeFunction, PostfixStep, Statement, TestContextMethod, UserFunction, Value,
+    HostError, HostRoots, HostValue, JsError, NativeFunction, PostfixStep, Statement,
+    TestContextMethod, UserFunction, Value,
 };
 use crate::url::Url;
 use std::collections::{HashMap, VecDeque};
@@ -197,6 +198,7 @@ pub(super) struct Interpreter {
     execution_limit: usize,
     steps_remaining: usize,
     execution_depth: usize,
+    host_roots: std::rc::Rc<HostRoots>,
 }
 
 impl Interpreter {
@@ -425,6 +427,7 @@ impl Interpreter {
             execution_limit: DEFAULT_EXECUTION_STEPS,
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
+            host_roots: std::rc::Rc::new(HostRoots::default()),
         }
     }
 
@@ -735,6 +738,14 @@ impl Interpreter {
                 )
             })
             .count()
+    }
+
+    pub(super) fn export_value(&self, value: Value) -> HostValue {
+        self.host_roots.register(value)
+    }
+
+    pub(super) fn export_error(&self, error: JsError) -> HostError {
+        HostError::from_internal(error, &self.host_roots)
     }
 }
 
@@ -1630,5 +1641,59 @@ mod tests {
 
         assert!(interpreter.execute_script(&program).is_err());
         assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn host_roots_keep_owner_alive_and_release_without_registry_borrow() {
+        use std::rc::Rc;
+
+        let interpreter = Interpreter::new();
+        let owner = Rc::downgrade(&interpreter.host_roots);
+
+        let value = interpreter.export_value(Value::array(vec![Value::Number(7.0)]));
+        let value_root = Rc::downgrade(&value.0);
+        let clone = value.clone();
+
+        let error = interpreter.export_error(JsError::thrown(Value::array(vec![])));
+
+        let registry = owner.upgrade().unwrap();
+
+        assert_eq!(
+            registry
+                .roots
+                .borrow()
+                .iter()
+                .filter(|root| root.upgrade().is_some())
+                .count(),
+            2
+        );
+
+        drop(interpreter);
+        drop(value);
+
+        assert!(value_root.upgrade().is_some());
+
+        let borrowed = registry.roots.borrow_mut();
+
+        drop(clone);
+
+        assert!(value_root.upgrade().is_none());
+
+        drop(borrowed);
+
+        assert_eq!(
+            registry
+                .roots
+                .borrow()
+                .iter()
+                .filter(|root| root.upgrade().is_some())
+                .count(),
+            1
+        );
+
+        drop(error);
+        drop(registry);
+
+        assert!(owner.upgrade().is_none());
     }
 }

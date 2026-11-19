@@ -5,7 +5,7 @@
 //! This shares one interpreter across scripts; full realms and event loops
 //! are incomplete.
 
-use super::{Completion, DocumentState, HostError, HostValue, Interpreter, JsError, parse_program};
+use super::{DocumentState, HostError, HostValue, Interpreter, JsError, parse_program};
 
 pub(crate) struct DocumentScriptSession {
     interpreter: Interpreter,
@@ -28,19 +28,24 @@ impl DocumentScriptSession {
         source: &str,
         document: &mut DocumentState,
     ) -> Result<HostValue, HostError> {
-        let program = parse_program(source)?;
+        let program =
+            parse_program(source).map_err(|error| self.interpreter.export_error(error))?;
+
         let result = self.interpreter.execute_script(&program);
 
         let Some(updated) = self.interpreter.snapshot_document() else {
-            return Err(JsError::runtime("document state is unavailable").into());
+            return Err(self
+                .interpreter
+                .export_error(JsError::runtime("document state is unavailable")));
         };
 
         *document = updated;
 
-        result
-            .map(Completion::into_value)
-            .map(HostValue)
-            .map_err(HostError::from)
+        match result {
+            Ok(completion) => Ok(self.interpreter.export_value(completion.into_value())),
+
+            Err(error) => Err(self.interpreter.export_error(error)),
+        }
     }
 
     pub(crate) fn into_canvas_surfaces(
