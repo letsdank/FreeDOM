@@ -169,32 +169,38 @@ impl Interpreter {
                             "TypeError: for-of currently requires an Array",
                         ));
                     };
+
                     let values = values.borrow().values.clone();
 
-                    let completion = self.with_shadowed_bindings(
-                        [(binding.clone(), Value::Undefined)],
-                        |interpreter| {
-                            for value in values {
-                                interpreter
-                                    .variables
-                                    .assign_or_insert(binding.clone(), value);
+                    let completion =
+                        self.with_for_of_items(values, |interpreter, items_index| {
+                            interpreter.with_shadowed_bindings(
+                                [(binding.clone(), Value::Undefined)],
+                                |interpreter| {
+                                    while let Some(value) =
+                                        interpreter.next_for_of_item(items_index)
+                                    {
+                                        interpreter
+                                            .variables
+                                            .assign_or_insert(binding.clone(), value);
 
-                                match interpreter.execute(body)? {
-                                    Completion::Normal(_) | Completion::Continue => {}
+                                        match interpreter.execute(body)? {
+                                            Completion::Normal(_) | Completion::Continue => {}
 
-                                    Completion::Break => {
-                                        return Ok(Completion::Normal(Value::Undefined));
+                                            Completion::Break => {
+                                                return Ok(Completion::Normal(Value::Undefined));
+                                            }
+
+                                            Completion::Return(value) => {
+                                                return Ok(Completion::Return(value));
+                                            }
+                                        }
                                     }
 
-                                    Completion::Return(value) => {
-                                        return Ok(Completion::Return(value));
-                                    }
-                                }
-                            }
-
-                            Ok(Completion::Normal(Value::Undefined))
-                        },
-                    )?;
+                                    Ok(Completion::Normal(Value::Undefined))
+                                },
+                            )
+                        })?;
 
                     match completion {
                         Completion::Normal(value) => value,

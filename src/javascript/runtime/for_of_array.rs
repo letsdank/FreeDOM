@@ -36,42 +36,44 @@ impl Interpreter {
             .cloned()
             .map(|name| (name, Value::Undefined));
 
-        self.with_shadowed_bindings(shadows, |interpreter| {
-            for item in items {
-                let values = match item {
-                    Value::Array(values) => values.borrow().values.clone(),
+        self.with_for_of_items(items, |interpreter, items_index| {
+            interpreter.with_shadowed_bindings(shadows, |interpreter| {
+                while let Some(item) = interpreter.next_for_of_item(items_index) {
+                    let values = match item {
+                        Value::Array(values) => values.borrow().values.clone(),
 
-                    Value::Null | Value::Undefined | Value::Boolean(_) | Value::Number(_) => {
-                        return Err(JsError::type_error("array binding value is not iterable"));
+                        Value::Null | Value::Undefined | Value::Boolean(_) | Value::Number(_) => {
+                            return Err(JsError::type_error("array binding value is not iterable"));
+                        }
+
+                        _ => {
+                            return Err(JsError::unsupported(
+                                "array binding only supports array values",
+                            ));
+                        }
+                    };
+
+                    for (index, binding) in bindings.iter().enumerate() {
+                        let value = values.get(index).cloned().unwrap_or(Value::Undefined);
+
+                        interpreter
+                            .variables
+                            .assign_or_insert(binding.clone(), value);
                     }
 
-                    _ => {
-                        return Err(JsError::unsupported(
-                            "array binding only supports array values",
-                        ));
+                    match interpreter.execute(body)? {
+                        Completion::Normal(_) | Completion::Continue => {}
+
+                        Completion::Break => {
+                            return Ok(Completion::Normal(Value::Undefined));
+                        }
+
+                        Completion::Return(value) => return Ok(Completion::Return(value)),
                     }
-                };
-
-                for (index, binding) in bindings.iter().enumerate() {
-                    let value = values.get(index).cloned().unwrap_or(Value::Undefined);
-
-                    interpreter
-                        .variables
-                        .assign_or_insert(binding.clone(), value);
                 }
 
-                match interpreter.execute(body)? {
-                    Completion::Normal(_) | Completion::Continue => {}
-
-                    Completion::Break => {
-                        return Ok(Completion::Normal(Value::Undefined));
-                    }
-
-                    Completion::Return(value) => return Ok(Completion::Return(value)),
-                }
-            }
-
-            Ok(Completion::Normal(Value::Undefined))
+                Ok(Completion::Normal(Value::Undefined))
+            })
         })
     }
 }

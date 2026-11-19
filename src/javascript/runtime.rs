@@ -144,6 +144,7 @@ pub(super) enum Completion {
 enum ExecutionFrame {
     PendingCompletion(Result<Completion, JsError>),
     ShadowedBindings(Vec<BindingSnapshot>),
+    ForOfItems(std::vec::IntoIter<Value>),
 }
 
 struct ActiveCallFrame {
@@ -617,6 +618,33 @@ impl Interpreter {
         self.pending_calls.truncate(index);
 
         result
+    }
+
+    fn with_for_of_items<T>(
+        &mut self,
+        items: Vec<Value>,
+        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.execution_frames.len();
+
+        self.execution_frames
+            .push(ExecutionFrame::ForOfItems(items.into_iter()));
+
+        let result = operation(self, index);
+
+        match self.execution_frames.pop() {
+            Some(ExecutionFrame::ForOfItems(_)) => {}
+            _ => unreachable!("for-of frame must exist"),
+        }
+
+        result
+    }
+
+    fn next_for_of_item(&mut self, index: usize) -> Option<Value> {
+        match self.execution_frames.get_mut(index) {
+            Some(ExecutionFrame::ForOfItems(items)) => items.next(),
+            _ => unreachable!("for-of frame must exist"),
+        }
     }
 }
 
@@ -1202,5 +1230,65 @@ mod tests {
                 Value::Number(7.0)
             );
         }
+    }
+
+    #[test]
+    fn for_of_items_remain_in_frames_and_unwind_on_errors() {
+        let mut interpreter = Interpreter::new();
+
+        let result = interpreter.with_for_of_items(
+            vec![Value::Number(1.0), Value::Number(2.0)],
+            |runtime, index| {
+                assert_eq!(runtime.next_for_of_item(index), Some(Value::Number(1.0)));
+
+                runtime.with_shadowed_bindings([(String::from("x"), Value::Undefined)], |runtime| {
+                    match &runtime.execution_frames[index] {
+                        ExecutionFrame::ForOfItems(items) => {
+                            assert_eq!(items.as_slice(), &[Value::Number(2.0)]);
+                        }
+
+                        _ => panic!("expected for-of frame"),
+                    }
+
+                    Err::<(), _>(JsError::resource_limit("test limit"))
+                })
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(interpreter.execution_frames.is_empty());
+
+        let program = parse_program(
+            r#"
+            let source = [{value: 1}, {value: 2}];
+            let sum = 0;
+
+            for (let item of source) {
+                source = [];
+
+                for (let n of [3, 4]) {
+                    sum = sum + n;
+                }
+
+                sum = sum + item.value;
+            }
+
+            let pairs = [[1, 2], [3, 4]];
+            let pair_sum = 0;
+
+            for (const [a, b] of pairs) {
+                pairs = [];
+                pair_sum = pair_sum + a + b;
+            }
+
+            sum === 17 && pair_sum === 10;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.execution_frames.is_empty());
     }
 }
