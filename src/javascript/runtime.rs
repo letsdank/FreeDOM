@@ -147,6 +147,7 @@ enum ExecutionFrame {
     ForOfItems(std::vec::IntoIter<Value>),
     TemporaryValues(Vec<Value>),
     Reference(reference::Reference),
+    PendingCall(PendingCall),
 }
 
 struct ActiveCallFrame {
@@ -198,7 +199,6 @@ pub(super) struct Interpreter {
     steps_remaining: usize,
     execution_depth: usize,
     active_call_frames: Vec<ActiveCallFrame>,
-    pending_calls: Vec<PendingCall>,
 }
 
 impl Interpreter {
@@ -430,7 +430,6 @@ impl Interpreter {
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
             active_call_frames: Vec::new(),
-            pending_calls: Vec::new(),
         }
     }
 
@@ -589,27 +588,45 @@ impl Interpreter {
         expressions: &[Expression],
         operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
     ) -> Result<T, JsError> {
-        let index = self.pending_calls.len();
+        let index = self.execution_frames.len();
 
-        self.pending_calls.push(PendingCall {
-            callee,
-            receiver,
-            arguments: Vec::with_capacity(expressions.len()),
-        });
+        self.execution_frames
+            .push(ExecutionFrame::PendingCall(PendingCall {
+                callee,
+                receiver,
+                arguments: Vec::with_capacity(expressions.len()),
+            }));
 
         let result = (|| {
             for expression in expressions {
                 let argument = self.evaluate_expression(expression)?;
 
-                self.pending_calls[index].arguments.push(argument);
+                self.pending_call_mut(index).arguments.push(argument);
             }
 
             operation(self, index)
         })();
 
-        self.pending_calls.truncate(index);
+        match self.execution_frames.pop() {
+            Some(ExecutionFrame::PendingCall(_)) => {}
+            _ => unreachable!("pending call frame must exist"),
+        }
 
         result
+    }
+
+    fn pending_call(&self, index: usize) -> &PendingCall {
+        match self.execution_frames.get(index) {
+            Some(ExecutionFrame::PendingCall(call)) => call,
+            _ => unreachable!("pending call frame must exist"),
+        }
+    }
+
+    fn pending_call_mut(&mut self, index: usize) -> &mut PendingCall {
+        match self.execution_frames.get_mut(index) {
+            Some(ExecutionFrame::PendingCall(call)) => call,
+            _ => unreachable!("pending call frame must exist"),
+        }
     }
 
     fn with_for_of_items<T>(
@@ -1023,7 +1040,7 @@ mod tests {
         let result = interpreter.execute_script(&program).unwrap().into_value();
 
         assert_eq!(result, Value::Boolean(true));
-        assert!(interpreter.pending_calls.is_empty());
+        assert!(interpreter.execution_frames.is_empty());
 
         for source in [
             "original.method({}, missing);",
@@ -1033,7 +1050,7 @@ mod tests {
             let program = parse_program(source).unwrap();
 
             assert!(interpreter.execute_script(&program).is_err());
-            assert!(interpreter.pending_calls.is_empty());
+            assert!(interpreter.execution_frames.is_empty());
         }
     }
 
@@ -1121,13 +1138,13 @@ mod tests {
         let result = interpreter.execute_script(&program).unwrap().into_value();
 
         assert_eq!(result, Value::Boolean(true));
-        assert!(interpreter.pending_calls.is_empty());
+        assert!(interpreter.execution_frames.is_empty());
 
         for source in ["new A(first(), missing);", "new Constructor(first());"] {
             let program = parse_program(source).unwrap();
 
             assert!(interpreter.execute_script(&program).is_err());
-            assert!(interpreter.pending_calls.is_empty());
+            assert!(interpreter.execution_frames.is_empty());
         }
     }
 
@@ -1434,6 +1451,39 @@ mod tests {
         });
 
         assert!(result.is_err());
+        assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn pending_call_frames_remain_accessible_during_nested_calls() {
+        let mut interpreter = Interpreter::new();
+
+        let arguments = [super::Expression::Literal(Value::Number(3.0))];
+
+        let result = interpreter.with_pending_call(
+            Value::Number(1.0),
+            Some(Value::Number(2.0)),
+            &arguments,
+            |runtime, index| {
+                let nested = runtime.with_pending_call(Value::Null, None, &[], |runtime, inner| {
+                    assert_eq!(runtime.pending_call(index).callee, Value::Number(1.0));
+                    assert_eq!(runtime.pending_call(inner).callee, Value::Null);
+
+                    Err::<(), _>(JsError::resource_limit("test limit"))
+                });
+
+                assert!(nested.is_err());
+
+                let call = runtime.pending_call(index);
+
+                assert_eq!(call.receiver, Some(Value::Number(2.0)));
+                assert_eq!(call.arguments, vec![Value::Number(3.0)]);
+
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
         assert!(interpreter.execution_frames.is_empty());
     }
 }

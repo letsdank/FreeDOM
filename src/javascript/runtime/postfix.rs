@@ -99,7 +99,7 @@ impl Interpreter {
         expressions: &[Expression],
     ) -> Result<Value, JsError> {
         self.with_pending_call(callee, receiver, expressions, |interpreter, index| {
-            let call = &interpreter.pending_calls[index];
+            let call = interpreter.pending_call(index);
             let callee = call.callee.clone();
             let receiver = call.receiver.clone();
             let arguments = call.arguments.clone();

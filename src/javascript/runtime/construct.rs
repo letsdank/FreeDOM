@@ -20,8 +20,8 @@ impl Interpreter {
             .ok_or_else(|| JsError::reference_error(name))?;
 
         self.with_pending_call(constructor, None, arguments, |interpreter, index| {
-            let constructor = interpreter.pending_calls[index].callee.clone();
-            let values = interpreter.pending_calls[index].arguments.clone();
+            let constructor = interpreter.pending_call(index).callee.clone();
+            let values = interpreter.pending_call(index).arguments.clone();
 
             interpreter.construct_resolved(constructor, values)
         })
