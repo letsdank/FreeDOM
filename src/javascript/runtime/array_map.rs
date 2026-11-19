@@ -91,45 +91,82 @@ impl Interpreter {
             state.values.len()
         };
 
-        let mut mapped = Vec::with_capacity(length);
+        const CALLBACK_SLOT: usize = 1;
+        const THIS_ARG_SLOT: usize = 2;
+        const RESULTS_START: usize = 3;
 
-        for index in 0..length {
-            let key = index.to_string();
+        self.with_temporary_values_scope(|interpreter, frame_index| {
+            interpreter.frame_values_mut(frame_index).extend([
+                Value::Array(array.clone()),
+                callback,
+                this_arg,
+            ]);
 
-            let value = match Self::array_get(array.clone(), &key) {
-                Some(value) => Some(value),
+            let mut present = Vec::with_capacity(length);
 
-                None => match ObjectState::lookup(&self.object_prototype, &key) {
-                    PropertyLookup::Found(value) => Some(value),
+            for index in 0..length {
+                let key = index.to_string();
 
-                    PropertyLookup::Absent => None,
+                let value = match Self::array_get(array.clone(), &key) {
+                    Some(value) => Some(value),
 
-                    PropertyLookup::Unknown => {
-                        return Err(JsError::unsupported(
-                            "Array.prototype.map encountered an unimplemented prototype",
-                        ));
-                    }
-                },
-            };
+                    None => match ObjectState::lookup(&interpreter.object_prototype, &key) {
+                        PropertyLookup::Found(value) => Some(value),
+                        PropertyLookup::Absent => None,
 
-            if let Some(value) = value {
-                let result = self.dispatch_call(
-                    callback.clone(),
-                    Some(this_arg.clone()),
-                    vec![
-                        value,
-                        Value::Number(index as f64),
-                        Value::Array(array.clone()),
-                    ],
-                )?;
+                        PropertyLookup::Unknown => {
+                            return Err(JsError::unsupported(
+                                "Array.prototype.map encountered an unimplemented prototype",
+                            ));
+                        }
+                    },
+                };
 
-                mapped.push(Some(result));
-            } else {
-                mapped.push(None);
+                if let Some(value) = value {
+                    let result =
+                        interpreter.with_frame_value(value, |interpreter, value_index| {
+                            let callback =
+                                interpreter.frame_values(frame_index)[CALLBACK_SLOT].clone();
+
+                            let this_arg =
+                                interpreter.frame_values(frame_index)[THIS_ARG_SLOT].clone();
+
+                            let value = interpreter.frame_value(value_index).clone();
+
+                            interpreter.dispatch_call(
+                                callback,
+                                Some(this_arg),
+                                vec![
+                                    value,
+                                    Value::Number(index as f64),
+                                    Value::Array(array.clone()),
+                                ],
+                            )
+                        })?;
+
+                    interpreter.frame_values_mut(frame_index).push(result);
+                    present.push(true);
+                } else {
+                    interpreter
+                        .frame_values_mut(frame_index)
+                        .push(Value::Undefined);
+
+                    present.push(false);
+                }
             }
-        }
 
-        Ok(Value::array_from_slots(mapped))
+            let mapped = present
+                .into_iter()
+                .zip(
+                    interpreter
+                        .frame_values_mut(frame_index)
+                        .drain(RESULTS_START..),
+                )
+                .map(|(present, value)| present.then_some(value))
+                .collect();
+
+            Ok(Value::array_from_slots(mapped))
+        })
     }
 }
 

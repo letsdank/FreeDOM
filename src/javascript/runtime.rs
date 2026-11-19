@@ -1518,4 +1518,58 @@ mod tests {
         assert!(result.is_ok());
         assert!(interpreter.execution_frames.is_empty());
     }
+
+    #[test]
+    fn map_scopes_results_through_nested_callbacks_and_errors() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let source = [1,,3];
+            let calls = 0;
+
+            let mapped = source.map(function(value, index) {
+                calls = calls + 1;
+
+                if (index === 0) {
+                    source[2] = 4;
+                }
+
+                let nested = [2].map(function(n) {
+                    return n + 1;
+                });
+
+                return {value: value + nested[0]};
+            });
+
+            mapped.length === 3 &&
+                !mapped.hasOwnProperty(1) &&
+                mapped[0].value === 4 &&
+                mapped[2].value === 7 &&
+                calls === 2;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.execution_frames.is_empty());
+
+        let program = parse_program(
+            r#"
+            [1, 2].map(function(value) {
+                if (value === 2) {
+                    throw 'error';
+                }
+
+                return {value: value};
+            });
+            "#,
+        )
+        .unwrap();
+
+        assert!(interpreter.execute_script(&program).is_err());
+        assert!(interpreter.execution_frames.is_empty());
+    }
 }
