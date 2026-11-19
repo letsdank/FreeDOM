@@ -50,6 +50,11 @@ pub use dom::DocumentState;
 #[path = "javascript/runtime.rs"]
 mod runtime;
 
+// The arena will be connected when object storage is migrated.
+#[allow(dead_code)]
+#[path = "javascript/heap.rs"]
+mod heap;
+
 #[path = "javascript/ast.rs"]
 mod ast;
 
