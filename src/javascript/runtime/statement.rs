@@ -79,26 +79,38 @@ impl Interpreter {
                 }
 
                 Statement::While { condition, body } => {
-                    let mut last_value = Value::Undefined;
+                    let completion =
+                        self.with_frame_value(Value::Undefined, |interpreter, index| {
+                            loop {
+                                let condition = interpreter.evaluate_expression(condition)?;
 
-                    loop {
-                        let condition = self.evaluate_expression(condition)?;
+                                if !interpreter.is_truthy(&condition) {
+                                    break;
+                                }
 
-                        if !self.is_truthy(&condition) {
-                            break;
-                        }
-
-                        match self.execute(body)? {
-                            Completion::Normal(value) => last_value = value,
-                            Completion::Return(value) => {
-                                return Ok(Completion::Return(value));
+                                match interpreter.execute(body)? {
+                                    Completion::Normal(value) => {
+                                        interpreter.set_frame_value(index, value)
+                                    }
+                                    Completion::Return(value) => {
+                                        return Ok(Completion::Return(value));
+                                    }
+                                    Completion::Break => break,
+                                    Completion::Continue => continue,
+                                }
                             }
-                            Completion::Break => break,
-                            Completion::Continue => continue,
+
+                            Ok(Completion::Normal(interpreter.frame_value(index).clone()))
+                        })?;
+
+                    match completion {
+                        Completion::Normal(value) => value,
+                        Completion::Return(value) => return Ok(Completion::Return(value)),
+
+                        Completion::Break | Completion::Continue => {
+                            unreachable!("while completion was handled")
                         }
                     }
-
-                    last_value
                 }
 
                 Statement::Break => {

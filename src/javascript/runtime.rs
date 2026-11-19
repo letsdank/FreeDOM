@@ -145,6 +145,7 @@ enum ExecutionFrame {
     PendingCompletion(Result<Completion, JsError>),
     ShadowedBindings(Vec<BindingSnapshot>),
     ForOfItems(std::vec::IntoIter<Value>),
+    TemporaryValue(Value),
 }
 
 struct ActiveCallFrame {
@@ -644,6 +645,40 @@ impl Interpreter {
         match self.execution_frames.get_mut(index) {
             Some(ExecutionFrame::ForOfItems(items)) => items.next(),
             _ => unreachable!("for-of frame must exist"),
+        }
+    }
+
+    fn with_frame_value<T>(
+        &mut self,
+        value: Value,
+        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.execution_frames.len();
+
+        self.execution_frames
+            .push(ExecutionFrame::TemporaryValue(value));
+
+        let result = operation(self, index);
+
+        match self.execution_frames.pop() {
+            Some(ExecutionFrame::TemporaryValue(_)) => {}
+            _ => unreachable!("temporary value frame must exist"),
+        }
+
+        result
+    }
+
+    fn frame_value(&self, index: usize) -> &Value {
+        match self.execution_frames.get(index) {
+            Some(ExecutionFrame::TemporaryValue(value)) => value,
+            _ => unreachable!("temporary value frame must exist"),
+        }
+    }
+
+    fn set_frame_value(&mut self, index: usize, value: Value) {
+        match self.execution_frames.get_mut(index) {
+            Some(ExecutionFrame::TemporaryValue(slot)) => *slot = value,
+            _ => unreachable!("temporary value frame must exist"),
         }
     }
 }
@@ -1290,5 +1325,77 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
         assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn switch_and_while_keep_values_across_nested_calls() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let target = {value: 7};
+            let source = [target];
+            let matched = false;
+
+            function choose() {
+                let result = source[0];
+                target = null;
+                source = [];
+                return result;
+            }
+
+            switch (target) {
+                case choose():
+                    matched = true;
+                    break;
+            }
+
+            matched && target === null;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.execution_frames.is_empty());
+
+        let program = parse_program(
+            r#"
+            let counter = 0;
+            let remembered = {value: 7};
+
+            function next() {
+                counter = counter + 1;
+
+                if (counter === 2) {
+                    remembered = null;
+                    return false;
+                }
+
+                return true;
+            }
+
+            while (next()) {
+                remembered;
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(
+            interpreter.member_value(result, "value").unwrap(),
+            Value::Number(7.0)
+        );
+        assert!(interpreter.execution_frames.is_empty());
+
+        for source in ["switch (1) { case missing: break; }", "while (missing) {}"] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err());
+            assert!(interpreter.execution_frames.is_empty());
+        }
     }
 }

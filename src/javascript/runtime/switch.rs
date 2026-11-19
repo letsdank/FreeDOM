@@ -13,51 +13,58 @@ impl Interpreter {
     ) -> Result<Completion, JsError> {
         let value = self.evaluate_expression(discriminant)?;
 
-        let mut selected = None;
-        let mut default = None;
+        self.with_frame_value(value, |interpreter, frame_index| {
+            let mut selected = None;
+            let mut default = None;
 
-        for (index, case) in cases.iter().enumerate() {
-            match &case.test {
-                Some(test) => {
-                    let case_value = self.evaluate_expression(test)?;
+            for (index, case) in cases.iter().enumerate() {
+                match &case.test {
+                    Some(test) => {
+                        let case_value = interpreter.evaluate_expression(test)?;
 
-                    if Self::strictly_equals(&value, &case_value) {
-                        selected = Some(index);
-                        break;
+                        if Self::strictly_equals(interpreter.frame_value(frame_index), &case_value)
+                        {
+                            selected = Some(index);
+                            break;
+                        }
+                    }
+
+                    None => {
+                        default = Some(index);
                     }
                 }
-
-                None => {
-                    default = Some(index);
-                }
-            }
-        }
-
-        let Some(start) = selected.or(default) else {
-            return Ok(Completion::Normal(Value::Undefined));
-        };
-
-        let mut last = Value::Undefined;
-
-        for case in &cases[start..] {
-            if case.body.is_empty() {
-                continue;
             }
 
-            match self.execute(&case.body)? {
-                Completion::Normal(value) => {
-                    last = value;
+            let Some(start) = selected.or(default) else {
+                return Ok(Completion::Normal(Value::Undefined));
+            };
+
+            interpreter.set_frame_value(frame_index, Value::Undefined);
+
+            for case in &cases[start..] {
+                if case.body.is_empty() {
+                    continue;
                 }
 
-                Completion::Break => {
-                    return Ok(Completion::Normal(last));
-                }
+                match interpreter.execute(&case.body)? {
+                    Completion::Normal(value) => {
+                        interpreter.set_frame_value(frame_index, value);
+                    }
 
-                abrupt => return Ok(abrupt),
+                    Completion::Break => {
+                        return Ok(Completion::Normal(
+                            interpreter.frame_value(frame_index).clone(),
+                        ));
+                    }
+
+                    abrupt => return Ok(abrupt),
+                }
             }
-        }
 
-        Ok(Completion::Normal(last))
+            Ok(Completion::Normal(
+                interpreter.frame_value(frame_index).clone(),
+            ))
+        })
     }
 }
 
