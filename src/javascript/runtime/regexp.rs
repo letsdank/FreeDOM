@@ -8,30 +8,34 @@ use crate::javascript::{RegExpState, RegExpValue};
 
 impl Interpreter {
     pub(super) fn construct_regexp(&mut self, arguments: &[Expression]) -> Result<Value, JsError> {
-        let mut values = Vec::with_capacity(arguments.len());
+        self.with_temporary_values_scope(|interpreter, base| {
+            for argument in arguments {
+                let value = interpreter.evaluate_expression(argument)?;
 
-        for argument in arguments {
-            values.push(self.evaluate_expression(argument)?);
-        }
-
-        let pattern = match values.first() {
-            None | Some(Value::Undefined) => String::new(),
-
-            Some(Value::RegExp(_)) => {
-                return Err(JsError::unsupported(
-                    "RegExp construction from another RegExp is not implemented yet",
-                ));
+                interpreter.temporary_values.push(value);
             }
 
-            Some(value) => value.to_js_string(),
-        };
+            let values = &interpreter.temporary_values[base..];
 
-        let flags = match values.get(1) {
-            None | Some(Value::Undefined) => String::new(),
-            Some(value) => value.to_js_string(),
-        };
+            let pattern = match values.first() {
+                None | Some(Value::Undefined) => String::new(),
 
-        Self::create_regexp(&pattern, &flags)
+                Some(Value::RegExp(_)) => {
+                    return Err(JsError::unsupported(
+                        "RegExp construction from another RegExp is not implemented yet",
+                    ));
+                }
+
+                Some(value) => value.to_js_string(),
+            };
+
+            let flags = match values.get(1) {
+                None | Some(Value::Undefined) => String::new(),
+                Some(value) => value.to_js_string(),
+            };
+
+            Self::create_regexp(&pattern, &flags)
+        })
     }
 
     pub(super) fn create_regexp(pattern: &str, flags: &str) -> Result<Value, JsError> {

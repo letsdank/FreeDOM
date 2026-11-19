@@ -28,13 +28,25 @@ impl Interpreter {
         &mut self,
         value: &Value,
     ) -> Result<Vec<Value>, JsError> {
+        self.with_temporary_value(value.clone(), |interpreter, index| {
+            let value = interpreter.temporary_values[index].clone();
+
+            interpreter.create_list_from_rooted_array_like(&value)
+        })
+    }
+
+    fn create_list_from_rooted_array_like(&mut self, value: &Value) -> Result<Vec<Value>, JsError> {
         let length = match value {
             Value::Array(array) => array.borrow().values.len(),
 
             Value::Object(object) => {
                 let length = ordinary_property(object, "length")?;
 
-                let number = self.to_number(&length)?;
+                let number = self.with_temporary_value(length, |interpreter, index| {
+                    let length = interpreter.temporary_values[index].clone();
+
+                    interpreter.to_number(&length)
+                })?;
 
                 if number.is_nan() || number <= 0.0 {
                     0

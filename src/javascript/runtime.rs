@@ -1031,4 +1031,72 @@ mod tests {
             assert!(interpreter.pending_calls.is_empty());
         }
     }
+
+    #[test]
+    fn regexp_arguments_and_apply_length_conversion_restore_temporaries() {
+        let mut interpreter = Interpreter::new();
+
+        interpreter.temporary_values.push(Value::Number(77.0));
+
+        let program = parse_program(
+            r#"
+            let trace = '';
+
+            function pattern() {
+                trace = trace + 'p';
+                return 'a';
+            }
+
+            function flags() {
+                trace = trace + 'f';
+                return 'i';
+            }
+
+            function extra() {
+                trace = trace + 'e';
+                return 0;
+            }
+
+            let regexp = new RegExp(pattern(), flags(), extra());
+
+            let list = {
+                0: 7,
+                length: {
+                    valueOf: function() {
+                        list = null;
+                        return 1;
+                    }
+                }
+            };
+
+            function first(a) {
+                return a;
+            }
+
+            let result = first.apply(null, list);
+
+            regexp.test('A') &&
+                trace === 'pfe' &&
+                result === 7 &&
+                list === null;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+
+        for source in [
+            "new RegExp('a', missing);",
+            "new RegExo('a', 'z');",
+            "first.apply(null, {length: {valueOf: function() { throw 'error'; }}});",
+        ] {
+            let program = parse_program(source).unwrap();
+
+            assert!(interpreter.execute_script(&program).is_err());
+            assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
+        }
+    }
 }
