@@ -141,6 +141,10 @@ pub(super) enum Completion {
     Continue,
 }
 
+enum ExecutionFrame {
+    PendingCompletion(Result<Completion, JsError>),
+}
+
 struct ActiveCallFrame {
     // Retain the callee and its properties for the duration of the call.
     _callee: FunctionValue,
@@ -165,7 +169,7 @@ impl Completion {
 
 pub(super) struct Interpreter {
     variables: Bindings,
-    pending_script_results: Vec<Result<Completion, JsError>>,
+    execution_frames: Vec<ExecutionFrame>,
     document: Option<DocumentStorage>,
     cleanups: Vec<Cleanup>,
     function_locals: Vec<Vec<String>>,
@@ -399,7 +403,7 @@ impl Interpreter {
 
         Self {
             variables,
-            pending_script_results: Vec::new(),
+            execution_frames: Vec::new(),
             document: None,
             cleanups: Vec::new(),
             function_locals: Vec::new(),
@@ -472,7 +476,7 @@ impl Interpreter {
             }
         }
 
-        self.with_pending_script_result(result, |interpreter| {
+        let (result, ()) = self.with_pending_completion(result, |interpreter| {
             let checkpoint = interpreter.perform_microtask_checkpoint();
 
             if checkpoint.is_err() {
@@ -480,26 +484,28 @@ impl Interpreter {
             }
 
             checkpoint
-        })
+        })?;
+
+        result
     }
 
     // Pending completions are future GC roots, but this is not a GC safepoint yet.
-    fn with_pending_script_result(
+    fn with_pending_completion<T>(
         &mut self,
-        result: Result<Completion, JsError>,
-        operation: impl FnOnce(&mut Self) -> Result<(), JsError>,
-    ) -> Result<Completion, JsError> {
-        self.pending_script_results.push(result);
+        pending: Result<Completion, JsError>,
+        operation: impl FnOnce(&mut Self) -> Result<T, JsError>,
+    ) -> Result<(Result<Completion, JsError>, T), JsError> {
+        self.execution_frames
+            .push(ExecutionFrame::PendingCompletion(pending));
 
-        let checkpoint = operation(self);
+        let outcome = operation(self);
 
-        let result = self
-            .pending_script_results
+        let ExecutionFrame::PendingCompletion(pending) = self
+            .execution_frames
             .pop()
-            .expect("pending script result must exist");
+            .expect("pending completion frame must exist");
 
-        checkpoint?;
-        result
+        Ok((pending, outcome?))
     }
 
     fn consume_step(&mut self) -> Result<(), JsError> {
@@ -588,7 +594,7 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Completion, Interpreter};
+    use super::{Completion, ExecutionFrame, Interpreter};
     use crate::javascript::{JsError, JsErrorKind, Value, parse_program};
 
     #[test]
@@ -608,7 +614,7 @@ mod tests {
 
             assert!(matches!(error.kind, JsErrorKind::ResourceLimit));
             assert!(error.message.contains("execution budget"));
-            assert!(interpreter.pending_script_results.is_empty());
+            assert!(interpreter.execution_frames.is_empty());
 
             let next_program = parse_program("42;").unwrap();
 
@@ -650,34 +656,36 @@ mod tests {
     }
 
     #[test]
-    fn pending_script_results_restore_after_nested_errors() {
+    fn pending_completions_restore_after_nested_errors() {
         let mut interpreter = Interpreter::new();
         let original = Err(JsError::thrown(Value::Number(7.0)));
 
-        let result = interpreter.with_pending_script_result(original, |runtime| {
-            assert_eq!(runtime.pending_script_results.len(), 1);
+        let (result, ()) = interpreter
+            .with_pending_completion(original, |runtime| {
+                assert_eq!(runtime.execution_frames.len(), 1);
 
-            assert!(matches!(
-                &runtime.pending_script_results[0],
-                Err(JsError {
-                    kind: JsErrorKind::Thrown(Value::Number(7.0)),
-                    ..
-                })
-            ));
+                assert!(matches!(
+                    &runtime.execution_frames[0],
+                    ExecutionFrame::PendingCompletion(Err(JsError {
+                        kind: JsErrorKind::Thrown(Value::Number(7.0)),
+                        ..
+                    }))
+                ));
 
-            let nested = runtime.with_pending_script_result(
-                Ok(Completion::Normal(Value::Null)),
-                |runtime| {
-                    assert_eq!(runtime.pending_script_results.len(), 2);
-                    Err(JsError::resource_limit("test limit"))
-                },
-            );
+                let nested = runtime.with_pending_completion(
+                    Ok(Completion::Normal(Value::Null)),
+                    |runtime| {
+                        assert_eq!(runtime.execution_frames.len(), 2);
+                        Err::<(), _>(JsError::resource_limit("test limit"))
+                    },
+                );
 
-            assert!(nested.is_err());
-            assert_eq!(runtime.pending_script_results.len(), 1);
+                assert!(nested.is_err());
+                assert_eq!(runtime.execution_frames.len(), 1);
 
-            Ok(())
-        });
+                Ok(())
+            })
+            .unwrap();
 
         assert!(matches!(
             result,
@@ -687,7 +695,7 @@ mod tests {
             })
         ));
 
-        assert!(interpreter.pending_script_results.is_empty());
+        assert!(interpreter.execution_frames.is_empty());
     }
 
     #[test]
@@ -712,7 +720,7 @@ mod tests {
             Value::Number(2.0)
         );
 
-        assert!(interpreter.pending_script_results.is_empty());
+        assert!(interpreter.execution_frames.is_empty());
     }
 
     #[test]
@@ -1098,5 +1106,46 @@ mod tests {
             assert!(interpreter.execute_script(&program).is_err());
             assert_eq!(interpreter.temporary_values, vec![Value::Number(77.0)]);
         }
+    }
+
+    #[test]
+    fn finally_preserves_pending_values_and_unwinds_frames() {
+        let mut interpreter = Interpreter::new();
+
+        let program = parse_program(
+            r#"
+            let object = { value: 1 };
+
+            function run() {
+                try {
+                    return object;
+                } finally {
+                    try {
+                        object.value = 2;
+                    } finally {
+                        object.value = object.value + 1;
+                    }
+                }
+            }
+
+            run() === object && object.value === 3;
+            "#,
+        )
+        .unwrap();
+
+        let result = interpreter.execute_script(&program).unwrap().into_value();
+
+        assert_eq!(result, Value::Boolean(true));
+        assert!(interpreter.execution_frames.is_empty());
+
+        let program = parse_program("try { throw 1; } finally { throw 2; }").unwrap();
+        let error = interpreter.execute_script(&program).err().unwrap();
+
+        assert!(matches!(
+            error.kind,
+            JsErrorKind::Thrown(Value::Number(2.0))
+        ));
+
+        assert!(interpreter.execution_frames.is_empty());
     }
 }

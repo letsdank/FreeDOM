@@ -46,8 +46,11 @@ impl Interpreter {
         }
 
         if let Some(finally) = finally {
-            match self.execute(finally)? {
-                Completion::Normal(_) => {}
+            let (result, completion) =
+                self.with_pending_completion(result, |interpreter| interpreter.execute(finally))?;
+
+            match completion {
+                Completion::Normal(_) => return result,
                 abrupt => return Ok(abrupt),
             }
         }
