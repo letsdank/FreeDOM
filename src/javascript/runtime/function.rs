@@ -136,7 +136,11 @@ fn function_local_names(statements: &[Statement]) -> Vec<String> {
 }
 
 impl Interpreter {
-    fn call_function(&mut self, function: &UserFunction) -> Result<Value, JsError> {
+    fn call_function(
+        &mut self,
+        function: &UserFunction,
+        frame_index: usize,
+    ) -> Result<Value, JsError> {
         let body_locals = function_local_names(&function.body);
 
         if function.kind == FunctionKind::Ordinary
@@ -162,9 +166,7 @@ impl Interpreter {
                 .variables
                 .shadow(parameter.name.clone(), Value::Undefined);
 
-            self.active_call_frames
-                .last_mut()
-                .expect("call frame must exist")
+            self.active_call_frame_mut(frame_index)
                 .replaced_bindings
                 .push(previous);
             local_names.push(parameter.name.clone());
@@ -183,21 +185,14 @@ impl Interpreter {
                 0
             };
 
-            let arguments = self
-                .active_call_frames
-                .last()
-                .expect("call frame must exist")
-                .arguments
-                .clone();
+            let arguments = self.active_call_frame(frame_index).arguments.clone();
 
             let previous = self.variables.shadow(
                 "arguments".to_owned(),
                 Value::arguments(arguments.clone(), potentially_mapped),
             );
 
-            self.active_call_frames
-                .last_mut()
-                .expect("call frame must exist")
+            self.active_call_frame_mut(frame_index)
                 .replaced_bindings
                 .push(previous);
             local_names.push("arguments".to_owned());
@@ -208,18 +203,12 @@ impl Interpreter {
         let result = (|| -> Result<Completion, JsError> {
             for (index, parameter) in function.parameters.iter().enumerate() {
                 let value = if parameter.is_rest {
-                    let arguments = &self
-                        .active_call_frames
-                        .last()
-                        .expect("call frame must exist")
-                        .arguments;
+                    let arguments = &self.active_call_frame(frame_index).arguments;
 
                     Value::array(arguments.iter().skip(index).cloned().collect())
                 } else {
                     let argument = self
-                        .active_call_frames
-                        .last()
-                        .expect("call frame must exist")
+                        .active_call_frame(frame_index)
                         .arguments
                         .get(index)
                         .cloned()
@@ -246,9 +235,7 @@ impl Interpreter {
 
                 let previous = self.variables.shadow(name.clone(), Value::Undefined);
 
-                self.active_call_frames
-                    .last_mut()
-                    .expect("call frame must exist")
+                self.active_call_frame_mut(frame_index)
                     .replaced_bindings
                     .push(previous);
                 local_names.push(name);
@@ -306,12 +293,14 @@ impl Interpreter {
         }
 
         let previous = self.variables.install_captures(function.captures());
+        let frame_index = self.execution_frames.len();
 
-        self.active_call_frames.push(super::ActiveCallFrame {
-            _callee: function.clone(),
-            arguments,
-            replaced_bindings: previous,
-        });
+        self.execution_frames
+            .push(super::ExecutionFrame::ActiveCall(super::ActiveCallFrame {
+                _callee: function.clone(),
+                arguments,
+                replaced_bindings: previous,
+            }));
 
         self.capture_frames.push(function.captures().clone());
 
@@ -320,21 +309,19 @@ impl Interpreter {
         {
             let previous = self.variables.shadow("this".to_owned(), receiver);
 
-            self.active_call_frames
-                .last_mut()
-                .expect("call frame must exist")
+            self.active_call_frame_mut(frame_index)
                 .replaced_bindings
                 .push(previous);
         }
 
-        let result = self.call_function(function.definition());
+        let result = self.call_function(function.definition(), frame_index);
 
         self.capture_frames.pop();
 
-        let frame = self
-            .active_call_frames
-            .pop()
-            .expect("call frame must exist");
+        let frame = match self.execution_frames.pop() {
+            Some(super::ExecutionFrame::ActiveCall(frame)) => frame,
+            _ => unreachable!("active call frame must exist"),
+        };
 
         for binding in frame.replaced_bindings.into_iter().rev() {
             self.variables.restore(binding);

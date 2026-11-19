@@ -148,6 +148,7 @@ enum ExecutionFrame {
     TemporaryValues(Vec<Value>),
     Reference(reference::Reference),
     PendingCall(PendingCall),
+    ActiveCall(ActiveCallFrame),
 }
 
 struct ActiveCallFrame {
@@ -198,7 +199,6 @@ pub(super) struct Interpreter {
     execution_limit: usize,
     steps_remaining: usize,
     execution_depth: usize,
-    active_call_frames: Vec<ActiveCallFrame>,
 }
 
 impl Interpreter {
@@ -429,7 +429,6 @@ impl Interpreter {
             execution_limit: DEFAULT_EXECUTION_STEPS,
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
-            active_call_frames: Vec::new(),
         }
     }
 
@@ -694,6 +693,20 @@ impl Interpreter {
             .first_mut()
             .expect("temporary value must exist") = value;
     }
+
+    fn active_call_frame(&self, index: usize) -> &ActiveCallFrame {
+        match self.execution_frames.get(index) {
+            Some(ExecutionFrame::ActiveCall(frame)) => frame,
+            _ => unreachable!("active call frame must exist"),
+        }
+    }
+
+    fn active_call_frame_mut(&mut self, index: usize) -> &mut ActiveCallFrame {
+        match self.execution_frames.get_mut(index) {
+            Some(ExecutionFrame::ActiveCall(frame)) => frame,
+            _ => unreachable!("active call frame must exist"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -844,12 +857,12 @@ mod tests {
         let result = interpreter.execute_script(&program).unwrap().into_value();
 
         assert_eq!(result, Value::Boolean(true));
-        assert!(interpreter.active_call_frames.is_empty());
+        assert!(interpreter.execution_frames.is_empty());
 
         let program = parse_program("function tail(x = missing) {} fail();").unwrap();
 
         assert!(interpreter.execute_script(&program).is_err());
-        assert!(interpreter.active_call_frames.is_empty());
+        assert!(interpreter.execution_frames.is_empty());
 
         let program = parse_program("x;").unwrap();
 
