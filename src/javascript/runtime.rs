@@ -149,6 +149,7 @@ enum ExecutionFrame {
     Reference(reference::Reference),
     PendingCall(PendingCall),
     ActiveCall(ActiveCallFrame),
+    Microtask(microtasks::Microtask),
 }
 
 struct ActiveCallFrame {

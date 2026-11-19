@@ -41,12 +41,14 @@ struct PromiseState {
     reactions: Vec<Reaction>,
 }
 
+#[derive(Clone)]
 struct Reaction {
     on_fulfilled: Option<Value>,
     on_rejected: Option<Value>,
     target: PromiseHandle,
 }
 
+#[derive(Clone)]
 pub(super) struct PromiseReactionJob {
     outcome: Outcome,
     reaction: Reaction,

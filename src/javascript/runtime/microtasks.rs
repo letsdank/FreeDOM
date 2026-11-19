@@ -7,9 +7,10 @@
 //! An engine failure aborts the checkpoint and discards pending microtasks.
 
 use super::promise::PromiseReactionJob;
-use super::{Interpreter, JsError, Value};
+use super::{ExecutionFrame, Interpreter, JsError, Value};
 use crate::javascript::JsErrorKind;
 
+#[derive(Clone)]
 pub(super) enum Microtask {
     Callback(Value),
     PromiseReaction(PromiseReactionJob),
@@ -53,13 +54,17 @@ impl Interpreter {
         let result = (|| {
             while let Some(job) = self.microtasks.pop_front() {
                 self.consume_step()?;
-                let job_result = match job {
-                    Microtask::Callback(callback) => {
-                        self.dispatch_call(callback, None, Vec::new()).map(|_| ())
-                    }
+                let job_result = self.with_active_microtask(job, |interpreter, index| {
+                    match interpreter.active_microtask(index).clone() {
+                        Microtask::Callback(callback) => interpreter
+                            .dispatch_call(callback, None, Vec::new())
+                            .map(|_| ()),
 
-                    Microtask::PromiseReaction(reaction) => self.run_promise_reaction(reaction),
-                };
+                        Microtask::PromiseReaction(reaction) => {
+                            interpreter.run_promise_reaction(reaction)
+                        }
+                    }
+                });
 
                 if let Err(error) = job_result {
                     match error.kind {
@@ -79,10 +84,37 @@ impl Interpreter {
 
         result
     }
+
+    fn with_active_microtask<T>(
+        &mut self,
+        job: Microtask,
+        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.execution_frames.len();
+
+        self.execution_frames.push(ExecutionFrame::Microtask(job));
+
+        let result = operation(self, index);
+
+        match self.execution_frames.pop() {
+            Some(ExecutionFrame::Microtask(_)) => {}
+            _ => unreachable!("microtask frame must exist"),
+        }
+
+        result
+    }
+
+    fn active_microtask(&self, index: usize) -> &Microtask {
+        match self.execution_frames.get(index) {
+            Some(ExecutionFrame::Microtask(job)) => job,
+            _ => unreachable!("microtask frame must exist"),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{Interpreter, JsError, Microtask};
     use crate::javascript::{DocumentScriptSession, DocumentState, JsErrorKind, Value, evaluate};
 
     #[test]
@@ -292,5 +324,27 @@ mod tests {
         session.evaluate("0;", &mut document).unwrap();
 
         assert_eq!(document.title, "before");
+    }
+
+    #[test]
+    fn active_microtask_survives_nested_frames_and_unwinds_on_error() {
+        let mut interpreter = Interpreter::new();
+        let job = Microtask::Callback(Value::Number(7.0));
+
+        let result = interpreter.with_active_microtask(job, |runtime, index| {
+            runtime.with_frame_value(Value::Number(9.0), |runtime, value_index| {
+                assert_eq!(runtime.frame_value(value_index), &Value::Number(9.0));
+
+                assert!(matches!(
+                    runtime.active_microtask(index),
+                    Microtask::Callback(Value::Number(7.0))
+                ));
+
+                Err::<(), _>(JsError::resource_limit("test limit"))
+            })
+        });
+
+        assert!(result.is_err());
+        assert!(interpreter.execution_frames.is_empty());
     }
 }
