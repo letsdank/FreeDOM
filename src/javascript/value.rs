@@ -295,23 +295,8 @@ impl ObjectState {
         }
     }
 
-    /// Visits immediate references without traversing their children.
-    /// The callback must not mutate the visited graph or re-enter JavaScript.
     #[allow(dead_code)]
-    pub(super) fn visit_references(
-        object: &ObjectStorage,
-        visit: &mut impl FnMut(RuntimeRoot<'_>),
-    ) -> Result<(), RootVisitError> {
-        let state = object
-            .try_borrow()
-            .map_err(|_| RootVisitError::ObjectBorrowed)?;
-
-        state.visit_contents(visit);
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn visit_contents(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+    pub(super) fn visit_contents(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
         for (_, value) in self.ordinary.properties.iter() {
             visit(RuntimeRoot::Value(value));
         }
@@ -1081,16 +1066,17 @@ mod tests {
         let mut saw_array = false;
         let mut saw_prototype = false;
 
-        ObjectState::visit_references(&object, &mut |root| match root {
-            RuntimeRoot::Value(Value::Array(value)) => {
-                saw_array = Rc::ptr_eq(value, &array);
-            }
-            RuntimeRoot::Object(value) => {
-                saw_prototype = Rc::ptr_eq(value, &prototype);
-            }
-            _ => {}
-        })
-        .unwrap();
+        HostRoots::default()
+            .visit_ordinary_references(&object, &mut |root| match root {
+                RuntimeRoot::Value(Value::Array(value)) => {
+                    saw_array = Rc::ptr_eq(value, &array);
+                }
+                RuntimeRoot::Object(value) => {
+                    saw_prototype = Rc::ptr_eq(value, &prototype);
+                }
+                _ => {}
+            })
+            .unwrap();
 
         assert!(saw_array && saw_prototype);
 
@@ -1112,7 +1098,7 @@ mod tests {
             let _object_guard = object.borrow_mut();
 
             assert_eq!(
-                ObjectState::visit_references(&object, &mut |_| {}),
+                HostRoots::default().visit_ordinary_references(&object, &mut |_| {}),
                 Err(RootVisitError::ObjectBorrowed)
             );
 
@@ -1210,18 +1196,19 @@ mod tests {
 
         let mut saw_cause = false;
 
-        ObjectState::visit_references(&error.properties, &mut |root| match root {
-            RuntimeRoot::Value(Value::Object(found)) => {
-                saw_cause = Rc::ptr_eq(found, &object);
-            }
+        HostRoots::default()
+            .visit_ordinary_references(&error.properties, &mut |root| match root {
+                RuntimeRoot::Value(Value::Object(found)) => {
+                    saw_cause = Rc::ptr_eq(found, &object);
+                }
 
-            RuntimeRoot::Object(found) => {
-                saw_prototype = Rc::ptr_eq(found, &prototype);
-            }
+                RuntimeRoot::Object(found) => {
+                    saw_prototype = Rc::ptr_eq(found, &prototype);
+                }
 
-            _ => {}
-        })
-        .unwrap();
+                _ => {}
+            })
+            .unwrap();
 
         assert!(saw_cause && saw_prototype);
     }
@@ -1390,12 +1377,13 @@ mod tests {
 
         let mut saw_arguments = false;
 
-        ObjectState::visit_references(&object, &mut |root| {
-            if let RuntimeRoot::Value(Value::Arguments(found)) = root {
-                saw_arguments = found == cyclic_arguments;
-            }
-        })
-        .unwrap();
+        HostRoots::default()
+            .visit_ordinary_references(&object, &mut |root| {
+                if let RuntimeRoot::Value(Value::Arguments(found)) = root {
+                    saw_arguments = found == cyclic_arguments;
+                }
+            })
+            .unwrap();
 
         assert!(saw_object && saw_arguments);
         assert_ne!(cyclic_arguments, arguments_node);

@@ -570,16 +570,18 @@ mod tests {
             unreachable!();
         };
 
-        object.borrow_mut().promise = Some(promise.clone());
+        let owner = crate::javascript::HostRoots::default();
+        owner.set_ordinary_promise(&object, promise.clone());
 
         let mut found_promise = false;
 
-        crate::javascript::value::ObjectState::visit_references(&object, &mut |root| {
-            if let RuntimeRoot::Promise(found) = root {
-                found_promise = found == &promise;
-            }
-        })
-        .unwrap();
+        owner
+            .visit_ordinary_references(&object, &mut |root| {
+                if let RuntimeRoot::Promise(found) = root {
+                    found_promise = found == &promise;
+                }
+            })
+            .unwrap();
 
         assert!(found_promise);
 

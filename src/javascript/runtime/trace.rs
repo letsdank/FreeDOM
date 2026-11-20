@@ -8,7 +8,8 @@ use super::{
     ArgumentsValue, ArrayStorage, DocumentStorage, FunctionValue, Interpreter, ObjectStorage,
     RegExpValue, RootVisitError, RuntimeRoot, Value, promise::PromiseHandle,
 };
-use crate::javascript::value::{ArrayState, ObjectState};
+use crate::javascript::value::ArrayState;
+use crate::javascript::{HostRoots, OrdinaryObjectIdentity};
 
 #[derive(Clone)]
 enum TraceNode {
@@ -26,7 +27,7 @@ enum TraceNode {
 enum NodeIdentity {
     Function(*const ()),
     Promise(*const ()),
-    Object(*const ()),
+    Object(OrdinaryObjectIdentity),
     Array(*const ()),
     Document(*const ()),
     RegExp(*const ()),
@@ -66,12 +67,14 @@ impl From<RuntimeRoot<'_>> for TraceNode {
 }
 
 impl TraceNode {
-    fn identity(&self) -> Option<NodeIdentity> {
+    fn identity(&self, owner: &HostRoots) -> Option<NodeIdentity> {
         match self {
             Self::Value(_) => None,
             Self::Function(value) => Some(NodeIdentity::Function(value.trace_identity())),
             Self::Promise(value) => Some(NodeIdentity::Promise(value.trace_identity())),
-            Self::Object(value) => Some(NodeIdentity::Object(Rc::as_ptr(value).cast())),
+            Self::Object(value) => {
+                Some(NodeIdentity::Object(owner.ordinary_object_identity(value)))
+            }
             Self::Array(value) => Some(NodeIdentity::Array(Rc::as_ptr(value).cast())),
             Self::Document(value) => Some(NodeIdentity::Document(Rc::as_ptr(value).cast())),
             Self::RegExp(value) => Some(NodeIdentity::RegExp(Rc::as_ptr(&value.inner).cast())),
@@ -118,7 +121,7 @@ impl Interpreter {
         let mut report = TraceReport::default();
 
         while let Some(node) = pending.pop() {
-            if let Some(identity) = node.identity() {
+            if let Some(identity) = node.identity(&self.host_roots) {
                 if !seen.insert(identity) {
                     continue;
                 }
@@ -132,7 +135,9 @@ impl Interpreter {
                 TraceNode::Value(value) => value.visit_references(&mut enqueue)?,
                 TraceNode::Function(function) => function.visit_references(&mut enqueue)?,
                 TraceNode::Promise(promise) => promise.visit_references(&mut enqueue)?,
-                TraceNode::Object(object) => ObjectState::visit_references(object, &mut enqueue)?,
+                TraceNode::Object(object) => self
+                    .host_roots
+                    .visit_ordinary_references(object, &mut enqueue)?,
                 TraceNode::Array(array) => ArrayState::visit_references(array, &mut enqueue)?,
                 TraceNode::Document(_) => {}
                 TraceNode::RegExp(regexp) => regexp.visit_references(&mut enqueue)?,
@@ -191,6 +196,9 @@ mod tests {
         interpreter
             .variables
             .insert("regexp_alias".into(), Value::RegExp(regexp.clone()));
+        interpreter
+            .variables
+            .insert("object_alias".into(), Value::Object(object.clone()));
         assert_eq!(interpreter.trace_when_quiescent().unwrap(), first);
         let host_value = interpreter.export_value(Value::array(vec![]));
         assert_eq!(
@@ -211,6 +219,13 @@ mod tests {
             assert_eq!(
                 interpreter.trace_when_quiescent(),
                 Err(DiagnosticTraceError::Root(RootVisitError::ArrayBorrowed))
+            );
+        }
+        {
+            let _guard = object.borrow_mut();
+            assert_eq!(
+                interpreter.trace_when_quiescent(),
+                Err(DiagnosticTraceError::Root(RootVisitError::ObjectBorrowed))
             );
         }
         object.borrow_mut().set("cycle".into(), Value::Undefined);

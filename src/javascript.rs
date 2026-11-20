@@ -260,6 +260,10 @@ struct HostRoot {
     _owner: Rc<HostRoots>,
 }
 
+// Valid only while the corresponding Rc-backed object remains alive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct OrdinaryObjectIdentity(*const ());
+
 impl HostRoots {
     // This allocation boundary still uses Rc-backed storage until heap migration.
     fn create_ordinary_object(
@@ -313,6 +317,26 @@ impl HostRoots {
         right: &value::ObjectStorage,
     ) -> bool {
         Rc::ptr_eq(left, right)
+    }
+
+    #[allow(dead_code)]
+    fn ordinary_object_identity(&self, object: &value::ObjectStorage) -> OrdinaryObjectIdentity {
+        OrdinaryObjectIdentity(Rc::as_ptr(object).cast())
+    }
+
+    /// Visits outgoing references while the current Rc-backed storage is borrowed.
+    /// The visitor must not mutate the graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    fn visit_ordinary_references(
+        &self,
+        object: &value::ObjectStorage,
+        visit: &mut impl FnMut(runtime::RuntimeRoot<'_>),
+    ) -> Result<(), runtime::RootVisitError> {
+        let state = object
+            .try_borrow()
+            .map_err(|_| runtime::RootVisitError::ObjectBorrowed)?;
+        state.visit_contents(visit);
+        Ok(())
     }
 
     fn set_ordinary_promise(
