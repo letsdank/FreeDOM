@@ -155,12 +155,13 @@ impl Interpreter {
                 }
             }
 
+            // Keep callback results rooted while allocating the result array.
             let mapped = present
                 .into_iter()
                 .zip(
-                    interpreter
-                        .frame_values_mut(frame_index)
-                        .drain(RESULTS_START..),
+                    interpreter.frame_values(frame_index)[RESULTS_START..]
+                        .iter()
+                        .cloned(),
                 )
                 .map(|(present, value)| present.then_some(value))
                 .collect();
@@ -255,6 +256,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+
+        let objects = evaluate(
+            r#"
+                let source = [{ n: 1 }, { n: 2 }];
+                let mapped = source.map(function(value, index) {
+                    if (index === 0) { source = []; }
+                    return { nested: [value] };
+                });
+                mapped[0].nested[0].n === 1 && mapped[1].nested[0].n === 2;
+            "#,
+        )
+        .unwrap();
+        assert_eq!(objects, Value::Boolean(true));
     }
 
     #[test]

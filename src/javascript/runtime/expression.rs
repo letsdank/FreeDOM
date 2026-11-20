@@ -85,11 +85,10 @@ impl Interpreter {
                         interpreter.frame_values_mut(base).push(value);
                     }
 
-                    let values = interpreter.frame_values_mut(base).drain(..);
-
+                    // Keep the elements rooted until the array has been allocated.
                     let slots = expressions
                         .iter()
-                        .zip(values)
+                        .zip(interpreter.frame_values(base).iter().cloned())
                         .map(|(expression, value)| expression.as_ref().map(|_| value))
                         .collect();
 
@@ -105,10 +104,11 @@ impl Interpreter {
                         interpreter.frame_values_mut(base).push(value);
                     }
 
+                    // Keep property values rooted until object allocation finishes.
                     let values: Vec<_> = properties
                         .iter()
                         .map(|(name, _)| name.clone())
-                        .zip(interpreter.frame_values_mut(base).drain(..))
+                        .zip(interpreter.frame_values(base).iter().cloned())
                         .collect();
 
                     Ok(interpreter.host_roots.create_ordinary_object(
