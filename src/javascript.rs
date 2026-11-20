@@ -34,11 +34,7 @@ mod parser;
 mod json;
 
 #[cfg(test)]
-pub fn parse_json(source: &str) -> Result<Value, HostError> {
-    let roots = Rc::new(HostRoots::default());
-
-    json::parse_json(source).map_err(|error| HostError::from_internal(error, &roots))
-}
+pub(crate) use json::{JsonValue, parse_json};
 
 use parser::parse_program;
 

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fs};
 
 use crate::{
-    javascript::{Value, parse_json},
+    javascript::{JsonValue, parse_json},
     url::Url,
 };
 
@@ -26,7 +26,7 @@ fn run_urltestdata(source: &str) -> Result<WptReport, String> {
         .as_array()
         .ok_or_else(|| "WPT URL fixture root must be an array".to_owned())?;
 
-    let cases = collect_cases(&records)?;
+    let cases = collect_cases(records)?;
 
     let mut report = WptReport {
         total: cases.len(),
@@ -79,7 +79,7 @@ fn run_urltestdata(source: &str) -> Result<WptReport, String> {
     Ok(report)
 }
 
-fn collect_cases(records: &[Value]) -> Result<Vec<UrlCase>, String> {
+fn collect_cases(records: &[JsonValue]) -> Result<Vec<UrlCase>, String> {
     let mut cases = Vec::new();
 
     for (fixture_index, record) in records.iter().enumerate() {
@@ -87,16 +87,16 @@ fn collect_cases(records: &[Value]) -> Result<Vec<UrlCase>, String> {
             continue;
         };
 
-        let Some(input) = object_string(&object, "input") else {
+        let Some(input) = object_string(object, "input") else {
             continue;
         };
 
         let expected_failure = object
             .get("failure")
-            .and_then(Value::as_bool)
+            .and_then(JsonValue::as_bool)
             .unwrap_or(false);
 
-        let expected_href = object_string(&object, "href").map(str::to_owned);
+        let expected_href = object_string(object, "href").map(str::to_owned);
 
         if !expected_failure && expected_href.is_none() {
             return Err(format!(
@@ -107,7 +107,7 @@ fn collect_cases(records: &[Value]) -> Result<Vec<UrlCase>, String> {
         cases.push(UrlCase {
             fixture_index,
             input: input.to_owned(),
-            base: object_string(&object, "base").map(str::to_owned),
+            base: object_string(object, "base").map(str::to_owned),
             expected_href,
             expected_failure,
         });
@@ -116,8 +116,8 @@ fn collect_cases(records: &[Value]) -> Result<Vec<UrlCase>, String> {
     Ok(cases)
 }
 
-fn object_string<'a>(object: &'a HashMap<String, Value>, name: &str) -> Option<&'a str> {
-    object.get(name).and_then(Value::as_string)
+fn object_string<'a>(object: &'a HashMap<String, JsonValue>, name: &str) -> Option<&'a str> {
+    object.get(name).and_then(JsonValue::as_string)
 }
 
 fn fixture_path() -> String {

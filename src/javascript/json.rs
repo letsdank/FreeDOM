@@ -8,9 +8,50 @@
 use super::token_cursor::TokenCursor;
 use std::collections::HashMap;
 
-use super::{JsError, Token, TokenKind, Value, tokenize};
+use super::{JsError, Token, TokenKind, tokenize};
 
-pub fn parse_json(source: &str) -> Result<Value, JsError> {
+/// Data parsed from fixtures, independent of JavaScript object storage.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum JsonValue {
+    Null,
+    Boolean(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<JsonValue>),
+    Object(HashMap<String, JsonValue>),
+}
+
+impl JsonValue {
+    pub(crate) fn as_array(&self) -> Option<&[JsonValue]> {
+        match self {
+            Self::Array(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_object(&self) -> Option<&HashMap<String, JsonValue>> {
+        match self {
+            Self::Object(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_string(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Boolean(value) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn parse_json(source: &str) -> Result<JsonValue, JsError> {
     let tokens = tokenize(source).map_err(|error| JsError::syntax(error.offset, error.message))?;
 
     JsonParser::new(tokens).parse()
@@ -27,7 +68,7 @@ impl JsonParser {
         }
     }
 
-    fn parse(&mut self) -> Result<Value, JsError> {
+    fn parse(&mut self) -> Result<JsonValue, JsError> {
         let value = self.parse_value()?;
 
         if !self.cursor.check(&TokenKind::EndOfFile) {
@@ -40,15 +81,15 @@ impl JsonParser {
         Ok(value)
     }
 
-    fn parse_value(&mut self) -> Result<Value, JsError> {
+    fn parse_value(&mut self) -> Result<JsonValue, JsError> {
         let token = self.cursor.advance();
 
         match token.kind {
-            TokenKind::String(value) => Ok(Value::String(value)),
-            TokenKind::Number(value) => Ok(Value::Number(value)),
-            TokenKind::True => Ok(Value::Boolean(true)),
-            TokenKind::False => Ok(Value::Boolean(false)),
-            TokenKind::Null => Ok(Value::Null),
+            TokenKind::String(value) => Ok(JsonValue::String(value)),
+            TokenKind::Number(value) => Ok(JsonValue::Number(value)),
+            TokenKind::True => Ok(JsonValue::Boolean(true)),
+            TokenKind::False => Ok(JsonValue::Boolean(false)),
+            TokenKind::Null => Ok(JsonValue::Null),
 
             TokenKind::LeftBracket => self.parse_array(),
             TokenKind::LeftBrace => self.parse_object(),
@@ -62,11 +103,11 @@ impl JsonParser {
         }
     }
 
-    fn parse_array(&mut self) -> Result<Value, JsError> {
+    fn parse_array(&mut self) -> Result<JsonValue, JsError> {
         let mut values = Vec::new();
 
         if self.cursor.consume_optional(&TokenKind::RightBracket) {
-            return Ok(Value::array(values));
+            return Ok(JsonValue::Array(values));
         }
 
         loop {
@@ -88,15 +129,15 @@ impl JsonParser {
                 "expected ',' or ']' after JSON array item",
             )?;
 
-            return Ok(Value::array(values));
+            return Ok(JsonValue::Array(values));
         }
     }
 
-    fn parse_object(&mut self) -> Result<Value, JsError> {
+    fn parse_object(&mut self) -> Result<JsonValue, JsError> {
         let mut values = HashMap::new();
 
         if self.cursor.consume_optional(&TokenKind::RightBrace) {
-            return Ok(Value::object(values));
+            return Ok(JsonValue::Object(values));
         }
 
         loop {
@@ -131,14 +172,14 @@ impl JsonParser {
                 "expected ',' or '}' after JSON object property",
             )?;
 
-            return Ok(Value::object(values));
+            return Ok(JsonValue::Object(values));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, parse_json};
+    use super::{JsonValue, parse_json};
 
     #[test]
     fn reads_supported_nested_fixture_values() {
@@ -149,16 +190,20 @@ mod tests {
 
         assert_eq!(
             object.get("name"),
-            Some(&Value::String("example".to_owned()))
+            Some(&JsonValue::String("example".to_owned()))
         );
 
         assert_eq!(
             object.get("items").unwrap().as_array().unwrap(),
-            vec![Value::Number(1.0), Value::Boolean(true), Value::Null]
+            vec![
+                JsonValue::Number(1.0),
+                JsonValue::Boolean(true),
+                JsonValue::Null
+            ]
         );
 
         let child = object.get("child").unwrap().as_object().unwrap();
-        assert_eq!(child.get("ok"), Some(&Value::Boolean(false)));
+        assert_eq!(child.get("ok"), Some(&JsonValue::Boolean(false)));
     }
 
     #[test]
