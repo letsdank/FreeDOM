@@ -5,7 +5,7 @@
 //! Generic array-like receivers, object coercion and custom species are incomplete.
 
 use super::{Interpreter, JsError, Value};
-use crate::javascript::value::{ObjectState, PropertyLookup};
+use crate::javascript::value::PropertyLookup;
 
 impl Interpreter {
     fn slice_index(&mut self, value: &Value, length: usize) -> Result<usize, JsError> {
@@ -88,7 +88,10 @@ impl Interpreter {
                     match Self::array_get(array.clone(), &key) {
                         Some(value) => Some(value),
 
-                        None => match ObjectState::lookup(&self.object_prototype, &key) {
+                        None => match self
+                            .host_roots
+                            .lookup_ordinary_property(&self.object_prototype, &key)
+                        {
                             PropertyLookup::Found(value) => Some(value),
 
                             PropertyLookup::Absent => None,

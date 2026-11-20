@@ -7,7 +7,7 @@
 
 use super::{Interpreter, JsError, Value};
 use crate::javascript::FunctionKind;
-use crate::javascript::value::{ObjectState, PropertyLookup};
+use crate::javascript::value::PropertyLookup;
 
 impl Interpreter {
     pub(super) fn array_to_string(&mut self, receiver: Option<Value>) -> Result<Value, JsError> {
@@ -16,7 +16,8 @@ impl Interpreter {
         let join = match &receiver {
             Value::Array(array) => self.array_property(array.clone(), "join"),
 
-            Value::Object(object) => match ObjectState::lookup(object, "join") {
+            Value::Object(object) => match self.host_roots.lookup_ordinary_property(object, "join")
+            {
                 PropertyLookup::Found(value) => value,
 
                 PropertyLookup::Absent => Value::Undefined,

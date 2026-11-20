@@ -90,7 +90,7 @@ impl Interpreter {
 
             BinaryOperator::Instanceof => self.evaluate_instanceof(left, right),
 
-            BinaryOperator::In => Self::evaluate_in(left, right),
+            BinaryOperator::In => self.evaluate_in(left, right),
         }
     }
 

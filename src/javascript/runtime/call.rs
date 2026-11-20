@@ -25,7 +25,7 @@ impl Interpreter {
             ));
         };
 
-        let keys = object.borrow().keys();
+        let keys = self.host_roots.ordinary_own_keys(object);
 
         Ok(Value::array(keys.into_iter().map(Value::String).collect()))
     }
@@ -114,7 +114,7 @@ impl Interpreter {
             Value::NativeFunction(NativeFunction::ObjectCreate) => self.object_create(values),
 
             Value::NativeFunction(NativeFunction::ObjectHasOwnProperty) => {
-                Self::object_has_own_property(receiver, values)
+                self.object_has_own_property(receiver, values)
             }
 
             Value::NativeFunction(NativeFunction::ObjectToString) => {
@@ -171,7 +171,7 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ErrorConstructor) => self.construct_error(values),
 
-            Value::NativeFunction(NativeFunction::ErrorToString) => Self::error_to_string(receiver),
+            Value::NativeFunction(NativeFunction::ErrorToString) => self.error_to_string(receiver),
 
             Value::NativeFunction(NativeFunction::TypeErrorConstructor) => {
                 self.construct_error_with_prototype(values, self.type_error_prototype.clone())

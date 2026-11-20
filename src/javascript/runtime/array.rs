@@ -310,7 +310,10 @@ impl Interpreter {
             return value;
         }
 
-        match crate::javascript::value::ObjectState::lookup(&self.object_prototype, name) {
+        match self
+            .host_roots
+            .lookup_ordinary_property(&self.object_prototype, name)
+        {
             crate::javascript::value::PropertyLookup::Found(value) => value,
 
             crate::javascript::value::PropertyLookup::Absent

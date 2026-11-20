@@ -5,10 +5,10 @@
 //! Built-in prototypes and general ToPropertyKey conversion are not implemented.
 
 use super::{Interpreter, JsError, Value};
-use crate::javascript::value::{ObjectState, PropertyLookup};
+use crate::javascript::value::PropertyLookup;
 
 impl Interpreter {
-    pub(super) fn evaluate_in(key: Value, target: Value) -> Result<Value, JsError> {
+    pub(super) fn evaluate_in(&self, key: Value, target: Value) -> Result<Value, JsError> {
         match target {
             Value::Undefined
             | Value::Null
@@ -25,7 +25,7 @@ impl Interpreter {
                     ));
                 };
 
-                match ObjectState::lookup(&object, &key) {
+                match self.host_roots.lookup_ordinary_property(&object, &key) {
                     PropertyLookup::Found(_) => Ok(Value::Boolean(true)),
 
                     PropertyLookup::Absent => Ok(Value::Boolean(false)),

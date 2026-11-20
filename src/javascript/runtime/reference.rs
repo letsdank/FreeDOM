@@ -99,7 +99,8 @@ impl Interpreter {
 
                 Value::Object(values) => {
                     if !self.set_canvas_property(&values, &property, &value)? {
-                        values.borrow_mut().set(property, value);
+                        self.host_roots
+                            .write_ordinary_property(&values, property, value);
                     }
 
                     Ok(())

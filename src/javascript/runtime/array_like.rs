@@ -6,24 +6,22 @@
 //! Getters, object-to-primitive conversion and other object kinds are incomplete.
 
 use super::{Interpreter, JsError, ObjectStorage, Value};
-use crate::javascript::value::{ObjectState, PropertyLookup};
+use crate::javascript::value::PropertyLookup;
 
 // This implementation limit avoids unbounded argument allocation.
 const MAX_ARGUMENTS: usize = 65_536;
 
-fn ordinary_property(object: &ObjectStorage, name: &str) -> Result<Value, JsError> {
-    match ObjectState::lookup(object, name) {
-        PropertyLookup::Found(value) => Ok(value),
-
-        PropertyLookup::Absent => Ok(Value::Undefined),
-
-        PropertyLookup::Unknown => Err(JsError::unsupported(
-            "array-like property lookup reached an unimplemented prototype",
-        )),
-    }
-}
-
 impl Interpreter {
+    fn ordinary_property(&self, object: &ObjectStorage, name: &str) -> Result<Value, JsError> {
+        match self.host_roots.lookup_ordinary_property(object, name) {
+            PropertyLookup::Found(value) => Ok(value),
+            PropertyLookup::Absent => Ok(Value::Undefined),
+            PropertyLookup::Unknown => Err(JsError::unsupported(
+                "array-like property lookup reached an unimplemented prototype",
+            )),
+        }
+    }
+
     pub(super) fn create_list_from_array_like(
         &mut self,
         value: &Value,
@@ -40,7 +38,7 @@ impl Interpreter {
             Value::Array(array) => array.borrow().values.len(),
 
             Value::Object(object) => {
-                let length = ordinary_property(object, "length")?;
+                let length = self.ordinary_property(object, "length")?;
 
                 let number = self.with_frame_value(length, |interpreter, index| {
                     let length = interpreter.frame_value(index).clone();
@@ -94,7 +92,7 @@ impl Interpreter {
             let value = match value {
                 Value::Array(array) => self.array_property(array.clone(), &name),
 
-                Value::Object(object) => ordinary_property(object, &name)?,
+                Value::Object(object) => self.ordinary_property(object, &name)?,
 
                 Value::Arguments(arguments) => arguments.get_index(index)?,
 

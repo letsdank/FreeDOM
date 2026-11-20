@@ -7,7 +7,7 @@
 
 use super::{ElementMethod, Interpreter, JsError, NativeFunction, TestContextMethod, Value};
 use crate::javascript::DocumentMethod;
-use crate::javascript::value::{ObjectState, PropertyLookup};
+use crate::javascript::value::PropertyLookup;
 
 impl Interpreter {
     pub(super) fn member_value(&self, object: Value, property: &str) -> Result<Value, JsError> {
@@ -74,11 +74,13 @@ impl Interpreter {
                 Ok(Value::Object(self.reference_error_prototype.clone()))
             }
 
-            (Value::Object(values), property) => Ok(match ObjectState::lookup(&values, property) {
-                PropertyLookup::Found(value) => value,
+            (Value::Object(values), property) => Ok(
+                match self.host_roots.lookup_ordinary_property(&values, property) {
+                    PropertyLookup::Found(value) => value,
 
-                PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
-            }),
+                    PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
+                },
+            ),
 
             (Value::Arguments(arguments), "length") => Ok(Value::Number(arguments.length() as f64)),
 

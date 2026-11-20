@@ -6,7 +6,6 @@
 //! Symbol.hasInstance, bound functions and exotic prototype chains are incomplete.
 
 use super::{Interpreter, JsError, NativeFunction, Value};
-use crate::javascript::value::ObjectState;
 
 impl Interpreter {
     pub(super) fn evaluate_instanceof(&self, left: Value, right: Value) -> Result<Value, JsError> {
@@ -27,30 +26,26 @@ impl Interpreter {
             }
 
             Value::Function(function) => {
-                Self::ordinary_has_instance(&left, function.get("prototype"))?
+                self.ordinary_has_instance(&left, function.get("prototype"))?
             }
 
             Value::ObjectConstructor => {
-                Self::ordinary_has_instance(&left, Value::Object(self.object_prototype.clone()))?
+                self.ordinary_has_instance(&left, Value::Object(self.object_prototype.clone()))?
             }
 
             Value::NativeFunction(NativeFunction::ErrorConstructor) => {
-                Self::ordinary_has_instance(&left, Value::Object(self.error_prototype.clone()))?
+                self.ordinary_has_instance(&left, Value::Object(self.error_prototype.clone()))?
             }
 
             Value::NativeFunction(NativeFunction::TypeErrorConstructor) => {
-                Self::ordinary_has_instance(
-                    &left,
-                    Value::Object(self.type_error_prototype.clone()),
-                )?
+                self.ordinary_has_instance(&left, Value::Object(self.type_error_prototype.clone()))?
             }
 
-            Value::NativeFunction(NativeFunction::ReferenceErrorConstructor) => {
-                Self::ordinary_has_instance(
+            Value::NativeFunction(NativeFunction::ReferenceErrorConstructor) => self
+                .ordinary_has_instance(
                     &left,
                     Value::Object(self.reference_error_prototype.clone()),
-                )?
-            }
+                )?,
 
             Value::Undefined
             | Value::Null
@@ -72,7 +67,7 @@ impl Interpreter {
         Ok(Value::Boolean(result))
     }
 
-    fn ordinary_has_instance(value: &Value, prototype: Value) -> Result<bool, JsError> {
+    fn ordinary_has_instance(&self, value: &Value, prototype: Value) -> Result<bool, JsError> {
         if matches!(
             value,
             Value::Undefined
@@ -105,11 +100,12 @@ impl Interpreter {
         };
 
         match value {
-            Value::Object(object) => {
-                ObjectState::has_prototype(object, &prototype).ok_or_else(|| {
+            Value::Object(object) => self
+                .host_roots
+                .ordinary_has_prototype(object, &prototype)
+                .ok_or_else(|| {
                     JsError::unsupported("instanceof reached an unimplemented prototype")
-                })
-            }
+                }),
 
             Value::NativeError(error) => error.has_prototype(&prototype).ok_or_else(|| {
                 JsError::unsupported("instanceof for this native error has no prototype")

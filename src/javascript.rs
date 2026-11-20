@@ -244,6 +244,43 @@ impl HostRoots {
         Value::object_with_entries_and_prototype(entries, prototype)
     }
 
+    // These operations still use Rc-backed objects until heap migration.
+    fn lookup_ordinary_property(
+        &self,
+        object: &value::ObjectStorage,
+        name: &str,
+    ) -> value::PropertyLookup {
+        value::ObjectState::lookup(object, name)
+    }
+
+    fn read_ordinary_own_property(
+        &self,
+        object: &value::ObjectStorage,
+        name: &str,
+    ) -> Option<Value> {
+        object.borrow().get(name).cloned()
+    }
+
+    fn write_ordinary_property(&self, object: &value::ObjectStorage, name: String, value: Value) {
+        object.borrow_mut().set(name, value);
+    }
+
+    fn ordinary_own_keys(&self, object: &value::ObjectStorage) -> Vec<String> {
+        object.borrow().keys()
+    }
+
+    fn ordinary_for_in_keys(&self, object: &value::ObjectStorage) -> Option<Vec<String>> {
+        value::ObjectState::for_in_keys(object)
+    }
+
+    fn ordinary_has_prototype(
+        &self,
+        object: &value::ObjectStorage,
+        prototype: &value::ObjectStorage,
+    ) -> Option<bool> {
+        value::ObjectState::has_prototype(object, prototype)
+    }
+
     fn register(self: &Rc<Self>, value: Value) -> HostValue {
         let root = Rc::new(HostRoot {
             value,

@@ -6,7 +6,6 @@
 //! are not implemented.
 
 use super::{Completion, Expression, Interpreter, JsError, Statement, Value};
-use crate::javascript::value::ObjectState;
 
 #[derive(Clone, Copy)]
 pub(super) enum ForInBindingMode {
@@ -32,9 +31,13 @@ impl Interpreter {
         let keys = match target {
             Value::Null | Value::Undefined => Vec::new(),
 
-            Value::Object(object) => ObjectState::for_in_keys(&object).ok_or_else(|| {
-                JsError::unsupported("for-in encountered an unimplemented prototype")
-            })?,
+            Value::Object(object) => {
+                self.host_roots
+                    .ordinary_for_in_keys(&object)
+                    .ok_or_else(|| {
+                        JsError::unsupported("for-in encountered an unimplemented prototype")
+                    })?
+            }
 
             _ => {
                 return Err(JsError::unsupported(

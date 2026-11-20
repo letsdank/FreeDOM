@@ -6,7 +6,7 @@
 //! These operations currently implement only a subset of ECMAScript semantics.
 
 use super::{Interpreter, JsError, Value};
-use crate::javascript::value::{ObjectState, PropertyLookup};
+use crate::javascript::value::PropertyLookup;
 
 #[derive(Clone, Copy)]
 pub(super) enum PrimitiveHint {
@@ -212,13 +212,15 @@ impl Interpreter {
 
         for name in methods {
             let lookup = match value {
-                Value::Object(object) => ObjectState::lookup(object, name),
+                Value::Object(object) => self.host_roots.lookup_ordinary_property(object, name),
                 Value::NativeError(error) => error.lookup_method(name),
 
                 Value::Array(array) => match Self::array_get(array.clone(), name) {
                     Some(method) => PropertyLookup::Found(method),
 
-                    None => ObjectState::lookup(&self.object_prototype, name),
+                    None => self
+                        .host_roots
+                        .lookup_ordinary_property(&self.object_prototype, name),
                 },
 
                 _ => unreachable!(),

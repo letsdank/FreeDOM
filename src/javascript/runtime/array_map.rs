@@ -6,10 +6,7 @@
 //! function this binding are not implemented.
 
 use super::{Interpreter, JsError, Value};
-use crate::javascript::{
-    FunctionKind,
-    value::{ObjectState, PropertyLookup},
-};
+use crate::javascript::{FunctionKind, value::PropertyLookup};
 
 impl Interpreter {
     pub(super) fn array_map(
@@ -110,7 +107,10 @@ impl Interpreter {
                 let value = match Self::array_get(array.clone(), &key) {
                     Some(value) => Some(value),
 
-                    None => match ObjectState::lookup(&interpreter.object_prototype, &key) {
+                    None => match interpreter
+                        .host_roots
+                        .lookup_ordinary_property(&interpreter.object_prototype, &key)
+                    {
                         PropertyLookup::Found(value) => Some(value),
                         PropertyLookup::Absent => None,
 

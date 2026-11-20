@@ -7,6 +7,7 @@ use super::{Interpreter, JsError, ObjectPrototype, Value};
 
 impl Interpreter {
     pub(super) fn object_has_own_property(
+        &self,
         receiver: Option<Value>,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
@@ -32,7 +33,11 @@ impl Interpreter {
         };
 
         match receiver.unwrap_or(Value::Undefined) {
-            Value::Object(object) => Ok(Value::Boolean(object.borrow().get(&key).is_some())),
+            Value::Object(object) => Ok(Value::Boolean(
+                self.host_roots
+                    .read_ordinary_own_property(&object, &key)
+                    .is_some(),
+            )),
 
             Value::Array(array) => Ok(Value::Boolean(Self::array_has_own(&array, &key))),
 
@@ -99,18 +104,15 @@ impl Interpreter {
                 .frame_values_mut(frame_index)
                 .push(Value::Object(object.clone()));
 
-            let keys = {
-                let object = object.borrow();
-                let keys = object.keys();
+            let keys = interpreter.host_roots.ordinary_own_keys(object);
+            for key in &keys {
+                let value = interpreter
+                    .host_roots
+                    .read_ordinary_own_property(object, key)
+                    .expect("own key must exist");
 
-                for key in &keys {
-                    let value = object.get(key).expect("own key must exist").clone();
-
-                    interpreter.frame_values_mut(frame_index).push(value);
-                }
-
-                keys
-            };
+                interpreter.frame_values_mut(frame_index).push(value);
+            }
 
             let entries_start = interpreter.frame_values(frame_index).len();
 

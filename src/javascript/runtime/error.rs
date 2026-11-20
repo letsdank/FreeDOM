@@ -9,7 +9,7 @@
 use super::{
     HostRoots, Interpreter, JsError, NativeFunction, ObjectPrototype, ObjectStorage, Value,
 };
-use crate::javascript::value::{ObjectState, PropertyLookup};
+use crate::javascript::value::PropertyLookup;
 
 impl Interpreter {
     pub(super) fn construct_error(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -51,12 +51,12 @@ impl Interpreter {
         Ok(Value::error_with_prototype(message, prototype))
     }
 
-    pub(super) fn error_to_string(receiver: Option<Value>) -> Result<Value, JsError> {
+    pub(super) fn error_to_string(&self, receiver: Option<Value>) -> Result<Value, JsError> {
         let (name, message) = match receiver.unwrap_or(Value::Undefined) {
             Value::NativeError(error) => (error.get("name"), error.get("message")),
 
             Value::Object(object) => {
-                let read = |key| match ObjectState::lookup(&object, key) {
+                let read = |key| match self.host_roots.lookup_ordinary_property(&object, key) {
                     PropertyLookup::Found(value) => Ok(value),
 
                     PropertyLookup::Absent => Ok(Value::Undefined),
