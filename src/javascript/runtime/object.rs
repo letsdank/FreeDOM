@@ -80,7 +80,7 @@ impl Interpreter {
     }
 
     // https://tc39.es/ecma262/#sec-object.entries
-    pub(super) fn object_entries(arguments: Vec<Value>) -> Result<Value, JsError> {
+    pub(super) fn object_entries(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
         let object = match arguments.first().unwrap_or(&Value::Undefined) {
             Value::Null | Value::Undefined => {
                 return Err(JsError::type_error(
@@ -97,19 +97,37 @@ impl Interpreter {
             }
         };
 
-        let object = object.borrow();
+        self.with_temporary_values_scope(|interpreter, frame_index| {
+            interpreter
+                .frame_values_mut(frame_index)
+                .push(Value::Object(object.clone()));
 
-        let entries = object
-            .keys()
-            .into_iter()
-            .map(|key| {
-                let value = object.get(&key).expect("own key must exist").clone();
+            let keys = {
+                let object = object.borrow();
+                let keys = object.keys();
 
-                Value::array(vec![Value::String(key), value])
-            })
-            .collect();
+                for key in &keys {
+                    let value = object.get(key).expect("own key must exist").clone();
 
-        Ok(Value::array(entries))
+                    interpreter.frame_values_mut(frame_index).push(value);
+                }
+
+                keys
+            };
+
+            let entries_start = interpreter.frame_values(frame_index).len();
+
+            for (index, key) in keys.into_iter().enumerate() {
+                let value = interpreter.frame_values(frame_index)[index + 1].clone();
+                let entry = Value::array(vec![Value::String(key), value]);
+
+                interpreter.frame_values_mut(frame_index).push(entry);
+            }
+
+            let entries = interpreter.frame_values(frame_index)[entries_start..].to_vec();
+
+            Ok(Value::array(entries))
+        })
     }
 
     // https://tc39.es/ecma262/#sec-object.prototype.valueof

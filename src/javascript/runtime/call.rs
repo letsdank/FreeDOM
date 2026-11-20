@@ -25,14 +25,9 @@ impl Interpreter {
             ));
         };
 
-        Ok(Value::array(
-            object
-                .borrow()
-                .keys()
-                .into_iter()
-                .map(Value::String)
-                .collect(),
-        ))
+        let keys = object.borrow().keys();
+
+        Ok(Value::array(keys.into_iter().map(Value::String).collect()))
     }
 
     pub(super) fn dispatch_call(
@@ -114,7 +109,7 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ObjectKeys) => self.object_keys(values),
 
-            Value::NativeFunction(NativeFunction::ObjectEntries) => Self::object_entries(values),
+            Value::NativeFunction(NativeFunction::ObjectEntries) => self.object_entries(values),
 
             Value::NativeFunction(NativeFunction::ObjectCreate) => Self::object_create(values),
 
