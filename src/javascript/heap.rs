@@ -100,6 +100,15 @@ pub(super) enum HeapError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HeapAccessError {
+    Initialization(HeapError),
+    Borrowed,
+    InvalidObject(ObjectId),
+    NotOrdinaryObject(ObjectId),
+    InvalidReference(ObjectId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TraceError {
     ForeignHeap(ObjectId),
     InvalidReference(ObjectId),

@@ -257,11 +257,99 @@ impl HostRoots {
     }
 
     #[allow(dead_code)]
-    fn heap(&self) -> Result<&RefCell<heap::Heap<heap::HeapObject>>, heap::HeapError> {
+    fn heap_cell(&self) -> Result<&RefCell<heap::Heap<heap::HeapObject>>, heap::HeapAccessError> {
         self.heap
             .get_or_init(|| heap::Heap::new().map(RefCell::new))
             .as_ref()
-            .map_err(|error| *error)
+            .map_err(|error| heap::HeapAccessError::Initialization(*error))
+    }
+
+    /// Experimental heap operations do not run JavaScript or collect garbage.
+    #[allow(dead_code)]
+    fn allocate_heap_object(
+        &self,
+        object: heap::HeapObject,
+    ) -> Result<heap::ObjectId, heap::HeapAccessError> {
+        let mut heap = self
+            .heap_cell()?
+            .try_borrow_mut()
+            .map_err(|_| heap::HeapAccessError::Borrowed)?;
+        let mut invalid = None;
+        object.visit_references(|reference| {
+            if invalid.is_none() && heap.get(reference).is_none() {
+                invalid = Some(reference);
+            }
+        });
+        if let Some(reference) = invalid {
+            return Err(heap::HeapAccessError::InvalidReference(reference));
+        }
+        Ok(heap.allocate(object))
+    }
+
+    #[allow(dead_code)]
+    fn contains_heap_object(&self, id: heap::ObjectId) -> Result<bool, heap::HeapAccessError> {
+        let heap = self
+            .heap_cell()?
+            .try_borrow()
+            .map_err(|_| heap::HeapAccessError::Borrowed)?;
+        Ok(heap.get(id).is_some())
+    }
+
+    /// Reads an ordinary object's own property; no prototype lookup is performed.
+    #[allow(dead_code)]
+    fn read_heap_property(
+        &self,
+        id: heap::ObjectId,
+        name: &str,
+    ) -> Result<Option<heap::HeapValue>, heap::HeapAccessError> {
+        let heap = self
+            .heap_cell()?
+            .try_borrow()
+            .map_err(|_| heap::HeapAccessError::Borrowed)?;
+        let object = heap
+            .get(id)
+            .ok_or(heap::HeapAccessError::InvalidObject(id))?;
+        let heap::HeapObject::Object(object) = object else {
+            return Err(heap::HeapAccessError::NotOrdinaryObject(id));
+        };
+        let value = object.properties.get(name).cloned();
+        if let Some(heap::HeapValue::Reference(reference)) = &value {
+            if heap.get(*reference).is_none() {
+                return Err(heap::HeapAccessError::InvalidReference(*reference));
+            }
+        }
+        Ok(value)
+    }
+
+    /// Writes an ordinary object's own data property without invoking JavaScript.
+    #[allow(dead_code)]
+    fn write_heap_property(
+        &self,
+        id: heap::ObjectId,
+        name: String,
+        value: heap::HeapValue,
+    ) -> Result<(), heap::HeapAccessError> {
+        let mut heap = self
+            .heap_cell()?
+            .try_borrow_mut()
+            .map_err(|_| heap::HeapAccessError::Borrowed)?;
+        match heap.get(id) {
+            None => return Err(heap::HeapAccessError::InvalidObject(id)),
+            Some(heap::HeapObject::Array(_)) => {
+                return Err(heap::HeapAccessError::NotOrdinaryObject(id));
+            }
+            Some(heap::HeapObject::Object(_)) => {}
+        }
+        if let heap::HeapValue::Reference(reference) = &value {
+            if heap.get(*reference).is_none() {
+                return Err(heap::HeapAccessError::InvalidReference(*reference));
+            }
+        }
+        let Some(heap::HeapObject::Object(object)) = heap.get_mut(id) else {
+            unreachable!("validated ordinary object must still exist");
+        };
+        object.properties.set(name, value, true);
+        Ok(())
     }
 
     /// Takes strong references to roots live at the time of the snapshot.

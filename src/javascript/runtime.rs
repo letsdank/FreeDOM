@@ -1893,43 +1893,109 @@ mod tests {
 
         let object = interpreter
             .host_roots
-            .heap()
-            .unwrap()
-            .borrow_mut()
-            .allocate(HeapObject::Object(HeapObjectState::default()));
+            .allocate_heap_object(HeapObject::Object(HeapObjectState::default()))
+            .unwrap();
 
         let array = interpreter
             .host_roots
-            .heap()
-            .unwrap()
-            .borrow_mut()
-            .allocate(HeapObject::Array(HeapArrayState::default()));
+            .allocate_heap_object(HeapObject::Array(HeapArrayState::default()))
+            .unwrap();
 
         let other = Interpreter::new();
 
-        assert!(
-            other
-                .host_roots
-                .heap()
-                .unwrap()
-                .borrow()
-                .get(object)
-                .is_none()
-        );
+        assert!(!other.host_roots.contains_heap_object(object).unwrap());
 
         drop(interpreter);
 
         let owner = weak_owner.upgrade().unwrap();
-        let heap = owner.heap().unwrap().borrow();
-
-        assert!(matches!(heap.get(object), Some(HeapObject::Object(_))));
-        assert!(matches!(heap.get(array), Some(HeapObject::Array(_))));
-
-        drop(heap);
+        assert!(owner.contains_heap_object(object).unwrap());
+        assert!(owner.contains_heap_object(array).unwrap());
         drop(owner);
         drop(host_value);
 
         assert!(weak_owner.upgrade().is_none());
+    }
+
+    #[test]
+    fn host_heap_access_validates_references_and_releases_borrows() {
+        use crate::javascript::heap::{
+            HeapAccessError, HeapArrayState, HeapObject, HeapObjectState, HeapPrototype, HeapValue,
+        };
+        let interpreter = Interpreter::new();
+        let owner = &interpreter.host_roots;
+        let object = owner
+            .allocate_heap_object(HeapObject::Object(HeapObjectState::default()))
+            .unwrap();
+        let array = owner
+            .allocate_heap_object(HeapObject::Array(HeapArrayState::default()))
+            .unwrap();
+        let other = Interpreter::new();
+        let foreign = other
+            .host_roots
+            .allocate_heap_object(HeapObject::Object(HeapObjectState::default()))
+            .unwrap();
+        assert_eq!(owner.read_heap_property(object, "x"), Ok(None));
+        owner
+            .write_heap_property(object, "x".into(), HeapValue::Number(42.0))
+            .unwrap();
+        assert_eq!(
+            owner.read_heap_property(object, "x"),
+            Ok(Some(HeapValue::Number(42.0)))
+        );
+        owner
+            .write_heap_property(object, "link".into(), HeapValue::Reference(array))
+            .unwrap();
+        owner
+            .write_heap_property(object, "self".into(), HeapValue::Reference(object))
+            .unwrap();
+        assert_eq!(
+            owner.read_heap_property(object, "self"),
+            Ok(Some(HeapValue::Reference(object)))
+        );
+        assert_eq!(
+            owner.read_heap_property(object, "link"),
+            Ok(Some(HeapValue::Reference(array)))
+        );
+        assert_eq!(
+            owner.write_heap_property(object, "x".into(), HeapValue::Reference(foreign)),
+            Err(HeapAccessError::InvalidReference(foreign))
+        );
+        assert_eq!(
+            owner.read_heap_property(object, "x"),
+            Ok(Some(HeapValue::Number(42.0)))
+        );
+        assert_eq!(
+            owner.read_heap_property(foreign, "x"),
+            Err(HeapAccessError::InvalidObject(foreign))
+        );
+        assert_eq!(
+            owner.read_heap_property(array, "0"),
+            Err(HeapAccessError::NotOrdinaryObject(array))
+        );
+        let bad = HeapObjectState {
+            prototype: HeapPrototype::Object(foreign),
+            ..HeapObjectState::default()
+        };
+        assert_eq!(
+            owner.allocate_heap_object(HeapObject::Object(bad)),
+            Err(HeapAccessError::InvalidReference(foreign))
+        );
+        {
+            let _guard = owner.heap_cell().unwrap().borrow_mut();
+            assert_eq!(
+                owner.read_heap_property(object, "x"),
+                Err(HeapAccessError::Borrowed)
+            );
+            assert_eq!(
+                owner.allocate_heap_object(HeapObject::Object(HeapObjectState::default())),
+                Err(HeapAccessError::Borrowed)
+            );
+        }
+        owner.heap_cell().unwrap().borrow_mut().remove(array);
+        assert_eq!(
+            owner.read_heap_property(object, "link"),
+            Err(HeapAccessError::InvalidReference(array))
+        );
     }
 
     #[test]
