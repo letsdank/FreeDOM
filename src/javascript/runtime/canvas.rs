@@ -182,7 +182,7 @@ impl Interpreter {
             return Ok(Value::Null);
         }
 
-        let Value::Object(context) = self.create_ordinary_object(
+        let Value::Object(context) = self.host_roots.create_ordinary_object(
             [
                 ("canvas".to_owned(), Value::Element(node_id)),
                 ("fillStyle".to_owned(), Value::String("#000000".to_owned())),
@@ -196,7 +196,7 @@ impl Interpreter {
                 ("miterLimit".to_owned(), Value::Number(10.0)),
                 ("lineDashOffset".to_owned(), Value::Number(0.0)),
             ],
-            Some(self.object_prototype.clone()),
+            super::ObjectPrototype::Object(self.object_prototype.clone()),
         ) else {
             unreachable!("object constructor returns an object");
         };

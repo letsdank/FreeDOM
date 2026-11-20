@@ -119,7 +119,10 @@ impl PromiseHandle {
 impl Interpreter {
     fn new_pending_promise(&self) -> (Value, PromiseHandle) {
         let handle = PromiseHandle(Rc::new(RefCell::new(PromiseState::default())));
-        let promise = self.create_ordinary_object([], Some(self.promise_prototype.clone()));
+        let promise = self.host_roots.create_ordinary_object(
+            [],
+            super::ObjectPrototype::Object(self.promise_prototype.clone()),
+        );
 
         let Value::Object(object) = &promise else {
             unreachable!("promise must be an object");

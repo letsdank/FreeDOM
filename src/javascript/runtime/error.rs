@@ -6,7 +6,9 @@
 //! Error causes, stack traces, subclass prototypes, and general object-to-string
 //! conversion are not implemented.
 
-use super::{Interpreter, JsError, NativeFunction, ObjectStorage, Value};
+use super::{
+    HostRoots, Interpreter, JsError, NativeFunction, ObjectPrototype, ObjectStorage, Value,
+};
 use crate::javascript::value::{ObjectState, PropertyLookup};
 
 impl Interpreter {
@@ -111,11 +113,14 @@ impl Interpreter {
     }
 
     pub(super) fn make_error_subtype_prototype(
+        owner: &HostRoots,
         parent: &ObjectStorage,
         name: &str,
         constructor: NativeFunction,
     ) -> ObjectStorage {
-        let Value::Object(prototype) = Value::object_with_prototype(parent.clone()) else {
+        let Value::Object(prototype) =
+            owner.create_ordinary_object([], ObjectPrototype::Object(parent.clone()))
+        else {
             unreachable!("object constructor returns an object");
         };
 

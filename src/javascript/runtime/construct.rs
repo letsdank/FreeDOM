@@ -102,7 +102,9 @@ impl Interpreter {
             }
         };
 
-        let instance = self.create_ordinary_object([], Some(prototype));
+        let instance = self
+            .host_roots
+            .create_ordinary_object([], super::ObjectPrototype::Object(prototype));
 
         let result =
             self.call_function_value_with_receiver(&function, values, Some(instance.clone()))?;

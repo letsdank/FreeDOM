@@ -1,6 +1,8 @@
 use self::bindings::{BindingSnapshot, Bindings};
 use super::arguments::ArgumentsValue;
-use super::value::{ArrayStorage, DocumentStorage, FunctionValue, ObjectStorage, RegExpValue};
+use super::value::{
+    ArrayStorage, DocumentStorage, FunctionValue, ObjectPrototype, ObjectStorage, RegExpValue,
+};
 use super::{
     ArrayMethodKind, BinaryOperator, DocumentMethod, DocumentState, ElementMethod, Expression,
     HostError, HostRoots, HostValue, JsError, NativeFunction, PostfixStep, Statement,
@@ -329,9 +331,12 @@ impl Interpreter {
 
     pub(super) fn new() -> Self {
         let mut variables = Bindings::default();
+        let host_roots = std::rc::Rc::new(HostRoots::default());
 
         // Most intrinsic properties are not implemented yet.
-        let Value::Object(object_prototype) = Value::intrinsic_object_prototype() else {
+        let Value::Object(object_prototype) =
+            host_roots.create_ordinary_object([], ObjectPrototype::IntrinsicObjectRoot)
+        else {
             unreachable!("object constructor returns an object");
         };
 
@@ -381,7 +386,8 @@ impl Interpreter {
             }
         }
 
-        let Value::Object(error_prototype) = Value::object_with_prototype(object_prototype.clone())
+        let Value::Object(error_prototype) = host_roots
+            .create_ordinary_object([], ObjectPrototype::Object(object_prototype.clone()))
         else {
             unreachable!("object constructor returns an object");
         };
@@ -411,19 +417,21 @@ impl Interpreter {
         );
 
         let type_error_prototype = Self::make_error_subtype_prototype(
+            &host_roots,
             &error_prototype,
             "TypeError",
             NativeFunction::TypeErrorConstructor,
         );
 
         let reference_error_prototype = Self::make_error_subtype_prototype(
+            &host_roots,
             &error_prototype,
             "ReferenceError",
             NativeFunction::ReferenceErrorConstructor,
         );
 
-        let Value::Object(promise_prototype) =
-            Value::object_with_prototype(object_prototype.clone())
+        let Value::Object(promise_prototype) = host_roots
+            .create_ordinary_object([], ObjectPrototype::Object(object_prototype.clone()))
         else {
             unreachable!("object constructor returns an object");
         };
@@ -533,7 +541,7 @@ impl Interpreter {
             execution_limit: DEFAULT_EXECUTION_STEPS,
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
-            host_roots: std::rc::Rc::new(HostRoots::default()),
+            host_roots,
         }
     }
 

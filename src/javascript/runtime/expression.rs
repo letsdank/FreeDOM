@@ -111,8 +111,10 @@ impl Interpreter {
                         .zip(interpreter.frame_values_mut(base).drain(..))
                         .collect();
 
-                    Ok(interpreter
-                        .create_ordinary_object(values, Some(interpreter.object_prototype.clone())))
+                    Ok(interpreter.host_roots.create_ordinary_object(
+                        values,
+                        super::ObjectPrototype::Object(interpreter.object_prototype.clone()),
+                    ))
                 })
             }
 

@@ -235,6 +235,15 @@ struct HostRoot {
 }
 
 impl HostRoots {
+    // This allocation boundary still uses Rc-backed storage until heap migration.
+    fn create_ordinary_object(
+        &self,
+        entries: impl IntoIterator<Item = (String, Value)>,
+        prototype: value::ObjectPrototype,
+    ) -> Value {
+        Value::object_with_entries_and_prototype(entries, prototype)
+    }
+
     fn register(self: &Rc<Self>, value: Value) -> HostValue {
         let root = Rc::new(HostRoot {
             value,

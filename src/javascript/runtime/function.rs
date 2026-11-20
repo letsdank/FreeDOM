@@ -279,8 +279,12 @@ impl Interpreter {
 
         captures.extend(self.variables.capture_names(&catch_names, &referenced));
 
-        let prototype = (function.kind == FunctionKind::Ordinary)
-            .then(|| self.create_ordinary_object([], Some(self.object_prototype.clone())));
+        let prototype = (function.kind == FunctionKind::Ordinary).then(|| {
+            self.host_roots.create_ordinary_object(
+                [],
+                super::ObjectPrototype::Object(self.object_prototype.clone()),
+            )
+        });
         Value::function(function.clone(), prototype, captures)
     }
 

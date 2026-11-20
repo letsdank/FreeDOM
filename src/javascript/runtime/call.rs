@@ -381,7 +381,7 @@ impl Interpreter {
                 match Self::run_regexp(&regexp, &units)? {
                     None => Ok(Value::Null),
 
-                    Some(result) => Self::regexp_exec_value(input, &units, result, has_indices),
+                    Some(result) => self.regexp_exec_value(input, &units, result, has_indices),
                 }
             }
 

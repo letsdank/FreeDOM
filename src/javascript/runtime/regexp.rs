@@ -105,6 +105,7 @@ impl Interpreter {
     }
 
     pub(super) fn regexp_exec_value(
+        &self,
         input: String,
         units: &[u16],
         result: ExecResult,
@@ -139,25 +140,28 @@ impl Interpreter {
             .named_groups
             .as_ref()
             .map_or(Value::Undefined, |named| {
-                Value::object(
+                self.host_roots.create_ordinary_object(
                     named
                         .iter()
                         .map(|group| (group.name.clone(), captures[group.index].clone())),
+                    super::ObjectPrototype::Unknown,
                 )
             });
 
         let array = Value::array(captures);
 
         if let Value::Array(storage) = &array {
-            let mut array = storage.borrow_mut();
+            {
+                let mut array = storage.borrow_mut();
 
-            array.properties.set(
-                "index".into(),
-                Value::Number(result.captures.span.start as f64),
-            );
+                array.properties.set(
+                    "index".into(),
+                    Value::Number(result.captures.span.start as f64),
+                );
 
-            array.properties.set("input".into(), Value::String(input));
-            array.properties.set("groups".into(), groups);
+                array.properties.set("input".into(), Value::String(input));
+                array.properties.set("groups".into(), groups);
+            }
 
             if has_indices {
                 let indices: Vec<Value> = result
@@ -178,10 +182,11 @@ impl Interpreter {
                     .named_groups
                     .as_ref()
                     .map_or(Value::Undefined, |named| {
-                        Value::object(
+                        self.host_roots.create_ordinary_object(
                             named
                                 .iter()
                                 .map(|group| (group.name.clone(), indices[group.index].clone())),
+                            super::ObjectPrototype::Unknown,
                         )
                     });
 
@@ -194,7 +199,10 @@ impl Interpreter {
                         .set("groups".into(), index_groups);
                 }
 
-                array.properties.set("indices".into(), indices);
+                storage
+                    .borrow_mut()
+                    .properties
+                    .set("indices".into(), indices);
             }
         }
 
@@ -236,5 +244,30 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn named_capture_objects_preserve_unknown_prototype() {
+        let mut interpreter = Interpreter::new();
+        let program = crate::javascript::parse_program(
+            "let r = new RegExp('(?<x>a)', 'd').exec('a'); [r.groups, r.indices.groups];",
+        )
+        .unwrap();
+        let Value::Array(values) = interpreter.execute_script(&program).unwrap().into_value()
+        else {
+            panic!("expected array");
+        };
+        let values = values.borrow();
+        for value in &values.values {
+            let Value::Object(object) = value else {
+                panic!("expected capture object");
+            };
+            assert_eq!(
+                crate::javascript::value::ObjectState::for_in_keys(object),
+                None
+            );
+            assert!(object.borrow().get("x").is_some());
+        }
+        assert_eq!(values.values.len(), 2);
     }
 }

@@ -111,7 +111,7 @@ pub(crate) struct ObjectState {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-enum ObjectPrototype {
+pub(super) enum ObjectPrototype {
     #[default]
     Unknown,
     IntrinsicObjectRoot,
@@ -778,41 +778,30 @@ impl Value {
         })))
     }
 
+    #[cfg(test)]
     pub(crate) fn object(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
-        Self::Object(Rc::new(RefCell::new(ObjectState::from_entries(entries))))
+        Self::object_with_entries_and_prototype(entries, ObjectPrototype::Unknown)
     }
 
     pub(super) fn object_with_entries_and_prototype(
         entries: impl IntoIterator<Item = (String, Value)>,
-        prototype: Option<ObjectStorage>,
+        prototype: ObjectPrototype,
     ) -> Self {
         let mut state = ObjectState::from_entries(entries);
 
-        state.prototype = match prototype {
-            Some(prototype) => ObjectPrototype::Object(prototype),
-            None => ObjectPrototype::Null,
-        };
+        state.prototype = prototype;
 
         Self::Object(Rc::new(RefCell::new(state)))
     }
 
     #[cfg(test)]
     pub(super) fn object_with_null_prototype() -> Self {
-        Self::object_with_entries_and_prototype([], None)
+        Self::object_with_entries_and_prototype([], ObjectPrototype::Null)
     }
 
+    #[cfg(test)]
     pub(super) fn object_with_prototype(prototype: ObjectStorage) -> Self {
-        Self::object_with_entries_and_prototype([], Some(prototype))
-    }
-
-    pub(super) fn intrinsic_object_prototype() -> Self {
-        let state = ObjectState {
-            properties: ObjectProperties::default(),
-            prototype: ObjectPrototype::IntrinsicObjectRoot,
-            promise: None,
-        };
-
-        Self::Object(Rc::new(RefCell::new(state)))
+        Self::object_with_entries_and_prototype([], ObjectPrototype::Object(prototype))
     }
 
     pub(super) fn function(
