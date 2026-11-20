@@ -771,13 +771,13 @@ impl Interpreter {
         result
     }
 
-    fn with_pending_call<T>(
+    fn with_pending_call(
         &mut self,
         callee: Value,
         receiver: Option<Value>,
         expressions: &[Expression],
-        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
-    ) -> Result<T, JsError> {
+        operation: impl FnOnce(&mut Self, usize) -> Result<Value, JsError>,
+    ) -> Result<Value, JsError> {
         self.with_call_frame(
             PendingCall {
                 callee,
@@ -796,24 +796,43 @@ impl Interpreter {
         )
     }
 
-    fn with_call_frame<T>(
+    fn with_call_frame(
         &mut self,
         call: PendingCall,
-        operation: impl FnOnce(&mut Self, usize) -> Result<T, JsError>,
-    ) -> Result<T, JsError> {
+        operation: impl FnOnce(&mut Self, usize) -> Result<Value, JsError>,
+    ) -> Result<Value, JsError> {
         let index = self.execution_frames.len();
 
         self.execution_frames
             .push(ExecutionFrame::PendingCall(call));
 
-        let result = operation(self, index);
+        let result = operation(self, index).map(Completion::Return);
 
-        match self.execution_frames.pop() {
-            Some(ExecutionFrame::PendingCall(_)) => {}
-            _ => unreachable!("pending call frame must exist"),
+        // The completion stays rooted until the call frame has been removed.
+        let (result, ()) = self
+            .with_pending_completion(result, |interpreter| {
+                interpreter.remove_pending_call(index);
+                Ok(())
+            })
+            .expect("removing a pending call cannot fail");
+
+        result.map(|completion| match completion {
+            Completion::Return(value) => value,
+            _ => unreachable!("call results use return completion"),
+        })
+    }
+
+    fn remove_pending_call(&mut self, index: usize) {
+        match self.execution_frames.get(index..) {
+            Some(
+                [
+                    ExecutionFrame::PendingCall(_),
+                    ExecutionFrame::PendingCompletion(_),
+                ],
+            ) => {}
+            _ => unreachable!("pending call must be followed only by its completion"),
         }
-
-        result
+        self.execution_frames.remove(index);
     }
 
     fn pending_call(&self, index: usize) -> &PendingCall {
@@ -1849,7 +1868,7 @@ mod tests {
                     assert_eq!(runtime.pending_call(index).callee, Value::Number(1.0));
                     assert_eq!(runtime.pending_call(inner).callee, Value::Null);
 
-                    Err::<(), _>(JsError::resource_limit("test limit"))
+                    Err::<Value, _>(JsError::resource_limit("test limit"))
                 });
 
                 assert!(nested.is_err());
@@ -1859,12 +1878,54 @@ mod tests {
                 assert_eq!(call.receiver, Some(Value::Number(2.0)));
                 assert_eq!(call.arguments, vec![Value::Number(3.0)]);
 
-                Ok(())
+                Ok(Value::Undefined)
             },
         );
 
         assert!(result.is_ok());
         assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn call_result_remains_rooted_when_call_frame_is_removed() {
+        for throwing in [false, true] {
+            let mut interpreter = Interpreter::new();
+            let Value::Object(object) = Value::object([]) else {
+                unreachable!();
+            };
+            let index = interpreter.execution_frames.len();
+            interpreter
+                .execution_frames
+                .push(ExecutionFrame::PendingCall(super::PendingCall {
+                    callee: Value::Undefined,
+                    receiver: None,
+                    arguments: vec![],
+                }));
+            let pending = if throwing {
+                Err(JsError::thrown(Value::Object(object.clone())))
+            } else {
+                Ok(Completion::Return(Value::Object(object.clone())))
+            };
+
+            let (result, ()) = interpreter
+                .with_pending_completion(pending, |interpreter| {
+                    interpreter.remove_pending_call(index);
+                    let mut found = false;
+                    interpreter
+                        .visit_runtime_roots(&mut |root| {
+                            if let RuntimeRoot::Value(Value::Object(value)) = root {
+                                found |= Rc::ptr_eq(value, &object);
+                            }
+                        })
+                        .unwrap();
+                    assert!(found);
+                    Ok(())
+                })
+                .unwrap();
+
+            assert_eq!(result.is_err(), throwing);
+            assert!(interpreter.execution_frames.is_empty());
+        }
     }
 
     #[test]

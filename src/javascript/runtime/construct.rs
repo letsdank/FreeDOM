@@ -106,18 +106,22 @@ impl Interpreter {
             .host_roots
             .create_ordinary_object([], super::ObjectPrototype::Object(prototype));
 
-        let result =
-            self.call_function_value_with_receiver(&function, values, Some(instance.clone()))?;
+        // The instance remains needed if the constructor returns a primitive.
+        self.with_frame_value(instance, |interpreter, index| {
+            let receiver = interpreter.frame_value(index).clone();
+            let result =
+                interpreter.call_function_value_with_receiver(&function, values, Some(receiver))?;
 
-        match result {
-            Value::Undefined
-            | Value::Null
-            | Value::Boolean(_)
-            | Value::Number(_)
-            | Value::String(_) => Ok(instance),
+            match result {
+                Value::Undefined
+                | Value::Null
+                | Value::Boolean(_)
+                | Value::Number(_)
+                | Value::String(_) => Ok(interpreter.frame_value(index).clone()),
 
-            object => Ok(object),
-        }
+                object => Ok(object),
+            }
+        })
     }
 }
 
