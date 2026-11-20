@@ -322,4 +322,47 @@ mod tests {
 
         assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
     }
+
+    #[test]
+    fn host_array_items_remain_rooted_after_parent_is_changed_and_dropped() {
+        let interpreter = Interpreter::new();
+        let baseline = interpreter.trace_when_quiescent().unwrap();
+
+        let Value::Array(child) = Value::array(vec![Value::Number(7.0)]) else {
+            unreachable!();
+        };
+
+        let Value::Array(parent) = Value::array(vec![Value::Array(child.clone())]) else {
+            unreachable!();
+        };
+
+        let rooted_parent = interpreter.export_value(Value::Array(parent.clone()));
+        let children = rooted_parent.array_items().unwrap().unwrap();
+
+        {
+            let mut state = parent.borrow_mut();
+            state.values.clear();
+            state.present.clear();
+        }
+
+        drop(rooted_parent);
+
+        assert_eq!(
+            interpreter.trace_when_quiescent().unwrap().arrays,
+            baseline.arrays + 1
+        );
+
+        let nested = children[0].array_items().unwrap().unwrap();
+        assert_eq!(nested[0].as_number(), Some(7.0));
+
+        {
+            let _guard = child.borrow_mut();
+            assert!(children[0].array_items().is_err());
+        }
+
+        drop(nested);
+        drop(children);
+
+        assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
+    }
 }

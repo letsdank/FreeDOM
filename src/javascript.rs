@@ -326,9 +326,27 @@ impl HostValue {
         &self.0.value
     }
 
-    // The returned reference cannot outlive the host root.
-    fn as_internal_value(&self) -> &Value {
-        &self.0.value
+    fn is_user_function(&self) -> bool {
+        matches!(self.0.value, Value::Function(_))
+    }
+
+    /// Snapshots the current stored array slots as independently rooted values.
+    /// This does not implement JavaScript indexed property access.
+    fn array_items(&self) -> Result<Option<Vec<HostValue>>, std::cell::BorrowError> {
+        let Value::Array(array) = &self.0.value else {
+            return Ok(None);
+        };
+
+        let array = array.try_borrow()?;
+
+        let values = array
+            .values
+            .iter()
+            .cloned()
+            .map(|value| self.0._owner.register(value))
+            .collect();
+
+        Ok(Some(values))
     }
 }
 

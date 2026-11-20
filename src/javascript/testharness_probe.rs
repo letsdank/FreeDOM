@@ -5,7 +5,7 @@
 //! This is not a WPT runner or a browser environment: `self` is an ordinary
 //! object, and the legacy native WPT assertion shim is not installed.
 
-use super::{HostError, HostValue, Interpreter, JsError, Value, parse_program};
+use super::{HostError, HostValue, Interpreter, JsError, parse_program};
 
 fn execute_host_source(
     interpreter: &mut Interpreter,
@@ -13,6 +13,19 @@ fn execute_host_source(
 ) -> Result<HostValue, HostError> {
     let program = parse_program(source).map_err(|error| interpreter.export_error(error))?;
     interpreter.execute_host_script(&program)
+}
+
+fn host_array(
+    interpreter: &Interpreter,
+    value: &HostValue,
+    invalid_message: &str,
+) -> Result<Vec<HostValue>, HostError> {
+    value
+        .array_items()
+        .map_err(|_| {
+            interpreter.export_error(JsError::runtime("harness report array is borrowed"))
+        })?
+        .ok_or_else(|| interpreter.export_error(JsError::runtime(invalid_message)))
 }
 
 fn bootstrap_testharness(source: &str) -> Result<Interpreter, HostError> {
@@ -24,7 +37,7 @@ fn bootstrap_testharness(source: &str) -> Result<Interpreter, HostError> {
     for name in ["test", "assert_equals", "add_completion_callback"] {
         let result = execute_host_source(&mut interpreter, &format!("self.{name};"))?;
 
-        if !matches!(result.as_internal_value(), Value::Function(_)) {
+        if !result.is_user_function() {
             return Err(interpreter.export_error(JsError::runtime(format!(
                 "testharness did not expose function self.{name}"
             ))));
@@ -128,21 +141,16 @@ pub(crate) fn run_harness_scripts(
         "[__freedom_results, __freedom_completions, __freedom_harness_status];",
     )?;
 
-    let fields = snapshot
-        .as_internal_value()
-        .as_array()
-        .ok_or_else(|| interpreter.export_error(JsError::runtime("invalid harness report")))?;
+    let fields = host_array(&interpreter, &snapshot, "invalid harness report")?;
 
-    if fields.len() != 3 || fields[1] != Value::Number(1.0) {
+    if fields.len() != 3 || fields[1].as_number() != Some(1.0) {
         return Err(interpreter.export_error(JsError::runtime(
             "testharness did not complete exactly once",
         )));
     }
 
-    let harness_status = match fields[2] {
-        Value::Number(number) if number.fract() == 0.0 && (0.0..=3.0).contains(&number) => {
-            number as u8
-        }
+    let harness_status = match fields[2].as_number() {
+        Some(number) if number.fract() == 0.0 && (0.0..=3.0).contains(&number) => number as u8,
 
         _ => {
             return Err(
@@ -151,32 +159,34 @@ pub(crate) fn run_harness_scripts(
         }
     };
 
-    let records = fields[0].as_array().ok_or_else(|| {
-        interpreter.export_error(JsError::runtime("invalid testharness result list"))
-    })?;
+    let records = host_array(&interpreter, &fields[0], "invalid testharness result list")?;
 
     let mut results = Vec::with_capacity(records.len());
 
     for record in records {
-        let record = record.as_array().ok_or_else(|| {
-            interpreter.export_error(JsError::runtime("invalid testharness result"))
-        })?;
+        let record = host_array(&interpreter, &record, "invalid testharness result")?;
 
-        let [Value::String(name), Value::Number(status)] = record.as_slice() else {
+        let [name, status] = record.as_slice() else {
             return Err(
                 interpreter.export_error(JsError::runtime("invalid testharness result fields"))
             );
         };
 
-        if status.fract() != 0.0 || !(0.0..=4.0).contains(status) {
+        let (Some(name), Some(status)) = (name.as_string(), status.as_number()) else {
+            return Err(
+                interpreter.export_error(JsError::runtime("invalid testharness result fields"))
+            );
+        };
+
+        if status.fract() != 0.0 || !(0.0..=4.0).contains(&status) {
             return Err(
                 interpreter.export_error(JsError::runtime("invalid testharness subtest status"))
             );
         }
 
         results.push(HarnessResult {
-            name: name.clone(),
-            status: *status as u8,
+            name: name.to_owned(),
+            status: status as u8,
         });
     }
 
@@ -228,12 +238,12 @@ mod tests {
         let JsErrorKind::Thrown(value) = thrown.kind else {
             panic!("expected thrown value")
         };
-        let super::Value::Object(object) = value.as_internal_value() else {
+        let crate::javascript::Value::Object(object) = value.as_test_value() else {
             panic!("expected object")
         };
         assert_eq!(
             object.borrow().get("code"),
-            Some(&super::Value::Number(42.0))
+            Some(&crate::javascript::Value::Number(42.0))
         );
     }
 
