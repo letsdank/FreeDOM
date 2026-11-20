@@ -355,6 +355,62 @@ mod tests {
     }
 
     #[test]
+    fn script_completion_stays_rooted_until_host_registration() {
+        use super::super::{Completion, ExecutionFrame};
+
+        for source in ["[];", "throw [];"] {
+            let mut interpreter = Interpreter::new();
+            let baseline = interpreter.trace_when_quiescent().unwrap();
+            let program = parse_program(source).unwrap();
+
+            let host = interpreter.with_script_completion(&program, |runtime, index| {
+                let result = match &runtime.execution_frames[index] {
+                    ExecutionFrame::PendingCompletion(result) => result.clone(),
+                    _ => panic!("expected pending completion"),
+                };
+                let array = match &result {
+                    Ok(Completion::Normal(Value::Array(array))) => array.clone(),
+                    Err(error) => match &error.kind {
+                        JsErrorKind::Thrown(Value::Array(array)) => array.clone(),
+                        _ => panic!("expected thrown array"),
+                    },
+                    _ => panic!("expected array result"),
+                };
+                let count_roots = |runtime: &Interpreter| {
+                    let mut count = 0;
+                    runtime
+                        .visit_runtime_roots(&mut |root| {
+                            if let super::RuntimeRoot::Value(Value::Array(found)) = root {
+                                count += usize::from(Rc::ptr_eq(found, &array));
+                            }
+                        })
+                        .unwrap();
+                    count
+                };
+
+                assert_eq!(count_roots(runtime), 1);
+                let host = match result {
+                    Ok(completion) => runtime.export_value(completion.into_value()),
+                    Err(error) => match runtime.export_error(error).kind {
+                        JsErrorKind::Thrown(value) => value,
+                        _ => panic!("expected host exception"),
+                    },
+                };
+                assert_eq!(count_roots(runtime), 2);
+                host
+            });
+
+            assert_eq!(
+                interpreter.trace_when_quiescent().unwrap().arrays,
+                baseline.arrays + 1,
+                "{source}"
+            );
+            drop(host);
+            assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
+        }
+    }
+
+    #[test]
     fn host_array_items_remain_rooted_after_parent_is_changed_and_dropped() {
         let interpreter = Interpreter::new();
         let baseline = interpreter.trace_when_quiescent().unwrap();

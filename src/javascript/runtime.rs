@@ -141,6 +141,7 @@ struct Cleanup {
     captured: HashMap<String, Value>,
 }
 
+#[derive(Clone)]
 pub(super) enum Completion {
     Normal(Value),
     Return(Value),
@@ -587,43 +588,74 @@ impl Interpreter {
         result
     }
 
-    pub(super) fn execute_script(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
+    // Keep the script result rooted through the checkpoint and its final consumer.
+    fn with_script_completion<T>(
+        &mut self,
+        program: &[Statement],
+        consume: impl FnOnce(&mut Self, usize) -> T,
+    ) -> T {
         self.steps_remaining = self.execution_limit;
         let result = self.execute(program);
 
-        if let Err(error) = &result {
-            if !matches!(
+        let run_checkpoint = match &result {
+            Err(error) => matches!(
                 error.kind,
                 super::JsErrorKind::Thrown(_) | super::JsErrorKind::NativeException(_)
-            ) {
-                self.microtasks.clear();
-                return result;
-            }
+            ),
+            Ok(_) => true,
+        };
+
+        if !run_checkpoint {
+            self.microtasks.clear();
         }
 
-        let (result, ()) = self.with_pending_completion(result, |interpreter| {
-            let checkpoint = interpreter.perform_microtask_checkpoint();
+        let index = self.execution_frames.len();
+        let (_, output) = self
+            .with_pending_completion(result, |interpreter| {
+                if run_checkpoint {
+                    if let Err(error) = interpreter.perform_microtask_checkpoint() {
+                        interpreter.microtasks.clear();
+                        match interpreter.execution_frames.get_mut(index) {
+                            Some(ExecutionFrame::PendingCompletion(result)) => *result = Err(error),
+                            _ => unreachable!("pending completion frame must exist"),
+                        }
+                    }
+                }
 
-            if checkpoint.is_err() {
-                interpreter.microtasks.clear();
-            }
+                Ok(consume(interpreter, index))
+            })
+            .expect("script completion consumer cannot fail as an engine operation");
 
-            checkpoint
-        })?;
-
-        result
+        output
     }
 
-    /// Executes a host script and registers its result before returning to the host.
-    /// No collection may run between `execute_script` and exporting its result.
+    // Test-only entry point: its returned value is not registered as a host root.
+    #[cfg(test)]
+    pub(super) fn execute_script(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
+        self.with_script_completion(program, |interpreter, index| {
+            match &interpreter.execution_frames[index] {
+                ExecutionFrame::PendingCompletion(result) => result.clone(),
+                _ => unreachable!("pending completion frame must exist"),
+            }
+        })
+    }
+
+    /// Registers the result or exception while the script completion frame is still live.
     pub(super) fn execute_host_script(
         &mut self,
         program: &[Statement],
     ) -> Result<HostValue, HostError> {
-        match self.execute_script(program) {
-            Ok(completion) => Ok(self.export_value(completion.into_value())),
-            Err(error) => Err(self.export_error(error)),
-        }
+        self.with_script_completion(program, |interpreter, index| {
+            match &interpreter.execution_frames[index] {
+                ExecutionFrame::PendingCompletion(Ok(completion)) => {
+                    Ok(interpreter.export_value(completion.clone().into_value()))
+                }
+                ExecutionFrame::PendingCompletion(Err(error)) => {
+                    Err(interpreter.export_error(error.clone()))
+                }
+                _ => unreachable!("pending completion frame must exist"),
+            }
+        })
     }
 
     // Pending completions are future GC roots, but this is not a GC safepoint yet.
