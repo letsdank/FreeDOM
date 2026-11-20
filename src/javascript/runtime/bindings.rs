@@ -41,6 +41,7 @@ pub(in crate::javascript) fn visit_captured_bindings(
     Ok(())
 }
 
+#[derive(Clone)]
 pub(super) struct BindingSnapshot {
     name: String,
     previous: Option<Rc<RefCell<Binding>>>,

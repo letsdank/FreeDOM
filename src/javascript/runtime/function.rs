@@ -321,18 +321,38 @@ impl Interpreter {
                 .push(previous);
         }
 
-        let result = self.call_function(function.definition(), frame_index);
+        let result = self
+            .call_function(function.definition(), frame_index)
+            .map(Completion::Return);
 
-        let frame = match self.execution_frames.pop() {
-            Some(super::ExecutionFrame::ActiveCall(frame)) => frame,
+        // Keep both the completion and unrestored bindings visible to root traversal.
+        let (result, ()) = self
+            .with_pending_completion(result, |interpreter| {
+                while let Some(binding) = interpreter
+                    .active_call_frame(frame_index)
+                    .replaced_bindings
+                    .last()
+                    .cloned()
+                {
+                    interpreter.variables.restore(binding);
+                    interpreter
+                        .active_call_frame_mut(frame_index)
+                        .replaced_bindings
+                        .pop();
+                }
+                Ok(())
+            })
+            .expect("restoring function bindings cannot fail");
+
+        match self.execution_frames.pop() {
+            Some(super::ExecutionFrame::ActiveCall(_)) => {}
             _ => unreachable!("active call frame must exist"),
-        };
-
-        for binding in frame.replaced_bindings.into_iter().rev() {
-            self.variables.restore(binding);
         }
 
-        result
+        result.map(|completion| match completion {
+            Completion::Return(value) => value,
+            _ => unreachable!("function results use return completion"),
+        })
     }
 }
 
@@ -779,6 +799,21 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Boolean(true));
+
+        let objects = evaluate(
+            r#"
+                let item = { value: 1 };
+                let expected = { value: 2 };
+                function forward(item) { return item; }
+                function fail(item) { throw item; }
+                let returned = forward(expected);
+                let caught;
+                try { fail(expected); } catch (error) { caught = error; }
+                returned === expected && caught === expected && item.value === 1;
+            "#,
+        )
+        .unwrap();
+        assert_eq!(objects, Value::Boolean(true));
     }
 
     #[test]
