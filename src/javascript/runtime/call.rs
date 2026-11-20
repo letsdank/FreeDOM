@@ -41,6 +41,7 @@ impl Interpreter {
                 callee,
                 receiver,
                 arguments: values,
+                pending_error: None,
             },
             |interpreter, index| interpreter.dispatch_call_in_frame(index),
         )
@@ -52,17 +53,30 @@ impl Interpreter {
         receiver: Option<Value>,
         values: Vec<Value>,
         destination: usize,
+        error_destination: usize,
     ) -> Result<(), JsError> {
         self.with_call_frame_handoff(
             super::PendingCall {
                 callee,
                 receiver,
                 arguments: values,
+                pending_error: None,
             },
             |interpreter, index| interpreter.dispatch_call_in_frame(index),
             |interpreter, result| {
-                interpreter.frame_values_mut(destination).push(result?);
-                Ok(())
+                match result {
+                    Ok(value) => {
+                        interpreter.frame_values_mut(destination).push(value);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        // The outer call keeps the error rooted while map unwinds its frames.
+                        interpreter
+                            .pending_call_mut(error_destination)
+                            .pending_error = Some(error.clone());
+                        Err(error)
+                    }
+                }
             },
         )
     }
@@ -73,11 +87,12 @@ impl Interpreter {
         let receiver = call.receiver.clone();
         let values = call.arguments.clone();
 
-        self.dispatch_call_inner(callee, receiver, values)
+        self.dispatch_call_inner(index, callee, receiver, values)
     }
 
     fn dispatch_call_inner(
         &mut self,
+        call_index: usize,
         callee: Value,
         receiver: Option<Value>,
         values: Vec<Value>,
@@ -184,7 +199,9 @@ impl Interpreter {
                 Self::array_constructor(values)
             }
 
-            Value::NativeFunction(NativeFunction::ArrayMap) => self.array_map(receiver, values),
+            Value::NativeFunction(NativeFunction::ArrayMap) => {
+                self.array_map(call_index, receiver, values)
+            }
 
             Value::NativeFunction(NativeFunction::ArraySome) => self.array_some(receiver, values),
 

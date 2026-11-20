@@ -193,23 +193,7 @@ impl ExecutionFrame {
 
                 Ok(Completion::Break | Completion::Continue) => {}
 
-                Err(error) => match &error.kind {
-                    super::JsErrorKind::Thrown(value)
-                    | super::JsErrorKind::NativeException(super::NativeException::Materialized(
-                        value,
-                    )) => {
-                        visit(RuntimeRoot::Value(value));
-                    }
-
-                    super::JsErrorKind::NativeException(super::NativeException::Pending {
-                        ..
-                    }) => {}
-
-                    super::JsErrorKind::Syntax
-                    | super::JsErrorKind::UnclassifiedRuntime
-                    | super::JsErrorKind::UnsupportedFeature
-                    | super::JsErrorKind::ResourceLimit => {}
-                },
+                Err(error) => visit_error_roots(error, visit),
             },
 
             Self::ShadowedBindings(bindings) => {
@@ -244,6 +228,10 @@ impl ExecutionFrame {
                 for argument in &call.arguments {
                     visit(RuntimeRoot::Value(argument));
                 }
+
+                if let Some(error) = &call.pending_error {
+                    visit_error_roots(error, visit);
+                }
             }
 
             Self::ActiveCall(call) => {
@@ -267,6 +255,20 @@ impl ExecutionFrame {
     }
 }
 
+fn visit_error_roots<'a>(error: &'a JsError, visit: &mut impl FnMut(RuntimeRoot<'a>)) {
+    match &error.kind {
+        super::JsErrorKind::Thrown(value)
+        | super::JsErrorKind::NativeException(super::NativeException::Materialized(value)) => {
+            visit(RuntimeRoot::Value(value));
+        }
+        super::JsErrorKind::NativeException(super::NativeException::Pending { .. })
+        | super::JsErrorKind::Syntax
+        | super::JsErrorKind::UnclassifiedRuntime
+        | super::JsErrorKind::UnsupportedFeature
+        | super::JsErrorKind::ResourceLimit => {}
+    }
+}
+
 struct ActiveCallFrame {
     callee: FunctionValue,
     arguments: Vec<Value>,
@@ -278,6 +280,7 @@ struct PendingCall {
     callee: Value,
     receiver: Option<Value>,
     arguments: Vec<Value>,
+    pending_error: Option<JsError>,
 }
 
 impl Completion {
@@ -783,6 +786,7 @@ impl Interpreter {
                 callee,
                 receiver,
                 arguments: Vec::with_capacity(expressions.len()),
+                pending_error: None,
             },
             |interpreter, index| {
                 for expression in expressions {
@@ -1911,6 +1915,7 @@ mod tests {
                     callee: Value::Undefined,
                     receiver: None,
                     arguments: vec![],
+                    pending_error: None,
                 }));
             let pending = if throwing {
                 Err(JsError::thrown(Value::Object(object.clone())))
@@ -1953,6 +1958,7 @@ mod tests {
                         callee: Value::Undefined,
                         receiver: None,
                         arguments: vec![],
+                        pending_error: None,
                     },
                     |_, _| Ok(Value::Object(object.clone())),
                     |interpreter, result| {
@@ -1982,6 +1988,82 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn map_callback_exception_stays_rooted_while_temporary_frames_unwind() {
+        let mut interpreter = Interpreter::new();
+        let program = parse_program("(function() { throw {}; });").unwrap();
+        let callback = interpreter.execute_script(&program).unwrap().into_value();
+        let call = super::PendingCall {
+            callee: Value::Undefined,
+            receiver: None,
+            arguments: vec![],
+            pending_error: None,
+        };
+
+        let result = interpreter.with_call_frame_handoff(
+            call,
+            |interpreter, call_index| {
+                let result = interpreter.with_temporary_values_scope(|interpreter, destination| {
+                    interpreter.with_frame_value(Value::Undefined, |interpreter, _| {
+                        interpreter.dispatch_call_into_temporary_frame(
+                            callback,
+                            None,
+                            vec![],
+                            destination,
+                            call_index,
+                        )
+                    })
+                });
+
+                let Err(JsError {
+                    kind: JsErrorKind::Thrown(Value::Object(object)),
+                    ..
+                }) = &result
+                else {
+                    panic!("expected an object exception");
+                };
+                let mut found = false;
+                interpreter
+                    .visit_runtime_roots(&mut |root| {
+                        if let RuntimeRoot::Value(Value::Object(value)) = root {
+                            found |= Rc::ptr_eq(value, object);
+                        }
+                    })
+                    .unwrap();
+                assert!(found, "outer call must retain the exception");
+                result.map(|()| Value::Undefined)
+            },
+            |interpreter, result| {
+                let Err(JsError {
+                    kind: JsErrorKind::Thrown(Value::Object(object)),
+                    ..
+                }) = &result
+                else {
+                    panic!("expected an object exception");
+                };
+                let mut found = false;
+                interpreter
+                    .visit_runtime_roots(&mut |root| {
+                        if let RuntimeRoot::Value(Value::Object(value)) = root {
+                            found |= Rc::ptr_eq(value, object);
+                        }
+                    })
+                    .unwrap();
+                assert!(found, "completion must retain the exception");
+                result
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(JsError {
+                kind: JsErrorKind::Thrown(_),
+                ..
+            })
+        ));
         assert!(interpreter.execution_frames.is_empty());
     }
 
@@ -2345,6 +2427,7 @@ mod tests {
                 callee: Value::Number(7.0),
                 receiver: Some(Value::Number(8.0)),
                 arguments: vec![Value::Number(9.0)],
+                pending_error: None,
             }),
             ExecutionFrame::ActiveCall(super::ActiveCallFrame {
                 callee,

@@ -11,6 +11,7 @@ use crate::javascript::{FunctionKind, value::PropertyLookup};
 impl Interpreter {
     pub(super) fn array_map(
         &mut self,
+        call_index: usize,
         receiver: Option<Value>,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
@@ -139,6 +140,7 @@ impl Interpreter {
                                 Value::Array(array.clone()),
                             ],
                             frame_index,
+                            call_index,
                         )
                     })?;
 
@@ -301,17 +303,18 @@ mod tests {
                     return x * this.factor;
                 }, context);
 
-                let caught = '';
+                let marker = { message: 'boom' };
+                let caught = null;
 
                 try {
                     [1].map(function() {
-                        throw 'boom';
+                        throw marker;
                     });
                 } catch (error) {
                     caught = error;
                 }
 
-                mapped[0] === 6 && caught === 'boom';
+                mapped[0] === 6 && caught === marker && caught.message === 'boom';
             "#,
         )
         .unwrap();
