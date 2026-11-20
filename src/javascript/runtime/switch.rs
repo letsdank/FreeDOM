@@ -22,7 +22,8 @@ impl Interpreter {
                     Some(test) => {
                         let case_value = interpreter.evaluate_expression(test)?;
 
-                        if Self::strictly_equals(interpreter.frame_value(frame_index), &case_value)
+                        if interpreter
+                            .strictly_equals(interpreter.frame_value(frame_index), &case_value)
                         {
                             selected = Some(index);
                             break;

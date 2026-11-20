@@ -171,7 +171,7 @@ impl Interpreter {
         let actual = &arguments[0];
         let expected = &arguments[1];
 
-        if Self::same_value(actual, expected) {
+        if self.same_value(actual, expected) {
             return Ok(Value::Undefined);
         }
 
@@ -227,7 +227,7 @@ impl Interpreter {
             ));
         }
 
-        if !Self::same_value(&arguments[0], &arguments[1]) {
+        if !self.same_value(&arguments[0], &arguments[1]) {
             return Ok(Value::Undefined);
         }
 

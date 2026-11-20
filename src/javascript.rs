@@ -280,7 +280,28 @@ impl HostRoots {
         object: &value::ObjectStorage,
         name: &str,
     ) -> value::PropertyLookup {
-        value::ObjectState::lookup(object, name)
+        let mut current = object.clone();
+        loop {
+            let next = {
+                let state = current.borrow();
+                if let Some(value) = state.get(name) {
+                    return value::PropertyLookup::Found(value.clone());
+                }
+                state.prototype()
+            };
+            match next {
+                value::ObjectPrototype::Null => return value::PropertyLookup::Absent,
+                value::ObjectPrototype::Unknown => return value::PropertyLookup::Unknown,
+                value::ObjectPrototype::IntrinsicObjectRoot => {
+                    return if value::is_object_prototype_intrinsic(name) {
+                        value::PropertyLookup::Unknown
+                    } else {
+                        value::PropertyLookup::Absent
+                    };
+                }
+                value::ObjectPrototype::Object(prototype) => current = prototype,
+            }
+        }
     }
 
     fn read_ordinary_own_property(
@@ -359,7 +380,37 @@ impl HostRoots {
     }
 
     fn ordinary_for_in_keys(&self, object: &value::ObjectStorage) -> Option<Vec<String>> {
-        value::ObjectState::for_in_keys(object)
+        let mut current = object.clone();
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let (keys, prototype) = {
+                let state = current.borrow();
+                let prototype = state.prototype();
+                // The legacy __proto__ setter is not implemented yet.
+                if matches!(prototype, value::ObjectPrototype::IntrinsicObjectRoot)
+                    && state.get("__proto__").is_some()
+                {
+                    return None;
+                }
+
+                (state.own_keys_with_enumerability(), prototype)
+            };
+            for (key, enumerable) in keys {
+                if seen.insert(key.clone()) && enumerable {
+                    result.push(key);
+                }
+            }
+            match prototype {
+                value::ObjectPrototype::Null | value::ObjectPrototype::IntrinsicObjectRoot => {
+                    return Some(result);
+                }
+                value::ObjectPrototype::Unknown => return None,
+                value::ObjectPrototype::Object(prototype) => {
+                    current = prototype;
+                }
+            }
+        }
     }
 
     fn ordinary_has_prototype(
@@ -367,7 +418,21 @@ impl HostRoots {
         object: &value::ObjectStorage,
         prototype: &value::ObjectStorage,
     ) -> Option<bool> {
-        value::ObjectState::has_prototype(object, prototype)
+        let mut current = object.clone();
+        loop {
+            match self.ordinary_prototype(&current) {
+                value::ObjectPrototype::Object(next) => {
+                    if self.same_ordinary_object(&next, prototype) {
+                        return Some(true);
+                    }
+                    current = next;
+                }
+                value::ObjectPrototype::Null | value::ObjectPrototype::IntrinsicObjectRoot => {
+                    return Some(false);
+                }
+                value::ObjectPrototype::Unknown => return None,
+            }
+        }
     }
 
     fn register(self: &Rc<Self>, value: Value) -> HostValue {

@@ -262,10 +262,7 @@ mod tests {
             let Value::Object(object) = value else {
                 panic!("expected capture object");
             };
-            assert_eq!(
-                crate::javascript::value::ObjectState::for_in_keys(object),
-                None
-            );
+            assert_eq!(interpreter.host_roots.ordinary_for_in_keys(object), None);
             assert!(object.borrow().get("x").is_some());
         }
         assert_eq!(values.values.len(), 2);

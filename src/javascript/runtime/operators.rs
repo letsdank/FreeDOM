@@ -16,9 +16,9 @@ impl Interpreter {
         right: Value,
     ) -> Result<Value, JsError> {
         match operator {
-            BinaryOperator::StrictEqual => Ok(Value::Boolean(Self::strictly_equals(&left, &right))),
+            BinaryOperator::StrictEqual => Ok(Value::Boolean(self.strictly_equals(&left, &right))),
             BinaryOperator::StrictNotEqual => {
-                Ok(Value::Boolean(!Self::strictly_equals(&left, &right)))
+                Ok(Value::Boolean(!self.strictly_equals(&left, &right)))
             }
 
             BinaryOperator::Equal => Ok(Value::Boolean(self.loosely_equals(&left, &right))),

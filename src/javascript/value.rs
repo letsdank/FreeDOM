@@ -120,7 +120,7 @@ pub(crate) enum PropertyLookup {
 // These names exist on the initial Object.prototype, but some values and
 // descriptors are not implemented. Other missing string keys are absent.
 // https://tc39.es/ecma262/#sec-properties-of-the-object-prototype-object
-fn is_object_prototype_intrinsic(name: &str) -> bool {
+pub(super) fn is_object_prototype_intrinsic(name: &str) -> bool {
     matches!(
         name,
         "constructor"
@@ -181,7 +181,7 @@ impl ObjectState {
             .collect()
     }
 
-    fn own_keys_with_enumerability(&self) -> Vec<(String, bool)> {
+    pub(super) fn own_keys_with_enumerability(&self) -> Vec<(String, bool)> {
         self.ordinary.properties.ordered_keys()
     }
 
@@ -191,108 +191,6 @@ impl ObjectState {
             .iter()
             .map(|(name, value)| (name.to_owned(), value.clone()))
             .collect()
-    }
-
-    pub(crate) fn lookup(object: &ObjectStorage, name: &str) -> PropertyLookup {
-        let mut current = object.clone();
-
-        loop {
-            let next = {
-                let state = current.borrow();
-
-                if let Some(value) = state.get(name) {
-                    return PropertyLookup::Found(value.clone());
-                }
-
-                state.ordinary.prototype.clone()
-            };
-
-            match next {
-                ObjectPrototype::Null => return PropertyLookup::Absent,
-
-                ObjectPrototype::Unknown => return PropertyLookup::Unknown,
-
-                ObjectPrototype::IntrinsicObjectRoot => {
-                    return if is_object_prototype_intrinsic(name) {
-                        PropertyLookup::Unknown
-                    } else {
-                        PropertyLookup::Absent
-                    };
-                }
-
-                ObjectPrototype::Object(prototype) => current = prototype,
-            }
-        }
-    }
-
-    pub(crate) fn has_prototype(object: &ObjectStorage, target: &ObjectStorage) -> Option<bool> {
-        let mut current = object.clone();
-
-        loop {
-            let prototype = current.borrow().ordinary.prototype.clone();
-
-            match prototype {
-                ObjectPrototype::Object(next) => {
-                    if Rc::ptr_eq(&next, target) {
-                        return Some(true);
-                    }
-
-                    current = next;
-                }
-
-                ObjectPrototype::Null | ObjectPrototype::IntrinsicObjectRoot => {
-                    return Some(false);
-                }
-
-                ObjectPrototype::Unknown => return None,
-            }
-        }
-    }
-
-    pub(crate) fn for_in_keys(object: &ObjectStorage) -> Option<Vec<String>> {
-        let mut current = object.clone();
-        let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        loop {
-            let (keys, prototype) = {
-                let state = current.borrow();
-
-                // The legacy __proto__ setter is not implemented yet.
-                if matches!(
-                    state.ordinary.prototype,
-                    ObjectPrototype::IntrinsicObjectRoot
-                ) && state.get("__proto__").is_some()
-                {
-                    return None;
-                }
-
-                (
-                    state.own_keys_with_enumerability(),
-                    state.ordinary.prototype.clone(),
-                )
-            };
-
-            for (key, enumerable) in keys {
-                if seen.insert(key.clone()) && enumerable {
-                    result.push(key);
-                }
-            }
-
-            match prototype {
-                ObjectPrototype::Null => return Some(result),
-
-                ObjectPrototype::Unknown => return None,
-
-                // The remaining built-in Object.prototype properties are
-                // non-enumerable and the intrinsic root has no prototype.
-                ObjectPrototype::IntrinsicObjectRoot => return Some(result),
-
-                ObjectPrototype::Object(prototype) => {
-                    current = prototype;
-                }
-            }
-        }
     }
 
     #[allow(dead_code)]
@@ -358,6 +256,10 @@ pub struct NativeErrorValue {
 }
 
 impl NativeErrorValue {
+    pub(super) fn same_identity(&self, owner: &HostRoots, other: &Self) -> bool {
+        owner.same_ordinary_object(&self.properties, &other.properties)
+    }
+
     pub(super) fn lookup_method(&self, owner: &HostRoots, name: &str) -> PropertyLookup {
         if let Some(value) = owner.read_ordinary_own_property(&self.properties, name) {
             return PropertyLookup::Found(value);
@@ -517,6 +419,10 @@ pub(super) struct BoundFunction {
 }
 
 impl FunctionValue {
+    pub(super) fn same_identity(&self, owner: &HostRoots, other: &Self) -> bool {
+        owner.same_ordinary_object(&self.properties, &other.properties)
+    }
+
     pub(super) fn definition(&self) -> &UserFunction {
         &self.definition
     }
@@ -995,12 +901,12 @@ mod tests {
         child.borrow_mut().set("visible".into(), Value::Number(4.0));
 
         assert!(matches!(
-            ObjectState::lookup(&child, "hidden"),
+            HostRoots::default().lookup_ordinary_property(&child, "hidden"),
             PropertyLookup::Found(Value::Number(3.0))
         ));
 
         assert_eq!(
-            ObjectState::for_in_keys(&child),
+            HostRoots::default().ordinary_for_in_keys(&child),
             Some(vec!["visible".to_owned(), "inherited".to_owned()])
         );
     }
@@ -1035,7 +941,7 @@ mod tests {
             panic!("expected object");
         };
 
-        assert_eq!(ObjectState::for_in_keys(&object), None);
+        assert_eq!(HostRoots::default().ordinary_for_in_keys(&object), None);
     }
 
     #[test]

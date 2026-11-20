@@ -122,8 +122,7 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use crate::javascript::value::ObjectState;
-    use crate::javascript::{JsErrorKind, Value, evaluate};
+    use crate::javascript::{HostRoots, JsErrorKind, Value, evaluate};
 
     #[test]
     fn checks_new_instances_and_prototype_identity() {
@@ -216,7 +215,10 @@ mod tests {
             panic!("expected object");
         };
 
-        assert_eq!(ObjectState::has_prototype(&unknown, &target), None);
+        assert_eq!(
+            HostRoots::default().ordinary_has_prototype(&unknown, &target),
+            None
+        );
 
         let error =
             evaluate("function F() {} F.prototype = []; let x = {}; x instanceof F;").unwrap_err();

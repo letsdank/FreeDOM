@@ -15,15 +15,25 @@ pub(super) enum PrimitiveHint {
 }
 
 impl Interpreter {
-    // The heap-backed Array and Object variants compare by identity.
+    // Array, ordinary object, function and native error values compare by identity.
     // https://tc39.es/ecma262/#sec-isstrictlyequal
-    pub(super) fn strictly_equals(left: &Value, right: &Value) -> bool {
+    pub(super) fn strictly_equals(&self, left: &Value, right: &Value) -> bool {
         match (left, right) {
             (Value::Array(left), Value::Array(right)) => std::rc::Rc::ptr_eq(left, right),
 
             (Value::Document(left), Value::Document(right)) => std::rc::Rc::ptr_eq(left, right),
 
-            (Value::Object(left), Value::Object(right)) => std::rc::Rc::ptr_eq(left, right),
+            (Value::Object(left), Value::Object(right)) => {
+                self.host_roots.same_ordinary_object(left, right)
+            }
+
+            (Value::Function(left), Value::Function(right)) => {
+                left.same_identity(&self.host_roots, right)
+            }
+
+            (Value::NativeError(left), Value::NativeError(right)) => {
+                left.same_identity(&self.host_roots, right)
+            }
 
             _ => left == right,
         }
@@ -31,7 +41,7 @@ impl Interpreter {
 
     // WPT's assert_equals and assert_not_equals use SameValue, not ===.
     // https://tc39.es/ecma262/#sec-samevalue
-    pub(super) fn same_value(left: &Value, right: &Value) -> bool {
+    pub(super) fn same_value(&self, left: &Value, right: &Value) -> bool {
         match (left, right) {
             (Value::Number(left), Value::Number(right)) if left.is_nan() && right.is_nan() => true,
 
@@ -39,7 +49,7 @@ impl Interpreter {
                 left.is_sign_negative() == right.is_sign_negative()
             }
 
-            _ => Self::strictly_equals(left, right),
+            _ => self.strictly_equals(left, right),
         }
     }
 
@@ -51,7 +61,7 @@ impl Interpreter {
                 self.primitive_to_number(left) == self.primitive_to_number(right)
             }
 
-            _ => Self::strictly_equals(left, right),
+            _ => self.strictly_equals(left, right),
         }
     }
 
@@ -267,22 +277,31 @@ mod tests {
 
     #[test]
     fn strict_and_same_value_handle_numbers_and_identity() {
+        let interpreter = Interpreter::new();
         let nan = Value::Number(f64::NAN);
         let positive_zero = Value::Number(0.0);
         let negative_zero = Value::Number(-0.0);
 
-        assert!(!Interpreter::strictly_equals(&nan, &nan));
-        assert!(Interpreter::same_value(&nan, &nan));
+        assert!(!interpreter.strictly_equals(&nan, &nan));
+        assert!(interpreter.same_value(&nan, &nan));
 
-        assert!(Interpreter::strictly_equals(&positive_zero, &negative_zero));
-        assert!(!Interpreter::same_value(&positive_zero, &negative_zero));
+        assert!(interpreter.strictly_equals(&positive_zero, &negative_zero));
+        assert!(!interpreter.same_value(&positive_zero, &negative_zero));
 
         let first = Value::array(vec![Value::Number(1.0)]);
         let alias = first.clone();
         let second = Value::array(vec![Value::Number(1.0)]);
 
-        assert!(Interpreter::strictly_equals(&first, &alias));
-        assert!(!Interpreter::strictly_equals(&first, &second));
+        assert!(interpreter.strictly_equals(&first, &alias));
+        assert!(!interpreter.strictly_equals(&first, &second));
+
+        let first = Value::object([]);
+        let alias = first.clone();
+        let second = Value::object([]);
+        assert!(interpreter.strictly_equals(&first, &alias));
+        assert!(interpreter.same_value(&first, &alias));
+        assert!(!interpreter.strictly_equals(&first, &second));
+        assert!(!interpreter.same_value(&first, &second));
     }
 
     #[test]
