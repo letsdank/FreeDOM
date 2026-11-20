@@ -46,6 +46,27 @@ impl Interpreter {
         )
     }
 
+    pub(super) fn dispatch_call_into_temporary_frame(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        values: Vec<Value>,
+        destination: usize,
+    ) -> Result<(), JsError> {
+        self.with_call_frame_handoff(
+            super::PendingCall {
+                callee,
+                receiver,
+                arguments: values,
+            },
+            |interpreter, index| interpreter.dispatch_call_in_frame(index),
+            |interpreter, result| {
+                interpreter.frame_values_mut(destination).push(result?);
+                Ok(())
+            },
+        )
+    }
+
     pub(super) fn dispatch_call_in_frame(&mut self, index: usize) -> Result<Value, JsError> {
         let call = self.pending_call(index);
         let callee = call.callee.clone();

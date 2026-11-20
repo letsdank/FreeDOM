@@ -801,6 +801,15 @@ impl Interpreter {
         call: PendingCall,
         operation: impl FnOnce(&mut Self, usize) -> Result<Value, JsError>,
     ) -> Result<Value, JsError> {
+        self.with_call_frame_handoff(call, operation, |_, result| result)
+    }
+
+    fn with_call_frame_handoff<T>(
+        &mut self,
+        call: PendingCall,
+        operation: impl FnOnce(&mut Self, usize) -> Result<Value, JsError>,
+        handoff: impl FnOnce(&mut Self, Result<Value, JsError>) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
         let index = self.execution_frames.len();
 
         self.execution_frames
@@ -808,18 +817,20 @@ impl Interpreter {
 
         let result = operation(self, index).map(Completion::Return);
 
-        // The completion stays rooted until the call frame has been removed.
-        let (result, ()) = self
-            .with_pending_completion(result, |interpreter| {
-                interpreter.remove_pending_call(index);
-                Ok(())
-            })
-            .expect("removing a pending call cannot fail");
+        // Retain the completion until the caller has accepted the result.
+        let (_, output) = self.with_pending_completion(result, |interpreter| {
+            interpreter.remove_pending_call(index);
+            let result = match &interpreter.execution_frames[index] {
+                ExecutionFrame::PendingCompletion(Ok(Completion::Return(value))) => {
+                    Ok(value.clone())
+                }
+                ExecutionFrame::PendingCompletion(Err(error)) => Err(error.clone()),
+                _ => unreachable!("call results use return completion"),
+            };
+            handoff(interpreter, result)
+        })?;
 
-        result.map(|completion| match completion {
-            Completion::Return(value) => value,
-            _ => unreachable!("call results use return completion"),
-        })
+        Ok(output)
     }
 
     fn remove_pending_call(&mut self, index: usize) {
@@ -1926,6 +1937,52 @@ mod tests {
             assert_eq!(result.is_err(), throwing);
             assert!(interpreter.execution_frames.is_empty());
         }
+    }
+
+    #[test]
+    fn call_handoff_keeps_result_rooted_until_destination_accepts_it() {
+        let mut interpreter = Interpreter::new();
+        let Value::Object(object) = Value::object([]) else {
+            unreachable!();
+        };
+
+        interpreter
+            .with_temporary_values_scope(|interpreter, destination| {
+                interpreter.with_call_frame_handoff(
+                    super::PendingCall {
+                        callee: Value::Undefined,
+                        receiver: None,
+                        arguments: vec![],
+                    },
+                    |_, _| Ok(Value::Object(object.clone())),
+                    |interpreter, result| {
+                        let mut roots = 0;
+                        interpreter
+                            .visit_runtime_roots(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(value)) = root {
+                                    roots += usize::from(Rc::ptr_eq(value, &object));
+                                }
+                            })
+                            .unwrap();
+                        assert_eq!(roots, 1);
+                        interpreter.frame_values_mut(destination).push(result?);
+                        Ok(())
+                    },
+                )?;
+
+                let mut roots = 0;
+                interpreter
+                    .visit_runtime_roots(&mut |root| {
+                        if let RuntimeRoot::Value(Value::Object(value)) = root {
+                            roots += usize::from(Rc::ptr_eq(value, &object));
+                        }
+                    })
+                    .unwrap();
+                assert_eq!(roots, 1);
+                Ok(())
+            })
+            .unwrap();
+        assert!(interpreter.execution_frames.is_empty());
     }
 
     #[test]

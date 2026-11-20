@@ -123,28 +123,25 @@ impl Interpreter {
                 };
 
                 if let Some(value) = value {
-                    let result =
-                        interpreter.with_frame_value(value, |interpreter, value_index| {
-                            let callback =
-                                interpreter.frame_values(frame_index)[CALLBACK_SLOT].clone();
+                    interpreter.with_frame_value(value, |interpreter, value_index| {
+                        let callback = interpreter.frame_values(frame_index)[CALLBACK_SLOT].clone();
 
-                            let this_arg =
-                                interpreter.frame_values(frame_index)[THIS_ARG_SLOT].clone();
+                        let this_arg = interpreter.frame_values(frame_index)[THIS_ARG_SLOT].clone();
 
-                            let value = interpreter.frame_value(value_index).clone();
+                        let value = interpreter.frame_value(value_index).clone();
 
-                            interpreter.dispatch_call(
-                                callback,
-                                Some(this_arg),
-                                vec![
-                                    value,
-                                    Value::Number(index as f64),
-                                    Value::Array(array.clone()),
-                                ],
-                            )
-                        })?;
+                        interpreter.dispatch_call_into_temporary_frame(
+                            callback,
+                            Some(this_arg),
+                            vec![
+                                value,
+                                Value::Number(index as f64),
+                                Value::Array(array.clone()),
+                            ],
+                            frame_index,
+                        )
+                    })?;
 
-                    interpreter.frame_values_mut(frame_index).push(result);
                     present.push(true);
                 } else {
                     interpreter
