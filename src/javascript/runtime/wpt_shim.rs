@@ -45,13 +45,13 @@ impl Interpreter {
 
         let test_result =
             self.with_shadowed_bindings([("this".to_owned(), Value::TestContext)], |interpreter| {
-                interpreter.call_function_value_with_receiver(callback, callback_arguments, None)
+                interpreter
+                    .call_function_value_with_receiver(callback, callback_arguments, None)
+                    .map(Completion::Normal)
             });
 
-        let pending = test_result.map(Completion::Normal);
-
         let (test_result, cleanup_result) = self
-            .with_pending_completion(pending, |interpreter| {
+            .with_pending_completion(test_result, |interpreter| {
                 Ok(interpreter.run_cleanups_since(cleanup_start))
             })?;
 
@@ -121,7 +121,7 @@ impl Interpreter {
                         &cleanup.callback,
                         Vec::new(),
                         None,
-                    )
+                    ).map(Completion::Normal)
                 });
 
                 if let Err(error) = result {

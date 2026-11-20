@@ -328,18 +328,7 @@ impl Interpreter {
         // Keep both the completion and unrestored bindings visible to root traversal.
         let (result, ()) = self
             .with_pending_completion(result, |interpreter| {
-                while let Some(binding) = interpreter
-                    .active_call_frame(frame_index)
-                    .replaced_bindings
-                    .last()
-                    .cloned()
-                {
-                    interpreter.variables.restore(binding);
-                    interpreter
-                        .active_call_frame_mut(frame_index)
-                        .replaced_bindings
-                        .pop();
-                }
+                interpreter.restore_frame_bindings(frame_index);
                 Ok(())
             })
             .expect("restoring function bindings cannot fail");

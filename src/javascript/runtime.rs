@@ -645,31 +645,51 @@ impl Interpreter {
         Ok((pending, outcome?))
     }
 
-    fn with_shadowed_bindings<T>(
+    fn with_shadowed_bindings(
         &mut self,
         bindings: impl IntoIterator<Item = (String, Value)>,
-        operation: impl FnOnce(&mut Self) -> Result<T, JsError>,
-    ) -> Result<T, JsError> {
+        operation: impl FnOnce(&mut Self) -> Result<Completion, JsError>,
+    ) -> Result<Completion, JsError> {
         let snapshots = bindings
             .into_iter()
             .map(|(name, value)| self.variables.shadow(name, value))
             .collect();
 
+        let frame_index = self.execution_frames.len();
         self.execution_frames
             .push(ExecutionFrame::ShadowedBindings(snapshots));
 
         let result = operation(self);
 
-        let snapshots = match self.execution_frames.pop() {
-            Some(ExecutionFrame::ShadowedBindings(snapshots)) => snapshots,
-            _ => unreachable!("shadowed bindings frame must exist"),
-        };
+        let (result, ()) = self
+            .with_pending_completion(result, |interpreter| {
+                interpreter.restore_frame_bindings(frame_index);
+                Ok(())
+            })
+            .expect("restoring shadowed bindings cannot fail");
 
-        for snapshot in snapshots.into_iter().rev() {
-            self.variables.restore(snapshot);
+        match self.execution_frames.pop() {
+            Some(ExecutionFrame::ShadowedBindings(_)) => {}
+            _ => unreachable!("shadowed bindings frame must exist"),
         }
 
         result
+    }
+
+    fn frame_bindings_mut(&mut self, index: usize) -> &mut Vec<BindingSnapshot> {
+        match self.execution_frames.get_mut(index) {
+            Some(ExecutionFrame::ShadowedBindings(bindings)) => bindings,
+            Some(ExecutionFrame::ActiveCall(frame)) => &mut frame.replaced_bindings,
+            _ => unreachable!("binding frame must exist"),
+        }
+    }
+
+    // Keep each snapshot in its frame until the corresponding binding is restored.
+    fn restore_frame_bindings(&mut self, index: usize) {
+        while let Some(snapshot) = self.frame_bindings_mut(index).last().cloned() {
+            self.variables.restore(snapshot);
+            self.frame_bindings_mut(index).pop();
+        }
     }
 
     fn consume_step(&mut self) -> Result<(), JsError> {
@@ -1549,6 +1569,61 @@ mod tests {
     }
 
     #[test]
+    fn pending_completion_and_shadowed_binding_remain_roots_during_restoration() {
+        for throwing in [false, true] {
+            let mut interpreter = Interpreter::new();
+            let Value::Object(original) = Value::object([]) else {
+                unreachable!();
+            };
+            let Value::Object(returned) = Value::object([]) else {
+                unreachable!();
+            };
+            interpreter
+                .variables
+                .insert("x".into(), Value::Object(original.clone()));
+            let snapshot = interpreter.variables.shadow("x".into(), Value::Undefined);
+            let index = interpreter.execution_frames.len();
+            interpreter
+                .execution_frames
+                .push(ExecutionFrame::ShadowedBindings(vec![snapshot]));
+            let pending = if throwing {
+                Err(JsError::thrown(Value::Object(returned.clone())))
+            } else {
+                Ok(Completion::Return(Value::Object(returned.clone())))
+            };
+
+            let (result, ()) = interpreter
+                .with_pending_completion(pending, |interpreter| {
+                    for step in 0..2 {
+                        let mut saw_original = false;
+                        let mut saw_returned = false;
+                        interpreter
+                            .visit_runtime_roots(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(object)) = root {
+                                    saw_original |= Rc::ptr_eq(object, &original);
+                                    saw_returned |= Rc::ptr_eq(object, &returned);
+                                }
+                            })
+                            .unwrap();
+                        assert!(saw_original && saw_returned);
+                        if step == 0 {
+                            interpreter.restore_frame_bindings(index);
+                        }
+                    }
+                    Ok(())
+                })
+                .unwrap();
+
+            assert_eq!(result.is_err(), throwing);
+            assert!(matches!(
+                interpreter.execution_frames.pop(),
+                Some(ExecutionFrame::ShadowedBindings(_))
+            ));
+            assert!(interpreter.execution_frames.is_empty());
+        }
+    }
+
+    #[test]
     fn primitive_conversion_frames_unwind_after_success_and_throw() {
         let mut interpreter = Interpreter::new();
         for (source, succeeds) in [
@@ -1579,7 +1654,7 @@ mod tests {
                         _ => panic!("expected for-of frame"),
                     }
 
-                    Err::<(), _>(JsError::resource_limit("test limit"))
+                    Err::<Completion, _>(JsError::resource_limit("test limit"))
                 })
             },
         );
