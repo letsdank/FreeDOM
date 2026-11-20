@@ -7,7 +7,7 @@
 //! without executing handlers.
 
 use super::{Completion, Interpreter, JsError, Statement, Value};
-use crate::javascript::{JsErrorKind, ast::CatchClause};
+use crate::javascript::{JsErrorKind, NativeException, ast::CatchClause};
 
 impl Interpreter {
     pub(super) fn execute_try(
@@ -25,7 +25,7 @@ impl Interpreter {
                     ..
                 })
                 | Err(JsError {
-                    kind: JsErrorKind::NativeException(value),
+                    kind: JsErrorKind::NativeException(NativeException::Materialized(value)),
                     ..
                 }) => self.execute_catch(clause, value),
 

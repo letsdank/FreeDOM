@@ -194,9 +194,15 @@ impl ExecutionFrame {
 
                 Err(error) => match &error.kind {
                     super::JsErrorKind::Thrown(value)
-                    | super::JsErrorKind::NativeException(value) => {
+                    | super::JsErrorKind::NativeException(super::NativeException::Materialized(
+                        value,
+                    )) => {
                         visit(RuntimeRoot::Value(value));
                     }
+
+                    super::JsErrorKind::NativeException(super::NativeException::Pending {
+                        ..
+                    }) => {}
 
                     super::JsErrorKind::Syntax
                     | super::JsErrorKind::UnclassifiedRuntime
@@ -575,9 +581,7 @@ impl Interpreter {
             self.with_execution_frame(|interpreter| interpreter.execute_statements(program));
 
         if let Err(error) = &mut result {
-            if let super::JsErrorKind::NativeException(value) = &mut error.kind {
-                self.attach_native_error_prototype(value);
-            }
+            self.materialize_native_exception(error);
         }
 
         result
@@ -880,7 +884,8 @@ impl Interpreter {
         self.host_roots.register(value)
     }
 
-    pub(super) fn export_error(&self, error: JsError) -> HostError {
+    pub(super) fn export_error(&self, mut error: JsError) -> HostError {
+        self.materialize_native_exception(&mut error);
         HostError::from_internal(error, &self.host_roots)
     }
 

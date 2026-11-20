@@ -10,8 +10,26 @@ use super::{
     HostRoots, Interpreter, JsError, NativeFunction, ObjectPrototype, ObjectStorage, Value,
 };
 use crate::javascript::value::PropertyLookup;
+use crate::javascript::{JsErrorKind, NativeErrorKind, NativeException};
 
 impl Interpreter {
+    // Defer allocating the JavaScript object until an exception crosses a runtime boundary.
+    pub(super) fn materialize_native_exception(&self, error: &mut JsError) {
+        let JsErrorKind::NativeException(NativeException::Pending { kind, message }) = &error.kind
+        else {
+            return;
+        };
+
+        let (name, prototype) = match kind {
+            NativeErrorKind::TypeError => ("TypeError", self.type_error_prototype.clone()),
+            NativeErrorKind::ReferenceError => {
+                ("ReferenceError", self.reference_error_prototype.clone())
+            }
+        };
+        let value =
+            Value::error_with_prototype(&self.host_roots, name, Some(message.clone()), prototype);
+        error.kind = JsErrorKind::NativeException(NativeException::Materialized(value));
+    }
     pub(super) fn construct_error(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
         self.construct_error_with_prototype(arguments, self.error_prototype.clone())
     }
@@ -157,26 +175,36 @@ impl Interpreter {
 
         prototype
     }
-
-    pub(super) fn attach_native_error_prototype(&self, value: &mut Value) {
-        if let Value::NativeError(error) = value {
-            let prototype = match error.builtin_name() {
-                "TypeError" => Some(&self.type_error_prototype),
-                "ReferenceError" => Some(&self.reference_error_prototype),
-                "Error" => Some(&self.error_prototype),
-                _ => None,
-            };
-
-            if let Some(prototype) = prototype {
-                error.attach_prototype_if_missing(&self.host_roots, prototype.clone());
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::javascript::{JsErrorKind, Value, evaluate};
+    use crate::javascript::{Interpreter, JsError, JsErrorKind, NativeException, Value, evaluate};
+
+    #[test]
+    fn native_exception_is_materialized_once_and_retains_identity_on_export() {
+        let interpreter = Interpreter::new();
+        let mut error = JsError::type_error("example");
+        assert!(matches!(
+            error.kind,
+            JsErrorKind::NativeException(NativeException::Pending { .. })
+        ));
+
+        interpreter.materialize_native_exception(&mut error);
+        let JsErrorKind::NativeException(NativeException::Materialized(value)) = &error.kind else {
+            panic!("expected a materialized exception");
+        };
+        let original = value.clone();
+        interpreter.materialize_native_exception(&mut error);
+        let exported = interpreter.export_error(error);
+        let JsErrorKind::NativeException(value) = exported.kind else {
+            panic!("expected an exported native exception");
+        };
+        assert_eq!(value.as_test_value(), &original);
+
+        let direct = interpreter.export_error(JsError::reference_error("missing"));
+        assert!(matches!(direct.kind, JsErrorKind::NativeException(_)));
+    }
 
     #[test]
     fn error_function_and_constructor_create_errors_with_prototype() {
@@ -432,6 +460,8 @@ mod tests {
                 r#"
                 let callbackError = false;
                 let cycleError = false;
+                let sameError = false;
+                let captured;
 
                 Promise.resolve(1)
                     .then(Error.prototype.toString)
@@ -440,6 +470,10 @@ mod tests {
                             e instanceof TypeError &&
                             e instanceof Error;
                     });
+
+                Promise.resolve(1).then(function() {
+                    try { missing; } catch (e) { captured = e; throw e; }
+                }).then(undefined, function(e) { sameError = e === captured; });
 
                 let p;
 
@@ -459,7 +493,7 @@ mod tests {
 
         assert_eq!(
             session
-                .evaluate("callbackError && cycleError;", &mut document)
+                .evaluate("callbackError && cycleError && sameError;", &mut document)
                 .unwrap(),
             Value::Boolean(true)
         );

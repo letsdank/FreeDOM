@@ -96,12 +96,12 @@ pub(crate) use session::DocumentScriptSession;
 /// Explicitly thrown JavaScript values are distinct from engine failures.
 /// Other runtime failures are still unclassified.
 #[derive(Clone, Debug, PartialEq)]
-pub enum JsErrorKind<T> {
+pub enum JsErrorKind<T, N = T> {
     Syntax,
     UnclassifiedRuntime,
     UnsupportedFeature,
     Thrown(T),
-    NativeException(T),
+    NativeException(N),
     ResourceLimit,
 }
 
@@ -109,7 +109,22 @@ pub enum JsErrorKind<T> {
 pub(crate) struct JsError {
     pub offset: Option<usize>,
     pub message: String,
-    pub kind: JsErrorKind<Value>,
+    pub kind: JsErrorKind<Value, NativeException>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum NativeErrorKind {
+    TypeError,
+    ReferenceError,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum NativeException {
+    Pending {
+        kind: NativeErrorKind,
+        message: String,
+    },
+    Materialized(Value),
 }
 
 impl JsError {
@@ -145,22 +160,29 @@ impl JsError {
         }
     }
 
-    fn native_exception(name: &str, message: impl Into<String>) -> Self {
+    fn native_exception(kind: NativeErrorKind, message: impl Into<String>) -> Self {
         let message = message.into();
+        let name = match kind {
+            NativeErrorKind::TypeError => "TypeError",
+            NativeErrorKind::ReferenceError => "ReferenceError",
+        };
 
         Self {
             offset: None,
             message: format!("{name}: {message}"),
-            kind: JsErrorKind::NativeException(Value::native_error(name, &message)),
+            kind: JsErrorKind::NativeException(NativeException::Pending { kind, message }),
         }
     }
 
     fn reference_error(name: &str) -> Self {
-        Self::native_exception("ReferenceError", format!("{name} is not defined"))
+        Self::native_exception(
+            NativeErrorKind::ReferenceError,
+            format!("{name} is not defined"),
+        )
     }
 
     fn type_error(message: impl Into<String>) -> Self {
-        Self::native_exception("TypeError", message)
+        Self::native_exception(NativeErrorKind::TypeError, message)
     }
 
     fn resource_limit(message: impl Into<String>) -> Self {
@@ -204,8 +226,12 @@ impl HostError {
 
                 JsErrorKind::Thrown(value) => JsErrorKind::Thrown(roots.register(value)),
 
-                JsErrorKind::NativeException(value) => {
+                JsErrorKind::NativeException(NativeException::Materialized(value)) => {
                     JsErrorKind::NativeException(roots.register(value))
+                }
+
+                JsErrorKind::NativeException(NativeException::Pending { .. }) => {
+                    unreachable!("native exception must be materialized before export")
                 }
 
                 JsErrorKind::ResourceLimit => JsErrorKind::ResourceLimit,
@@ -267,14 +293,6 @@ impl HostRoots {
 
     fn ordinary_prototype(&self, object: &value::ObjectStorage) -> value::ObjectPrototype {
         object.borrow().prototype()
-    }
-
-    fn attach_ordinary_prototype_if_unknown(
-        &self,
-        object: &value::ObjectStorage,
-        prototype: value::ObjectStorage,
-    ) {
-        object.borrow_mut().attach_prototype_if_unknown(prototype);
     }
 
     fn define_ordinary_property(

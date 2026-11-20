@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use super::{Cleanup, Completion, Interpreter, JsError, Value};
-use crate::javascript::JsErrorKind;
+use crate::javascript::{JsErrorKind, NativeException};
 
 impl Interpreter {
     pub(super) fn run_test(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -127,13 +127,14 @@ impl Interpreter {
                 if let Err(error) = result {
                     if first_error.is_none() {
                         match &error.kind {
-                            JsErrorKind::Thrown(value) | JsErrorKind::NativeException(value) => {
+                            JsErrorKind::Thrown(value) | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
                                 interpreter
                                     .frame_values_mut(frame_index)
                                     .push(value.clone());
                             }
 
-                            JsErrorKind::Syntax
+                            JsErrorKind::NativeException(NativeException::Pending { .. })
+                            | JsErrorKind::Syntax
                             | JsErrorKind::UnclassifiedRuntime
                             | JsErrorKind::UnsupportedFeature
                             | JsErrorKind::ResourceLimit => {}

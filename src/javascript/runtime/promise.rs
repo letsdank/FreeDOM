@@ -11,7 +11,7 @@ use std::{cell::RefCell, fmt, rc::Rc};
 use super::{
     Interpreter, JsError, NativeFunction, RootVisitError, RuntimeRoot, Value, microtasks::Microtask,
 };
-use crate::javascript::JsErrorKind;
+use crate::javascript::{JsErrorKind, NativeException};
 
 #[derive(Clone)]
 pub(in crate::javascript) struct PromiseHandle(Rc<RefCell<PromiseState>>);
@@ -321,15 +321,18 @@ impl Interpreter {
                 }
             }
 
-            Err(error) => match error.kind {
-                JsErrorKind::Thrown(mut value) | JsErrorKind::NativeException(mut value) => {
-                    self.attach_native_error_prototype(&mut value);
+            Err(mut error) => {
+                self.materialize_native_exception(&mut error);
 
-                    self.settle_promise(&reaction.target, Outcome::Rejected(value));
+                match error.kind {
+                    JsErrorKind::Thrown(value)
+                    | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
+                        self.settle_promise(&reaction.target, Outcome::Rejected(value));
+                    }
+
+                    _ => return Err(error),
                 }
-
-                _ => return Err(error),
-            },
+            }
         }
 
         Ok(())

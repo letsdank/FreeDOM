@@ -151,12 +151,6 @@ impl ObjectState {
         self.prototype.clone()
     }
 
-    pub(super) fn attach_prototype_if_unknown(&mut self, prototype: ObjectStorage) {
-        if matches!(self.prototype, ObjectPrototype::Unknown) {
-            self.prototype = ObjectPrototype::Object(prototype);
-        }
-    }
-
     fn from_entries(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
         let mut state = Self::default();
 
@@ -390,21 +384,6 @@ impl NativeErrorValue {
         }
     }
 
-    fn new(name: &str, message: &str) -> Self {
-        let mut properties = ObjectState::default();
-
-        properties.define_own_data_property(
-            "message".to_owned(),
-            Value::String(message.to_owned()),
-            false,
-        );
-
-        Self {
-            default_name: name.to_owned(),
-            properties: Rc::new(RefCell::new(properties)),
-        }
-    }
-
     fn new_with_prototype(
         owner: &HostRoots,
         default_name: &str,
@@ -479,18 +458,6 @@ impl NativeErrorValue {
         } else {
             owner.ordinary_has_prototype(&prototype, target)
         }
-    }
-
-    pub(super) fn builtin_name(&self) -> &str {
-        &self.default_name
-    }
-
-    pub(super) fn attach_prototype_if_missing(
-        &mut self,
-        owner: &HostRoots,
-        prototype: ObjectStorage,
-    ) {
-        owner.attach_ordinary_prototype_if_unknown(&self.properties, prototype);
     }
 
     /// Visits immediate references without traversing their children.
@@ -705,10 +672,6 @@ pub enum Value {
 }
 
 impl Value {
-    pub(super) fn native_error(name: &str, message: &str) -> Self {
-        Self::NativeError(NativeErrorValue::new(name, message))
-    }
-
     pub(super) fn arguments(values: Vec<Value>, potentially_mapped: usize) -> Self {
         Self::Arguments(ArgumentsValue::new(values, potentially_mapped))
     }
@@ -1312,7 +1275,12 @@ mod tests {
             Value::RegExpTest(regexp.clone()),
             Value::RegExpExec(regexp.clone()),
             arguments.clone(),
-            Value::native_error("Error", "oops"),
+            Value::error_with_prototype(
+                &HostRoots::default(),
+                "Error",
+                Some("oops".into()),
+                object.clone(),
+            ),
             Value::Null,
         ];
 
@@ -1436,20 +1404,22 @@ mod tests {
     }
 
     #[test]
-    fn native_error_aliases_share_a_late_attached_prototype() {
-        let Value::NativeError(mut error) = Value::native_error("TypeError", "test") else {
-            unreachable!();
-        };
-
-        let alias = error.clone();
-
+    fn native_error_aliases_share_properties_and_prototype() {
         let Value::Object(prototype) = Value::object([("custom".into(), Value::Number(42.0))])
         else {
             unreachable!();
         };
 
         let owner = HostRoots::default();
-        error.attach_prototype_if_missing(&owner, prototype.clone());
+        let Value::NativeError(error) = Value::error_with_prototype(
+            &owner,
+            "TypeError",
+            Some("test".into()),
+            prototype.clone(),
+        ) else {
+            unreachable!();
+        };
+        let alias = error.clone();
 
         assert_eq!(error, alias);
         assert_eq!(alias.get(&owner, "custom"), Value::Number(42.0));
@@ -1458,12 +1428,6 @@ mod tests {
         alias.set(&owner, "name".into(), Value::String("Renamed".into()));
         let nested = Value::array(vec![Value::NativeError(alias.clone())]);
         assert_eq!(nested.to_js_string(&owner), "Renamed: test");
-
-        let Value::Object(other) = Value::object([]) else {
-            unreachable!();
-        };
-
-        error.attach_prototype_if_missing(&owner, other);
 
         assert_eq!(alias.get(&owner, "custom"), Value::Number(42.0));
     }
