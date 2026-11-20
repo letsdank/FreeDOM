@@ -147,6 +147,16 @@ fn is_object_prototype_intrinsic(name: &str) -> bool {
 }
 
 impl ObjectState {
+    pub(super) fn prototype(&self) -> ObjectPrototype {
+        self.prototype.clone()
+    }
+
+    pub(super) fn attach_prototype_if_unknown(&mut self, prototype: ObjectStorage) {
+        if matches!(self.prototype, ObjectPrototype::Unknown) {
+            self.prototype = ObjectPrototype::Object(prototype);
+        }
+    }
+
     fn from_entries(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
         let mut state = Self::default();
 
@@ -369,13 +379,13 @@ pub struct NativeErrorValue {
 }
 
 impl NativeErrorValue {
-    pub(super) fn lookup_method(&self, name: &str) -> PropertyLookup {
-        if let Some(value) = self.properties.borrow().get(name) {
-            return PropertyLookup::Found(value.clone());
+    pub(super) fn lookup_method(&self, owner: &HostRoots, name: &str) -> PropertyLookup {
+        if let Some(value) = owner.read_ordinary_own_property(&self.properties, name) {
+            return PropertyLookup::Found(value);
         }
 
-        match self.prototype() {
-            Some(prototype) => ObjectState::lookup(&prototype, name),
+        match self.prototype(owner) {
+            Some(prototype) => owner.lookup_ordinary_property(&prototype, name),
             None => PropertyLookup::Unknown,
         }
     }
@@ -414,9 +424,9 @@ impl NativeErrorValue {
         }
     }
 
-    fn prototype(&self) -> Option<ObjectStorage> {
-        match &self.properties.borrow().prototype {
-            ObjectPrototype::Object(prototype) => Some(prototype.clone()),
+    fn prototype(&self, owner: &HostRoots) -> Option<ObjectStorage> {
+        match owner.ordinary_prototype(&self.properties) {
+            ObjectPrototype::Object(prototype) => Some(prototype),
 
             ObjectPrototype::Unknown
             | ObjectPrototype::IntrinsicObjectRoot
@@ -424,13 +434,13 @@ impl NativeErrorValue {
         }
     }
 
-    pub(super) fn get(&self, name: &str) -> Value {
-        if let Some(value) = self.properties.borrow().get(name) {
-            return value.clone();
+    pub(super) fn get(&self, owner: &HostRoots, name: &str) -> Value {
+        if let Some(value) = owner.read_ordinary_own_property(&self.properties, name) {
+            return value;
         }
 
-        if let Some(prototype) = self.prototype() {
-            return match ObjectState::lookup(&prototype, name) {
+        if let Some(prototype) = self.prototype(owner) {
+            return match owner.lookup_ordinary_property(&prototype, name) {
                 PropertyLookup::Found(value) => value,
                 PropertyLookup::Absent | PropertyLookup::Unknown => Value::Undefined,
             };
@@ -443,21 +453,23 @@ impl NativeErrorValue {
         }
     }
 
-    pub(super) fn set(&self, name: String, value: Value) {
-        self.properties.borrow_mut().set(name, value);
+    pub(super) fn set(&self, owner: &HostRoots, name: String, value: Value) {
+        owner.write_ordinary_property(&self.properties, name, value);
     }
 
-    pub(super) fn has_own_property(&self, name: &str) -> bool {
-        self.properties.borrow().get(name).is_some()
+    pub(super) fn has_own_property(&self, owner: &HostRoots, name: &str) -> bool {
+        owner
+            .read_ordinary_own_property(&self.properties, name)
+            .is_some()
     }
 
-    pub(super) fn has_prototype(&self, target: &ObjectStorage) -> Option<bool> {
-        let prototype = self.prototype()?;
+    pub(super) fn has_prototype(&self, owner: &HostRoots, target: &ObjectStorage) -> Option<bool> {
+        let prototype = self.prototype(owner)?;
 
-        if Rc::ptr_eq(&prototype, target) {
+        if owner.same_ordinary_object(&prototype, target) {
             Some(true)
         } else {
-            ObjectState::has_prototype(&prototype, target)
+            owner.ordinary_has_prototype(&prototype, target)
         }
     }
 
@@ -465,12 +477,12 @@ impl NativeErrorValue {
         &self.default_name
     }
 
-    pub(super) fn attach_prototype_if_missing(&mut self, prototype: ObjectStorage) {
-        let mut properties = self.properties.borrow_mut();
-
-        if matches!(properties.prototype, ObjectPrototype::Unknown) {
-            properties.prototype = ObjectPrototype::Object(prototype);
-        }
+    pub(super) fn attach_prototype_if_missing(
+        &mut self,
+        owner: &HostRoots,
+        prototype: ObjectStorage,
+    ) {
+        owner.attach_ordinary_prototype_if_unknown(&self.properties, prototype);
     }
 
     /// Visits immediate references without traversing their children.
@@ -693,7 +705,7 @@ impl Value {
         Self::Arguments(ArgumentsValue::new(values, potentially_mapped))
     }
 
-    pub(super) fn to_js_string(&self) -> String {
+    pub(super) fn to_js_string(&self, owner: &HostRoots) -> String {
         match self {
             Self::Undefined => "undefined".to_owned(),
             Self::Null => "null".to_owned(),
@@ -705,7 +717,7 @@ impl Value {
                 .borrow()
                 .values
                 .iter()
-                .map(|value| value.to_js_string())
+                .map(|value| value.to_js_string(owner))
                 .collect::<Vec<_>>()
                 .join(","),
 
@@ -714,14 +726,14 @@ impl Value {
             Self::Object(_) => "[object Object]".to_owned(),
 
             Self::NativeError(error) => {
-                let name = match error.get("name") {
+                let name = match error.get(owner, "name") {
                     Value::Undefined => "Error".to_owned(),
-                    value => value.to_js_string(),
+                    value => value.to_js_string(owner),
                 };
 
-                let message = match error.get("message") {
+                let message = match error.get(owner, "message") {
                     Value::Undefined => String::new(),
-                    value => value.to_js_string(),
+                    value => value.to_js_string(owner),
                 };
 
                 if name.is_empty() {
@@ -923,7 +935,9 @@ impl Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArrayState, ObjectState, PropertyLookup, RootVisitError, RuntimeRoot, Value};
+    use super::{
+        ArrayState, HostRoots, ObjectState, PropertyLookup, RootVisitError, RuntimeRoot, Value,
+    };
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1194,7 +1208,11 @@ mod tests {
             unreachable!();
         };
 
-        error.set("cause".into(), Value::Object(object.clone()));
+        error.set(
+            &HostRoots::default(),
+            "cause".into(),
+            Value::Object(object.clone()),
+        );
 
         let mut saw_properties = false;
         let mut saw_prototype = false;
@@ -1410,18 +1428,23 @@ mod tests {
             unreachable!();
         };
 
-        error.attach_prototype_if_missing(prototype.clone());
+        let owner = HostRoots::default();
+        error.attach_prototype_if_missing(&owner, prototype.clone());
 
         assert_eq!(error, alias);
-        assert_eq!(alias.get("custom"), Value::Number(42.0));
-        assert_eq!(alias.has_prototype(&prototype), Some(true));
+        assert_eq!(alias.get(&owner, "custom"), Value::Number(42.0));
+        assert_eq!(alias.has_prototype(&owner, &prototype), Some(true));
+
+        alias.set(&owner, "name".into(), Value::String("Renamed".into()));
+        let nested = Value::array(vec![Value::NativeError(alias.clone())]);
+        assert_eq!(nested.to_js_string(&owner), "Renamed: test");
 
         let Value::Object(other) = Value::object([]) else {
             unreachable!();
         };
 
-        error.attach_prototype_if_missing(other);
+        error.attach_prototype_if_missing(&owner, other);
 
-        assert_eq!(alias.get("custom"), Value::Number(42.0));
+        assert_eq!(alias.get(&owner, "custom"), Value::Number(42.0));
     }
 }

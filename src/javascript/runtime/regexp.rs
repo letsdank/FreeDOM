@@ -26,12 +26,12 @@ impl Interpreter {
                     ));
                 }
 
-                Some(value) => value.to_js_string(),
+                Some(value) => value.to_js_string(&interpreter.host_roots),
             };
 
             let flags = match values.get(1) {
                 None | Some(Value::Undefined) => String::new(),
-                Some(value) => value.to_js_string(),
+                Some(value) => value.to_js_string(&interpreter.host_roots),
             };
 
             Self::create_regexp(&pattern, &flags)

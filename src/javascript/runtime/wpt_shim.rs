@@ -151,10 +151,10 @@ impl Interpreter {
         })
     }
 
-    fn assertion_description(arguments: &[Value], index: usize) -> String {
+    fn assertion_description(&self, arguments: &[Value], index: usize) -> String {
         arguments
             .get(index)
-            .map(Value::to_js_string)
+            .map(|value| value.to_js_string(&self.host_roots))
             .filter(|message| !message.is_empty())
             .map(|message| format!(": {message}"))
             .unwrap_or_default()
@@ -174,7 +174,7 @@ impl Interpreter {
             return Ok(Value::Undefined);
         }
 
-        let description = Self::assertion_description(&arguments, 2);
+        let description = self.assertion_description(&arguments, 2);
 
         Err(JsError::runtime(format!(
             "AssertionError{description}; expected {expected:?}, got {actual:?}"
@@ -192,7 +192,7 @@ impl Interpreter {
             return Ok(Value::Undefined);
         }
 
-        let description = Self::assertion_description(&arguments, 1);
+        let description = self.assertion_description(&arguments, 1);
 
         Err(JsError::runtime(format!(
             "AssertionError{description}; expected true, got {:?}",
@@ -211,7 +211,7 @@ impl Interpreter {
             return Ok(Value::Undefined);
         }
 
-        let description = Self::assertion_description(&arguments, 1);
+        let description = self.assertion_description(&arguments, 1);
 
         Err(JsError::runtime(format!(
             "AssertionError{description}; expected false, got {:?}",
@@ -230,7 +230,7 @@ impl Interpreter {
             return Ok(Value::Undefined);
         }
 
-        let description = Self::assertion_description(&arguments, 2);
+        let description = self.assertion_description(&arguments, 2);
 
         Err(JsError::runtime(format!(
             "AssertionError{description}; values must differ, got {:?}",

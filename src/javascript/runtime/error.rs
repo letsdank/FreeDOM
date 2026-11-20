@@ -53,7 +53,10 @@ impl Interpreter {
 
     pub(super) fn error_to_string(&self, receiver: Option<Value>) -> Result<Value, JsError> {
         let (name, message) = match receiver.unwrap_or(Value::Undefined) {
-            Value::NativeError(error) => (error.get("name"), error.get("message")),
+            Value::NativeError(error) => (
+                error.get(&self.host_roots, "name"),
+                error.get(&self.host_roots, "message"),
+            ),
 
             Value::Object(object) => {
                 let read = |key| match self.host_roots.lookup_ordinary_property(&object, key) {
@@ -160,7 +163,7 @@ impl Interpreter {
             };
 
             if let Some(prototype) = prototype {
-                error.attach_prototype_if_missing(prototype.clone());
+                error.attach_prototype_if_missing(&self.host_roots, prototype.clone());
             }
         }
     }

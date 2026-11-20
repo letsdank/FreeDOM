@@ -359,7 +359,7 @@ impl Interpreter {
 
             (Value::RegExp(regexp), "exec") => Ok(Value::RegExpExec(regexp)),
 
-            (Value::NativeError(error), property) => Ok(error.get(property)),
+            (Value::NativeError(error), property) => Ok(error.get(&self.host_roots, property)),
 
             (_, property) => Err(JsError::runtime(format!(
                 "cannot read property {property:?} from this value"
@@ -422,7 +422,7 @@ impl Interpreter {
                 | Value::TestContext
                 | Value::ClassList(_)
         ) {
-            return self.member_value(object, &index.to_js_string());
+            return self.member_value(object, &index.to_js_string(&self.host_roots));
         }
 
         if let Value::String(name) = &index {
@@ -455,11 +455,13 @@ impl Interpreter {
                     if let Some(key) = crate::javascript::number::integer_property_key(*number) {
                         key
                     } else {
-                        index.to_js_string()
+                        index.to_js_string(&self.host_roots)
                     }
                 }
 
-                Value::Undefined | Value::Null | Value::Boolean(_) => index.to_js_string(),
+                Value::Undefined | Value::Null | Value::Boolean(_) => {
+                    index.to_js_string(&self.host_roots)
+                }
 
                 _ => {
                     return Err(JsError::unsupported(

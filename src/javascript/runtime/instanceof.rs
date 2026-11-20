@@ -107,9 +107,11 @@ impl Interpreter {
                     JsError::unsupported("instanceof reached an unimplemented prototype")
                 }),
 
-            Value::NativeError(error) => error.has_prototype(&prototype).ok_or_else(|| {
-                JsError::unsupported("instanceof for this native error has no prototype")
-            }),
+            Value::NativeError(error) => error
+                .has_prototype(&self.host_roots, &prototype)
+                .ok_or_else(|| {
+                    JsError::unsupported("instanceof for this native error has no prototype")
+                }),
 
             _ => Err(JsError::unsupported(
                 "instanceof for this left-hand object is not implemented",

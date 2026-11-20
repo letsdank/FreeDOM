@@ -283,12 +283,16 @@ impl Interpreter {
             ));
         }
 
-        let input = self.evaluate_expression(&arguments[0])?.to_js_string();
+        let input = self
+            .evaluate_expression(&arguments[0])?
+            .to_js_string(&self.host_roots);
 
         let url = if arguments.len() == 1 {
             Url::parse(&input)
         } else {
-            let base = self.evaluate_expression(&arguments[1])?.to_js_string();
+            let base = self
+                .evaluate_expression(&arguments[1])?
+                .to_js_string(&self.host_roots);
 
             Url::parse(&base).and_then(|base_url| base_url.join(&input))
         }

@@ -126,7 +126,9 @@ impl Interpreter {
             ));
         }
 
-        Ok(Value::HtmlCollection(arguments[0].to_js_string()))
+        Ok(Value::HtmlCollection(
+            arguments[0].to_js_string(&self.host_roots),
+        ))
     }
 
     pub(super) fn query_selector(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -136,7 +138,7 @@ impl Interpreter {
             ));
         }
 
-        let selector = parse_simple_selector(&arguments[0].to_js_string())?;
+        let selector = parse_simple_selector(&arguments[0].to_js_string(&self.host_roots))?;
 
         Ok(self
             .current_document()
@@ -156,7 +158,7 @@ impl Interpreter {
             ));
         }
 
-        let selector = parse_simple_selector(&arguments[0].to_js_string())?;
+        let selector = parse_simple_selector(&arguments[0].to_js_string(&self.host_roots))?;
 
         Ok(self
             .current_document()
@@ -172,7 +174,7 @@ impl Interpreter {
             ));
         }
 
-        let selector = parse_simple_selector(&arguments[0].to_js_string())?;
+        let selector = parse_simple_selector(&arguments[0].to_js_string(&self.host_roots))?;
 
         let nodes = self
             .current_document()
@@ -193,7 +195,7 @@ impl Interpreter {
             ));
         }
 
-        let selector = parse_simple_selector(&arguments[0].to_js_string())?;
+        let selector = parse_simple_selector(&arguments[0].to_js_string(&self.host_roots))?;
 
         let nodes = self
             .current_document()
@@ -237,8 +239,8 @@ impl Interpreter {
         }
     }
 
-    fn class_list_token(value: &Value) -> Result<String, JsError> {
-        let token = value.to_js_string();
+    fn class_list_token(&self, value: &Value) -> Result<String, JsError> {
+        let token = value.to_js_string(&self.host_roots);
 
         if token.is_empty()
             || token
@@ -264,7 +266,7 @@ impl Interpreter {
             ));
         }
 
-        let token = Self::class_list_token(&arguments[0])?;
+        let token = self.class_list_token(&arguments[0])?;
         Ok(Value::Boolean(
             self.class_list_tokens(node_id)?
                 .iter()
@@ -279,7 +281,7 @@ impl Interpreter {
     ) -> Result<Value, JsError> {
         let additions = arguments
             .iter()
-            .map(Self::class_list_token)
+            .map(|value| self.class_list_token(value))
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut tokens = self.class_list_tokens(node_id)?;
@@ -301,7 +303,7 @@ impl Interpreter {
     ) -> Result<Value, JsError> {
         let removals = arguments
             .iter()
-            .map(Self::class_list_token)
+            .map(|value| self.class_list_token(value))
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut tokens = self.class_list_tokens(node_id)?;
@@ -322,7 +324,7 @@ impl Interpreter {
             ));
         }
 
-        let token = Self::class_list_token(&arguments[0])?;
+        let token = self.class_list_token(&arguments[0])?;
         let force = arguments.get(1).map(|value| self.is_truthy(value));
 
         let mut tokens = self.class_list_tokens(node_id)?;
@@ -349,7 +351,9 @@ impl Interpreter {
             ));
         }
 
-        let tag_name = arguments[0].to_js_string().to_ascii_lowercase();
+        let tag_name = arguments[0]
+            .to_js_string(&self.host_roots)
+            .to_ascii_lowercase();
 
         if tag_name.is_empty() {
             return Err(JsError::runtime(
@@ -373,7 +377,9 @@ impl Interpreter {
             ));
         }
 
-        let name = arguments[0].to_js_string().to_ascii_lowercase();
+        let name = arguments[0]
+            .to_js_string(&self.host_roots)
+            .to_ascii_lowercase();
 
         let Some(element) = self.current_document_element(node_id) else {
             return Err(JsError::runtime(
@@ -400,8 +406,10 @@ impl Interpreter {
             ));
         }
 
-        let name = arguments[0].to_js_string().to_ascii_lowercase();
-        let value = arguments[1].to_js_string();
+        let name = arguments[0]
+            .to_js_string(&self.host_roots)
+            .to_ascii_lowercase();
+        let value = arguments[1].to_js_string(&self.host_roots);
 
         if self
             .current_document_mut()?
@@ -427,7 +435,9 @@ impl Interpreter {
             ));
         }
 
-        let name = arguments[0].to_js_string().to_ascii_lowercase();
+        let name = arguments[0]
+            .to_js_string(&self.host_roots)
+            .to_ascii_lowercase();
 
         let had_attribute = self
             .current_document_element(node_id)

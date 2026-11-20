@@ -265,6 +265,18 @@ impl HostRoots {
         object.borrow_mut().set(name, value);
     }
 
+    fn ordinary_prototype(&self, object: &value::ObjectStorage) -> value::ObjectPrototype {
+        object.borrow().prototype()
+    }
+
+    fn attach_ordinary_prototype_if_unknown(
+        &self,
+        object: &value::ObjectStorage,
+        prototype: value::ObjectStorage,
+    ) {
+        object.borrow_mut().attach_prototype_if_unknown(prototype);
+    }
+
     fn define_ordinary_property(
         &self,
         object: &value::ObjectStorage,

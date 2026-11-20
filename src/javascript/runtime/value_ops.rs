@@ -213,7 +213,7 @@ impl Interpreter {
         for name in methods {
             let lookup = match value {
                 Value::Object(object) => self.host_roots.lookup_ordinary_property(object, name),
-                Value::NativeError(error) => error.lookup_method(name),
+                Value::NativeError(error) => error.lookup_method(&self.host_roots, name),
 
                 Value::Array(array) => match Self::array_get(array.clone(), name) {
                     Some(method) => PropertyLookup::Found(method),

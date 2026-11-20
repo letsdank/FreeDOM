@@ -39,7 +39,7 @@ impl Interpreter {
             }
 
             Value::String(_) | Value::Boolean(_) | Value::Undefined | Value::Null => {
-                Some(value.to_js_string())
+                Some(value.to_js_string(&self.host_roots))
             }
 
             _ => None,

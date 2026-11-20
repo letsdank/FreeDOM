@@ -89,7 +89,7 @@ impl Interpreter {
 
             Reference::Member { object, property } => match object {
                 Value::Document(document) if property == "title" => {
-                    document.borrow_mut().title = value.to_js_string();
+                    document.borrow_mut().title = value.to_js_string(&self.host_roots);
                     Ok(())
                 }
 
@@ -112,7 +112,7 @@ impl Interpreter {
                 }
 
                 Value::NativeError(error) => {
-                    error.set(property, value);
+                    error.set(&self.host_roots, property, value);
                     Ok(())
                 }
 
@@ -120,24 +120,24 @@ impl Interpreter {
                     "arguments property mutation is not implemented",
                 )),
 
-                Value::Element(node_id) if property == "textContent" => {
-                    self.set_document_element_text_content(node_id, value.to_js_string())
-                }
+                Value::Element(node_id) if property == "textContent" => self
+                    .set_document_element_text_content(
+                        node_id,
+                        value.to_js_string(&self.host_roots),
+                    ),
 
-                Value::Element(node_id) if property == "innerHTML" => {
-                    self.set_document_element_inner_html(node_id, value.to_js_string())
-                }
+                Value::Element(node_id) if property == "innerHTML" => self
+                    .set_document_element_inner_html(node_id, value.to_js_string(&self.host_roots)),
 
-                Value::Element(node_id) if property == "outerHTML" => {
-                    self.set_document_element_outer_html(node_id, value.to_js_string())
-                }
+                Value::Element(node_id) if property == "outerHTML" => self
+                    .set_document_element_outer_html(node_id, value.to_js_string(&self.host_roots)),
 
                 Value::Element(node_id) if property == "id" => {
-                    self.set_document_element_id(node_id, value.to_js_string())
+                    self.set_document_element_id(node_id, value.to_js_string(&self.host_roots))
                 }
 
                 Value::Element(node_id) if property == "className" => {
-                    let class_name = value.to_js_string();
+                    let class_name = value.to_js_string(&self.host_roots);
 
                     if self
                         .current_document_mut()?
@@ -163,11 +163,11 @@ impl Interpreter {
                 }
 
                 Value::Attribute { node_id, name } if property == "value" => {
-                    if self.current_document_mut()?.set_node_attribute(
-                        node_id,
-                        &name,
-                        value.to_js_string(),
-                    ) {
+                    let value = value.to_js_string(&self.host_roots);
+                    if self
+                        .current_document_mut()?
+                        .set_node_attribute(node_id, &name, value)
+                    {
                         self.reset_canvas_attribute(node_id, &name);
                         Ok(())
                     } else {
@@ -200,7 +200,7 @@ impl Interpreter {
                     ));
                 }
 
-                let property = index.to_js_string();
+                let property = index.to_js_string(&self.host_roots);
 
                 self.write_reference(Reference::Member { object, property }, value)
             }

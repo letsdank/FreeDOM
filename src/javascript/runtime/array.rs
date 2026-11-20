@@ -299,7 +299,7 @@ impl Interpreter {
 
             Value::Number(number) if *number == f64::NEG_INFINITY => Ok("-Infinity".to_owned()),
 
-            Value::Number(_) => Ok(value.to_js_string()),
+            Value::Number(_) => Ok(value.to_js_string(&self.host_roots)),
 
             _ => self.webidl_dom_string(value),
         }

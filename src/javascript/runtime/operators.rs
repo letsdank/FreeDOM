@@ -34,8 +34,8 @@ impl Interpreter {
                 if matches!(&left, Value::String(_)) || matches!(&right, Value::String(_)) {
                     return Ok(Value::String(format!(
                         "{}{}",
-                        left.to_js_string(),
-                        right.to_js_string()
+                        left.to_js_string(&self.host_roots),
+                        right.to_js_string(&self.host_roots)
                     )));
                 }
 

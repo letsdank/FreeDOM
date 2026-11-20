@@ -178,7 +178,7 @@ impl Interpreter {
             ));
         };
 
-        if kind.to_js_string() != "2d" {
+        if kind.to_js_string(&self.host_roots) != "2d" {
             return Ok(Value::Null);
         }
 

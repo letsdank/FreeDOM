@@ -362,7 +362,10 @@ impl Interpreter {
             }
 
             Value::RegExpTest(regexp) => {
-                let input = values.first().unwrap_or(&Value::Undefined).to_js_string();
+                let input = values
+                    .first()
+                    .unwrap_or(&Value::Undefined)
+                    .to_js_string(&self.host_roots);
 
                 let units: Vec<u16> = input.encode_utf16().collect();
 
@@ -372,7 +375,10 @@ impl Interpreter {
             }
 
             Value::RegExpExec(regexp) => {
-                let input = values.first().unwrap_or(&Value::Undefined).to_js_string();
+                let input = values
+                    .first()
+                    .unwrap_or(&Value::Undefined)
+                    .to_js_string(&self.host_roots);
 
                 let units: Vec<u16> = input.encode_utf16().collect();
 
