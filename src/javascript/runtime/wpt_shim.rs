@@ -6,7 +6,8 @@
 
 use std::collections::HashMap;
 
-use super::{Cleanup, Interpreter, JsError, Value};
+use super::{Cleanup, Completion, Interpreter, JsError, Value};
+use crate::javascript::JsErrorKind;
 
 impl Interpreter {
     pub(super) fn run_test(&mut self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -42,14 +43,17 @@ impl Interpreter {
 
         let cleanup_start = self.cleanups.len();
 
-        let previous_this = self.variables.shadow("this".to_owned(), Value::TestContext);
-
         let test_result =
-            self.call_function_value_with_receiver(callback, callback_arguments, None);
+            self.with_shadowed_bindings([("this".to_owned(), Value::TestContext)], |interpreter| {
+                interpreter.call_function_value_with_receiver(callback, callback_arguments, None)
+            });
 
-        self.variables.restore(previous_this);
+        let pending = test_result.map(Completion::Normal);
 
-        let cleanup_result = self.run_cleanups_since(cleanup_start);
+        let (test_result, cleanup_result) = self
+            .with_pending_completion(pending, |interpreter| {
+                Ok(interpreter.run_cleanups_since(cleanup_start))
+            })?;
 
         test_result?;
         cleanup_result?;
@@ -106,35 +110,45 @@ impl Interpreter {
     }
 
     fn run_cleanups_since(&mut self, cleanup_start: usize) -> Result<(), JsError> {
-        let mut first_error = None;
+        self.with_temporary_values_scope(|interpreter, frame_index| {
+            let mut first_error = None;
 
-        while self.cleanups.len() > cleanup_start {
-            let cleanup = self.cleanups.pop().unwrap();
-            let mut replaced_bindings = Vec::new();
+            while interpreter.cleanups.len() > cleanup_start {
+                let cleanup = interpreter.cleanups.pop().unwrap();
 
-            for (name, value) in cleanup.captured {
-                let previous = self.variables.shadow(name, value);
-                replaced_bindings.push(previous);
-            }
+                let result = interpreter.with_shadowed_bindings(cleanup.captured, |interpreter| {
+                    interpreter.call_function_value_with_receiver(
+                        &cleanup.callback,
+                        Vec::new(),
+                        None,
+                    )
+                });
 
-            let result =
-                self.call_function_value_with_receiver(&cleanup.callback, Vec::new(), None);
+                if let Err(error) = result {
+                    if first_error.is_none() {
+                        match &error.kind {
+                            JsErrorKind::Thrown(value) | JsErrorKind::NativeException(value) => {
+                                interpreter
+                                    .frame_values_mut(frame_index)
+                                    .push(value.clone());
+                            }
 
-            for previous in replaced_bindings.into_iter().rev() {
-                self.variables.restore(previous);
-            }
+                            JsErrorKind::Syntax
+                            | JsErrorKind::UnclassifiedRuntime
+                            | JsErrorKind::UnsupportedFeature
+                            | JsErrorKind::ResourceLimit => {}
+                        }
 
-            if let Err(error) = result {
-                if first_error.is_none() {
-                    first_error = Some(error);
+                        first_error = Some(error);
+                    }
                 }
             }
-        }
 
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+            match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        })
     }
 
     fn assertion_description(arguments: &[Value], index: usize) -> String {
@@ -227,7 +241,7 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use crate::javascript::{DocumentState, evaluate_with_document};
+    use crate::javascript::{DocumentState, Value, evaluate_with_document};
 
     #[test]
     fn cleanup_callbacks_run_in_reverse_order() {
@@ -277,5 +291,37 @@ mod tests {
 
         assert!(error.message.contains("body failure"));
         assert_eq!(document.title, "second");
+    }
+
+    #[test]
+    fn thrown_cleanup_value_survives_later_cleanup() {
+        let mut document = DocumentState::with_title("");
+
+        let result = evaluate_with_document(
+            r#"
+                let result = 0;
+
+                try {
+                    test(function() {
+                        this.add_cleanup(function() {
+                            document.title = 'later';
+                        });
+
+                        this.add_cleanup(function() {
+                            throw {code: 42};
+                        });
+                    });
+                } catch (error) {
+                    result = error.code;
+                }
+
+                result;
+            "#,
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(42.0));
+        assert_eq!(document.title, "later");
     }
 }
