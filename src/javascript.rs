@@ -80,7 +80,7 @@ pub(crate) use ast::{
     UserFunction,
 };
 
-use runtime::{Completion, Interpreter};
+use runtime::Interpreter;
 
 #[path = "javascript/testharness_probe.rs"]
 mod testharness_probe;
@@ -323,6 +323,11 @@ impl HostValue {
 
     #[cfg(test)]
     pub(crate) fn as_test_value(&self) -> &Value {
+        &self.0.value
+    }
+
+    // The returned reference cannot outlive the host root.
+    fn as_internal_value(&self) -> &Value {
         &self.0.value
     }
 }
