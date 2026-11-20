@@ -1549,6 +1549,19 @@ mod tests {
     }
 
     #[test]
+    fn primitive_conversion_frames_unwind_after_success_and_throw() {
+        let mut interpreter = Interpreter::new();
+        for (source, succeeds) in [
+            ("+{ valueOf: function() { return 7; } };", true),
+            ("+{ valueOf: function() { throw 'failure'; } };", false),
+        ] {
+            let program = parse_program(source).unwrap();
+            assert_eq!(interpreter.execute_script(&program).is_ok(), succeeds);
+            assert!(interpreter.execution_frames.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
     fn for_of_items_remain_in_frames_and_unwind_on_errors() {
         let mut interpreter = Interpreter::new();
 

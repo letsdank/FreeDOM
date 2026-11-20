@@ -215,13 +215,26 @@ impl Interpreter {
             }
         }
 
+        // User-defined conversion methods may re-enter the interpreter.
+        // Keep the receiver rooted for the entire two-method lookup and call sequence.
+        self.with_frame_value(value.clone(), |interpreter, index| {
+            interpreter.ordinary_to_primitive_rooted(index, hint)
+        })
+    }
+
+    fn ordinary_to_primitive_rooted(
+        &mut self,
+        index: usize,
+        hint: PrimitiveHint,
+    ) -> Result<Value, JsError> {
+        let value = self.frame_value(index).clone();
         let methods = match hint {
             PrimitiveHint::String => ["toString", "valueOf"],
             PrimitiveHint::Number => ["valueOf", "toString"],
         };
 
         for name in methods {
-            let lookup = match value {
+            let lookup = match &value {
                 Value::Object(object) => self.host_roots.lookup_ordinary_property(object, name),
                 Value::NativeError(error) => error.lookup_method(&self.host_roots, name),
 

@@ -154,8 +154,14 @@ mod tests {
             let failure = false;
             try { +{ valueOf: function() { throw 'boom'; } }; }
             catch (e) { failure = e === 'boom'; }
+            let transient = {
+                valueOf: function() { transient = null; return {}; },
+                toString: function() { return '7'; }
+            };
+            let fallback = +transient;
             sum === '23' && difference === -1 && trace === 'lrlr'
                 && before === 8 && update === 9 && failure
+                && fallback === 7 && transient === null
                 && '10' < '2'
                 && String.fromCharCode({ valueOf: function() { return 65; } }) === 'A';
             "#,
