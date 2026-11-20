@@ -353,13 +353,7 @@ pub fn evaluate(source: &str) -> Result<HostValue, HostError> {
 
     let program = parse_program(source).map_err(|error| interpreter.export_error(error))?;
 
-    let result = interpreter.execute_script(&program);
-
-    match result {
-        Ok(completion) => Ok(interpreter.export_value(completion.into_value())),
-
-        Err(error) => Err(interpreter.export_error(error)),
-    }
+    interpreter.execute_host_script(&program)
 }
 
 pub fn evaluate_with_document(

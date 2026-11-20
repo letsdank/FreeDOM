@@ -146,7 +146,7 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::{DiagnosticTraceError, Interpreter, RootVisitError, Value};
-    use crate::javascript::{RegExpState, RegExpValue};
+    use crate::javascript::{JsErrorKind, RegExpState, RegExpValue, parse_program};
     use std::{cell::RefCell, rc::Rc};
 
     #[test]
@@ -270,6 +270,55 @@ mod tests {
         );
 
         drop(host_result);
+
+        assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
+    }
+
+    #[test]
+    fn host_script_exports_results_and_errors_before_returning() {
+        let mut interpreter = Interpreter::new();
+        let baseline = interpreter.trace_when_quiescent().unwrap();
+
+        let result = interpreter
+            .execute_host_script(&parse_program("[];").unwrap())
+            .unwrap();
+
+        assert_eq!(
+            interpreter.trace_when_quiescent().unwrap().arrays,
+            baseline.arrays + 1,
+        );
+
+        drop(result);
+
+        assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
+
+        let error = interpreter
+            .execute_host_script(&parse_program("throw [];").unwrap())
+            .unwrap_err();
+
+        assert!(matches!(&error.kind, JsErrorKind::Thrown(_)));
+
+        assert_eq!(
+            interpreter.trace_when_quiescent().unwrap().arrays,
+            baseline.arrays + 1,
+        );
+
+        drop(error);
+
+        assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
+
+        let error = interpreter
+            .execute_host_script(&parse_program("missing;").unwrap())
+            .unwrap_err();
+
+        assert!(matches!(&error.kind, JsErrorKind::NativeException(_)));
+
+        assert_eq!(
+            interpreter.trace_when_quiescent().unwrap().objects,
+            baseline.objects + 1
+        );
+
+        drop(error);
 
         assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
     }

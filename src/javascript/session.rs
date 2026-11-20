@@ -31,7 +31,7 @@ impl DocumentScriptSession {
         let program =
             parse_program(source).map_err(|error| self.interpreter.export_error(error))?;
 
-        let result = self.interpreter.execute_script(&program);
+        let result = self.interpreter.execute_host_script(&program);
 
         let Some(updated) = self.interpreter.snapshot_document() else {
             return Err(self
@@ -41,11 +41,7 @@ impl DocumentScriptSession {
 
         *document = updated;
 
-        match result {
-            Ok(completion) => Ok(self.interpreter.export_value(completion.into_value())),
-
-            Err(error) => Err(self.interpreter.export_error(error)),
-        }
+        result
     }
 
     pub(crate) fn into_canvas_surfaces(

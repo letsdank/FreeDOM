@@ -592,6 +592,18 @@ impl Interpreter {
         result
     }
 
+    /// Executes a host script and registers its result before returning to the host.
+    /// No collection may run between `execute_script` and exporting its result.
+    pub(super) fn execute_host_script(
+        &mut self,
+        program: &[Statement],
+    ) -> Result<HostValue, HostError> {
+        match self.execute_script(program) {
+            Ok(completion) => Ok(self.export_value(completion.into_value())),
+            Err(error) => Err(self.export_error(error)),
+        }
+    }
+
     // Pending completions are future GC roots, but this is not a GC safepoint yet.
     fn with_pending_completion<T>(
         &mut self,
