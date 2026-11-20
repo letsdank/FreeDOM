@@ -110,6 +110,10 @@ impl PromiseHandle {
 
         Ok(())
     }
+
+    pub(super) fn trace_identity(&self) -> *const () {
+        Rc::as_ptr(&self.0).cast()
+    }
 }
 
 impl Interpreter {

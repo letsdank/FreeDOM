@@ -129,6 +129,10 @@ mod canvas;
 #[path = "runtime/webidl.rs"]
 mod webidl;
 
+#[allow(dead_code)]
+#[path = "runtime/trace.rs"]
+mod trace;
+
 #[derive(Clone, Debug)]
 struct Cleanup {
     callback: FunctionValue,

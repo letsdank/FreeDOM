@@ -672,6 +672,10 @@ impl FunctionValue {
 
         visit_captured_bindings(&self.captures, visit)
     }
+
+    pub(super) fn trace_identity(&self) -> *const () {
+        Rc::as_ptr(&self.properties).cast()
+    }
 }
 
 impl fmt::Debug for FunctionValue {

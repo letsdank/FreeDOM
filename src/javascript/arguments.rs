@@ -57,6 +57,10 @@ impl ArgumentsValue {
             visit(RuntimeRoot::Value(value));
         }
     }
+
+    pub(super) fn trace_identity(&self) -> *const () {
+        Rc::as_ptr(&self.inner).cast()
+    }
 }
 
 impl fmt::Debug for ArgumentsValue {
