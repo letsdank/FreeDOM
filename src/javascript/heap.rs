@@ -6,7 +6,7 @@
 //! Collection and runtime integration are not implemented. Graph tracing
 //! reports reachable objects without removing anything.
 
-use super::object_properties::ObjectProperties;
+use super::object_properties::{ObjectPrototype, OrdinaryObject};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -21,20 +21,8 @@ pub(super) enum HeapValue {
     Reference(ObjectId),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum HeapPrototype {
-    #[default]
-    Unknown,
-    IntrinsicObjectRoot,
-    Null,
-    Object(ObjectId),
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(super) struct HeapObjectState {
-    pub(super) properties: ObjectProperties<HeapValue>,
-    pub(super) prototype: HeapPrototype,
-}
+pub(super) type HeapPrototype = ObjectPrototype<ObjectId>;
+pub(super) type HeapObjectState = OrdinaryObject<HeapValue, ObjectId>;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct HeapArrayState {

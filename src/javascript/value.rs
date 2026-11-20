@@ -8,7 +8,7 @@ use crate::url::Url;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 use super::arguments::ArgumentsValue;
-use super::object_properties::ObjectProperties;
+use super::object_properties::{ObjectPrototype as Prototype, OrdinaryObject};
 use super::runtime::bindings::{CapturedBindings, visit_captured_bindings};
 use super::runtime::promise::PromiseHandle;
 use super::runtime::{RootVisitError, RuntimeRoot};
@@ -105,19 +105,11 @@ pub(crate) enum TestContextMethod {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ObjectState {
-    properties: ObjectProperties<Value>,
-    prototype: ObjectPrototype,
+    ordinary: OrdinaryObject<Value, ObjectStorage>,
     pub(super) promise: Option<PromiseHandle>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(super) enum ObjectPrototype {
-    #[default]
-    Unknown,
-    IntrinsicObjectRoot,
-    Null,
-    Object(ObjectStorage),
-}
+pub(super) type ObjectPrototype = Prototype<ObjectStorage>;
 
 pub(crate) enum PropertyLookup {
     Found(Value),
@@ -148,7 +140,7 @@ fn is_object_prototype_intrinsic(name: &str) -> bool {
 
 impl ObjectState {
     pub(super) fn prototype(&self) -> ObjectPrototype {
-        self.prototype.clone()
+        self.ordinary.prototype.clone()
     }
 
     fn from_entries(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
@@ -162,13 +154,15 @@ impl ObjectState {
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&Value> {
-        self.properties.get(name)
+        self.ordinary.properties.get(name)
     }
 
     pub(crate) fn set(&mut self, name: String, value: Value) {
-        let enumerable = !(matches!(self.prototype, ObjectPrototype::IntrinsicObjectRoot)
-            && is_object_prototype_intrinsic(&name));
-        self.properties.set(name, value, enumerable);
+        let enumerable = !(matches!(
+            self.ordinary.prototype,
+            ObjectPrototype::IntrinsicObjectRoot
+        ) && is_object_prototype_intrinsic(&name));
+        self.ordinary.properties.set(name, value, enumerable);
     }
 
     pub(super) fn define_own_data_property(
@@ -177,7 +171,7 @@ impl ObjectState {
         value: Value,
         enumerable: bool,
     ) {
-        self.properties.define(name, value, enumerable);
+        self.ordinary.properties.define(name, value, enumerable);
     }
 
     pub(crate) fn keys(&self) -> Vec<String> {
@@ -188,11 +182,12 @@ impl ObjectState {
     }
 
     fn own_keys_with_enumerability(&self) -> Vec<(String, bool)> {
-        self.properties.ordered_keys()
+        self.ordinary.properties.ordered_keys()
     }
 
     fn as_hash_map(&self) -> HashMap<String, Value> {
-        self.properties
+        self.ordinary
+            .properties
             .iter()
             .map(|(name, value)| (name.to_owned(), value.clone()))
             .collect()
@@ -209,7 +204,7 @@ impl ObjectState {
                     return PropertyLookup::Found(value.clone());
                 }
 
-                state.prototype.clone()
+                state.ordinary.prototype.clone()
             };
 
             match next {
@@ -234,7 +229,7 @@ impl ObjectState {
         let mut current = object.clone();
 
         loop {
-            let prototype = current.borrow().prototype.clone();
+            let prototype = current.borrow().ordinary.prototype.clone();
 
             match prototype {
                 ObjectPrototype::Object(next) => {
@@ -264,13 +259,18 @@ impl ObjectState {
                 let state = current.borrow();
 
                 // The legacy __proto__ setter is not implemented yet.
-                if matches!(state.prototype, ObjectPrototype::IntrinsicObjectRoot)
-                    && state.get("__proto__").is_some()
+                if matches!(
+                    state.ordinary.prototype,
+                    ObjectPrototype::IntrinsicObjectRoot
+                ) && state.get("__proto__").is_some()
                 {
                     return None;
                 }
 
-                (state.own_keys_with_enumerability(), state.prototype.clone())
+                (
+                    state.own_keys_with_enumerability(),
+                    state.ordinary.prototype.clone(),
+                )
             };
 
             for (key, enumerable) in keys {
@@ -312,11 +312,11 @@ impl ObjectState {
 
     #[allow(dead_code)]
     fn visit_contents(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
-        for (_, value) in self.properties.iter() {
+        for (_, value) in self.ordinary.properties.iter() {
             visit(RuntimeRoot::Value(value));
         }
 
-        match &self.prototype {
+        match &self.ordinary.prototype {
             ObjectPrototype::Object(prototype) => {
                 visit(RuntimeRoot::Object(prototype));
             }
@@ -781,7 +781,7 @@ impl Value {
     ) -> Self {
         let mut state = ObjectState::from_entries(entries);
 
-        state.prototype = prototype;
+        state.ordinary.prototype = prototype;
 
         Self::Object(Rc::new(RefCell::new(state)))
     }
@@ -1124,7 +1124,7 @@ mod tests {
             );
         }
 
-        object.borrow_mut().properties.clear();
+        object.borrow_mut().ordinary.properties.clear();
     }
 
     #[test]

@@ -1,8 +1,33 @@
-//! Partial own data-property storage shared by runtime and heap objects.
+//! Partial ordinary-object data shared by runtime and experimental heap objects.
 //!
 //! <https://tc39.es/ecma262/#sec-ordinaryownpropertykeys>
 //!
 //! Accessors, symbols and full property descriptors are not implemented.
+
+/// The known portion of an ordinary object's prototype chain.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ObjectPrototype<R> {
+    #[default]
+    Unknown,
+    IntrinsicObjectRoot,
+    Null,
+    Object(R),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct OrdinaryObject<V, R> {
+    pub(super) properties: ObjectProperties<V>,
+    pub(super) prototype: ObjectPrototype<R>,
+}
+
+impl<V, R> Default for OrdinaryObject<V, R> {
+    fn default() -> Self {
+        Self {
+            properties: ObjectProperties::default(),
+            prototype: ObjectPrototype::Unknown,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct Property<V> {
