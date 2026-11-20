@@ -155,6 +155,22 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     #[test]
+    fn queued_reaction_traces_derived_promise_and_its_properties() {
+        let mut interpreter = Interpreter::new();
+        let baseline = interpreter.trace_when_quiescent().unwrap();
+        let program = parse_program("Promise.resolve(1).then().extra = {};").unwrap();
+
+        drop(interpreter.execute(&program).unwrap());
+
+        let pending = interpreter.trace_reachable().unwrap();
+        assert_eq!(pending.objects, baseline.objects + 2);
+        assert_eq!(pending.promises, baseline.promises + 1);
+
+        interpreter.perform_microtask_checkpoint().unwrap();
+        assert_eq!(interpreter.trace_reachable().unwrap(), baseline);
+    }
+
+    #[test]
     fn traverses_cycles_once_and_fails_closed_on_borrowed_state() {
         let mut interpreter = Interpreter::new();
         let baseline = interpreter.trace_when_quiescent().unwrap();

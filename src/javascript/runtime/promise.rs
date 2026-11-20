@@ -9,7 +9,8 @@
 use std::{cell::RefCell, fmt, rc::Rc};
 
 use super::{
-    Interpreter, JsError, NativeFunction, RootVisitError, RuntimeRoot, Value, microtasks::Microtask,
+    Interpreter, JsError, NativeFunction, ObjectStorage, RootVisitError, RuntimeRoot, Value,
+    microtasks::Microtask,
 };
 use crate::javascript::{JsErrorKind, NativeException};
 
@@ -47,7 +48,10 @@ struct PromiseState {
 struct Reaction {
     on_fulfilled: Option<Value>,
     on_rejected: Option<Value>,
-    target: PromiseHandle,
+    // The derived Promise is retained by the reaction and by its queued job.
+    // https://tc39.es/ecma262/#sec-promisereaction-records
+    // https://tc39.es/ecma262/#sec-promisecapability-records
+    target: ObjectStorage,
 }
 
 #[derive(Clone)]
@@ -83,7 +87,7 @@ impl Reaction {
             visit(RuntimeRoot::Value(handler));
         }
 
-        visit(RuntimeRoot::Promise(&self.target));
+        visit(RuntimeRoot::Object(&self.target));
     }
 }
 
@@ -241,12 +245,16 @@ impl Interpreter {
         let on_fulfilled = Self::handler(arguments.next().unwrap_or(Value::Undefined))?;
         let on_rejected = Self::handler(arguments.next().unwrap_or(Value::Undefined))?;
 
-        let (promise, target) = self.new_pending_promise();
+        let (promise, _) = self.new_pending_promise();
+
+        let Value::Object(target) = &promise else {
+            unreachable!("promise must be an object");
+        };
 
         let reaction = Reaction {
             on_fulfilled,
             on_rejected,
-            target,
+            target: target.clone(),
         };
 
         let mut state = source.0.borrow_mut();
@@ -289,13 +297,18 @@ impl Interpreter {
     pub(super) fn run_promise_reaction(&mut self, job: PromiseReactionJob) -> Result<(), JsError> {
         let PromiseReactionJob { outcome, reaction } = job;
 
+        let target = self
+            .host_roots
+            .ordinary_promise(&reaction.target)
+            .ok_or_else(|| JsError::runtime("Promise reaction target has no internal state"))?;
+
         let handler = match &outcome {
             Outcome::Fulfilled(_) => reaction.on_fulfilled,
             Outcome::Rejected(_) => reaction.on_rejected,
         };
 
         let Some(handler) = handler else {
-            self.settle_promise(&reaction.target, outcome);
+            self.settle_promise(&target, outcome);
             return Ok(());
         };
 
@@ -305,7 +318,7 @@ impl Interpreter {
 
         match self.dispatch_call(handler, None, vec![argument]) {
             Ok(value) => {
-                if self.promise_handle(&value).as_ref() == Some(&reaction.target) {
+                if self.promise_handle(&value).as_ref() == Some(&target) {
                     let error = Value::error_with_prototype(
                         &self.host_roots,
                         "TypeError",
@@ -313,11 +326,11 @@ impl Interpreter {
                         self.type_error_prototype.clone(),
                     );
 
-                    self.settle_promise(&reaction.target, Outcome::Rejected(error));
+                    self.settle_promise(&target, Outcome::Rejected(error));
                 } else {
                     Self::require_primitive(&value)?;
 
-                    self.settle_promise(&reaction.target, Outcome::Fulfilled(value));
+                    self.settle_promise(&target, Outcome::Fulfilled(value));
                 }
             }
 
@@ -327,7 +340,7 @@ impl Interpreter {
                 match error.kind {
                     JsErrorKind::Thrown(value)
                     | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
-                        self.settle_promise(&reaction.target, Outcome::Rejected(value));
+                        self.settle_promise(&target, Outcome::Rejected(value));
                     }
 
                     _ => return Err(error),
@@ -341,7 +354,9 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, PromiseHandle, PromiseState, Reaction, RootVisitError, RuntimeRoot};
+    use super::{
+        Interpreter, Outcome, PromiseHandle, PromiseState, Reaction, RootVisitError, RuntimeRoot,
+    };
     use crate::javascript::{DocumentScriptSession, DocumentState, JsErrorKind, Value, evaluate};
     use std::{cell::RefCell, rc::Rc};
 
@@ -528,6 +543,11 @@ mod tests {
     #[test]
     fn visits_promise_references_without_following_cycles() {
         let promise = PromiseHandle(Rc::new(RefCell::new(PromiseState::default())));
+        let Value::Object(object) = Value::object([]) else {
+            unreachable!();
+        };
+        let owner = crate::javascript::HostRoots::default();
+        owner.set_ordinary_promise(&object, promise.clone());
 
         {
             let mut state = promise.0.borrow_mut();
@@ -536,7 +556,7 @@ mod tests {
             state.reactions.push(Reaction {
                 on_fulfilled: Some(Value::Number(2.0)),
                 on_rejected: Some(Value::Number(3.0)),
-                target: promise.clone(),
+                target: object.clone(),
             });
         }
 
@@ -546,7 +566,7 @@ mod tests {
         promise
             .visit_references(&mut |root| match root {
                 RuntimeRoot::Value(value) => values.push(value.clone()),
-                RuntimeRoot::Promise(target) if target == &promise => self_references += 1,
+                RuntimeRoot::Object(target) if Rc::ptr_eq(target, &object) => self_references += 1,
                 _ => {}
             })
             .unwrap();
@@ -566,13 +586,6 @@ mod tests {
             );
         }
 
-        let Value::Object(object) = Value::object([]) else {
-            unreachable!();
-        };
-
-        let owner = crate::javascript::HostRoots::default();
-        owner.set_ordinary_promise(&object, promise.clone());
-
         let mut found_promise = false;
 
         owner
@@ -586,5 +599,33 @@ mod tests {
         assert!(found_promise);
 
         promise.0.borrow_mut().reactions.clear();
+    }
+
+    #[test]
+    fn reaction_and_queued_job_retain_the_derived_promise_object() {
+        let mut interpreter = Interpreter::new();
+        let (source, source_handle) = interpreter.new_pending_promise();
+        let derived = interpreter.promise_then(Some(source), vec![]).unwrap();
+        let Value::Object(object) = &derived else {
+            panic!("expected a promise object");
+        };
+        let weak = Rc::downgrade(object);
+        drop(derived);
+
+        assert!(
+            weak.upgrade().is_some(),
+            "pending reaction must retain the target"
+        );
+        interpreter.settle_promise(&source_handle, Outcome::Fulfilled(Value::Number(1.0)));
+        assert!(
+            weak.upgrade().is_some(),
+            "queued job must retain the target"
+        );
+
+        interpreter.perform_microtask_checkpoint().unwrap();
+        assert!(
+            weak.upgrade().is_none(),
+            "completed job must release the target"
+        );
     }
 }

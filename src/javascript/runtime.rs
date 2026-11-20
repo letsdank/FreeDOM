@@ -2120,7 +2120,7 @@ mod tests {
 
         let mut numbers = Vec::new();
         let mut functions = 0;
-        let mut promises = 0;
+        let mut promise_objects = 0;
         let mut handler_values = 0;
 
         for frame in &frames {
@@ -2135,7 +2135,12 @@ mod tests {
                     }
 
                     RuntimeRoot::Function(_) => functions += 1,
-                    RuntimeRoot::Promise(_) => promises += 1,
+                    RuntimeRoot::Object(object)
+                        if interpreter.host_roots.ordinary_promise(object).is_some() =>
+                    {
+                        promise_objects += 1;
+                    }
+                    RuntimeRoot::Promise(_) => {}
                     RuntimeRoot::Value(_) => {}
                     RuntimeRoot::Object(_)
                     | RuntimeRoot::Array(_)
@@ -2151,7 +2156,7 @@ mod tests {
         }
 
         assert_eq!(functions, 1);
-        assert_eq!(promises, 1);
+        assert_eq!(promise_objects, 1);
         assert_eq!(handler_values, 1);
 
         let _guard = captured.get("x").unwrap().borrow_mut();
