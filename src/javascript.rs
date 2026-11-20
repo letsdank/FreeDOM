@@ -257,7 +257,7 @@ struct HostRoots {
 #[derive(Debug)]
 struct HostRoot {
     value: Value,
-    _owner: Rc<HostRoots>,
+    owner: Rc<HostRoots>,
 }
 
 // Valid only while the corresponding Rc-backed object remains alive.
@@ -438,7 +438,7 @@ impl HostRoots {
     fn register(self: &Rc<Self>, value: Value) -> HostValue {
         let root = Rc::new(HostRoot {
             value,
-            _owner: self.clone(),
+            owner: self.clone(),
         });
 
         let mut roots = self.roots.borrow_mut();
@@ -450,6 +450,29 @@ impl HostRoots {
         roots.push(Rc::downgrade(&root));
 
         HostValue(root)
+    }
+
+    // These snapshots read stored data only; they do not invoke JavaScript.
+    fn root_array_slots(
+        self: &Rc<Self>,
+        array: &ArrayStorage,
+    ) -> Result<Vec<HostValue>, std::cell::BorrowError> {
+        let array = array.try_borrow()?;
+        Ok(array
+            .values
+            .iter()
+            .cloned()
+            .map(|value| self.register(value))
+            .collect())
+    }
+
+    fn root_ordinary_own_property(
+        self: &Rc<Self>,
+        object: &value::ObjectStorage,
+        name: &str,
+    ) -> Result<Option<HostValue>, std::cell::BorrowError> {
+        let object = object.try_borrow()?;
+        Ok(object.get(name).cloned().map(|value| self.register(value)))
     }
 
     #[allow(dead_code)]
@@ -624,16 +647,17 @@ impl HostValue {
             return Ok(None);
         };
 
-        let array = array.try_borrow()?;
+        self.0.owner.root_array_slots(array).map(Some)
+    }
 
-        let values = array
-            .values
-            .iter()
-            .cloned()
-            .map(|value| self.0._owner.register(value))
-            .collect();
-
-        Ok(Some(values))
+    /// Snapshots an own data property as an independently rooted value.
+    /// Returns None for a non-ordinary object or a missing own property.
+    /// This does not perform prototype lookup or invoke JavaScript.
+    fn object_own_property(&self, name: &str) -> Result<Option<HostValue>, std::cell::BorrowError> {
+        let Value::Object(object) = &self.0.value else {
+            return Ok(None);
+        };
+        self.0.owner.root_ordinary_own_property(object, name)
     }
 }
 

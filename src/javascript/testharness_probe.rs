@@ -28,6 +28,21 @@ fn host_array(
         .ok_or_else(|| interpreter.export_error(JsError::runtime(invalid_message)))
 }
 
+fn host_property(
+    interpreter: &Interpreter,
+    value: &HostValue,
+    name: &str,
+) -> Result<HostValue, HostError> {
+    value
+        .object_own_property(name)
+        .map_err(|_| {
+            interpreter.export_error(JsError::runtime("harness report object is borrowed"))
+        })?
+        .ok_or_else(|| {
+            interpreter.export_error(JsError::runtime("invalid testharness result fields"))
+        })
+}
+
 fn bootstrap_testharness(source: &str) -> Result<Interpreter, HostError> {
     let mut interpreter = Interpreter::new_without_wpt_shim();
 
@@ -115,7 +130,7 @@ pub(crate) fn run_harness_scripts(
             let __freedom_harness_status = -1;
 
             self.add_result_callback(function(result) {
-                __freedom_results.push([result.name, result.status]);
+                __freedom_results.push({ name: result.name, status: result.status });
             });
 
             self.add_completion_callback(function(results, status) {
@@ -164,13 +179,8 @@ pub(crate) fn run_harness_scripts(
     let mut results = Vec::with_capacity(records.len());
 
     for record in records {
-        let record = host_array(&interpreter, &record, "invalid testharness result")?;
-
-        let [name, status] = record.as_slice() else {
-            return Err(
-                interpreter.export_error(JsError::runtime("invalid testharness result fields"))
-            );
-        };
+        let name = host_property(&interpreter, &record, "name")?;
+        let status = host_property(&interpreter, &record, "status")?;
 
         let (Some(name), Some(status)) = (name.as_string(), status.as_number()) else {
             return Err(

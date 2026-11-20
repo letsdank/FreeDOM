@@ -396,4 +396,78 @@ mod tests {
 
         assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
     }
+
+    #[test]
+    fn host_object_property_roots_child_and_prototype_independently() {
+        use crate::javascript::value::ObjectPrototype;
+
+        let interpreter = Interpreter::new();
+        let baseline = interpreter.trace_when_quiescent().unwrap();
+        let owner = &interpreter.host_roots;
+        let Value::Object(prototype) = owner.create_ordinary_object(
+            [("inherited".into(), Value::Number(1.0))],
+            ObjectPrototype::Null,
+        ) else {
+            unreachable!();
+        };
+        let Value::Object(child) = owner.create_ordinary_object(
+            [("own".into(), Value::Undefined)],
+            ObjectPrototype::Object(prototype),
+        ) else {
+            unreachable!();
+        };
+        let Value::Object(parent) = owner.create_ordinary_object(
+            [("child".into(), Value::Object(child.clone()))],
+            ObjectPrototype::Null,
+        ) else {
+            unreachable!();
+        };
+
+        let rooted_parent = interpreter.export_value(Value::Object(parent.clone()));
+        let rooted_child = rooted_parent.object_own_property("child").unwrap().unwrap();
+        assert!(
+            rooted_child
+                .object_own_property("own")
+                .unwrap()
+                .unwrap()
+                .is_undefined()
+        );
+        assert!(
+            rooted_child
+                .object_own_property("inherited")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            rooted_child
+                .object_own_property("missing")
+                .unwrap()
+                .is_none()
+        );
+
+        owner.write_ordinary_property(&parent, "child".into(), Value::Undefined);
+        drop(rooted_parent);
+        assert_eq!(
+            interpreter.trace_when_quiescent().unwrap().objects,
+            baseline.objects + 2
+        );
+
+        {
+            let _guard = child.borrow_mut();
+            assert!(rooted_child.object_own_property("own").is_err());
+        }
+
+        let weak_owner = Rc::downgrade(&interpreter.host_roots);
+        drop(interpreter);
+        assert!(
+            rooted_child
+                .object_own_property("own")
+                .unwrap()
+                .unwrap()
+                .is_undefined()
+        );
+        assert!(weak_owner.upgrade().is_some());
+        drop(rooted_child);
+        assert!(weak_owner.upgrade().is_none());
+    }
 }
