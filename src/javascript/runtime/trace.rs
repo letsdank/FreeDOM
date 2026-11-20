@@ -44,6 +44,12 @@ struct TraceReport {
     arguments: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DiagnosticTraceError {
+    InterpreterBusy,
+    Root(RootVisitError),
+}
+
 impl From<RuntimeRoot<'_>> for TraceNode {
     fn from(root: RuntimeRoot<'_>) -> Self {
         match root {
@@ -89,6 +95,19 @@ impl TraceReport {
 }
 
 impl Interpreter {
+    /// Runs diagnostic tracing when no interpreter work is active.
+    /// This is not a GC safepoint: caller-owned values may still be unregistered.
+    fn trace_when_quiescent(&self) -> Result<TraceReport, DiagnosticTraceError> {
+        if self.execution_depth != 0
+            || !self.execution_frames.is_empty()
+            || self.performing_microtask_checkpoint
+        {
+            return Err(DiagnosticTraceError::InterpreterBusy);
+        }
+
+        self.trace_reachable().map_err(DiagnosticTraceError::Root)
+    }
+
     /// Performs a diagnostic traversal without collecting or mutating objects.
     fn trace_reachable(&self) -> Result<TraceReport, RootVisitError> {
         let mut pending = Vec::new();
@@ -126,14 +145,14 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Interpreter, RootVisitError, Value};
+    use super::{DiagnosticTraceError, Interpreter, RootVisitError, Value};
     use crate::javascript::{RegExpState, RegExpValue};
     use std::{cell::RefCell, rc::Rc};
 
     #[test]
     fn traverses_cycles_once_and_fails_closed_on_borrowed_state() {
         let mut interpreter = Interpreter::new();
-        let baseline = interpreter.trace_reachable().unwrap();
+        let baseline = interpreter.trace_when_quiescent().unwrap();
         let Value::Array(array) = Value::array(vec![]) else {
             unreachable!()
         };
@@ -161,7 +180,7 @@ mod tests {
             .variables
             .insert("regexp".into(), Value::RegExp(regexp.clone()));
         interpreter.variables.insert("arguments".into(), arguments);
-        let first = interpreter.trace_reachable().unwrap();
+        let first = interpreter.trace_when_quiescent().unwrap();
         assert_eq!(first.arrays, baseline.arrays + 1);
         assert_eq!(first.regexps, baseline.regexps + 1);
         assert_eq!(first.objects, baseline.objects + 1);
@@ -172,26 +191,26 @@ mod tests {
         interpreter
             .variables
             .insert("regexp_alias".into(), Value::RegExp(regexp.clone()));
-        assert_eq!(interpreter.trace_reachable().unwrap(), first);
+        assert_eq!(interpreter.trace_when_quiescent().unwrap(), first);
         let host_value = interpreter.export_value(Value::array(vec![]));
         assert_eq!(
-            interpreter.trace_reachable().unwrap().arrays,
+            interpreter.trace_when_quiescent().unwrap().arrays,
             first.arrays + 1
         );
         drop(host_value);
-        assert_eq!(interpreter.trace_reachable().unwrap(), first);
+        assert_eq!(interpreter.trace_when_quiescent().unwrap(), first);
         {
             let _guard = regexp.inner.borrow_mut();
             assert_eq!(
-                interpreter.trace_reachable(),
-                Err(RootVisitError::RegExpBorrowed)
+                interpreter.trace_when_quiescent(),
+                Err(DiagnosticTraceError::Root(RootVisitError::RegExpBorrowed))
             );
         }
         {
             let _guard = array.borrow_mut();
             assert_eq!(
-                interpreter.trace_reachable(),
-                Err(RootVisitError::ArrayBorrowed)
+                interpreter.trace_when_quiescent(),
+                Err(DiagnosticTraceError::Root(RootVisitError::ArrayBorrowed))
             );
         }
         object.borrow_mut().set("cycle".into(), Value::Undefined);
@@ -201,5 +220,57 @@ mod tests {
             state.present.clear();
         }
         regexp.inner.borrow_mut().last_index = Value::Null;
+    }
+
+    #[test]
+    fn diagnostic_trace_requires_quiescence_but_unexported_results_are_not_roots() {
+        let mut interpreter = Interpreter::new();
+        let baseline = interpreter.trace_when_quiescent().unwrap();
+
+        interpreter
+            .with_execution_frame(|interpreter| {
+                assert_eq!(
+                    interpreter.trace_when_quiescent(),
+                    Err(DiagnosticTraceError::InterpreterBusy)
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        interpreter
+            .with_temporary_values_scope(|interpreter, _| {
+                assert_eq!(
+                    interpreter.trace_when_quiescent(),
+                    Err(DiagnosticTraceError::InterpreterBusy)
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        interpreter.performing_microtask_checkpoint = true;
+
+        assert_eq!(
+            interpreter.trace_when_quiescent(),
+            Err(DiagnosticTraceError::InterpreterBusy)
+        );
+
+        interpreter.performing_microtask_checkpoint = false;
+
+        let program = crate::javascript::parse_program("[];").unwrap();
+        let local_result = interpreter.execute_script(&program).unwrap().into_value();
+
+        // The local Rust value is not registered as a runtime or host root.
+        assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
+
+        let host_result = interpreter.export_value(local_result);
+
+        assert_eq!(
+            interpreter.trace_when_quiescent().unwrap().arrays,
+            baseline.arrays + 1,
+        );
+
+        drop(host_result);
+
+        assert_eq!(interpreter.trace_when_quiescent().unwrap(), baseline);
     }
 }
