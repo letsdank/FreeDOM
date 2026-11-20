@@ -128,14 +128,14 @@ impl Interpreter {
             unreachable!("promise must be an object");
         };
 
-        object.borrow_mut().promise = Some(handle.clone());
+        self.host_roots.set_ordinary_promise(object, handle.clone());
 
         (promise, handle)
     }
 
-    fn promise_handle(value: &Value) -> Option<PromiseHandle> {
+    fn promise_handle(&self, value: &Value) -> Option<PromiseHandle> {
         match value {
-            Value::Object(object) => object.borrow().promise.clone(),
+            Value::Object(object) => self.host_roots.ordinary_promise(object),
             _ => None,
         }
     }
@@ -162,7 +162,7 @@ impl Interpreter {
 
         let value = arguments.into_iter().next().unwrap_or(Value::Undefined);
 
-        if Self::promise_handle(&value).is_some() {
+        if self.promise_handle(&value).is_some() {
             return Ok(value);
         }
 
@@ -231,7 +231,7 @@ impl Interpreter {
     ) -> Result<Value, JsError> {
         let source = receiver
             .as_ref()
-            .and_then(Self::promise_handle)
+            .and_then(|value| self.promise_handle(value))
             .ok_or_else(|| {
                 JsError::type_error("Promise.prototype.then receiver is not a Promise")
             })?;
@@ -305,7 +305,7 @@ impl Interpreter {
 
         match self.dispatch_call(handler, None, vec![argument]) {
             Ok(value) => {
-                if Self::promise_handle(&value).as_ref() == Some(&reaction.target) {
+                if self.promise_handle(&value).as_ref() == Some(&reaction.target) {
                     let mut error =
                         Value::native_error("TypeError", "promise cannot resolve to itself");
 

@@ -125,21 +125,22 @@ impl Interpreter {
         };
 
         {
-            let mut properties = prototype.borrow_mut();
-
-            properties.define_own_data_property(
+            owner.define_ordinary_property(
+                &prototype,
                 "name".to_owned(),
                 Value::String(name.to_owned()),
                 false,
             );
 
-            properties.define_own_data_property(
+            owner.define_ordinary_property(
+                &prototype,
                 "message".to_owned(),
                 Value::String(String::new()),
                 false,
             );
 
-            properties.define_own_data_property(
+            owner.define_ordinary_property(
+                &prototype,
                 "constructor".to_owned(),
                 Value::NativeFunction(constructor),
                 false,

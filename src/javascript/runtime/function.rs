@@ -285,7 +285,7 @@ impl Interpreter {
                 super::ObjectPrototype::Object(self.object_prototype.clone()),
             )
         });
-        Value::function(function.clone(), prototype, captures)
+        Value::function(&self.host_roots, function.clone(), prototype, captures)
     }
 
     pub(super) fn call_function_value_with_receiver(

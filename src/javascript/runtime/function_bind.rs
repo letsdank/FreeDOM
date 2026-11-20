@@ -50,6 +50,7 @@ impl Interpreter {
         let this_arg = arguments.next().unwrap_or(Value::Undefined);
 
         Ok(Value::Function(FunctionValue::bind(
+            &self.host_roots,
             function,
             this_arg,
             arguments.collect(),

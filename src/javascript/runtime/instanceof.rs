@@ -26,7 +26,7 @@ impl Interpreter {
             }
 
             Value::Function(function) => {
-                self.ordinary_has_instance(&left, function.get("prototype"))?
+                self.ordinary_has_instance(&left, function.get(&self.host_roots, "prototype"))?
             }
 
             Value::ObjectConstructor => {

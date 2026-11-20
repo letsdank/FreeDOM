@@ -265,6 +265,41 @@ impl HostRoots {
         object.borrow_mut().set(name, value);
     }
 
+    fn define_ordinary_property(
+        &self,
+        object: &value::ObjectStorage,
+        name: String,
+        value: Value,
+        enumerable: bool,
+    ) {
+        object
+            .borrow_mut()
+            .define_own_data_property(name, value, enumerable);
+    }
+
+    fn same_ordinary_object(
+        &self,
+        left: &value::ObjectStorage,
+        right: &value::ObjectStorage,
+    ) -> bool {
+        Rc::ptr_eq(left, right)
+    }
+
+    fn set_ordinary_promise(
+        &self,
+        object: &value::ObjectStorage,
+        promise: runtime::promise::PromiseHandle,
+    ) {
+        object.borrow_mut().promise = Some(promise);
+    }
+
+    fn ordinary_promise(
+        &self,
+        object: &value::ObjectStorage,
+    ) -> Option<runtime::promise::PromiseHandle> {
+        object.borrow().promise.clone()
+    }
+
     fn ordinary_own_keys(&self, object: &value::ObjectStorage) -> Vec<String> {
         object.borrow().keys()
     }

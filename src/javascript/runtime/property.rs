@@ -22,7 +22,7 @@ impl Interpreter {
 
             (Value::Array(values), property) => Ok(self.array_property(values, property)),
 
-            (Value::Function(function), property) => Ok(function.get(property)),
+            (Value::Function(function), property) => Ok(function.get(&self.host_roots, property)),
 
             (Value::NativeFunction(_), "call") => {
                 Ok(Value::NativeFunction(NativeFunction::FunctionCall))

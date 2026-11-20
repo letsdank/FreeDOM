@@ -12,7 +12,7 @@ use super::object_properties::ObjectProperties;
 use super::runtime::bindings::{CapturedBindings, visit_captured_bindings};
 use super::runtime::promise::PromiseHandle;
 use super::runtime::{RootVisitError, RuntimeRoot};
-use super::{DocumentState, UserFunction, regexp};
+use super::{DocumentState, HostRoots, UserFunction, regexp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeFunction {
@@ -549,8 +549,8 @@ impl FunctionValue {
         &self.definition
     }
 
-    pub(super) fn get(&self, name: &str) -> Value {
-        let own = self.properties.borrow().get(name).cloned();
+    pub(super) fn get(&self, owner: &HostRoots, name: &str) -> Value {
+        let own = owner.read_ordinary_own_property(&self.properties, name);
 
         match own {
             Some(value) => value,
@@ -565,14 +565,23 @@ impl FunctionValue {
         }
     }
 
-    pub(super) fn set(&self, name: String, value: Value) {
-        self.properties.borrow_mut().set(name, value);
+    pub(super) fn set(&self, owner: &HostRoots, name: String, value: Value) {
+        owner.write_ordinary_property(&self.properties, name, value);
     }
 
-    pub(super) fn bind(target: Self, this_arg: Value, arguments: Vec<Value>) -> Self {
+    pub(super) fn bind(
+        owner: &HostRoots,
+        target: Self,
+        this_arg: Value,
+        arguments: Vec<Value>,
+    ) -> Self {
+        let Value::Object(properties) = owner.create_ordinary_object([], ObjectPrototype::Unknown)
+        else {
+            unreachable!("ordinary object creation returned a non-object");
+        };
         Self {
             definition: target.definition.clone(),
-            properties: Rc::new(RefCell::new(ObjectState::default())),
+            properties,
             captures: target.captures.clone(),
             binding: Some(Rc::new(BoundFunction {
                 target,
@@ -805,19 +814,23 @@ impl Value {
     }
 
     pub(super) fn function(
+        owner: &HostRoots,
         definition: UserFunction,
         prototype: Option<Value>,
         captures: CapturedBindings,
     ) -> Self {
-        let mut properties = ObjectState::default();
+        let Value::Object(properties) = owner.create_ordinary_object([], ObjectPrototype::Unknown)
+        else {
+            unreachable!("ordinary object creation returned a non-object");
+        };
 
         if let Some(prototype) = prototype {
-            properties.define_own_data_property("prototype".to_owned(), prototype, false);
+            owner.define_ordinary_property(&properties, "prototype".to_owned(), prototype, false);
         }
 
         Self::Function(FunctionValue {
             definition: Rc::new(definition),
-            properties: Rc::new(RefCell::new(properties)),
+            properties,
             binding: None,
             captures,
         })

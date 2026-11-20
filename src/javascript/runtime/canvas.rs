@@ -2,7 +2,7 @@
 //!
 //! <https://html.spec.whatwg.org/multipage/canvas.html#canvasrenderingcontext2d>
 
-use super::{ElementMethod, Interpreter, JsError, ObjectStorage, RuntimeRoot, Value};
+use super::{ElementMethod, HostRoots, Interpreter, JsError, ObjectStorage, RuntimeRoot, Value};
 use crate::{
     css::parse_color,
     graphics::{
@@ -82,7 +82,7 @@ impl Interpreter {
         ) || !self
             .canvas_contexts
             .values()
-            .any(|context| std::rc::Rc::ptr_eq(context, object))
+            .any(|context| self.host_roots.same_ordinary_object(context, object))
         {
             return Ok(false);
         }
@@ -96,9 +96,11 @@ impl Interpreter {
                 };
 
                 if valid {
-                    object
-                        .borrow_mut()
-                        .set(name.to_owned(), Value::String(value.clone()));
+                    self.host_roots.write_ordinary_property(
+                        object,
+                        name.to_owned(),
+                        Value::String(value.clone()),
+                    );
                 }
 
                 return Ok(true);
@@ -108,9 +110,11 @@ impl Interpreter {
         if name == "lineDashOffset" {
             let offset = self.to_number(value)?;
             if offset.is_finite() {
-                object
-                    .borrow_mut()
-                    .set(name.to_owned(), Value::Number(offset));
+                self.host_roots.write_ordinary_property(
+                    object,
+                    name.to_owned(),
+                    Value::Number(offset),
+                );
             }
 
             return Ok(true);
@@ -125,9 +129,11 @@ impl Interpreter {
                 && raster_number.is_finite()
                 && raster_number > 0.0
             {
-                object
-                    .borrow_mut()
-                    .set(name.to_owned(), Value::Number(number));
+                self.host_roots.write_ordinary_property(
+                    object,
+                    name.to_owned(),
+                    Value::Number(number),
+                );
             }
 
             return Ok(true);
@@ -143,9 +149,11 @@ impl Interpreter {
             };
 
             if let Some(normalized) = normalized {
-                object
-                    .borrow_mut()
-                    .set(name.to_owned(), Value::String(normalized));
+                self.host_roots.write_ordinary_property(
+                    object,
+                    name.to_owned(),
+                    Value::String(normalized),
+                );
             }
         }
 
@@ -201,13 +209,15 @@ impl Interpreter {
             unreachable!("object constructor returns an object");
         };
 
-        context.borrow_mut().define_own_data_property(
+        self.host_roots.define_ordinary_property(
+            &context,
             "fillRect".to_owned(),
             Value::ElementMethod(ElementMethod::CanvasFillRect(node_id)),
             false,
         );
 
-        context.borrow_mut().define_own_data_property(
+        self.host_roots.define_ordinary_property(
+            &context,
             "clearRect".to_owned(),
             Value::ElementMethod(ElementMethod::CanvasClearRect(node_id)),
             false,
@@ -239,7 +249,8 @@ impl Interpreter {
             ),
             ("setTransform", ElementMethod::CanvasSetTransform(node_id)),
         ] {
-            context.borrow_mut().define_own_data_property(
+            self.host_roots.define_ordinary_property(
+                &context,
                 name.to_owned(),
                 Value::ElementMethod(method),
                 false,
@@ -336,7 +347,7 @@ impl Interpreter {
         let (context, coordinates) =
             self.canvas_rect_arguments(node_id, receiver, arguments, "fillRect")?;
 
-        let color = canvas_color(&context, "fillStyle");
+        let color = canvas_color(&self.host_roots, &context, "fillStyle");
 
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
@@ -393,20 +404,43 @@ impl Interpreter {
         self.clear_canvas_state_stack(node_id);
 
         if let Some(context) = self.canvas_contexts.get(&node_id) {
-            let mut context = context.borrow_mut();
+            self.host_roots.write_ordinary_property(
+                context,
+                "fillStyle".to_owned(),
+                Value::String("#000000".to_owned()),
+            );
 
-            context.set("fillStyle".to_owned(), Value::String("#000000".to_owned()));
-
-            context.set(
+            self.host_roots.write_ordinary_property(
+                context,
                 "strokeStyle".to_owned(),
                 Value::String("#000000".to_owned()),
             );
 
-            context.set("lineWidth".to_owned(), Value::Number(1.0));
-            context.set("lineCap".to_owned(), Value::String("butt".to_owned()));
-            context.set("lineJoin".to_owned(), Value::String("miter".to_owned()));
-            context.set("miterLimit".to_owned(), Value::Number(10.0));
-            context.set("lineDashOffset".to_owned(), Value::Number(0.0));
+            self.host_roots.write_ordinary_property(
+                context,
+                "lineWidth".to_owned(),
+                Value::Number(1.0),
+            );
+            self.host_roots.write_ordinary_property(
+                context,
+                "lineCap".to_owned(),
+                Value::String("butt".to_owned()),
+            );
+            self.host_roots.write_ordinary_property(
+                context,
+                "lineJoin".to_owned(),
+                Value::String("miter".to_owned()),
+            );
+            self.host_roots.write_ordinary_property(
+                context,
+                "miterLimit".to_owned(),
+                Value::Number(10.0),
+            );
+            self.host_roots.write_ordinary_property(
+                context,
+                "lineDashOffset".to_owned(),
+                Value::Number(0.0),
+            );
         }
 
         self.ensure_canvas_surface(node_id);
@@ -444,7 +478,7 @@ impl Interpreter {
         if !self
             .canvas_contexts
             .get(&node_id)
-            .is_some_and(|expected| std::rc::Rc::ptr_eq(expected, &context))
+            .is_some_and(|expected| self.host_roots.same_ordinary_object(expected, &context))
         {
             return Err(JsError::type_error(format!("{method}: invalid receiver")));
         }
@@ -516,6 +550,7 @@ impl Interpreter {
         };
 
         let color = canvas_color(
+            &self.host_roots,
             &context,
             if matches!(operation, PathOperation::Stroke) {
                 "strokeStyle"
@@ -526,6 +561,7 @@ impl Interpreter {
 
         let stroke_style = if matches!(operation, PathOperation::Stroke) {
             Some(canvas_stroke_style(
+                &self.host_roots,
                 &context,
                 self.canvas_dashes
                     .get(&node_id)
@@ -663,12 +699,11 @@ impl Interpreter {
             return Err(JsError::unsupported("canvas state stack limit exceeded"));
         }
 
-        let properties = {
-            let context = context.borrow();
-
-            CANVAS_SAVED_PROPERTIES
-                .map(|name| context.get(name).cloned().unwrap_or(Value::Undefined))
-        };
+        let properties = CANVAS_SAVED_PROPERTIES.map(|name| {
+            self.host_roots
+                .read_ordinary_own_property(&context, name)
+                .unwrap_or(Value::Undefined)
+        });
 
         let dash = self
             .canvas_dashes
@@ -729,10 +764,9 @@ impl Interpreter {
         }
 
         {
-            let mut context = context.borrow_mut();
-
             for (name, value) in CANVAS_SAVED_PROPERTIES.into_iter().zip(saved.properties) {
-                context.set(name.to_owned(), value);
+                self.host_roots
+                    .write_ordinary_property(&context, name.to_owned(), value);
             }
         }
 
@@ -916,28 +950,30 @@ impl Interpreter {
     }
 }
 
-fn canvas_stroke_style(context: &ObjectStorage, dash: &[f64]) -> Result<StrokeStyle, JsError> {
-    let context = context.borrow();
-
-    let line_cap = match context.get("lineCap") {
+fn canvas_stroke_style(
+    owner: &HostRoots,
+    context: &ObjectStorage,
+    dash: &[f64],
+) -> Result<StrokeStyle, JsError> {
+    let line_cap = match owner.read_ordinary_own_property(context, "lineCap") {
         Some(Value::String(value)) if value == "round" => StrokeLineCap::Round,
         Some(Value::String(value)) if value == "square" => StrokeLineCap::Square,
         _ => StrokeLineCap::Butt,
     };
 
-    let line_join = match context.get("lineJoin") {
+    let line_join = match owner.read_ordinary_own_property(context, "lineJoin") {
         Some(Value::String(value)) if value == "round" => StrokeLineJoin::Round,
         Some(Value::String(value)) if value == "bevel" => StrokeLineJoin::Bevel,
         _ => StrokeLineJoin::Miter,
     };
 
-    let width = match context.get("lineWidth") {
-        Some(Value::Number(value)) => *value as f32,
+    let width = match owner.read_ordinary_own_property(context, "lineWidth") {
+        Some(Value::Number(value)) => value as f32,
         _ => 1.0,
     };
 
-    let miter_limit = match context.get("miterLimit") {
-        Some(Value::Number(value)) => *value as f32,
+    let miter_limit = match owner.read_ordinary_own_property(context, "miterLimit") {
+        Some(Value::Number(value)) => value as f32,
         _ => 10.0,
     };
 
@@ -959,8 +995,8 @@ fn canvas_stroke_style(context: &ObjectStorage, dash: &[f64]) -> Result<StrokeSt
         return Err(JsError::unsupported("stroke: dash pattern is too large"));
     }
 
-    let offset = match context.get("lineDashOffset") {
-        Some(Value::Number(value)) => *value,
+    let offset = match owner.read_ordinary_own_property(context, "lineDashOffset") {
+        Some(Value::Number(value)) => value,
         _ => 0.0,
     };
 
@@ -983,11 +1019,9 @@ fn canvas_stroke_style(context: &ObjectStorage, dash: &[f64]) -> Result<StrokeSt
     })
 }
 
-fn canvas_color(context: &ObjectStorage, property: &str) -> Color {
-    match context
-        .borrow()
-        .get(property)
-        .cloned()
+fn canvas_color(owner: &HostRoots, context: &ObjectStorage, property: &str) -> Color {
+    match owner
+        .read_ordinary_own_property(context, property)
         .unwrap_or(Value::Undefined)
     {
         Value::String(value) if value.eq_ignore_ascii_case("transparent") => Color::TRANSPARENT,

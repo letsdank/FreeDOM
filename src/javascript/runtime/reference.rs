@@ -107,7 +107,7 @@ impl Interpreter {
                 }
 
                 Value::Function(function) => {
-                    function.set(property, value);
+                    function.set(&self.host_roots, property, value);
                     Ok(())
                 }
 

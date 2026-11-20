@@ -86,7 +86,7 @@ impl Interpreter {
             }
         };
 
-        let prototype = match function.get("prototype") {
+        let prototype = match function.get(&self.host_roots, "prototype") {
             Value::Object(object) => object,
 
             Value::Undefined

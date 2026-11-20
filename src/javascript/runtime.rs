@@ -340,25 +340,29 @@ impl Interpreter {
             unreachable!("object constructor returns an object");
         };
 
-        object_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &object_prototype,
             "constructor".to_owned(),
             Value::ObjectConstructor,
             false,
         );
 
-        object_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &object_prototype,
             "hasOwnProperty".to_owned(),
             Value::NativeFunction(NativeFunction::ObjectHasOwnProperty),
             false,
         );
 
-        object_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &object_prototype,
             "toString".to_owned(),
             Value::NativeFunction(NativeFunction::ObjectToString),
             false,
         );
 
-        object_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &object_prototype,
             "valueOf".to_owned(),
             Value::NativeFunction(NativeFunction::ObjectValueOf),
             false,
@@ -392,25 +396,29 @@ impl Interpreter {
             unreachable!("object constructor returns an object");
         };
 
-        error_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &error_prototype,
             "name".to_owned(),
             Value::String("Error".to_owned()),
             false,
         );
 
-        error_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &error_prototype,
             "message".to_owned(),
             Value::String(String::new()),
             false,
         );
 
-        error_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &error_prototype,
             "constructor".to_owned(),
             Value::NativeFunction(NativeFunction::ErrorConstructor),
             false,
         );
 
-        error_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &error_prototype,
             "toString".to_owned(),
             Value::NativeFunction(NativeFunction::ErrorToString),
             false,
@@ -436,13 +444,15 @@ impl Interpreter {
             unreachable!("object constructor returns an object");
         };
 
-        promise_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &promise_prototype,
             "then".to_owned(),
             Value::NativeFunction(NativeFunction::PromiseThen),
             false,
         );
 
-        promise_prototype.borrow_mut().define_own_data_property(
+        host_roots.define_ordinary_property(
+            &promise_prototype,
             "constructor".to_owned(),
             Value::NativeFunction(NativeFunction::PromiseConstructor),
             false,
