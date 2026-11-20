@@ -6,6 +6,7 @@
 //! Collection and runtime integration are not implemented. Graph tracing
 //! reports reachable objects without removing anything.
 
+use super::object_properties::ObjectProperties;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,16 +30,9 @@ pub(super) enum HeapPrototype {
     Object(ObjectId),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct HeapProperty {
-    pub(super) name: String,
-    pub(super) value: HeapValue,
-    pub(super) enumerable: bool,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct HeapObjectState {
-    pub(super) properties: Vec<HeapProperty>,
+    pub(super) properties: ObjectProperties<HeapValue>,
     pub(super) prototype: HeapPrototype,
 }
 
@@ -68,8 +62,8 @@ impl HeapObjectState {
             visit(id);
         }
 
-        for property in &self.properties {
-            property.value.visit_reference(visit);
+        for (_, value) in self.properties.iter() {
+            value.visit_reference(visit);
         }
     }
 }
@@ -258,8 +252,7 @@ impl Heap<HeapObject> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Heap, HeapArrayState, HeapObject, HeapObjectState, HeapProperty, HeapPrototype, HeapValue,
-        TraceError,
+        Heap, HeapArrayState, HeapObject, HeapObjectState, HeapPrototype, HeapValue, TraceError,
     };
 
     #[test]
@@ -325,17 +318,24 @@ mod tests {
 
         object.prototype = HeapPrototype::Object(array_id);
 
-        object.properties.push(HeapProperty {
-            name: "self".into(),
-            value: HeapValue::Reference(object_id),
-            enumerable: false,
-        });
+        object
+            .properties
+            .define("self".into(), HeapValue::Reference(object_id), false);
+        object
+            .properties
+            .set("self".into(), HeapValue::Reference(object_id), true);
+        assert_eq!(
+            object.properties.get("self"),
+            Some(&HeapValue::Reference(object_id))
+        );
+        assert_eq!(
+            object.properties.ordered_keys(),
+            vec![("self".into(), false)]
+        );
 
-        object.properties.push(HeapProperty {
-            name: "number".into(),
-            value: HeapValue::Number(3.0),
-            enumerable: true,
-        });
+        object
+            .properties
+            .define("number".into(), HeapValue::Number(3.0), true);
 
         let Some(HeapObject::Array(array)) = heap.get_mut(array_id) else {
             panic!("expected array");
@@ -386,11 +386,9 @@ mod tests {
             panic!("expected object");
         };
 
-        object.properties.push(HeapProperty {
-            name: "child".into(),
-            value: HeapValue::Reference(child),
-            enumerable: true,
-        });
+        object
+            .properties
+            .define("child".into(), HeapValue::Reference(child), true);
 
         let Some(HeapObject::Array(array)) = heap.get_mut(child) else {
             panic!("expected array");
@@ -426,11 +424,9 @@ mod tests {
             panic!("expected object");
         };
 
-        object.properties.push(HeapProperty {
-            name: "bad".into(),
-            value: HeapValue::Reference(old),
-            enumerable: true,
-        });
+        object
+            .properties
+            .define("bad".into(), HeapValue::Reference(old), true);
 
         assert_eq!(
             heap.trace_reachable([root]),
@@ -444,7 +440,9 @@ mod tests {
             panic!("expected object");
         };
 
-        object.properties[0].value = HeapValue::Reference(foreign);
+        object
+            .properties
+            .set("bad".into(), HeapValue::Reference(foreign), true);
 
         assert_eq!(
             heap.trace_reachable([root]),

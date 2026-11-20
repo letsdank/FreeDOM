@@ -8,6 +8,7 @@ use crate::url::Url;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 use super::arguments::ArgumentsValue;
+use super::object_properties::ObjectProperties;
 use super::runtime::bindings::{CapturedBindings, visit_captured_bindings};
 use super::runtime::promise::PromiseHandle;
 use super::runtime::{RootVisitError, RuntimeRoot};
@@ -104,16 +105,9 @@ pub(crate) enum TestContextMethod {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ObjectState {
-    properties: Vec<ObjectProperty>,
+    properties: ObjectProperties<Value>,
     prototype: ObjectPrototype,
     pub(super) promise: Option<PromiseHandle>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct ObjectProperty {
-    name: String,
-    value: Value,
-    enumerable: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -164,29 +158,13 @@ impl ObjectState {
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&Value> {
-        self.properties
-            .iter()
-            .find(|property| property.name == name)
-            .map(|property| &property.value)
+        self.properties.get(name)
     }
 
     pub(crate) fn set(&mut self, name: String, value: Value) {
-        if let Some(property) = self
-            .properties
-            .iter_mut()
-            .find(|property| property.name == name)
-        {
-            property.value = value;
-        } else {
-            let enumerable = !(matches!(self.prototype, ObjectPrototype::IntrinsicObjectRoot)
-                && is_object_prototype_intrinsic(&name));
-
-            self.properties.push(ObjectProperty {
-                name,
-                value,
-                enumerable,
-            });
-        }
+        let enumerable = !(matches!(self.prototype, ObjectPrototype::IntrinsicObjectRoot)
+            && is_object_prototype_intrinsic(&name));
+        self.properties.set(name, value, enumerable);
     }
 
     pub(super) fn define_own_data_property(
@@ -195,20 +173,7 @@ impl ObjectState {
         value: Value,
         enumerable: bool,
     ) {
-        if let Some(property) = self
-            .properties
-            .iter_mut()
-            .find(|property| property.name == name)
-        {
-            property.value = value;
-            property.enumerable = enumerable;
-        } else {
-            self.properties.push(ObjectProperty {
-                name,
-                value,
-                enumerable,
-            });
-        }
+        self.properties.define(name, value, enumerable);
     }
 
     pub(crate) fn keys(&self) -> Vec<String> {
@@ -219,36 +184,13 @@ impl ObjectState {
     }
 
     fn own_keys_with_enumerability(&self) -> Vec<(String, bool)> {
-        let mut indices = Vec::new();
-        let mut strings = Vec::new();
-
-        for property in &self.properties {
-            let key = &property.name;
-
-            match key.parse::<u32>() {
-                Ok(index) if index != u32::MAX && index.to_string() == *key => {
-                    indices.push((index, key.clone(), property.enumerable));
-                }
-
-                _ => {
-                    strings.push((key.clone(), property.enumerable));
-                }
-            }
-        }
-
-        indices.sort_unstable_by_key(|(index, _, _)| *index);
-
-        indices
-            .into_iter()
-            .map(|(_, key, enumerable)| (key, enumerable))
-            .chain(strings)
-            .collect()
+        self.properties.ordered_keys()
     }
 
     fn as_hash_map(&self) -> HashMap<String, Value> {
         self.properties
             .iter()
-            .map(|property| (property.name.clone(), property.value.clone()))
+            .map(|(name, value)| (name.to_owned(), value.clone()))
             .collect()
     }
 
@@ -366,8 +308,8 @@ impl ObjectState {
 
     #[allow(dead_code)]
     fn visit_contents(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
-        for property in &self.properties {
-            visit(RuntimeRoot::Value(&property.value));
+        for (_, value) in self.properties.iter() {
+            visit(RuntimeRoot::Value(value));
         }
 
         match &self.prototype {
@@ -853,7 +795,7 @@ impl Value {
 
     pub(super) fn object_with_null_prototype() -> Self {
         let state = ObjectState {
-            properties: Vec::new(),
+            properties: ObjectProperties::default(),
             prototype: ObjectPrototype::Null,
             promise: None,
         };
@@ -863,7 +805,7 @@ impl Value {
 
     pub(super) fn object_with_prototype(prototype: ObjectStorage) -> Self {
         let state = ObjectState {
-            properties: Vec::new(),
+            properties: ObjectProperties::default(),
             prototype: ObjectPrototype::Object(prototype),
             promise: None,
         };
@@ -873,7 +815,7 @@ impl Value {
 
     pub(super) fn intrinsic_object_prototype() -> Self {
         let state = ObjectState {
-            properties: Vec::new(),
+            properties: ObjectProperties::default(),
             prototype: ObjectPrototype::IntrinsicObjectRoot,
             promise: None,
         };

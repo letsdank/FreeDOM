@@ -55,6 +55,9 @@ mod runtime;
 #[path = "javascript/heap.rs"]
 mod heap;
 
+#[path = "javascript/object_properties.rs"]
+mod object_properties;
+
 #[path = "javascript/ast.rs"]
 mod ast;
 
