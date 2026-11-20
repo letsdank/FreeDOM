@@ -3,9 +3,18 @@
 //! <https://tc39.es/ecma262/#sec-object.create>
 //! <https://tc39.es/ecma262/#sec-object.prototype.hasownproperty>
 
-use super::{Interpreter, JsError, Value};
+use super::{Interpreter, JsError, ObjectStorage, Value};
 
 impl Interpreter {
+    // This allocation boundary still uses Rc-backed storage until heap migration.
+    pub(super) fn create_ordinary_object(
+        &self,
+        entries: impl IntoIterator<Item = (String, Value)>,
+        prototype: Option<ObjectStorage>,
+    ) -> Value {
+        Value::object_with_entries_and_prototype(entries, prototype)
+    }
+
     pub(super) fn object_has_own_property(
         receiver: Option<Value>,
         arguments: Vec<Value>,
@@ -48,7 +57,7 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn object_create(arguments: Vec<Value>) -> Result<Value, JsError> {
+    pub(super) fn object_create(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
         let prototype = match arguments.first().unwrap_or(&Value::Undefined) {
             Value::Null => None,
 
@@ -73,10 +82,7 @@ impl Interpreter {
             ));
         }
 
-        Ok(match prototype {
-            Some(object) => Value::object_with_prototype(object),
-            None => Value::object_with_null_prototype(),
-        })
+        Ok(self.create_ordinary_object([], prototype))
     }
 
     // https://tc39.es/ecma262/#sec-object.entries

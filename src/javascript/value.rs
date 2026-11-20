@@ -12,7 +12,7 @@ use super::object_properties::ObjectProperties;
 use super::runtime::bindings::{CapturedBindings, visit_captured_bindings};
 use super::runtime::promise::PromiseHandle;
 use super::runtime::{RootVisitError, RuntimeRoot};
-use super::{DocumentState, FunctionKind, UserFunction, regexp};
+use super::{DocumentState, UserFunction, regexp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeFunction {
@@ -784,33 +784,25 @@ impl Value {
 
     pub(super) fn object_with_entries_and_prototype(
         entries: impl IntoIterator<Item = (String, Value)>,
-        prototype: ObjectStorage,
+        prototype: Option<ObjectStorage>,
     ) -> Self {
         let mut state = ObjectState::from_entries(entries);
 
-        state.prototype = ObjectPrototype::Object(prototype);
+        state.prototype = match prototype {
+            Some(prototype) => ObjectPrototype::Object(prototype),
+            None => ObjectPrototype::Null,
+        };
 
         Self::Object(Rc::new(RefCell::new(state)))
     }
 
+    #[cfg(test)]
     pub(super) fn object_with_null_prototype() -> Self {
-        let state = ObjectState {
-            properties: ObjectProperties::default(),
-            prototype: ObjectPrototype::Null,
-            promise: None,
-        };
-
-        Self::Object(Rc::new(RefCell::new(state)))
+        Self::object_with_entries_and_prototype([], None)
     }
 
     pub(super) fn object_with_prototype(prototype: ObjectStorage) -> Self {
-        let state = ObjectState {
-            properties: ObjectProperties::default(),
-            prototype: ObjectPrototype::Object(prototype),
-            promise: None,
-        };
-
-        Self::Object(Rc::new(RefCell::new(state)))
+        Self::object_with_entries_and_prototype([], Some(prototype))
     }
 
     pub(super) fn intrinsic_object_prototype() -> Self {
@@ -825,17 +817,13 @@ impl Value {
 
     pub(super) fn function(
         definition: UserFunction,
-        object_prototype: ObjectStorage,
+        prototype: Option<Value>,
         captures: CapturedBindings,
     ) -> Self {
         let mut properties = ObjectState::default();
 
-        if definition.kind == FunctionKind::Ordinary {
-            properties.define_own_data_property(
-                "prototype".to_owned(),
-                Value::object_with_prototype(object_prototype),
-                false,
-            );
+        if let Some(prototype) = prototype {
+            properties.define_own_data_property("prototype".to_owned(), prototype, false);
         }
 
         Self::Function(FunctionValue {

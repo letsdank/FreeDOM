@@ -111,7 +111,7 @@ impl Interpreter {
 
             Value::NativeFunction(NativeFunction::ObjectEntries) => self.object_entries(values),
 
-            Value::NativeFunction(NativeFunction::ObjectCreate) => Self::object_create(values),
+            Value::NativeFunction(NativeFunction::ObjectCreate) => self.object_create(values),
 
             Value::NativeFunction(NativeFunction::ObjectHasOwnProperty) => {
                 Self::object_has_own_property(receiver, values)
