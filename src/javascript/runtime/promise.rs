@@ -306,10 +306,12 @@ impl Interpreter {
         match self.dispatch_call(handler, None, vec![argument]) {
             Ok(value) => {
                 if self.promise_handle(&value).as_ref() == Some(&reaction.target) {
-                    let mut error =
-                        Value::native_error("TypeError", "promise cannot resolve to itself");
-
-                    self.attach_native_error_prototype(&mut error);
+                    let error = Value::error_with_prototype(
+                        &self.host_roots,
+                        "TypeError",
+                        Some("promise cannot resolve to itself".to_owned()),
+                        self.type_error_prototype.clone(),
+                    );
 
                     self.settle_promise(&reaction.target, Outcome::Rejected(error));
                 } else {

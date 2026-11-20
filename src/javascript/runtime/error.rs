@@ -48,7 +48,12 @@ impl Interpreter {
             }
         };
 
-        Ok(Value::error_with_prototype(message, prototype))
+        Ok(Value::error_with_prototype(
+            &self.host_roots,
+            "Error",
+            message,
+            prototype,
+        ))
     }
 
     pub(super) fn error_to_string(&self, receiver: Option<Value>) -> Result<Value, JsError> {

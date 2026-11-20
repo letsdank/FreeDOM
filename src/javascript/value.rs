@@ -405,13 +405,21 @@ impl NativeErrorValue {
         }
     }
 
-    fn new_with_prototype(message: Option<String>, prototype: ObjectStorage) -> Self {
-        let mut properties = ObjectState::default();
-
-        properties.prototype = ObjectPrototype::Object(prototype);
+    fn new_with_prototype(
+        owner: &HostRoots,
+        default_name: &str,
+        message: Option<String>,
+        prototype: ObjectStorage,
+    ) -> Self {
+        let Value::Object(properties) =
+            owner.create_ordinary_object([], ObjectPrototype::Object(prototype))
+        else {
+            unreachable!("ordinary object creation returned a non-object");
+        };
 
         if let Some(message) = message {
-            properties.define_own_data_property(
+            owner.define_ordinary_property(
+                &properties,
                 "message".to_owned(),
                 Value::String(message),
                 false,
@@ -419,8 +427,8 @@ impl NativeErrorValue {
         }
 
         Self {
-            default_name: "Error".to_owned(),
-            properties: Rc::new(RefCell::new(properties)),
+            default_name: default_name.to_owned(),
+            properties,
         }
     }
 
@@ -848,8 +856,18 @@ impl Value {
         })
     }
 
-    pub(super) fn error_with_prototype(message: Option<String>, prototype: ObjectStorage) -> Self {
-        Self::NativeError(NativeErrorValue::new_with_prototype(message, prototype))
+    pub(super) fn error_with_prototype(
+        owner: &HostRoots,
+        default_name: &str,
+        message: Option<String>,
+        prototype: ObjectStorage,
+    ) -> Self {
+        Self::NativeError(NativeErrorValue::new_with_prototype(
+            owner,
+            default_name,
+            message,
+            prototype,
+        ))
     }
 
     pub fn as_array(&self) -> Option<Vec<Value>> {
@@ -1204,7 +1222,9 @@ mod tests {
             );
         }
 
-        let Value::NativeError(error) = Value::error_with_prototype(None, prototype.clone()) else {
+        let Value::NativeError(error) =
+            Value::error_with_prototype(&HostRoots::default(), "Error", None, prototype.clone())
+        else {
             unreachable!();
         };
 
