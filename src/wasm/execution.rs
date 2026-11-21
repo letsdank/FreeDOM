@@ -6,6 +6,7 @@
 //!
 //! <https://webassembly.github.io/spec/core/valid/instructions.html#expressions>
 //! <https://webassembly.github.io/spec/core/exec/instructions.html>
+//! <https://webassembly.github.io/spec/core/exec/numerics.html#op-iadd>
 
 use std::fmt;
 
@@ -23,6 +24,11 @@ pub(crate) enum FunctionError {
     UnsupportedSignature,
     UnsupportedLocals,
     Decode(BinaryError),
+    StackUnderflow {
+        offset: usize,
+        needed: usize,
+        available: usize,
+    },
     ResultStackMismatch {
         expected: usize,
         actual: usize,
@@ -39,6 +45,14 @@ impl fmt::Display for FunctionError {
             Self::UnsupportedSignature => write!(formatter, "unsupported function signature"),
             Self::UnsupportedLocals => write!(formatter, "function locals are not supported"),
             Self::Decode(error) => write!(formatter, "{error}"),
+            Self::StackUnderflow {
+                offset,
+                needed,
+                available,
+            } => write!(
+                formatter,
+                "operand stack underflow at byte {offset}: needed {needed}, found {available}"
+            ),
             Self::ResultStackMismatch {
                 expected,
                 actual,
@@ -57,6 +71,7 @@ impl std::error::Error for FunctionError {}
 pub(crate) struct ValidatedFunction {
     expression: Expression,
     returns_i32: bool,
+    max_stack_depth: usize,
 }
 
 /// Resolves the type and checks the expression's final operand stack.
@@ -81,9 +96,29 @@ pub(crate) fn validate_function(
         return Err(FunctionError::UnsupportedLocals);
     }
     let expression = decode_expression(body).map_err(FunctionError::Decode)?;
-    // Every supported instruction pushes exactly one i32; none consume values.
+    // All values in the currently supported subset are i32.
+    let mut depth = 0_usize;
+    let mut max_stack_depth = 0_usize;
+    for instruction in &expression.instructions {
+        match instruction.kind {
+            InstructionKind::I32Const(_) => {
+                depth += 1;
+                max_stack_depth = max_stack_depth.max(depth);
+            }
+            InstructionKind::I32Add => {
+                if depth < 2 {
+                    return Err(FunctionError::StackUnderflow {
+                        offset: instruction.offset,
+                        needed: 2,
+                        available: depth,
+                    });
+                }
+                depth -= 1;
+            }
+        }
+    }
     let expected = usize::from(returns_i32);
-    let actual = expression.instructions.len();
+    let actual = depth;
     if actual != expected {
         return Err(FunctionError::ResultStackMismatch {
             expected,
@@ -94,18 +129,51 @@ pub(crate) fn validate_function(
     Ok(ValidatedFunction {
         expression,
         returns_i32,
+        max_stack_depth,
     })
 }
 
-/// Executes a previously checked function. `None` denotes a void result.
-pub(crate) fn execute_function(function: &ValidatedFunction) -> Option<i32> {
-    let mut top = None;
-    for instruction in &function.expression.instructions {
-        match instruction.kind {
-            InstructionKind::I32Const(value) => top = Some(value),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExecutionError {
+    AllocationFailed,
+    /// Defensive check for inconsistencies between validation and execution.
+    InvalidValidatedStack,
+}
+
+impl fmt::Display for ExecutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AllocationFailed => write!(formatter, "cannot allocate operand stack"),
+            Self::InvalidValidatedStack => write!(formatter, "invalid validated operand stack"),
         }
     }
-    if function.returns_i32 { top } else { None }
+}
+
+impl std::error::Error for ExecutionError {}
+
+/// Executes a previously checked function. `None` denotes a void result.
+pub(crate) fn execute_function(
+    function: &ValidatedFunction,
+) -> Result<Option<i32>, ExecutionError> {
+    let mut stack: Vec<i32> = Vec::new();
+    stack
+        .try_reserve_exact(function.max_stack_depth)
+        .map_err(|_| ExecutionError::AllocationFailed)?;
+    for instruction in &function.expression.instructions {
+        match instruction.kind {
+            InstructionKind::I32Const(value) => stack.push(value),
+            InstructionKind::I32Add => {
+                let right = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let left = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                stack.push(left.wrapping_add(right));
+            }
+        }
+    }
+    match (function.returns_i32, stack.as_slice()) {
+        (false, []) => Ok(None),
+        (true, [value]) => Ok(Some(*value)),
+        _ => Err(ExecutionError::InvalidValidatedStack),
+    }
 }
 
 #[cfg(test)]
@@ -128,7 +196,7 @@ mod tests {
         let linked = link_functions(&declarations, &bodies).unwrap();
         let (type_index, body) = linked.iter().next().unwrap();
         let function = validate_function(&declarations, type_index, body).unwrap();
-        assert_eq!(execute_function(&function), Some(42));
+        assert_eq!(execute_function(&function).unwrap(), Some(42));
     }
 
     #[test]
@@ -157,12 +225,12 @@ mod tests {
         };
         let minus_one = body(&[0x41, 0x7f, 0x0b]);
         assert_eq!(
-            execute_function(&validate_function(&declarations, 0, &minus_one).unwrap()),
+            execute_function(&validate_function(&declarations, 0, &minus_one).unwrap()).unwrap(),
             Some(-1)
         );
         let empty = body(&[0x0b]);
         assert_eq!(
-            execute_function(&validate_function(&declarations, 1, &empty).unwrap()),
+            execute_function(&validate_function(&declarations, 1, &empty).unwrap()).unwrap(),
             None
         );
         assert!(matches!(
@@ -190,10 +258,10 @@ mod tests {
                 offset: 24,
             })
         ));
-        let unsupported = body(&[0x6a, 0x0b]);
+        let unsupported = body(&[0x6b, 0x0b]);
         assert!(matches!(
             validate_function(&declarations, 0, &unsupported),
-            Err(FunctionError::Decode(error)) if error.kind == BinaryErrorKind::UnsupportedOpcode(0x6a)
+            Err(FunctionError::Decode(error)) if error.kind == BinaryErrorKind::UnsupportedOpcode(0x6b)
         ));
         let local_body = FunctionBody {
             locals: vec![LocalGroup {
@@ -205,6 +273,42 @@ mod tests {
         assert!(matches!(
             validate_function(&declarations, 1, &local_body),
             Err(FunctionError::UnsupportedLocals)
+        ));
+    }
+
+    #[test]
+    fn executes_addition_and_rejects_stack_underflow() {
+        // (module (func (export "f") (result i32) i32.const 20 i32.const 22 i32.add))
+        let bytes=b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x09\x01\x07\x00\x41\x14\x41\x16\x6a\x0b";
+        let module = scan_module(bytes).unwrap();
+        let declarations = decode_declarations(&module).unwrap();
+        let bodies = decode_bodies(&module).unwrap();
+        let linked = link_functions(&declarations, &bodies).unwrap();
+        let (type_index, body) = linked.iter().next().unwrap();
+        let function = validate_function(&declarations, type_index, body).unwrap();
+        assert_eq!(execute_function(&function).unwrap(), Some(42));
+
+        let overflow = FunctionBody {
+            locals: vec![],
+            instructions_offset: 20,
+            instructions: &[0x41, 0xff, 0xff, 0xff, 0xff, 0x07, 0x41, 0x01, 0x6a, 0x0b],
+        };
+        assert_eq!(
+            execute_function(&validate_function(&declarations, 0, &overflow).unwrap()).unwrap(),
+            Some(i32::MIN)
+        );
+        let underflow = FunctionBody {
+            locals: vec![],
+            instructions_offset: 20,
+            instructions: &[0x41, 0x01, 0x6a, 0x0b],
+        };
+        assert!(matches!(
+            validate_function(&declarations, 0, &underflow),
+            Err(FunctionError::StackUnderflow {
+                offset: 22,
+                needed: 2,
+                available: 1
+            })
         ));
     }
 }
