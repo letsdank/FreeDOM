@@ -137,6 +137,17 @@ impl Interpreter {
         (promise, handle)
     }
 
+    // Keep the new object visible while its state or reactions are initialized.
+    fn with_new_pending_promise<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self, usize, &PromiseHandle) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let (promise, handle) = self.new_pending_promise();
+        self.with_frame_value(promise, |interpreter, index| {
+            operation(interpreter, index, &handle)
+        })
+    }
+
     fn promise_handle(&self, value: &Value) -> Option<PromiseHandle> {
         match value {
             Value::Object(object) => self.host_roots.ordinary_promise(object),
@@ -172,11 +183,10 @@ impl Interpreter {
 
         Self::require_primitive(&value)?;
 
-        let (promise, handle) = self.new_pending_promise();
-
-        self.settle_promise(&handle, Outcome::Fulfilled(value));
-
-        Ok(promise)
+        self.with_new_pending_promise(|interpreter, index, handle| {
+            interpreter.settle_promise(handle, Outcome::Fulfilled(value));
+            Ok(interpreter.frame_value(index).clone())
+        })
     }
 
     pub(super) fn promise_reject(
@@ -188,11 +198,13 @@ impl Interpreter {
 
         let reason = arguments.into_iter().next().unwrap_or(Value::Undefined);
 
-        let (promise, handle) = self.new_pending_promise();
-
-        self.settle_promise(&handle, Outcome::Rejected(reason));
-
-        Ok(promise)
+        self.with_frame_value(reason, |interpreter, reason_index| {
+            interpreter.with_new_pending_promise(|interpreter, promise_index, handle| {
+                let reason = interpreter.frame_value(reason_index).clone();
+                interpreter.settle_promise(handle, Outcome::Rejected(reason));
+                Ok(interpreter.frame_value(promise_index).clone())
+            })
+        })
     }
 
     fn require_primitive(value: &Value) -> Result<(), JsError> {
@@ -245,31 +257,32 @@ impl Interpreter {
         let on_fulfilled = Self::handler(arguments.next().unwrap_or(Value::Undefined))?;
         let on_rejected = Self::handler(arguments.next().unwrap_or(Value::Undefined))?;
 
-        let (promise, _) = self.new_pending_promise();
+        self.with_new_pending_promise(|interpreter, index, _| {
+            let Value::Object(target) = interpreter.frame_value(index) else {
+                unreachable!("promise must be an object");
+            };
 
-        let Value::Object(target) = &promise else {
-            unreachable!("promise must be an object");
-        };
+            let reaction = Reaction {
+                on_fulfilled,
+                on_rejected,
+                target: target.clone(),
+            };
 
-        let reaction = Reaction {
-            on_fulfilled,
-            on_rejected,
-            target: target.clone(),
-        };
+            let mut state = source.0.borrow_mut();
 
-        let mut state = source.0.borrow_mut();
+            if let Some(outcome) = state.outcome.clone() {
+                interpreter
+                    .microtasks
+                    .push_back(Microtask::PromiseReaction(PromiseReactionJob {
+                        outcome,
+                        reaction,
+                    }));
+            } else {
+                state.reactions.push(reaction);
+            }
 
-        if let Some(outcome) = state.outcome.clone() {
-            self.microtasks
-                .push_back(Microtask::PromiseReaction(PromiseReactionJob {
-                    outcome,
-                    reaction,
-                }));
-        } else {
-            state.reactions.push(reaction);
-        }
-
-        Ok(promise)
+            Ok(interpreter.frame_value(index).clone())
+        })
     }
 
     fn settle_promise(&mut self, promise: &PromiseHandle, outcome: Outcome) {
@@ -450,6 +463,8 @@ mod tests {
             .evaluate(
                 r#"
                 let log = '';
+                let marker = {};
+                let identical = false;
 
                 Promise.resolve('a')
                     .then(null)
@@ -462,14 +477,22 @@ mod tests {
                     .then(undefined, function(e) {
                         log += e;
                     });
+
+                Promise.reject(marker)
+                    .then()
+                    .then(undefined, function(e) {
+                        identical = e === marker;
+                    });
             "#,
                 &mut doc,
             )
             .unwrap();
 
         assert_eq!(
-            session.evaluate("log;", &mut doc).unwrap(),
-            Value::String("ab".into())
+            session
+                .evaluate("log === 'ab' && identical;", &mut doc)
+                .unwrap(),
+            Value::Boolean(true)
         );
     }
 
@@ -646,5 +669,53 @@ mod tests {
             weak.upgrade().is_none(),
             "completed job must release the target"
         );
+    }
+
+    #[test]
+    fn initializing_promise_keeps_object_and_rejection_reason_rooted() {
+        let mut interpreter = Interpreter::new();
+        let Value::Object(reason) = Value::object([]) else {
+            unreachable!();
+        };
+
+        let promise = interpreter
+            .with_frame_value(
+                Value::Object(reason.clone()),
+                |interpreter, reason_index| {
+                    interpreter.with_new_pending_promise(|interpreter, promise_index, handle| {
+                        let Value::Object(promise) = interpreter.frame_value(promise_index).clone()
+                        else {
+                            unreachable!();
+                        };
+                        let (mut saw_promise, mut saw_reason) = (false, false);
+                        interpreter
+                            .visit_runtime_roots(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(object)) = root {
+                                    saw_promise |= Rc::ptr_eq(object, &promise);
+                                    saw_reason |= Rc::ptr_eq(object, &reason);
+                                }
+                            })
+                            .unwrap();
+                        assert!(saw_promise && saw_reason);
+
+                        let reason_value = interpreter.frame_value(reason_index).clone();
+                        interpreter.settle_promise(handle, Outcome::Rejected(reason_value));
+                        let mut retained_reason = false;
+                        handle
+                            .visit_references(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(object)) = root {
+                                    retained_reason |= Rc::ptr_eq(object, &reason);
+                                }
+                            })
+                            .unwrap();
+                        assert!(retained_reason);
+                        Ok(Value::Object(promise))
+                    })
+                },
+            )
+            .unwrap();
+
+        assert!(interpreter.execution_frames.is_empty());
+        assert!(interpreter.promise_handle(&promise).is_some());
     }
 }
