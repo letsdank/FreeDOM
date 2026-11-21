@@ -2068,39 +2068,42 @@ mod tests {
     #[test]
     fn call_handoff_keeps_result_rooted_until_destination_accepts_it() {
         let mut interpreter = Interpreter::new();
-        let Value::Object(object) = Value::object([]) else {
-            unreachable!();
-        };
+        let program = parse_program("(function() { return {}; });").unwrap();
+        let callback = interpreter.execute_script(&program).unwrap().into_value();
+        let mut returned_object = None;
 
         interpreter
             .with_temporary_values_scope(|interpreter, destination| {
-                interpreter.with_call_frame_handoff(
-                    super::PendingCall {
-                        callee: Value::Undefined,
-                        receiver: None,
-                        arguments: vec![],
-                    },
-                    |_, _| Ok(Value::Object(object.clone())),
+                interpreter.dispatch_call_with_handoff(
+                    callback,
+                    None,
+                    vec![],
                     |interpreter, result| {
+                        let value = result?;
+                        let Value::Object(object) = &value else {
+                            panic!("expected object result");
+                        };
                         let mut roots = 0;
                         interpreter
                             .visit_runtime_roots(&mut |root| {
                                 if let RuntimeRoot::Value(Value::Object(value)) = root {
-                                    roots += usize::from(Rc::ptr_eq(value, &object));
+                                    roots += usize::from(Rc::ptr_eq(value, object));
                                 }
                             })
                             .unwrap();
                         assert_eq!(roots, 1);
-                        interpreter.frame_values_mut(destination).push(result?);
+                        returned_object = Some(object.clone());
+                        interpreter.frame_values_mut(destination).push(value);
                         Ok(())
                     },
                 )?;
 
+                let object = returned_object.as_ref().expect("callback result");
                 let mut roots = 0;
                 interpreter
                     .visit_runtime_roots(&mut |root| {
                         if let RuntimeRoot::Value(Value::Object(value)) = root {
-                            roots += usize::from(Rc::ptr_eq(value, &object));
+                            roots += usize::from(Rc::ptr_eq(value, object));
                         }
                     })
                     .unwrap();

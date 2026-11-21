@@ -36,13 +36,24 @@ impl Interpreter {
         receiver: Option<Value>,
         values: Vec<Value>,
     ) -> Result<Value, JsError> {
-        self.with_call_frame(
+        self.dispatch_call_with_handoff(callee, receiver, values, |_, result| result)
+    }
+
+    pub(super) fn dispatch_call_with_handoff<T>(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        values: Vec<Value>,
+        handoff: impl FnOnce(&mut Self, Result<Value, JsError>) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        self.with_call_frame_handoff(
             super::PendingCall {
                 callee,
                 receiver,
                 arguments: values,
             },
             |interpreter, index| interpreter.dispatch_call_in_frame(index),
+            handoff,
         )
     }
 
@@ -53,18 +64,10 @@ impl Interpreter {
         values: Vec<Value>,
         destination: usize,
     ) -> Result<(), JsError> {
-        self.with_call_frame_handoff(
-            super::PendingCall {
-                callee,
-                receiver,
-                arguments: values,
-            },
-            |interpreter, index| interpreter.dispatch_call_in_frame(index),
-            |interpreter, result| {
-                interpreter.frame_values_mut(destination).push(result?);
-                Ok(())
-            },
-        )
+        self.dispatch_call_with_handoff(callee, receiver, values, |interpreter, result| {
+            interpreter.frame_values_mut(destination).push(result?);
+            Ok(())
+        })
     }
 
     pub(super) fn dispatch_call_in_frame(&mut self, index: usize) -> Result<Value, JsError> {

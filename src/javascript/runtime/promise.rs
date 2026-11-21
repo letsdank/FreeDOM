@@ -316,42 +316,48 @@ impl Interpreter {
             Outcome::Fulfilled(value) | Outcome::Rejected(value) => value,
         };
 
-        match self.dispatch_call(handler, None, vec![argument]) {
-            Ok(value) => {
-                if self.promise_handle(&value).as_ref() == Some(&target) {
-                    let error = Value::error_with_prototype(
-                        &self.host_roots,
-                        "TypeError",
-                        Some("promise cannot resolve to itself".to_owned()),
-                        self.type_error_prototype.clone(),
-                    );
+        self.dispatch_call_with_handoff(handler, None, vec![argument], |interpreter, result| {
+            match result {
+                Ok(value) => {
+                    if interpreter.promise_handle(&value).as_ref() == Some(&target) {
+                        let error = Value::error_with_prototype(
+                            &interpreter.host_roots,
+                            "TypeError",
+                            Some("promise cannot resolve to itself".to_owned()),
+                            interpreter.type_error_prototype.clone(),
+                        );
 
-                    self.settle_promise(&target, Outcome::Rejected(error));
-                } else {
-                    Self::require_primitive(&value)?;
+                        interpreter.with_frame_value(error, |interpreter, index| {
+                            let reason = interpreter.frame_value(index).clone();
+                            interpreter.settle_promise(&target, Outcome::Rejected(reason));
+                            Ok(())
+                        })?;
+                    } else {
+                        Self::require_primitive(&value)?;
 
-                    self.settle_promise(&target, Outcome::Fulfilled(value));
-                }
-            }
-
-            Err(mut error) => {
-                self.materialize_native_exception(&mut error);
-                self.record_exception(&error);
-
-                match error.kind {
-                    JsErrorKind::Thrown(value)
-                    | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
-                        self.settle_promise(&target, Outcome::Rejected(value));
-                        // The target promise now owns the rejection reason.
-                        self.clear_exception();
+                        interpreter.settle_promise(&target, Outcome::Fulfilled(value));
                     }
+                }
 
-                    _ => return Err(error),
+                Err(mut error) => {
+                    interpreter.materialize_native_exception(&mut error);
+                    interpreter.record_exception(&error);
+
+                    match error.kind {
+                        JsErrorKind::Thrown(value)
+                        | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
+                            interpreter.settle_promise(&target, Outcome::Rejected(value));
+                            // The target promise now owns the rejection reason.
+                            interpreter.clear_exception();
+                        }
+
+                        _ => return Err(error),
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -491,7 +497,8 @@ mod tests {
         session
             .evaluate(
                 r#"
-                let name = '';
+                let firstError;
+                let secondError;
                 let p;
 
                 p = Promise.resolve().then(function() {
@@ -499,7 +506,11 @@ mod tests {
                 });
 
                 p.then(undefined, function(error) {
-                    name = error.name;
+                    firstError = error;
+                });
+
+                p.then(undefined, function(error) {
+                    secondError = error;
                 });
             "#,
                 &mut doc,
@@ -507,8 +518,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            session.evaluate("name;", &mut doc).unwrap(),
-            Value::String("TypeError".into())
+            session
+                .evaluate(
+                    "firstError === secondError && firstError.name === 'TypeError';",
+                    &mut doc
+                )
+                .unwrap(),
+            Value::Boolean(true)
         );
     }
 
