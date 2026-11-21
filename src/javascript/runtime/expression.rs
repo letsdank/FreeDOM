@@ -200,8 +200,7 @@ impl Interpreter {
                 let reference = self.prepare_reference(target)?;
 
                 self.with_active_reference(reference, |interpreter, index| {
-                    let reference = interpreter.active_reference(index).clone();
-                    let left = interpreter.read_reference(&reference)?;
+                    let left = interpreter.read_active_reference(index)?;
 
                     let result = interpreter.evaluate_binary_chain_step(left, *operator, value)?;
 

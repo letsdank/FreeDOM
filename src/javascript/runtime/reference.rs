@@ -4,6 +4,7 @@
 //!
 //! This is not a complete ECMAScript Reference Record implementation.
 
+use super::value_ops::PrimitiveHint;
 use super::{ExecutionFrame, Expression, Interpreter, JsError, PostfixStep, RuntimeRoot, Value};
 
 #[derive(Clone)]
@@ -70,7 +71,13 @@ impl Interpreter {
                 object, property, ..
             } => self.member_value(object.clone(), property),
 
-            Reference::Index { object, index } => self.index_value(object.clone(), index.clone()),
+            Reference::Index { object, index } => {
+                if matches!(object, Value::Null | Value::Undefined) {
+                    return self.index_value(object.clone(), index.clone());
+                }
+                let index = self.property_key_for_index(index)?;
+                self.index_value(object.clone(), index)
+            }
         }
     }
 
@@ -200,11 +207,52 @@ impl Interpreter {
                     ));
                 }
 
-                let property = index.to_js_string(&self.host_roots);
+                let property = self
+                    .property_key_for_index(&index)?
+                    .to_js_string(&self.host_roots);
 
                 self.write_reference(Reference::Member { object, property }, value)
             }
         }
+    }
+
+    // https://tc39.es/ecma262/2026/#sec-topropertykey
+    // Other object-like values retain the interpreter's existing partial behavior.
+    fn property_key_for_index(&mut self, index: &Value) -> Result<Value, JsError> {
+        match index {
+            Value::Object(_) | Value::NativeError(_) => {
+                let primitive = self.ordinary_to_primitive(index, PrimitiveHint::String)?;
+                let key = match primitive {
+                    Value::Number(number) if number == 0.0 => "0".to_owned(),
+                    Value::Number(number) if number == f64::INFINITY => "Infinity".to_owned(),
+                    Value::Number(number) if number == f64::NEG_INFINITY => "-Infinity".to_owned(),
+                    _ => primitive.to_js_string(&self.host_roots),
+                };
+                Ok(Value::String(key))
+            }
+            _ => Ok(index.clone()),
+        }
+    }
+
+    // GetValue updates a computed reference with its converted property key.
+    // https://tc39.es/ecma262/2026/#sec-getvalue
+    pub(super) fn read_active_reference(&mut self, index: usize) -> Result<Value, JsError> {
+        let reference = self.active_reference(index).clone();
+        if let Reference::Index { object, index: key } = reference {
+            if matches!(object, Value::Null | Value::Undefined) {
+                return self.index_value(object, key);
+            }
+            let key = self.property_key_for_index(&key)?;
+            match self.execution_frames.get_mut(index) {
+                Some(ExecutionFrame::Reference(reference)) => {
+                    *reference = Reference::Index { object, index: key };
+                }
+                _ => unreachable!("reference frame must exist"),
+            }
+        }
+
+        let reference = self.active_reference(index).clone();
+        self.read_reference(&reference)
     }
 
     pub(super) fn with_active_reference<T>(
@@ -390,6 +438,41 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn computed_object_keys_are_converted_in_reference_order() {
+        let result = evaluate(
+            r#"
+                let trace = '';
+                let object = {x: 1};
+                let marker = {};
+                let key = {toString: function() { trace += 'k'; return 'x'; }};
+                let fallback = {
+                    toString: function() { trace += 's'; return {}; },
+                    valueOf: function() { trace += 'v'; return 'x'; }
+                };
+                let failing = {toString: function() { trace += 'e'; throw marker; }};
+                let zeroKey = {toString: function() { return -0; }};
+                let numbers = {'0': 5};
+                function rhs() { trace += 'r'; return 2; }
+
+                let compound = object[key] += rhs();
+                let before = object[key]++;
+                let assigned = object[key] = rhs();
+                let read = object[fallback];
+                let caught = false;
+                let nullError = '';
+                try { object[failing] += rhs(); } catch (error) { caught = error === marker; }
+                try { null[key] = rhs(); } catch (error) { nullError = error.name; }
+
+                trace === 'krkrksver' && compound === 3 && before === 3 &&
+                    assigned === 2 && read === 2 && object.x === 2 &&
+                    caught && nullError === 'TypeError' && numbers[zeroKey] === 5;
+            "#,
+        )
+        .unwrap();
         assert_eq!(result, Value::Boolean(true));
     }
 

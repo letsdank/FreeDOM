@@ -16,7 +16,10 @@ impl PostfixResult {
     fn into_value(self, interpreter: &mut Interpreter) -> Result<Value, JsError> {
         match self {
             Self::Value(value) => Ok(value),
-            Self::Reference(reference) => interpreter.read_reference(&reference),
+            Self::Reference(reference) => interpreter
+                .with_active_reference(reference, |interpreter, index| {
+                    interpreter.read_active_reference(index)
+                }),
         }
     }
 }
