@@ -183,12 +183,12 @@ impl Interpreter {
                 let reference = self.prepare_reference(target)?;
 
                 self.with_active_reference(reference, |interpreter, index| {
-                    let value = interpreter.evaluate_expression(value)?;
-                    let reference = interpreter.active_reference(index).clone();
-
-                    interpreter.write_reference(reference, value.clone())?;
-
-                    Ok(value)
+                    interpreter.evaluate_expression_with_handoff(value, |interpreter, result| {
+                        let value = result?;
+                        let reference = interpreter.active_reference(index).clone();
+                        interpreter.write_reference(reference, value.clone())?;
+                        Ok(value)
+                    })
                 })
             }
 
@@ -370,6 +370,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Value::Number(12.0));
+    }
+
+    #[test]
+    fn bindings_assignments_and_defaults_preserve_identity_and_order() {
+        let result = evaluate(
+            r#"
+                let log = '';
+                let container = {};
+                function make() { log += 'v'; return {}; }
+                function target() { log += 't'; return container; }
+                function useDefault(value = make()) { return value; }
+
+                let first = make(), second = first;
+                let assigned = (target().value = make());
+                let fallback = useDefault();
+                let explicit = useDefault(first);
+
+                log === 'vtvv' && first === second && assigned === container.value &&
+                    fallback !== first && explicit === first;
+            "#,
+        )
+        .unwrap();
+        assert_eq!(result, Value::Boolean(true));
     }
 
     #[test]

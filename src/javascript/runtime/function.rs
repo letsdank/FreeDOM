@@ -215,17 +215,21 @@ impl Interpreter {
                         .unwrap_or(Value::Undefined);
 
                     match (argument, &parameter.default) {
-                        (Value::Undefined, Some(default)) => self.evaluate_expression(default)?,
+                        (Value::Undefined, Some(default)) => {
+                            self.evaluate_expression_with_handoff(
+                                default,
+                                |interpreter, result| {
+                                    interpreter.assign_function_parameter(&parameter.name, result?)
+                                },
+                            )?;
+                            continue;
+                        }
 
                         (value, _) => value,
                     }
                 };
 
-                self.variables
-                    .assign_existing(&parameter.name, value)
-                    .map_err(|_| {
-                        JsError::runtime("internal error: parameter binding is missing")
-                    })?;
+                self.assign_function_parameter(&parameter.name, value)?;
             }
 
             for name in body_locals {
@@ -249,6 +253,12 @@ impl Interpreter {
             Completion::Normal(_) => Value::Undefined,
             completion => completion.into_value(),
         })
+    }
+
+    fn assign_function_parameter(&mut self, name: &str, value: Value) -> Result<(), JsError> {
+        self.variables
+            .assign_existing(name, value)
+            .map_err(|_| JsError::runtime("internal error: parameter binding is missing"))
     }
 
     pub(super) fn create_function(&self, function: &UserFunction) -> Value {

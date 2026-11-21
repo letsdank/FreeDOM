@@ -4,7 +4,7 @@
 //! <https://tc39.es/ecma262/#sec-ecmascript-language-statements-and-declarations>
 
 use super::for_in::ForInBindingMode;
-use super::{Completion, Interpreter, JsError, Statement, Value};
+use super::{Completion, Expression, Interpreter, JsError, Statement, Value};
 
 impl Interpreter {
     pub(super) fn execute_statements(
@@ -27,16 +27,13 @@ impl Interpreter {
                 Statement::FunctionDeclaration { .. } => Value::Undefined,
 
                 Statement::Declaration { name, value } => {
-                    let value = self.evaluate_expression(value)?;
-                    self.variables.assign_or_insert(name.clone(), value);
+                    self.initialize_declaration(name, value)?;
                     Value::Undefined
                 }
 
                 Statement::Declarations(declarations) => {
                     for (name, value) in declarations {
-                        let value = self.evaluate_expression(value)?;
-
-                        self.variables.assign_or_insert(name.clone(), value);
+                        self.initialize_declaration(name, value)?;
                     }
 
                     Value::Undefined
@@ -293,6 +290,19 @@ impl Interpreter {
         }
 
         Ok(Completion::Normal(result))
+    }
+
+    fn initialize_declaration(
+        &mut self,
+        name: &str,
+        expression: &Expression,
+    ) -> Result<(), JsError> {
+        self.evaluate_expression_with_handoff(expression, |interpreter, result| {
+            interpreter
+                .variables
+                .assign_or_insert(name.to_owned(), result?);
+            Ok(())
+        })
     }
 }
 
