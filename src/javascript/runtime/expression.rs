@@ -5,7 +5,9 @@
 //!
 //! This module preserves existing behavior and is not a complete implementation.
 
-use super::{BinaryOperator, Expression, Interpreter, JsError, Url, Value};
+use super::{
+    BinaryOperator, Completion, ExecutionFrame, Expression, Interpreter, JsError, Url, Value,
+};
 
 impl Interpreter {
     pub(super) fn evaluate_expression(
@@ -15,6 +17,43 @@ impl Interpreter {
         self.consume_step()?;
 
         self.with_execution_frame(|interpreter| interpreter.evaluate_expression_inner(expression))
+    }
+
+    pub(super) fn evaluate_expression_with_handoff<T>(
+        &mut self,
+        expression: &Expression,
+        handoff: impl FnOnce(&mut Self, Result<Value, JsError>) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        self.consume_step()?;
+        self.with_execution_frame(|interpreter| {
+            let result = interpreter
+                .evaluate_expression_inner(expression)
+                .map(Completion::Normal);
+            let index = interpreter.execution_frames.len();
+            let (_, output) = interpreter.with_pending_completion(result, |interpreter| {
+                let result = match &interpreter.execution_frames[index] {
+                    ExecutionFrame::PendingCompletion(Ok(Completion::Normal(value))) => {
+                        Ok(value.clone())
+                    }
+
+                    ExecutionFrame::PendingCompletion(Err(error)) => Err(error.clone()),
+                    _ => unreachable!("expression results use normal completion"),
+                };
+                handoff(interpreter, result)
+            })?;
+            Ok(output)
+        })
+    }
+
+    fn evaluate_expression_into_frame(
+        &mut self,
+        expression: &Expression,
+        destination: usize,
+    ) -> Result<(), JsError> {
+        self.evaluate_expression_with_handoff(expression, |interpreter, result| {
+            interpreter.frame_values_mut(destination).push(result?);
+            Ok(())
+        })
     }
 
     pub(super) fn evaluate_expression_inner(
@@ -77,12 +116,12 @@ impl Interpreter {
             Expression::Array(expressions) => {
                 self.with_temporary_values_scope(|interpreter, base| {
                     for expression in expressions {
-                        let value = match expression {
-                            Some(expression) => interpreter.evaluate_expression(expression)?,
-                            None => Value::Undefined,
-                        };
-
-                        interpreter.frame_values_mut(base).push(value);
+                        match expression {
+                            Some(expression) => {
+                                interpreter.evaluate_expression_into_frame(expression, base)?
+                            }
+                            None => interpreter.frame_values_mut(base).push(Value::Undefined),
+                        }
                     }
 
                     // Keep the elements rooted until the array has been allocated.
@@ -99,9 +138,7 @@ impl Interpreter {
             Expression::Object(properties) => {
                 self.with_temporary_values_scope(|interpreter, base| {
                     for (_, expression) in properties {
-                        let value = interpreter.evaluate_expression(expression)?;
-
-                        interpreter.frame_values_mut(base).push(value);
+                        interpreter.evaluate_expression_into_frame(expression, base)?;
                     }
 
                     // Keep property values rooted until object allocation finishes.
@@ -253,9 +290,7 @@ impl Interpreter {
         self.with_temporary_values_scope(|interpreter, base| {
             interpreter.frame_values_mut(base).push(left);
 
-            let right = interpreter.evaluate_expression(right_expression)?;
-
-            interpreter.frame_values_mut(base).push(right);
+            interpreter.evaluate_expression_into_frame(right_expression, base)?;
 
             let left = interpreter.frame_values(base)[0].clone();
             let right = interpreter.frame_values(base)[1].clone();

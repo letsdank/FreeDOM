@@ -45,12 +45,25 @@ impl Interpreter {
                 Statement::Expression(expression) => self.evaluate_expression(expression)?,
 
                 Statement::Return(expression) => {
-                    return Ok(Completion::Return(self.evaluate_expression(expression)?));
+                    return self.evaluate_expression_with_handoff(
+                        expression,
+                        |interpreter, result| {
+                            let value = result?;
+                            interpreter.retain_function_return(&value);
+                            Ok(Completion::Return(value))
+                        },
+                    );
                 }
 
                 Statement::Throw(expression) => {
-                    let value = self.evaluate_expression(expression)?;
-                    return Err(JsError::thrown(value));
+                    return self.evaluate_expression_with_handoff(
+                        expression,
+                        |interpreter, result| {
+                            let error = JsError::thrown(result?);
+                            interpreter.record_exception(&error);
+                            Err(error)
+                        },
+                    );
                 }
 
                 Statement::If {

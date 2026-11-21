@@ -609,6 +609,11 @@ impl Interpreter {
 
     // Retain returns in the active function while nested statements unwind.
     fn track_function_completion(&mut self, result: &Result<Completion, JsError>) {
+        if let Ok(Completion::Return(value)) = result {
+            self.retain_function_return(value);
+            return;
+        }
+
         if let Some(ExecutionFrame::ActiveCall(call)) = self
             .execution_frames
             .iter_mut()
@@ -616,10 +621,20 @@ impl Interpreter {
             .find(|frame| matches!(frame, ExecutionFrame::ActiveCall(_)))
         {
             match result {
-                Ok(Completion::Return(value)) => call.return_value = Some(value.clone()),
                 Err(_) | Ok(Completion::Break | Completion::Continue) => call.return_value = None,
-                Ok(Completion::Normal(_)) => {}
+                Ok(Completion::Normal(_) | Completion::Return(_)) => {}
             }
+        }
+    }
+
+    fn retain_function_return(&mut self, value: &Value) {
+        if let Some(ExecutionFrame::ActiveCall(call)) = self
+            .execution_frames
+            .iter_mut()
+            .rev()
+            .find(|frame| matches!(frame, ExecutionFrame::ActiveCall(_)))
+        {
+            call.return_value = Some(value.clone());
         }
     }
 
@@ -912,9 +927,13 @@ impl Interpreter {
             },
             |interpreter, index| {
                 for expression in expressions {
-                    let argument = interpreter.evaluate_expression(expression)?;
-
-                    interpreter.pending_call_mut(index).arguments.push(argument);
+                    interpreter.evaluate_expression_with_handoff(
+                        expression,
+                        |interpreter, result| {
+                            interpreter.pending_call_mut(index).arguments.push(result?);
+                            Ok(())
+                        },
+                    )?;
                 }
 
                 operation(interpreter, index)
@@ -2185,6 +2204,59 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn expression_handoff_retains_result_until_destination_accepts_it() {
+        let mut interpreter = Interpreter::new();
+        let program = parse_program("({value: 7});").unwrap();
+        let [super::Statement::Expression(expression)] = program.as_slice() else {
+            panic!("expected an expression");
+        };
+        let mut returned_object = None;
+
+        interpreter
+            .with_temporary_values_scope(|interpreter, destination| {
+                interpreter.evaluate_expression_with_handoff(
+                    expression,
+                    |interpreter, result| {
+                        let value = result?;
+                        let Value::Object(object) = &value else {
+                            panic!("expected an object");
+                        };
+                        let mut found = false;
+                        interpreter
+                            .visit_runtime_roots(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(value)) = root {
+                                    found |= Rc::ptr_eq(value, object);
+                                }
+                            })
+                            .unwrap();
+                        assert!(found, "expression completion must retain the object");
+                        returned_object = Some(object.clone());
+                        interpreter.frame_values_mut(destination).push(value);
+                        Ok(())
+                    },
+                )?;
+                let object = returned_object.as_ref().unwrap();
+                assert!(matches!(
+                    interpreter.frame_values(destination),
+                    [Value::Object(value)] if Rc::ptr_eq(value, object)
+                ));
+                Ok(())
+            })
+            .unwrap();
+        assert!(interpreter.execution_frames.is_empty());
+
+        let program = parse_program("missing;").unwrap();
+        let [super::Statement::Expression(expression)] = program.as_slice() else {
+            panic!("expected an expression");
+        };
+        let error = interpreter
+            .evaluate_expression_with_handoff(expression, |_, result| result)
+            .unwrap_err();
+        assert!(matches!(error.kind, JsErrorKind::NativeException(_)));
         assert!(interpreter.execution_frames.is_empty());
     }
 
