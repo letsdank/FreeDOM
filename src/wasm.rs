@@ -1,7 +1,7 @@
 //! WebAssembly core binary support.
 //!
-//! Scans binary envelopes and decodes type, function, and code-section subsets.
-//! It does not yet validate complete modules, instantiate, or execute them.
+//! Scans binary envelopes, decodes sections, and executes a small function subset.
+//! This does not validate or instantiate complete modules.
 //!
 //! <https://webassembly.github.io/spec/core/binary/modules.html>
 
@@ -13,6 +13,9 @@ pub(crate) mod code;
 
 #[path = "wasm/decode.rs"]
 pub(crate) mod decode;
+
+#[path = "wasm/execution.rs"]
+pub(crate) mod execution;
 
 #[path = "wasm/instructions.rs"]
 pub(crate) mod instructions;
