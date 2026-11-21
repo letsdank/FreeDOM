@@ -1,12 +1,15 @@
 //! WebAssembly core binary support.
 //!
-//! The initial implementation scans the binary envelope only. It does not
-//! validate section contents, instantiate modules, or execute instructions.
+//! Scans binary envelopes and decodes a subset of type and function sections.
+//! It does not yet validate complete modules, instantiate, or execute them.
 //!
 //! <https://webassembly.github.io/spec/core/binary/modules.html>
 
 #[path = "wasm/binary.rs"]
 pub(crate) mod binary;
+
+#[path = "wasm/decode.rs"]
+pub(crate) mod decode;
 
 #[path = "wasm/reader.rs"]
 mod reader;
@@ -29,6 +32,9 @@ pub(crate) enum BinaryErrorKind {
     DuplicateSection(u8),
     OutOfOrderSection(u8),
     InvalidNameUtf8,
+    UnsupportedTypeForm(u8),
+    UnsupportedValueType(u8),
+    TrailingSectionData(u8),
     SizeOverflow,
     AllocationFailed,
 }
@@ -59,6 +65,15 @@ impl fmt::Display for BinaryError {
                 write!(formatter, "section {id} is out of order")
             }
             BinaryErrorKind::InvalidNameUtf8 => write!(formatter, "invalid UTF-8 section name"),
+            BinaryErrorKind::UnsupportedTypeForm(byte) => {
+                write!(formatter, "unsupported type form 0x{byte:02x}")
+            }
+            BinaryErrorKind::UnsupportedValueType(byte) => {
+                write!(formatter, "unsupported value type 0x{byte:02x}")
+            }
+            BinaryErrorKind::TrailingSectionData(id) => {
+                write!(formatter, "trailing bytes in section {id}")
+            }
             BinaryErrorKind::SizeOverflow => {
                 write!(formatter, "section size exceeds addressable memory")
             }
