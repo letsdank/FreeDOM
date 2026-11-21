@@ -92,7 +92,7 @@ impl Interpreter {
         const THIS_ARG_SLOT: usize = 2;
         const RESULTS_START: usize = 3;
 
-        self.with_temporary_values_scope(|interpreter, frame_index| {
+        self.with_call_result_scope(|interpreter, frame_index| {
             interpreter.frame_values_mut(frame_index).extend([
                 Value::Array(array.clone()),
                 callback,

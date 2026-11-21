@@ -235,6 +235,10 @@ impl ExecutionFrame {
                 for argument in &call.arguments {
                     visit(RuntimeRoot::Value(argument));
                 }
+
+                if let Some(value) = &call.handoff_value {
+                    visit(RuntimeRoot::Value(value));
+                }
             }
 
             Self::ActiveCall(call) => {
@@ -283,6 +287,7 @@ struct PendingCall {
     callee: Value,
     receiver: Option<Value>,
     arguments: Vec<Value>,
+    handoff_value: Option<Value>,
 }
 
 impl Completion {
@@ -845,6 +850,28 @@ impl Interpreter {
         result
     }
 
+    fn with_call_result_scope(
+        &mut self,
+        operation: impl FnOnce(&mut Self, usize) -> Result<Value, JsError>,
+    ) -> Result<Value, JsError> {
+        self.with_temporary_values_scope(|interpreter, index| {
+            let result = operation(interpreter, index)?;
+            interpreter.retain_call_result(&result);
+            Ok(result)
+        })
+    }
+
+    fn with_frame_value_for_call_result(
+        &mut self,
+        value: Value,
+        operation: impl FnOnce(&mut Self, usize) -> Result<Value, JsError>,
+    ) -> Result<Value, JsError> {
+        self.with_call_result_scope(|interpreter, index| {
+            interpreter.frame_values_mut(index).push(value);
+            operation(interpreter, index)
+        })
+    }
+
     fn with_pending_call(
         &mut self,
         callee: Value,
@@ -857,6 +884,7 @@ impl Interpreter {
                 callee,
                 receiver,
                 arguments: Vec::with_capacity(expressions.len()),
+                handoff_value: None,
             },
             |interpreter, index| {
                 for expression in expressions {
@@ -875,7 +903,9 @@ impl Interpreter {
         call: PendingCall,
         operation: impl FnOnce(&mut Self, usize) -> Result<Value, JsError>,
     ) -> Result<Value, JsError> {
-        self.with_call_frame_handoff(call, operation, |_, result| result)
+        self.with_call_frame_handoff(call, operation, |interpreter, result| {
+            interpreter.handoff_call_result(result)
+        })
     }
 
     fn with_call_frame_handoff<T>(
@@ -935,6 +965,25 @@ impl Interpreter {
             Some(ExecutionFrame::PendingCall(call)) => call,
             _ => unreachable!("pending call frame must exist"),
         }
+    }
+
+    // A call can retain a returned value until its caller accepts it.
+    fn retain_call_result(&mut self, value: &Value) {
+        if let Some(ExecutionFrame::PendingCall(call)) = self
+            .execution_frames
+            .iter_mut()
+            .rev()
+            .find(|frame| matches!(frame, ExecutionFrame::PendingCall(_)))
+        {
+            call.handoff_value = Some(value.clone());
+        }
+    }
+
+    fn handoff_call_result(&mut self, result: Result<Value, JsError>) -> Result<Value, JsError> {
+        if let Ok(value) = &result {
+            self.retain_call_result(value);
+        }
+        result
     }
 
     fn with_for_of_items<T>(
@@ -2037,6 +2086,7 @@ mod tests {
                     callee: Value::Undefined,
                     receiver: None,
                     arguments: vec![],
+                    handoff_value: None,
                 }));
             let pending = if throwing {
                 Err(JsError::thrown(Value::Object(object.clone())))
@@ -2115,6 +2165,73 @@ mod tests {
     }
 
     #[test]
+    fn builtin_results_survive_temporary_and_nested_call_handoffs() {
+        for nested in [false, true] {
+            let mut interpreter = Interpreter::new();
+            let call = super::PendingCall {
+                callee: Value::Undefined,
+                receiver: None,
+                arguments: vec![],
+                handoff_value: None,
+            };
+            let result = interpreter
+                .with_call_frame_handoff(
+                    call,
+                    |interpreter, index| {
+                        let receiver = Some(Value::NativeFunction(
+                            super::NativeFunction::PromiseConstructor,
+                        ));
+                        let value = if nested {
+                            interpreter.dispatch_call(
+                                Value::NativeFunction(super::NativeFunction::PromiseResolve),
+                                receiver,
+                                vec![Value::Number(1.0)],
+                            )?
+                        } else {
+                            interpreter.promise_resolve(receiver, vec![Value::Number(1.0)])?
+                        };
+                        let Value::Object(object) = &value else {
+                            panic!("expected a promise");
+                        };
+                        assert!(matches!(
+                            &interpreter.pending_call(index).handoff_value,
+                            Some(Value::Object(retained)) if Rc::ptr_eq(retained, object)
+                        ));
+                        let mut found = false;
+                        interpreter
+                            .visit_runtime_roots(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(value)) = root {
+                                    found |= Rc::ptr_eq(value, object);
+                                }
+                            })
+                            .unwrap();
+                        assert!(found, "call must retain the result");
+                        Ok(value)
+                    },
+                    |interpreter, result| {
+                        let value = result?;
+                        let Value::Object(object) = &value else {
+                            panic!("expected a promise");
+                        };
+                        let mut found = false;
+                        interpreter
+                            .visit_runtime_roots(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(value)) = root {
+                                    found |= Rc::ptr_eq(value, object);
+                                }
+                            })
+                            .unwrap();
+                        assert!(found, "completion must retain the result");
+                        Ok(value)
+                    },
+                )
+                .unwrap();
+            assert!(matches!(result, Value::Object(_)));
+            assert!(interpreter.execution_frames.is_empty());
+        }
+    }
+
+    #[test]
     fn map_callback_exception_stays_rooted_while_temporary_frames_unwind() {
         let mut interpreter = Interpreter::new();
         let program = parse_program("(function() { throw {}; });").unwrap();
@@ -2123,6 +2240,7 @@ mod tests {
             callee: Value::Undefined,
             receiver: None,
             arguments: vec![],
+            handoff_value: None,
         };
 
         let result = interpreter.with_call_frame_handoff(
@@ -2581,6 +2699,7 @@ mod tests {
                 callee: Value::Number(7.0),
                 receiver: Some(Value::Number(8.0)),
                 arguments: vec![Value::Number(9.0)],
+                handoff_value: Some(Value::Number(12.0)),
             }),
             ExecutionFrame::ActiveCall(super::ActiveCallFrame {
                 callee,
@@ -2625,7 +2744,7 @@ mod tests {
                 .unwrap();
         }
 
-        for number in 1..=11 {
+        for number in 1..=12 {
             assert!(numbers.contains(&(number as f64)));
         }
 

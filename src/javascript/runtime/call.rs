@@ -36,7 +36,9 @@ impl Interpreter {
         receiver: Option<Value>,
         values: Vec<Value>,
     ) -> Result<Value, JsError> {
-        self.dispatch_call_with_handoff(callee, receiver, values, |_, result| result)
+        self.dispatch_call_with_handoff(callee, receiver, values, |interpreter, result| {
+            interpreter.handoff_call_result(result)
+        })
     }
 
     pub(super) fn dispatch_call_with_handoff<T>(
@@ -51,6 +53,7 @@ impl Interpreter {
                 callee,
                 receiver,
                 arguments: values,
+                handoff_value: None,
             },
             |interpreter, index| interpreter.dispatch_call_in_frame(index),
             handoff,

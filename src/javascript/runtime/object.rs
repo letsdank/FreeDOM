@@ -101,7 +101,7 @@ impl Interpreter {
             }
         };
 
-        self.with_temporary_values_scope(|interpreter, frame_index| {
+        self.with_call_result_scope(|interpreter, frame_index| {
             interpreter
                 .frame_values_mut(frame_index)
                 .push(Value::Object(object.clone()));

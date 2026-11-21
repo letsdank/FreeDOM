@@ -138,12 +138,12 @@ impl Interpreter {
     }
 
     // Keep the new object visible while its state or reactions are initialized.
-    fn with_new_pending_promise<T>(
+    fn with_new_pending_promise(
         &mut self,
-        operation: impl FnOnce(&mut Self, usize, &PromiseHandle) -> Result<T, JsError>,
-    ) -> Result<T, JsError> {
+        operation: impl FnOnce(&mut Self, usize, &PromiseHandle) -> Result<Value, JsError>,
+    ) -> Result<Value, JsError> {
         let (promise, handle) = self.new_pending_promise();
-        self.with_frame_value(promise, |interpreter, index| {
+        self.with_frame_value_for_call_result(promise, |interpreter, index| {
             operation(interpreter, index, &handle)
         })
     }
