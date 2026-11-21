@@ -11,7 +11,6 @@ use crate::javascript::{FunctionKind, value::PropertyLookup};
 impl Interpreter {
     pub(super) fn array_map(
         &mut self,
-        call_index: usize,
         receiver: Option<Value>,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
@@ -140,7 +139,6 @@ impl Interpreter {
                                 Value::Array(array.clone()),
                             ],
                             frame_index,
-                            call_index,
                         )
                     })?;
 

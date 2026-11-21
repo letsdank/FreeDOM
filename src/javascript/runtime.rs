@@ -151,6 +151,7 @@ pub(super) enum Completion {
 
 enum ExecutionFrame {
     PendingCompletion(Result<Completion, JsError>),
+    ExceptionScope(Option<JsError>),
     ShadowedBindings(Vec<BindingSnapshot>),
     ForOfItems(std::vec::IntoIter<Value>),
     TemporaryValues(Vec<Value>),
@@ -196,6 +197,12 @@ impl ExecutionFrame {
                 Err(error) => visit_error_roots(error, visit),
             },
 
+            Self::ExceptionScope(error) => {
+                if let Some(error) = error {
+                    visit_error_roots(error, visit);
+                }
+            }
+
             Self::ShadowedBindings(bindings) => {
                 for binding in bindings {
                     binding.visit_root(visit)?;
@@ -227,10 +234,6 @@ impl ExecutionFrame {
 
                 for argument in &call.arguments {
                     visit(RuntimeRoot::Value(argument));
-                }
-
-                if let Some(error) = &call.pending_error {
-                    visit_error_roots(error, visit);
                 }
             }
 
@@ -280,7 +283,6 @@ struct PendingCall {
     callee: Value,
     receiver: Option<Value>,
     arguments: Vec<Value>,
-    pending_error: Option<JsError>,
 }
 
 impl Completion {
@@ -586,6 +588,7 @@ impl Interpreter {
 
         if let Err(error) = &mut result {
             self.materialize_native_exception(error);
+            self.record_exception(error);
         }
 
         result
@@ -593,6 +596,17 @@ impl Interpreter {
 
     // Keep the script result rooted through the checkpoint and its final consumer.
     fn with_script_completion<T>(
+        &mut self,
+        program: &[Statement],
+        consume: impl FnOnce(&mut Self, usize) -> T,
+    ) -> T {
+        self.with_exception_scope(|interpreter| {
+            Ok(interpreter.with_script_completion_inner(program, consume))
+        })
+        .expect("script completion consumer cannot fail as an engine operation")
+    }
+
+    fn with_script_completion_inner<T>(
         &mut self,
         program: &[Statement],
         consume: impl FnOnce(&mut Self, usize) -> T,
@@ -615,6 +629,8 @@ impl Interpreter {
         let index = self.execution_frames.len();
         let (_, output) = self
             .with_pending_completion(result, |interpreter| {
+                // The completion frame owns the result during the checkpoint.
+                interpreter.clear_exception();
                 if run_checkpoint {
                     if let Err(error) = interpreter.perform_microtask_checkpoint() {
                         interpreter.microtasks.clear();
@@ -752,11 +768,62 @@ impl Interpreter {
 
         self.execution_depth += 1;
 
-        let result = operation(self);
+        let result = self.with_exception_scope(operation);
 
         self.execution_depth -= 1;
 
         result
+    }
+
+    // This retains only errors crossing an active execution or call boundary.
+    // It is diagnostic rooting, not permission to run GC at arbitrary points.
+    fn with_exception_scope<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        let index = self.execution_frames.len();
+        self.execution_frames
+            .push(ExecutionFrame::ExceptionScope(None));
+        let result = operation(self);
+
+        if let Err(error) = &result {
+            self.record_exception(error);
+            if let Some(ExecutionFrame::ExceptionScope(parent)) = self.execution_frames[..index]
+                .iter_mut()
+                .rev()
+                .find(|frame| matches!(frame, ExecutionFrame::ExceptionScope(_)))
+            {
+                *parent = Some(error.clone());
+            }
+        }
+
+        match self.execution_frames.pop() {
+            Some(ExecutionFrame::ExceptionScope(_)) => {}
+            _ => unreachable!("exception scope must exist"),
+        }
+        result
+    }
+
+    fn record_exception(&mut self, error: &JsError) {
+        if let Some(ExecutionFrame::ExceptionScope(slot)) = self
+            .execution_frames
+            .iter_mut()
+            .rev()
+            .find(|frame| matches!(frame, ExecutionFrame::ExceptionScope(_)))
+        {
+            *slot = Some(error.clone());
+        }
+    }
+
+    fn clear_exception(&mut self) {
+        if let Some(ExecutionFrame::ExceptionScope(slot)) = self
+            .execution_frames
+            .iter_mut()
+            .rev()
+            .find(|frame| matches!(frame, ExecutionFrame::ExceptionScope(_)))
+        {
+            *slot = None;
+        }
     }
 
     fn with_temporary_values_scope<T>(
@@ -790,7 +857,6 @@ impl Interpreter {
                 callee,
                 receiver,
                 arguments: Vec::with_capacity(expressions.len()),
-                pending_error: None,
             },
             |interpreter, index| {
                 for expression in expressions {
@@ -818,27 +884,30 @@ impl Interpreter {
         operation: impl FnOnce(&mut Self, usize) -> Result<Value, JsError>,
         handoff: impl FnOnce(&mut Self, Result<Value, JsError>) -> Result<T, JsError>,
     ) -> Result<T, JsError> {
-        let index = self.execution_frames.len();
+        self.with_exception_scope(|interpreter| {
+            let index = interpreter.execution_frames.len();
+            interpreter
+                .execution_frames
+                .push(ExecutionFrame::PendingCall(call));
+            let result = operation(interpreter, index).map(Completion::Return);
 
-        self.execution_frames
-            .push(ExecutionFrame::PendingCall(call));
-
-        let result = operation(self, index).map(Completion::Return);
-
-        // Retain the completion until the caller has accepted the result.
-        let (_, output) = self.with_pending_completion(result, |interpreter| {
-            interpreter.remove_pending_call(index);
-            let result = match &interpreter.execution_frames[index] {
-                ExecutionFrame::PendingCompletion(Ok(Completion::Return(value))) => {
-                    Ok(value.clone())
+            // Retain the completion until the caller has accepted the result.
+            let (_, output) = interpreter.with_pending_completion(result, |interpreter| {
+                interpreter.remove_pending_call(index);
+                let result = match &interpreter.execution_frames[index] {
+                    ExecutionFrame::PendingCompletion(Ok(Completion::Return(value))) => {
+                        Ok(value.clone())
+                    }
+                    ExecutionFrame::PendingCompletion(Err(error)) => Err(error.clone()),
+                    _ => unreachable!("call results use return completion"),
+                };
+                if let Err(error) = &result {
+                    interpreter.record_exception(error);
                 }
-                ExecutionFrame::PendingCompletion(Err(error)) => Err(error.clone()),
-                _ => unreachable!("call results use return completion"),
-            };
-            handoff(interpreter, result)
-        })?;
-
-        Ok(output)
+                handoff(interpreter, result)
+            })?;
+            Ok(output)
+        })
     }
 
     fn remove_pending_call(&mut self, index: usize) {
@@ -1968,7 +2037,6 @@ mod tests {
                     callee: Value::Undefined,
                     receiver: None,
                     arguments: vec![],
-                    pending_error: None,
                 }));
             let pending = if throwing {
                 Err(JsError::thrown(Value::Object(object.clone())))
@@ -2011,7 +2079,6 @@ mod tests {
                         callee: Value::Undefined,
                         receiver: None,
                         arguments: vec![],
-                        pending_error: None,
                     },
                     |_, _| Ok(Value::Object(object.clone())),
                     |interpreter, result| {
@@ -2053,12 +2120,11 @@ mod tests {
             callee: Value::Undefined,
             receiver: None,
             arguments: vec![],
-            pending_error: None,
         };
 
         let result = interpreter.with_call_frame_handoff(
             call,
-            |interpreter, call_index| {
+            |interpreter, _| {
                 let result = interpreter.with_temporary_values_scope(|interpreter, destination| {
                     interpreter.with_frame_value(Value::Undefined, |interpreter, _| {
                         interpreter.dispatch_call_into_temporary_frame(
@@ -2066,7 +2132,6 @@ mod tests {
                             None,
                             vec![],
                             destination,
-                            call_index,
                         )
                     })
                 });
@@ -2117,6 +2182,39 @@ mod tests {
                 ..
             })
         ));
+        assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn exception_scopes_transfer_and_clear_caught_errors() {
+        let mut interpreter = Interpreter::new();
+        let Value::Object(object) = Value::object([]) else {
+            unreachable!();
+        };
+        interpreter
+            .with_exception_scope(|interpreter| {
+                let result = interpreter.with_exception_scope(|_| {
+                    Err::<(), _>(JsError::thrown(Value::Object(object.clone())))
+                });
+                assert!(result.is_err());
+
+                let has_root = |interpreter: &Interpreter| {
+                    let mut found = false;
+                    interpreter
+                        .visit_runtime_roots(&mut |root| {
+                            if let RuntimeRoot::Value(Value::Object(value)) = root {
+                                found |= Rc::ptr_eq(value, &object);
+                            }
+                        })
+                        .unwrap();
+                    found
+                };
+                assert!(has_root(interpreter));
+                interpreter.clear_exception();
+                assert!(!has_root(interpreter));
+                Ok(())
+            })
+            .unwrap();
         assert!(interpreter.execution_frames.is_empty());
     }
 
@@ -2480,7 +2578,6 @@ mod tests {
                 callee: Value::Number(7.0),
                 receiver: Some(Value::Number(8.0)),
                 arguments: vec![Value::Number(9.0)],
-                pending_error: None,
             }),
             ExecutionFrame::ActiveCall(super::ActiveCallFrame {
                 callee,

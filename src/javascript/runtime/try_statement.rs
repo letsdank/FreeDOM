@@ -40,6 +40,8 @@ impl Interpreter {
             };
 
             if let Some((clause, value)) = caught {
+                // The pending completion now owns the exception during catch.
+                interpreter.clear_exception();
                 let result = interpreter.execute_catch(clause, value);
                 interpreter.replace_pending_completion(index, result);
             }
