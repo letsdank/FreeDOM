@@ -15,6 +15,40 @@ pub(super) enum PrimitiveHint {
 }
 
 impl Interpreter {
+    // Partial ToPropertyKey for computed references and property lookups.
+    // https://tc39.es/ecma262/2026/#sec-topropertykey
+    pub(super) fn property_key_for_index(&mut self, index: &Value) -> Result<Value, JsError> {
+        match index {
+            Value::Object(_) | Value::NativeError(_) => {
+                let primitive = self.ordinary_to_primitive(index, PrimitiveHint::String)?;
+                let key = match primitive {
+                    Value::Number(number) if number == 0.0 => "0".to_owned(),
+                    Value::Number(number) if number == f64::INFINITY => "Infinity".to_owned(),
+                    Value::Number(number) if number == f64::NEG_INFINITY => "-Infinity".to_owned(),
+                    _ => primitive.to_js_string(&self.host_roots),
+                };
+                Ok(Value::String(key))
+            }
+            _ => Ok(index.clone()),
+        }
+    }
+
+    pub(super) fn property_key_for_lookup(&mut self, value: &Value) -> Result<String, JsError> {
+        match self.property_key_for_index(value)? {
+            Value::String(value) => Ok(value),
+            Value::Undefined => Ok("undefined".to_owned()),
+            Value::Null => Ok("null".to_owned()),
+            Value::Boolean(value) => Ok(value.to_string()),
+            Value::Number(value) => crate::javascript::number::integer_property_key(value)
+                .ok_or_else(|| {
+                    JsError::unsupported("numeric property key conversion is not implemented")
+                }),
+            _ => Err(JsError::unsupported(
+                "object property key conversion is not implemented",
+            )),
+        }
+    }
+
     // Array, ordinary object, function and native error values compare by identity.
     // https://tc39.es/ecma262/#sec-isstrictlyequal
     pub(super) fn strictly_equals(&self, left: &Value, right: &Value) -> bool {

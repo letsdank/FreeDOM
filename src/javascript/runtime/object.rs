@@ -7,52 +7,37 @@ use super::{Interpreter, JsError, ObjectPrototype, Value};
 
 impl Interpreter {
     pub(super) fn object_has_own_property(
-        &self,
+        &mut self,
         receiver: Option<Value>,
         arguments: Vec<Value>,
     ) -> Result<Value, JsError> {
-        let key = match arguments.first().unwrap_or(&Value::Undefined) {
-            Value::String(value) => value.clone(),
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        self.with_frame_value(receiver, |interpreter, index| {
+            let key = interpreter
+                .property_key_for_lookup(arguments.first().unwrap_or(&Value::Undefined))?;
+            match interpreter.frame_value(index).clone() {
+                Value::Object(object) => Ok(Value::Boolean(
+                    interpreter
+                        .host_roots
+                        .read_ordinary_own_property(&object, &key)
+                        .is_some(),
+                )),
 
-            Value::Undefined => "undefined".to_owned(),
+                Value::Array(array) => Ok(Value::Boolean(Self::array_has_own(&array, &key))),
 
-            Value::Null => "null".to_owned(),
+                Value::NativeError(error) => Ok(Value::Boolean(
+                    error.has_own_property(&interpreter.host_roots, &key),
+                )),
 
-            Value::Boolean(value) => value.to_string(),
+                Value::Null | Value::Undefined => Err(JsError::type_error(
+                    "Object.prototype.hasOwnProperty requires a non-null value",
+                )),
 
-            Value::Number(value) => crate::javascript::number::integer_property_key(*value)
-                .ok_or_else(|| {
-                    JsError::unsupported("numeric property key conversion is not implemented")
-                })?,
-
-            _ => {
-                return Err(JsError::unsupported(
-                    "object property key conversion is not implemented",
-                ));
+                _ => Err(JsError::unsupported(
+                    "Object.prototype.hasOwnProperty is only implemented for ordinary objects",
+                )),
             }
-        };
-
-        match receiver.unwrap_or(Value::Undefined) {
-            Value::Object(object) => Ok(Value::Boolean(
-                self.host_roots
-                    .read_ordinary_own_property(&object, &key)
-                    .is_some(),
-            )),
-
-            Value::Array(array) => Ok(Value::Boolean(Self::array_has_own(&array, &key))),
-
-            Value::NativeError(error) => Ok(Value::Boolean(
-                error.has_own_property(&self.host_roots, &key),
-            )),
-
-            Value::Null | Value::Undefined => Err(JsError::type_error(
-                "Object.prototype.hasOwnProperty requires a non-null value",
-            )),
-
-            _ => Err(JsError::unsupported(
-                "Object.prototype.hasOwnProperty is only implemented for ordinary objects",
-            )),
-        }
+        })
     }
 
     pub(super) fn object_create(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
@@ -575,7 +560,7 @@ mod tests {
 
     #[test]
     fn unsupported_has_own_property_keys_are_not_silently_coerced() {
-        for source in ["({}).hasOwnProperty({});", "({}).hasOwnProperty(1.5);"] {
+        for source in ["({}).hasOwnProperty([]);", "({}).hasOwnProperty(1.5);"] {
             let error = evaluate(source).unwrap_err();
 
             assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);

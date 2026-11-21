@@ -4,7 +4,6 @@
 //!
 //! This is not a complete ECMAScript Reference Record implementation.
 
-use super::value_ops::PrimitiveHint;
 use super::{ExecutionFrame, Expression, Interpreter, JsError, PostfixStep, RuntimeRoot, Value};
 
 #[derive(Clone)]
@@ -213,24 +212,6 @@ impl Interpreter {
 
                 self.write_reference(Reference::Member { object, property }, value)
             }
-        }
-    }
-
-    // https://tc39.es/ecma262/2026/#sec-topropertykey
-    // Other object-like values retain the interpreter's existing partial behavior.
-    fn property_key_for_index(&mut self, index: &Value) -> Result<Value, JsError> {
-        match index {
-            Value::Object(_) | Value::NativeError(_) => {
-                let primitive = self.ordinary_to_primitive(index, PrimitiveHint::String)?;
-                let key = match primitive {
-                    Value::Number(number) if number == 0.0 => "0".to_owned(),
-                    Value::Number(number) if number == f64::INFINITY => "Infinity".to_owned(),
-                    Value::Number(number) if number == f64::NEG_INFINITY => "-Infinity".to_owned(),
-                    _ => primitive.to_js_string(&self.host_roots),
-                };
-                Ok(Value::String(key))
-            }
-            _ => Ok(index.clone()),
         }
     }
 

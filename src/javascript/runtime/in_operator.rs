@@ -2,13 +2,13 @@
 //!
 //! <https://tc39.es/ecma262/#sec-relational-operators>
 //!
-//! Built-in prototypes and general ToPropertyKey conversion are not implemented.
+//! Built-in prototypes and complete ToPropertyKey conversion are not implemented.
 
 use super::{Interpreter, JsError, Value};
 use crate::javascript::value::PropertyLookup;
 
 impl Interpreter {
-    pub(super) fn evaluate_in(&self, key: Value, target: Value) -> Result<Value, JsError> {
+    pub(super) fn evaluate_in(&mut self, key: Value, target: Value) -> Result<Value, JsError> {
         match target {
             Value::Undefined
             | Value::Null
@@ -19,21 +19,23 @@ impl Interpreter {
             )),
 
             Value::Object(object) => {
-                let Value::String(key) = key else {
-                    return Err(JsError::unsupported(
-                        "'in' property key conversion is not implemented",
-                    ));
-                };
+                self.with_frame_value(Value::Object(object), |interpreter, index| {
+                    let key = interpreter.property_key_for_lookup(&key)?;
+                    let Value::Object(object) = interpreter.frame_value(index).clone() else {
+                        unreachable!("object receiver must remain rooted");
+                    };
 
-                match self.host_roots.lookup_ordinary_property(&object, &key) {
-                    PropertyLookup::Found(_) => Ok(Value::Boolean(true)),
-
-                    PropertyLookup::Absent => Ok(Value::Boolean(false)),
-
-                    PropertyLookup::Unknown => Err(JsError::unsupported(
-                        "'in' lookup reached an unimplemented prototype",
-                    )),
-                }
+                    match interpreter
+                        .host_roots
+                        .lookup_ordinary_property(&object, &key)
+                    {
+                        PropertyLookup::Found(_) => Ok(Value::Boolean(true)),
+                        PropertyLookup::Absent => Ok(Value::Boolean(false)),
+                        PropertyLookup::Unknown => Err(JsError::unsupported(
+                            "'in' lookup reached an unimplemented prototype",
+                        )),
+                    }
+                })
             }
 
             _ => Err(JsError::unsupported(
@@ -80,10 +82,50 @@ mod tests {
     }
 
     #[test]
-    fn does_not_guess_how_to_convert_property_keys() {
-        let error = evaluate("1 in { '1': true };").unwrap_err();
+    fn converts_supported_keys_and_rejects_unimplemented_numbers() {
+        assert_eq!(
+            evaluate("1 in { '1': true };").unwrap(),
+            Value::Boolean(true)
+        );
+        let error = evaluate("1.5 in { '1.5': true };").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+    }
+
+    #[test]
+    fn property_key_conversion_is_shared_and_keeps_receivers_alive() {
+        let result = evaluate(
+            r#"
+                let trace = '';
+                let object = {x: 7};
+                let key = {toString: function() { trace += 'k'; return 'x'; }};
+                let marker = {};
+                let failing = {toString: function() { trace += 'e'; throw marker; }};
+                let exists = key in object;
+                let own = object.hasOwnProperty(key);
+                let read = object[key];
+                let inError = '';
+                let ownError = '';
+                let caught = false;
+                try { key in null; } catch (error) { inError = error.name; }
+                try { Object.prototype.hasOwnProperty.call(null, key); }
+                catch (error) { ownError = error.name; }
+                try { failing in object; } catch (error) { caught = error === marker; }
+
+                let target = {x: 1};
+                let keyForIn = {toString: function() { target = null; return 'x'; }};
+                let stillFound = keyForIn in target;
+                let receiver = {x: 1};
+                let keyForOwn = {toString: function() { receiver = null; return 'x'; }};
+                let stillOwn = receiver.hasOwnProperty(keyForOwn);
+
+                trace === 'kkkke' && exists && own && read === 7 && caught &&
+                    inError === 'TypeError' && ownError === 'TypeError' &&
+                    stillFound && target === null && stillOwn && receiver === null;
+            "#,
+        )
+        .unwrap();
+        assert_eq!(result, Value::Boolean(true));
     }
 
     #[test]
