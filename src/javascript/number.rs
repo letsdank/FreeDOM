@@ -1,4 +1,4 @@
-//! String-to-number conversion for the JavaScript interpreter.
+//! Partial numeric conversion and property-key formatting for JavaScript.
 //!
 //! <https://tc39.es/ecma262/#sec-stringtonumber>
 //!
@@ -37,6 +37,48 @@ pub(super) fn integer_property_key(number: f64) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Formats a subset of Number::toString without guessing at shortest rounding.
+/// <https://tc39.es/ecma262/2026/#sec-numeric-types-number-tostring>
+pub(super) fn number_property_key(number: f64) -> Option<String> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+    if number.is_nan() {
+        return Some("NaN".to_owned());
+    }
+    if number == f64::INFINITY {
+        return Some("Infinity".to_owned());
+    }
+    if number == f64::NEG_INFINITY {
+        return Some("-Infinity".to_owned());
+    }
+    if number == 0.0 {
+        return Some("0".to_owned());
+    }
+    if number.fract() == 0.0 && number.abs() <= MAX_SAFE_INTEGER {
+        return Some((number as i64).to_string());
+    }
+
+    // For |x| <= 1024 and x * 256 integral, the exact decimal has at most
+    // eight fractional digits. Any shorter decimal is farther away than
+    // half an f64 ULP throughout this range, so that decimal is shortest.
+    if number.abs() <= 1024.0 {
+        let scaled = number.abs() * 256.0;
+        if scaled.fract() == 0.0 {
+            let scaled = scaled as u64;
+            let whole = scaled / 256;
+            let fraction = (scaled % 256) * 390_625;
+            let sign = if number.is_sign_negative() { "-" } else { "" };
+            let mut result = format!("{sign}{whole}.{fraction:08}");
+            while result.ends_with('0') {
+                result.pop();
+            }
+            return Some(result);
+        }
+    }
+
+    None
 }
 
 pub(super) fn string_to_number(input: &str) -> f64 {
@@ -284,6 +326,27 @@ mod tests {
 
         for number in [-1.0, 1.5, 9_007_199_254_740_992.0, f64::INFINITY, f64::NAN] {
             assert!(integer_property_key(number).is_none(), "{number}");
+        }
+    }
+
+    #[test]
+    fn formats_supported_number_property_keys_without_guessing() {
+        use super::number_property_key;
+
+        for (number, expected) in [
+            (-0.0, "0"),
+            (-3.0, "-3"),
+            (1.5, "1.5"),
+            (-0.125, "-0.125"),
+            (3.0 / 256.0, "0.01171875"),
+            (f64::INFINITY, "Infinity"),
+            (f64::NEG_INFINITY, "-Infinity"),
+            (f64::NAN, "NaN"),
+        ] {
+            assert_eq!(number_property_key(number).as_deref(), Some(expected));
+        }
+        for number in [0.1, 1024.5, 9_007_199_254_740_992.0] {
+            assert!(number_property_key(number).is_none(), "{number}");
         }
     }
 }

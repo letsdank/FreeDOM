@@ -87,9 +87,50 @@ mod tests {
             evaluate("1 in { '1': true };").unwrap(),
             Value::Boolean(true)
         );
-        let error = evaluate("1.5 in { '1.5': true };").unwrap_err();
+        assert_eq!(
+            evaluate("1.5 in { '1.5': true };").unwrap(),
+            Value::Boolean(true)
+        );
+        let error = evaluate("0.1 in { '0.1': true };").unwrap_err();
 
         assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);
+    }
+
+    #[test]
+    fn direct_and_object_number_keys_match_across_property_operations() {
+        let result = evaluate(
+            r#"
+                let object = {'-1.5': 7, '0': 8, 'NaN': 9, 'Infinity': 10, '-Infinity': 11};
+                let fraction = {toString: function() { return -1.5; }};
+                let zero = {toString: function() { return -0; }};
+                let nan = 0 / 0;
+                let inf = 1 / 0;
+                let notNumber = {toString: function() { return nan; }};
+                let infinity = {toString: function() { return inf; }};
+
+                object[-1.5] === 7 && object[fraction] === 7 &&
+                    (-1.5 in object) && (fraction in object) &&
+                    object.hasOwnProperty(-1.5) && object.hasOwnProperty(fraction) &&
+                    object[0] === 8 && object[zero] === 8 &&
+                    object[nan] === 9 && object[notNumber] === 9 &&
+                    object[inf] === 10 && object[infinity] === 10 && object[-inf] == 11;
+            "#,
+        )
+        .unwrap();
+        assert_eq!(result, Value::Boolean(true));
+
+        for source in [
+            "0.1 in {};",
+            "let k = {toString: function() { return 0.1; }}; k in {};",
+            "({}).hasOwnProperty(0.1);",
+            "let k = {toString: function() { return 0.1; }}; ({}).hasOwnProperty(k);",
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap_err().kind,
+                JsErrorKind::UnsupportedFeature,
+                "{source}"
+            );
+        }
     }
 
     #[test]

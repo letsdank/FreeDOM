@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn unsupported_has_own_property_keys_are_not_silently_coerced() {
-        for source in ["({}).hasOwnProperty([]);", "({}).hasOwnProperty(1.5);"] {
+        for source in ["({}).hasOwnProperty([]);", "({}).hasOwnProperty(0.1);"] {
             let error = evaluate(source).unwrap_err();
 
             assert_eq!(error.kind, JsErrorKind::UnsupportedFeature);

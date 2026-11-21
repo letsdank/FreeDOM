@@ -18,18 +18,21 @@ impl Interpreter {
     // Partial ToPropertyKey for computed references and property lookups.
     // https://tc39.es/ecma262/2026/#sec-topropertykey
     pub(super) fn property_key_for_index(&mut self, index: &Value) -> Result<Value, JsError> {
-        match index {
+        let primitive = match index {
             Value::Object(_) | Value::NativeError(_) => {
-                let primitive = self.ordinary_to_primitive(index, PrimitiveHint::String)?;
-                let key = match primitive {
-                    Value::Number(number) if number == 0.0 => "0".to_owned(),
-                    Value::Number(number) if number == f64::INFINITY => "Infinity".to_owned(),
-                    Value::Number(number) if number == f64::NEG_INFINITY => "-Infinity".to_owned(),
-                    _ => primitive.to_js_string(&self.host_roots),
-                };
-                Ok(Value::String(key))
+                self.ordinary_to_primitive(index, PrimitiveHint::String)?
             }
-            _ => Ok(index.clone()),
+            _ => index.clone(),
+        };
+
+        match primitive {
+            Value::Number(number) => Ok(
+                match crate::javascript::number::number_property_key(number) {
+                    Some(key) => Value::String(key),
+                    None => Value::Number(number),
+                },
+            ),
+            value => Ok(value),
         }
     }
 
@@ -39,10 +42,9 @@ impl Interpreter {
             Value::Undefined => Ok("undefined".to_owned()),
             Value::Null => Ok("null".to_owned()),
             Value::Boolean(value) => Ok(value.to_string()),
-            Value::Number(value) => crate::javascript::number::integer_property_key(value)
-                .ok_or_else(|| {
-                    JsError::unsupported("numeric property key conversion is not implemented")
-                }),
+            Value::Number(_) => Err(JsError::unsupported(
+                "numeric property key conversion is not implemented",
+            )),
             _ => Err(JsError::unsupported(
                 "object property key conversion is not implemented",
             )),
