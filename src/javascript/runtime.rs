@@ -2232,6 +2232,68 @@ mod tests {
     }
 
     #[test]
+    fn user_function_result_is_retained_after_locals_are_restored() {
+        let mut interpreter = Interpreter::new();
+        interpreter
+            .variables
+            .insert("item".to_owned(), Value::Number(99.0));
+        let program=parse_program(
+            "(function () { let item = {value: 7}; try { return item; } finally { item.value = 8; } });",
+        ).unwrap();
+        let Value::Function(function) = interpreter.execute_script(&program).unwrap().into_value()
+        else {
+            panic!("expected a function");
+        };
+        let call = super::PendingCall {
+            callee: Value::Undefined,
+            receiver: None,
+            arguments: vec![],
+            handoff_value: None,
+        };
+
+        let result = interpreter
+            .with_call_frame_handoff(
+                call,
+                |interpreter, index| {
+                    let result =
+                        interpreter.call_function_value_with_receiver(&function, vec![], None)?;
+                    let Value::Object(object) = &result else {
+                        panic!("expected an object");
+                    };
+                    assert_eq!(
+                        *interpreter.variables.get("item").unwrap(),
+                        Value::Number(99.0)
+                    );
+                    assert_eq!(
+                        interpreter
+                            .host_roots
+                            .read_ordinary_own_property(object, "value"),
+                        Some(Value::Number(8.0))
+                    );
+                    assert!(matches!(
+                        &interpreter.pending_call(index).handoff_value,
+                        Some(Value::Object(retained)) if Rc::ptr_eq(retained, object)
+                    ));
+                    let mut found = false;
+                    interpreter
+                        .visit_runtime_roots(&mut |root| {
+                            if let RuntimeRoot::Value(Value::Object(value)) = root {
+                                found |= Rc::ptr_eq(value, object);
+                            }
+                        })
+                        .unwrap();
+                    assert!(found, "call must retain the function result");
+                    Ok(result)
+                },
+                |_, result| result,
+            )
+            .unwrap();
+
+        assert!(matches!(result, Value::Object(_)));
+        assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
     fn map_callback_exception_stays_rooted_while_temporary_frames_unwind() {
         let mut interpreter = Interpreter::new();
         let program = parse_program("(function() { throw {}; });").unwrap();

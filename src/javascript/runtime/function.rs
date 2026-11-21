@@ -329,6 +329,16 @@ impl Interpreter {
         let (result, ()) = self
             .with_pending_completion(result, |interpreter| {
                 interpreter.restore_frame_bindings(frame_index);
+                let value = match &interpreter.execution_frames[frame_index + 1] {
+                    super::ExecutionFrame::PendingCompletion(Ok(Completion::Return(value))) => {
+                        Some(value.clone())
+                    }
+                    super::ExecutionFrame::PendingCompletion(Err(_)) => None,
+                    _ => unreachable!("function results use return completion"),
+                };
+                if let Some(value) = value {
+                    interpreter.retain_call_result(&value);
+                }
                 Ok(())
             })
             .expect("restoring function bindings cannot fail");
