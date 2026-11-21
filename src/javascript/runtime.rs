@@ -618,10 +618,7 @@ impl Interpreter {
                 if run_checkpoint {
                     if let Err(error) = interpreter.perform_microtask_checkpoint() {
                         interpreter.microtasks.clear();
-                        match interpreter.execution_frames.get_mut(index) {
-                            Some(ExecutionFrame::PendingCompletion(result)) => *result = Err(error),
-                            _ => unreachable!("pending completion frame must exist"),
-                        }
+                        interpreter.replace_pending_completion(index, Err(error));
                     }
                 }
 
@@ -678,6 +675,13 @@ impl Interpreter {
         };
 
         Ok((pending, outcome?))
+    }
+
+    fn replace_pending_completion(&mut self, index: usize, result: Result<Completion, JsError>) {
+        match self.execution_frames.get_mut(index) {
+            Some(ExecutionFrame::PendingCompletion(pending)) => *pending = result,
+            _ => unreachable!("pending completion frame must exist"),
+        }
     }
 
     fn with_shadowed_bindings(
@@ -1145,6 +1149,55 @@ mod tests {
             })
         ));
 
+        assert!(interpreter.execution_frames.is_empty());
+    }
+
+    #[test]
+    fn replacing_pending_completion_updates_exception_roots() {
+        let mut interpreter = Interpreter::new();
+        let Value::Object(original) = Value::object([]) else {
+            unreachable!();
+        };
+        let Value::Object(replacement) = Value::object([]) else {
+            unreachable!();
+        };
+
+        let (result, ()) = interpreter
+            .with_pending_completion(
+                Err(JsError::thrown(Value::Object(original.clone()))),
+                |interpreter| {
+                    let check_roots = |interpreter: &Interpreter, old: bool, new: bool| {
+                        let mut saw_old = false;
+                        let mut saw_new = false;
+                        interpreter
+                            .visit_runtime_roots(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(object)) = root {
+                                    saw_old |= Rc::ptr_eq(object, &original);
+                                    saw_new |= Rc::ptr_eq(object, &replacement);
+                                }
+                            })
+                            .unwrap();
+                        assert_eq!((saw_old, saw_new), (old, new));
+                    };
+
+                    check_roots(interpreter, true, false);
+                    interpreter.replace_pending_completion(
+                        0,
+                        Err(JsError::thrown(Value::Object(replacement.clone()))),
+                    );
+                    check_roots(interpreter, false, true);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            Err(JsError {
+                kind: JsErrorKind::Thrown(Value::Object(object)),
+                ..
+            }) if Rc::ptr_eq(&object, &replacement)
+        ));
         assert!(interpreter.execution_frames.is_empty());
     }
 

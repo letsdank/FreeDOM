@@ -6,7 +6,7 @@
 //! Unclassified runtime failures and unsupported engine features propagate
 //! without executing handlers.
 
-use super::{Completion, Interpreter, JsError, Statement, Value};
+use super::{Completion, ExecutionFrame, Interpreter, JsError, Statement, Value};
 use crate::javascript::{JsErrorKind, NativeException, ast::CatchClause};
 
 impl Interpreter {
@@ -17,43 +17,52 @@ impl Interpreter {
         finally: Option<&[Statement]>,
     ) -> Result<Completion, JsError> {
         let result = self.execute(body);
+        let index = self.execution_frames.len();
 
-        let result = match catch {
-            Some(clause) => match result {
-                Err(JsError {
-                    kind: JsErrorKind::Thrown(value),
-                    ..
-                })
-                | Err(JsError {
-                    kind: JsErrorKind::NativeException(NativeException::Materialized(value)),
-                    ..
-                }) => self.execute_catch(clause, value),
+        // Retain the body completion until catch has installed its binding.
+        let (result, ()) = self.with_pending_completion(result, |interpreter| {
+            let caught = match (&interpreter.execution_frames[index], catch) {
+                (
+                    ExecutionFrame::PendingCompletion(Err(JsError {
+                        kind: JsErrorKind::Thrown(value),
+                        ..
+                    })),
+                    Some(clause),
+                )
+                | (
+                    ExecutionFrame::PendingCompletion(Err(JsError {
+                        kind: JsErrorKind::NativeException(NativeException::Materialized(value)),
+                        ..
+                    })),
+                    Some(clause),
+                ) => Some((clause, value.clone())),
+                _ => None,
+            };
 
-                other => other,
-            },
-
-            None => result,
-        };
-
-        // Engine failures are not JavaScript throws and must not be swallowed.
-        if let Err(error) = &result {
-            if !matches!(
-                &error.kind,
-                JsErrorKind::Thrown(_) | JsErrorKind::NativeException(_)
-            ) {
-                return result;
+            if let Some((clause, value)) = caught {
+                let result = interpreter.execute_catch(clause, value);
+                interpreter.replace_pending_completion(index, result);
             }
-        }
 
-        if let Some(finally) = finally {
-            let (result, completion) =
-                self.with_pending_completion(result, |interpreter| interpreter.execute(finally))?;
+            // Engine failures are not JavaScript throws and must not be swallowed.
+            let run_finally = match &interpreter.execution_frames[index] {
+                ExecutionFrame::PendingCompletion(Err(error)) => matches!(
+                    &error.kind,
+                    JsErrorKind::Thrown(_) | JsErrorKind::NativeException(_)
+                ),
+                ExecutionFrame::PendingCompletion(Ok(_)) => true,
+                _ => unreachable!("pending try completion must exist"),
+            };
 
-            match completion {
-                Completion::Normal(_) => return result,
-                abrupt => return Ok(abrupt),
+            if let (true, Some(finally)) = (run_finally, finally) {
+                match interpreter.execute(finally) {
+                    Ok(Completion::Normal(_)) => {}
+                    abrupt => interpreter.replace_pending_completion(index, abrupt),
+                }
             }
-        }
+
+            Ok(())
+        })?;
 
         result
     }
@@ -108,15 +117,16 @@ mod tests {
     #[test]
     fn catches_object_thrown_through_function_call() {
         let result = evaluate(
-            "let result = 0; \
-            function fail() { throw { code: 7 }; } \
+            "let result = 0; let marker = { code: 7 }; \
+            function fail() { throw marker; } \
             try { fail(); } \
-            catch (error) { result = error.code; } \
+            catch (error) { result = error === marker ? error.code : 0; } \
+            finally { result = result + 1; } \
             result;",
         )
         .unwrap();
 
-        assert_eq!(result, Value::Number(7.0));
+        assert_eq!(result, Value::Number(8.0));
     }
 
     #[test]
