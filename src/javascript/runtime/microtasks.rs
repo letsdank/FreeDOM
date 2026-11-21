@@ -63,27 +63,35 @@ impl Interpreter {
         let result = (|| {
             while let Some(job) = self.microtasks.pop_front() {
                 self.consume_step()?;
-                let job_result = self.with_active_microtask(job, |interpreter, index| {
-                    match interpreter.active_microtask(index).clone() {
-                        Microtask::Callback(callback) => interpreter
-                            .dispatch_call(callback, None, Vec::new())
-                            .map(|_| ()),
+                self.with_exception_scope(|interpreter| {
+                    let job_result =
+                        interpreter.with_active_microtask(job, |interpreter, index| {
+                            match interpreter.active_microtask(index).clone() {
+                                Microtask::Callback(callback) => interpreter
+                                    .dispatch_call(callback, None, Vec::new())
+                                    .map(|_| ()),
 
-                        Microtask::PromiseReaction(reaction) => {
-                            interpreter.run_promise_reaction(reaction)
-                        }
-                    }
-                });
+                                Microtask::PromiseReaction(reaction) => {
+                                    interpreter.run_promise_reaction(reaction)
+                                }
+                            }
+                        });
 
-                if let Err(error) = job_result {
-                    match error.kind {
-                        JsErrorKind::Thrown(_) | JsErrorKind::NativeException(_) => {
+                    match job_result {
+                        Err(error)
+                            if matches!(
+                                error.kind,
+                                JsErrorKind::Thrown(_) | JsErrorKind::NativeException(_)
+                            ) =>
+                        {
                             eprintln!("FreeDOM: uncaught microtask exception: {error}");
+                            interpreter.clear_exception();
+                            Ok(())
                         }
 
-                        _ => return Err(error),
+                        result => result,
                     }
-                }
+                })?;
             }
 
             Ok(())
@@ -124,7 +132,61 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::{Interpreter, JsError, Microtask};
-    use crate::javascript::{DocumentScriptSession, DocumentState, JsErrorKind, Value, evaluate};
+    use crate::javascript::{
+        DocumentScriptSession, DocumentState, JsErrorKind, Value, evaluate, parse_program,
+    };
+    use std::rc::Rc;
+
+    #[test]
+    fn handled_job_errors_do_not_replace_an_outer_exception_root() {
+        use super::super::ExecutionFrame;
+
+        let mut interpreter = Interpreter::new();
+        let Value::Object(outer) = Value::object([]) else {
+            unreachable!();
+        };
+        let program = parse_program(
+            r#"
+                let marker = {};
+                let caught = false;
+                let nativeName = '';
+                Promise.resolve(1)
+                    .then(function() { throw marker; })
+                    .then(undefined, function(error) { caught = error === marker; });
+                Promise.resolve(1)
+                    .then(Promise.resolve)
+                    .then(undefined, function(error) { nativeName = error.name; });
+                queueMicrotask(function() { throw {}; });
+            "#,
+        )
+        .unwrap();
+
+        interpreter
+            .with_exception_scope(|interpreter| {
+                interpreter.record_exception(&JsError::thrown(Value::Object(outer.clone())));
+                interpreter.execute(&program)?;
+                interpreter.perform_microtask_checkpoint()?;
+
+                assert!(interpreter.execution_frames.iter().any(|frame| matches!(
+                    frame,
+                    ExecutionFrame::ExceptionScope(Some(JsError {
+                        kind: JsErrorKind::Thrown(Value::Object(value)),
+                        ..
+                    })) if Rc::ptr_eq(value, &outer)
+                )));
+                assert_eq!(
+                    *interpreter.variables.get("caught").unwrap(),
+                    Value::Boolean(true)
+                );
+                assert_eq!(
+                    *interpreter.variables.get("nativeName").unwrap(),
+                    Value::String("TypeError".to_owned())
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert!(interpreter.execution_frames.is_empty());
+    }
 
     #[test]
     fn runs_microtasks_after_script_and_in_fifo_order() {

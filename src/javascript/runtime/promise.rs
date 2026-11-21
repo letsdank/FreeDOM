@@ -336,11 +336,14 @@ impl Interpreter {
 
             Err(mut error) => {
                 self.materialize_native_exception(&mut error);
+                self.record_exception(&error);
 
                 match error.kind {
                     JsErrorKind::Thrown(value)
                     | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
                         self.settle_promise(&target, Outcome::Rejected(value));
+                        // The target promise now owns the rejection reason.
+                        self.clear_exception();
                     }
 
                     _ => return Err(error),
