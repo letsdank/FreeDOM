@@ -1,12 +1,15 @@
 //! WebAssembly core binary support.
 //!
-//! Scans binary envelopes and decodes a subset of type and function sections.
+//! Scans binary envelopes and decodes type, function, and code-section subsets.
 //! It does not yet validate complete modules, instantiate, or execute them.
 //!
 //! <https://webassembly.github.io/spec/core/binary/modules.html>
 
 #[path = "wasm/binary.rs"]
 pub(crate) mod binary;
+
+#[path = "wasm/code.rs"]
+pub(crate) mod code;
 
 #[path = "wasm/decode.rs"]
 pub(crate) mod decode;
@@ -35,6 +38,7 @@ pub(crate) enum BinaryErrorKind {
     UnsupportedTypeForm(u8),
     UnsupportedValueType(u8),
     TrailingSectionData(u8),
+    TooManyLocals,
     SizeOverflow,
     AllocationFailed,
 }
@@ -74,6 +78,7 @@ impl fmt::Display for BinaryError {
             BinaryErrorKind::TrailingSectionData(id) => {
                 write!(formatter, "trailing bytes in section {id}")
             }
+            BinaryErrorKind::TooManyLocals => write!(formatter, "too many function locals"),
             BinaryErrorKind::SizeOverflow => {
                 write!(formatter, "section size exceeds addressable memory")
             }

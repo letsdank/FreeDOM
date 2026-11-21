@@ -96,7 +96,7 @@ fn read_function_type(reader: &mut Reader<'_>) -> Result<FunctionType, BinaryErr
     })
 }
 
-fn read_value_type(reader: &mut Reader<'_>) -> Result<ValueType, BinaryError> {
+pub(super) fn read_value_type(reader: &mut Reader<'_>) -> Result<ValueType, BinaryError> {
     let offset = reader.offset();
     Ok(match reader.read_byte()? {
         0x7f => ValueType::I32,
