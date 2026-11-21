@@ -67,6 +67,30 @@ impl<'a> Reader<'a> {
         }
         unreachable!("a fifth byte with continuation is rejected")
     }
+
+    /// Accepts redundant sign-extension groups within the five-byte limit.
+    pub(super) fn read_i32_leb(&mut self) -> Result<i32, BinaryError> {
+        let start = self.offset();
+        let mut value = 0_i64;
+        for index in 0..5 {
+            let byte = self.read_byte()?;
+            if index == 4 && (byte & 0x80 != 0 || !matches!(byte & 0x78, 0 | 0x78)) {
+                return Err(BinaryError::new(
+                    start,
+                    BinaryErrorKind::InvalidSignedLeb128,
+                ));
+            }
+            let shift = 7 * index;
+            value |= i64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                if byte & 0x40 != 0 {
+                    value |= !0_i64 << (shift + 7);
+                }
+                return Ok(value as i32);
+            }
+        }
+        unreachable!("a fifth byte with continuation is rejected")
+    }
 }
 
 #[cfg(test)]
@@ -98,5 +122,39 @@ mod tests {
         let error = Reader::new(&[0x80], 7).read_u32_leb().unwrap_err();
         assert_eq!(error.offset, 8);
         assert_eq!(error.kind, BinaryErrorKind::UnexpectedEnd);
+    }
+
+    #[test]
+    fn reads_signed_leb_boundaries_and_rejects_invalid_sign_extension() {
+        for (bytes, expected) in [
+            (&[0x00][..], 0),
+            (&[0x3f][..], 63),
+            (&[0x40][..], -64),
+            (&[0x7f][..], -1),
+            (&[0xff, 0x7f][..], -1),
+            (&[0x80, 0x00][..], 0),
+            (&[0xff, 0xff, 0xff, 0xff, 0x07][..], i32::MAX),
+            (&[0x80, 0x80, 0x80, 0x80, 0x78][..], i32::MIN),
+        ] {
+            let mut reader = Reader::new(bytes, 7);
+            assert_eq!(reader.read_i32_leb().unwrap(), expected);
+            assert!(reader.is_empty());
+        }
+        for bytes in [
+            &[0x80, 0x80, 0x80, 0x80, 0x08][..],
+            &[0xff, 0xff, 0xff, 0xff, 0x77][..],
+            &[0x80, 0x80, 0x80, 0x80, 0x80][..],
+        ] {
+            let error = Reader::new(bytes, 7).read_i32_leb().unwrap_err();
+            assert_eq!(
+                (error.offset, error.kind),
+                (7, BinaryErrorKind::InvalidSignedLeb128)
+            );
+        }
+        let error = Reader::new(&[0x80], 7).read_i32_leb().unwrap_err();
+        assert_eq!(
+            (error.offset, error.kind),
+            (8, BinaryErrorKind::UnexpectedEnd)
+        );
     }
 }

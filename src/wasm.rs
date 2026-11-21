@@ -14,6 +14,9 @@ pub(crate) mod code;
 #[path = "wasm/decode.rs"]
 pub(crate) mod decode;
 
+#[path = "wasm/instructions.rs"]
+pub(crate) mod instructions;
+
 #[path = "wasm/reader.rs"]
 mod reader;
 
@@ -31,6 +34,7 @@ pub(crate) enum BinaryErrorKind {
     InvalidMagic,
     UnsupportedVersion([u8; 4]),
     InvalidUnsignedLeb128,
+    InvalidSignedLeb128,
     InvalidSectionId(u8),
     DuplicateSection(u8),
     OutOfOrderSection(u8),
@@ -39,6 +43,9 @@ pub(crate) enum BinaryErrorKind {
     UnsupportedValueType(u8),
     TrailingSectionData(u8),
     TooManyLocals,
+    UnsupportedOpcode(u8),
+    MissingExpressionEnd,
+    TrailingExpressionData,
     SizeOverflow,
     AllocationFailed,
 }
@@ -63,6 +70,7 @@ impl fmt::Display for BinaryError {
                 write!(formatter, "unsupported version {version:02x?}")
             }
             BinaryErrorKind::InvalidUnsignedLeb128 => write!(formatter, "invalid u32 LEB128"),
+            BinaryErrorKind::InvalidSignedLeb128 => write!(formatter, "invalid i32 LEB128"),
             BinaryErrorKind::InvalidSectionId(id) => write!(formatter, "invalid section id {id}"),
             BinaryErrorKind::DuplicateSection(id) => write!(formatter, "duplicate section {id}"),
             BinaryErrorKind::OutOfOrderSection(id) => {
@@ -79,6 +87,13 @@ impl fmt::Display for BinaryError {
                 write!(formatter, "trailing bytes in section {id}")
             }
             BinaryErrorKind::TooManyLocals => write!(formatter, "too many function locals"),
+            BinaryErrorKind::UnsupportedOpcode(opcode) => {
+                write!(formatter, "unsupported opcode 0x{opcode:02x}")
+            }
+            BinaryErrorKind::MissingExpressionEnd => write!(formatter, "missing expression end"),
+            BinaryErrorKind::TrailingExpressionData => {
+                write!(formatter, "trailing bytes after expression end")
+            }
             BinaryErrorKind::SizeOverflow => {
                 write!(formatter, "section size exceeds addressable memory")
             }
