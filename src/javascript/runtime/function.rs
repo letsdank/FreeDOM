@@ -309,6 +309,7 @@ impl Interpreter {
                 arguments,
                 replaced_bindings: previous,
                 local_names: None,
+                return_value: None,
             }));
 
         if let Some(receiver) =
@@ -328,6 +329,8 @@ impl Interpreter {
         // Keep both the completion and unrestored bindings visible to root traversal.
         let (result, ()) = self
             .with_pending_completion(result, |interpreter| {
+                // The completion frame now owns the result during restoration.
+                interpreter.active_call_frame_mut(frame_index).return_value = None;
                 interpreter.restore_frame_bindings(frame_index);
                 let value = match &interpreter.execution_frames[frame_index + 1] {
                     super::ExecutionFrame::PendingCompletion(Ok(Completion::Return(value))) => {

@@ -251,6 +251,10 @@ impl ExecutionFrame {
                 for binding in &call.replaced_bindings {
                     binding.visit_root(visit)?;
                 }
+
+                if let Some(value) = &call.return_value {
+                    visit(RuntimeRoot::Value(value));
+                }
             }
 
             Self::Microtask(job) => {
@@ -281,6 +285,7 @@ struct ActiveCallFrame {
     arguments: Vec<Value>,
     replaced_bindings: Vec<BindingSnapshot>,
     local_names: Option<Vec<String>>,
+    return_value: Option<Value>,
 }
 
 struct PendingCall {
@@ -588,8 +593,11 @@ impl Interpreter {
     pub(super) fn execute(&mut self, program: &[Statement]) -> Result<Completion, JsError> {
         self.consume_step()?;
 
-        let mut result =
-            self.with_execution_frame(|interpreter| interpreter.execute_statements(program));
+        let mut result = self.with_execution_frame(|interpreter| {
+            let result = interpreter.execute_statements(program);
+            interpreter.track_function_completion(&result);
+            result
+        });
 
         if let Err(error) = &mut result {
             self.materialize_native_exception(error);
@@ -597,6 +605,22 @@ impl Interpreter {
         }
 
         result
+    }
+
+    // Retain returns in the active function while nested statements unwind.
+    fn track_function_completion(&mut self, result: &Result<Completion, JsError>) {
+        if let Some(ExecutionFrame::ActiveCall(call)) = self
+            .execution_frames
+            .iter_mut()
+            .rev()
+            .find(|frame| matches!(frame, ExecutionFrame::ActiveCall(_)))
+        {
+            match result {
+                Ok(Completion::Return(value)) => call.return_value = Some(value.clone()),
+                Err(_) | Ok(Completion::Break | Completion::Continue) => call.return_value = None,
+                Ok(Completion::Normal(_)) => {}
+            }
+        }
     }
 
     // Keep the script result rooted through the checkpoint and its final consumer.
@@ -2294,6 +2318,68 @@ mod tests {
     }
 
     #[test]
+    fn active_function_retains_return_while_nested_statements_unwind() {
+        for source in [
+            "(function() { try { return {value: 7}; } finally { return {value: 8}; } });",
+            "(function() { try { return {value: 8}; } finally { while (true) { break; } } });",
+        ] {
+            let mut interpreter = Interpreter::new();
+            let program = parse_program(source).unwrap();
+            let Value::Function(function) =
+                interpreter.execute_script(&program).unwrap().into_value()
+            else {
+                panic!("expected a function");
+            };
+            let body = function.definition().body.clone();
+            let index = interpreter.execution_frames.len();
+            interpreter
+                .execution_frames
+                .push(ExecutionFrame::ActiveCall(super::ActiveCallFrame {
+                    callee: function,
+                    arguments: vec![],
+                    replaced_bindings: vec![],
+                    local_names: None,
+                    return_value: None,
+                }));
+
+            let completion = interpreter.execute(&body).unwrap();
+            let Completion::Return(Value::Object(object)) = &completion else {
+                panic!("expected an object return");
+            };
+            assert_eq!(
+                interpreter
+                    .host_roots
+                    .read_ordinary_own_property(object, "value"),
+                Some(Value::Number(8.0))
+            );
+            assert!(matches!(
+                &interpreter.active_call_frame(index).return_value,
+                Some(Value::Object(value)) if Rc::ptr_eq(value, object)
+            ));
+            let mut found = false;
+            interpreter
+                .visit_runtime_roots(&mut |root| {
+                    if let RuntimeRoot::Value(Value::Object(value)) = root {
+                        found |= Rc::ptr_eq(value, object);
+                    }
+                })
+                .unwrap();
+            assert!(found);
+
+            assert!(
+                interpreter
+                    .execute(&parse_program("throw 1;").unwrap())
+                    .is_err()
+            );
+            assert!(interpreter.active_call_frame(index).return_value.is_none());
+            assert!(matches!(
+                interpreter.execution_frames.pop(),
+                Some(ExecutionFrame::ActiveCall(_))
+            ));
+        }
+    }
+
+    #[test]
     fn map_callback_exception_stays_rooted_while_temporary_frames_unwind() {
         let mut interpreter = Interpreter::new();
         let program = parse_program("(function() { throw {}; });").unwrap();
@@ -2768,6 +2854,7 @@ mod tests {
                 arguments: vec![Value::Number(10.0)],
                 replaced_bindings: Vec::new(),
                 local_names: None,
+                return_value: Some(Value::Number(13.0)),
             }),
             ExecutionFrame::Microtask(super::microtasks::Microtask::Callback(Value::Number(11.0))),
             ExecutionFrame::Microtask(job),
@@ -2806,7 +2893,7 @@ mod tests {
                 .unwrap();
         }
 
-        for number in 1..=12 {
+        for number in 1..=13 {
             assert!(numbers.contains(&(number as f64)));
         }
 
