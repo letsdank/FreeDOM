@@ -18,6 +18,8 @@ pub(crate) struct Instruction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstructionKind {
     LocalGet(u32),
+    LocalSet(u32),
+    LocalTee(u32),
     I32Const(i32),
     I32Add,
 }
@@ -55,6 +57,8 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                 });
             }
             0x20 => InstructionKind::LocalGet(reader.read_u32_leb()?),
+            0x21 => InstructionKind::LocalSet(reader.read_u32_leb()?),
+            0x22 => InstructionKind::LocalTee(reader.read_u32_leb()?),
             0x41 => InstructionKind::I32Const(reader.read_i32_leb()?),
             0x6a => InstructionKind::I32Add,
             opcode => {

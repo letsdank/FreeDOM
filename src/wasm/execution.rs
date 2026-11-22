@@ -8,7 +8,7 @@
 //! <https://webassembly.github.io/spec/core/exec/instructions.html>
 //! <https://webassembly.github.io/spec/core/exec/numerics.html#op-iadd>
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use super::{
     BinaryError,
@@ -128,14 +128,22 @@ pub(crate) fn validate_function(
     for instruction in &expression.instructions {
         match instruction.kind {
             InstructionKind::LocalGet(index) => {
-                if u64::from(index) >= local_index_count {
-                    return Err(FunctionError::InvalidLocalIndex {
-                        index,
-                        offset: instruction.offset,
-                    });
-                }
+                validate_local_index(index, local_index_count, instruction.offset)?;
                 depth += 1;
                 max_stack_depth = max_stack_depth.max(depth);
+            }
+            InstructionKind::LocalSet(index) | InstructionKind::LocalTee(index) => {
+                validate_local_index(index, local_index_count, instruction.offset)?;
+                if depth == 0 {
+                    return Err(FunctionError::StackUnderflow {
+                        offset: instruction.offset,
+                        needed: 1,
+                        available: 0,
+                    });
+                }
+                if matches!(instruction.kind, InstructionKind::LocalSet(_)) {
+                    depth -= 1;
+                }
             }
             InstructionKind::I32Const(_) => {
                 depth += 1;
@@ -171,6 +179,13 @@ pub(crate) fn validate_function(
     })
 }
 
+fn validate_local_index(index: u32, count: u64, offset: usize) -> Result<(), FunctionError> {
+    if u64::from(index) >= count {
+        return Err(FunctionError::InvalidLocalIndex { index, offset });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExecutionError {
     AllocationFailed,
@@ -186,13 +201,13 @@ pub(crate) enum ExecutionError {
 impl fmt::Display for ExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AllocationFailed => write!(formatter, "cannot allocate operand stack"),
+            Self::AllocationFailed => write!(formatter, "cannot allocate execution state"),
             Self::ArgumentCountMismatch { expected, actual } => write!(
                 formatter,
                 "incorrect argument count: expected {expected}, found {actual}"
             ),
             Self::InvalidValidatedStack => write!(formatter, "invalid validated operand stack"),
-            Self::InvalidValidatedLocal => write!(formatter, "invalid validated local stack"),
+            Self::InvalidValidatedLocal => write!(formatter, "invalid validated local index"),
         }
     }
 }
@@ -214,20 +229,38 @@ pub(crate) fn execute_function(
     stack
         .try_reserve_exact(function.max_stack_depth)
         .map_err(|_| ExecutionError::AllocationFailed)?;
+    // Store only modified locals, including modified parameters. Unmodified
+    // locals are zero and need no allocation even when a group is very large.
+    let mut modified_locals: HashMap<u32, i32> = HashMap::new();
     for instruction in &function.expression.instructions {
         match instruction.kind {
             InstructionKind::LocalGet(index) => {
                 if u64::from(index) >= function.local_index_count {
                     return Err(ExecutionError::InvalidValidatedLocal);
                 }
-                // Unmodified i32 locals are implicitly zero; only parameters
-                // need storage until local mutation instructions are supported.
-                let value = usize::try_from(index)
-                    .ok()
-                    .and_then(|index| arguments.get(index))
-                    .copied()
-                    .unwrap_or(0);
+                let value = modified_locals.get(&index).copied().unwrap_or_else(|| {
+                    usize::try_from(index)
+                        .ok()
+                        .and_then(|index| arguments.get(index))
+                        .copied()
+                        .unwrap_or(0)
+                });
                 stack.push(value);
+            }
+            InstructionKind::LocalSet(index) | InstructionKind::LocalTee(index) => {
+                if u64::from(index) >= function.local_index_count {
+                    return Err(ExecutionError::InvalidValidatedLocal);
+                }
+                let value = *stack.last().ok_or(ExecutionError::InvalidValidatedStack)?;
+                if !modified_locals.contains_key(&index) {
+                    modified_locals
+                        .try_reserve(1)
+                        .map_err(|_| ExecutionError::AllocationFailed)?;
+                }
+                modified_locals.insert(index, value);
+                if matches!(instruction.kind, InstructionKind::LocalSet(_)) {
+                    let _ = stack.pop();
+                }
             }
             InstructionKind::I32Const(value) => stack.push(value),
             InstructionKind::I32Add => {
@@ -483,5 +516,81 @@ mod tests {
         };
         let function = validate_function(&declarations, type_index, &many_locals).unwrap();
         assert_eq!(execute_function(&function, &[57]).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn executes_local_set_and_tee_with_isolated_call_state() {
+        // f(x): local.tee saves x + 1; local.set also updates the parameter.
+        let bytes=b"\0asm\x01\0\0\0\x01\x06\x01\x60\x01\x7f\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x14\x01\x12\x01\x01\x7f\x20\x00\x41\x01\x6a\x22\x01\x21\x00\x20\x01\x20\x00\x6a\x0b";
+        let module = scan_module(bytes).unwrap();
+        let declarations = decode_declarations(&module).unwrap();
+        let bodies = decode_bodies(&module).unwrap();
+        let linked = link_functions(&declarations, &bodies).unwrap();
+        let (index, body) = linked.iter().next().unwrap();
+        let function = validate_function(&declarations, index, body).unwrap();
+        assert_eq!(execute_function(&function, &[20]).unwrap(), Some(42));
+        assert_eq!(execute_function(&function, &[-5]).unwrap(), Some(-8));
+
+        let overwrite_with_zero = FunctionBody {
+            locals: vec![],
+            instructions_offset: 0,
+            instructions: &[0x41, 0x00, 0x21, 0x00, 0x20, 0x00, 0x0b],
+        };
+        let zero_function = validate_function(&declarations, index, &overwrite_with_zero).unwrap();
+        assert_eq!(execute_function(&zero_function, &[7]).unwrap(), Some(0));
+
+        let huge = FunctionBody {
+            locals: vec![LocalGroup {
+                count: 1_000_000_000,
+                value_type: ValueType::I32,
+            }],
+            instructions_offset: 0,
+            instructions: &[
+                0x41, 0x2a, 0x21, 0x80, 0x94, 0xeb, 0xdc, 0x03, 0x20, 0x80, 0x94, 0xeb, 0xdc, 0x03,
+                0x0b,
+            ],
+        };
+        let huge_function = validate_function(&declarations, index, &huge).unwrap();
+        assert_eq!(execute_function(&huge_function, &[0]).unwrap(), Some(42));
+    }
+
+    #[test]
+    fn validates_local_writes_before_execution() {
+        let declarations = Declarations {
+            types: vec![FunctionType {
+                parameters: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            }],
+            function_types: vec![],
+        };
+        for opcode in [0x21, 0x22] {
+            let instructions = [opcode, 0x00, 0x0b];
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 20,
+                instructions: &instructions,
+            };
+            assert!(matches!(
+                validate_function(&declarations, 0, &body),
+                Err(FunctionError::StackUnderflow {
+                    offset: 20,
+                    needed: 1,
+                    available: 0,
+                })
+            ));
+            let instructions = [0x41, 0x01, opcode, 0x01, 0x0b];
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 20,
+                instructions: &instructions,
+            };
+            assert!(matches!(
+                validate_function(&declarations, 0, &body),
+                Err(FunctionError::InvalidLocalIndex {
+                    index: 1,
+                    offset: 22,
+                })
+            ));
+        }
     }
 }
