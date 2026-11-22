@@ -17,6 +17,7 @@ pub(crate) struct Instruction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstructionKind {
+    LocalGet(u32),
     I32Const(i32),
     I32Add,
 }
@@ -53,6 +54,7 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                     end_offset: offset,
                 });
             }
+            0x20 => InstructionKind::LocalGet(reader.read_u32_leb()?),
             0x41 => InstructionKind::I32Const(reader.read_i32_leb()?),
             0x6a => InstructionKind::I32Add,
             opcode => {
@@ -95,6 +97,7 @@ mod tests {
         let cases: &[(&[u8], usize, BinaryErrorKind)] = &[
             (&[], 10, BinaryErrorKind::MissingExpressionEnd),
             (&[0x41], 11, BinaryErrorKind::UnexpectedEnd),
+            (&[0x20, 0x80], 12, BinaryErrorKind::UnexpectedEnd),
             (&[0x41, 0x00], 12, BinaryErrorKind::MissingExpressionEnd),
             (&[0x6b, 0x0b], 10, BinaryErrorKind::UnsupportedOpcode(0x6b)),
             (&[0x0b, 0x00], 11, BinaryErrorKind::TrailingExpressionData),
