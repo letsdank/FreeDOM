@@ -1390,6 +1390,75 @@ mod tests {
     };
 
     #[test]
+    fn line_height_reaches_the_main_page_layout() {
+        use crate::{
+            page_layout::{CONTENT_TOP, PageLayout},
+            render::{BACKGROUND, BlockRasterCache, GlyphRasterCache, paint},
+        };
+
+        let page = parse_html(
+            "https://example.test",
+            "<div style='font-size:16px;line-height:20px'>one one</div>",
+        );
+        let layout = PageLayout::build(&page, 80, None);
+        let runs = layout
+            .block_text_runs(0)
+            .expect("explicit line-height uses inline layout");
+        assert_eq!(layout.block_height(0), 40);
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[0].y, runs[1].y), (6, 26));
+        let (width, height) = (80, 160);
+        let mut pixels = vec![0; width * height];
+        paint(
+            &mut pixels,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+        let first_y = CONTENT_TOP as usize + 6;
+        let mut ink = false;
+        for row in 0..8 {
+            let first = &pixels[(first_y + row) * width + 16..(first_y + row) * width + 40];
+            let second =
+                &pixels[(first_y + 20 + row) * width + 16..(first_y + 20 + row) * width + 40];
+            assert_eq!(first, second);
+            ink |= first.iter().any(|&pixel| pixel != BACKGROUND);
+        }
+        assert!(ink);
+
+        let page = parse_html(
+            "https://example.test",
+            "<div style='font-size:16px;line-height:20px'>one <span style='font-size:24px;line-height:40px'>two</span></div>",
+        );
+        let layout = PageLayout::build(&page, 300, None);
+        let runs = layout.block_text_runs(0).unwrap();
+        assert_eq!(layout.block_height(0), 40);
+        assert_eq!(runs.len(), 2);
+        // Fallback bitmap glyphs use baselines at 8px and 16px respectively.
+        assert_eq!(runs[0].y + 8, runs[1].y + 16);
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/fonts/noto/nko-hmtx.woff2");
+        let font_bytes = normalize_font_container(std::fs::read(path).unwrap()).unwrap();
+        let font = crate::graphics::font::TrueTypeFont::parse(&font_bytes).unwrap();
+        let layout = PageLayout::build(&page, 300, Some(&font_bytes));
+        let runs = layout.block_text_runs(0).unwrap();
+        assert_eq!(runs.len(), 2);
+        let baseline = |run: &crate::inline_layout::PositionedTextRun| {
+            run.y as f32 + run.offset_y + font.line_metrics(run.style.font_size).unwrap().ascent
+        };
+        assert!((baseline(&runs[0]) - baseline(&runs[1])).abs() <= 0.125);
+    }
+
+    #[test]
     fn inline_style_overrides_author_rules() {
         let page = parse_html(
             "https://example.test",

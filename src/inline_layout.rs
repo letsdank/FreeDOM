@@ -5,7 +5,7 @@
 //! <https://www.w3.org/TR/css-text-3/#white-space-processing>
 
 use crate::{
-    css::{FontStyle, FontWeight, TextStyle, WhiteSpace},
+    css::{FontStyle, FontWeight, LineHeight, TextStyle, WhiteSpace},
     graphics::font::{
         TrueTypeFont,
         render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
@@ -163,10 +163,12 @@ pub(crate) fn layout_text_block(
 
     if end != block.text.len()
         || (inherited.white_space != WhiteSpace::Nowrap
+            && inherited.line_height == LineHeight::Normal
             && !fragments.iter().any(|fragment| {
                 fragment.style.color != inherited.color
                     || fragment.style.font_weight != inherited.font_weight
                     || fragment.style.font_size.to_bits() != inherited.font_size.to_bits()
+                    || fragment.style.line_height != inherited.line_height
                     || fragment.link.is_some()
             }))
     {
@@ -201,6 +203,7 @@ pub(crate) fn layout_text_block(
             word.parts.first().is_some_and(|first| {
                 word.parts.iter().any(|part| {
                     !same_font(part.style, first.style)
+                        || part.style.line_height != first.style.line_height
                         || part.style.color != first.style.color
                         || part.link != first.link
                 }) && fonts.measure_vector_word(word, fallback).is_none()
@@ -288,7 +291,13 @@ pub(crate) fn layout_inline_words(
 ) -> (i32, Vec<PositionedTextRun>) {
     let primary = fonts.get(inherited).or(fallback);
 
-    let base = InlineLineMetrics::from_stack(primary, fonts.stack(inherited), inherited.font_size);
+    let base = InlineLineMetrics::from_stack(primary, fonts.stack(inherited), inherited.font_size)
+        .with_line_height(
+            primary,
+            fonts.stack(inherited),
+            inherited.font_size,
+            inherited.line_height,
+        );
 
     let mut wrap = TextWrap::new(0, width);
     let mut metrics = base;
@@ -317,7 +326,12 @@ pub(crate) fn layout_inline_words(
             let run_metrics =
                 InlineLineMetrics::from_stack(font, fonts.stack(run.style), run.style.font_size);
 
-            metrics.include(run_metrics);
+            metrics.include(run_metrics.with_line_height(
+                font,
+                fonts.stack(run.style),
+                run.style.font_size,
+                run.style.line_height,
+            ));
 
             if positioned {
                 pending.push(PendingInlineRun {
@@ -382,6 +396,43 @@ impl InlineLineMetrics {
         self.below_subpixels = self.below_subpixels.max(other.below_subpixels);
     }
 
+    /// Distribute CSS half-leading around the unmodified glyph baseline.
+    /// <https://www.w3.org/TR/CSS22/visudet.html#leading>
+    fn with_line_height(
+        self,
+        font: Option<&TrueTypeFont<'_>>,
+        stack: &[ResolvedFont<'_>],
+        size: f32,
+        line_height: LineHeight,
+    ) -> Self {
+        let height = match line_height {
+            LineHeight::Normal => return self,
+            LineHeight::Number(factor) => f64::from(size) * f64::from(factor),
+            LineHeight::Pixels(pixels) => f64::from(pixels),
+        };
+        let steps = i64::from(GLYPH_SUBPIXEL_STEPS);
+        let limit = (i32::MAX as f64) * steps as f64;
+        let target = (height * steps as f64).clamp(0.0, limit).round() as i64;
+        let descent = stack
+            .iter()
+            .filter_map(|entry| entry.font.line_metrics(size))
+            .map(|metrics| metrics.descent)
+            .reduce(f32::max)
+            .or_else(|| {
+                font.and_then(|font| font.line_metrics(size))
+                    .map(|metrics| metrics.descent)
+            })
+            .unwrap_or(0.0);
+        let descent = (f64::from(descent) * steps as f64)
+            .clamp(0.0, limit)
+            .round() as i64;
+        let above = self.above_subpixels + (target - self.above_subpixels - descent).div_euclid(2);
+        Self {
+            above_subpixels: above,
+            below_subpixels: target - above,
+        }
+    }
+
     fn height(self) -> i32 {
         let steps = i64::from(GLYPH_SUBPIXEL_STEPS);
         let height = (self.above_subpixels + self.below_subpixels + steps - 1) / steps;
@@ -408,13 +459,14 @@ fn finish_inline_line(
     let steps = i64::from(GLYPH_SUBPIXEL_STEPS);
 
     for run in pending.drain(..) {
-        let offset = metrics
-            .above_subpixels
-            .saturating_sub(run.above_subpixels)
-            .max(0);
+        let offset = metrics.above_subpixels.saturating_sub(run.above_subpixels);
 
-        let whole = i32::try_from(offset / steps).unwrap_or(i32::MAX);
-        let fraction = (offset % steps) as f32 / GLYPH_SUBPIXEL_STEPS as f32;
+        let whole = i32::try_from(offset.div_euclid(steps)).unwrap_or(if offset < 0 {
+            i32::MIN
+        } else {
+            i32::MAX
+        });
+        let fraction = offset.rem_euclid(steps) as f32 / GLYPH_SUBPIXEL_STEPS as f32;
 
         output.push(PositionedTextRun {
             x: run.x,
@@ -449,6 +501,7 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
         if word.parts.first().is_some_and(|first| {
             word.parts.iter().any(|part| {
                 !same_font(part.style, first.style)
+                    || part.style.line_height != first.style.line_height
                     || part.style.color != first.style.color
                     || part.link != first.link
             })
@@ -625,6 +678,7 @@ fn measure_styled_word<'a>(
 
         while index < word.parts.len()
             && same_font(style, word.parts[index].style)
+            && style.line_height == word.parts[index].style.line_height
             && style.color == word.parts[index].style.color
             && link == word.parts[index].link
         {

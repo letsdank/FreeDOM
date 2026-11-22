@@ -43,6 +43,15 @@ pub(crate) enum FontStyle {
     Italic,
 }
 
+/// Computed line-height; unitless factors remain relative when inherited.
+/// <https://www.w3.org/TR/CSS22/visudet.html#propdef-line-height>
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LineHeight {
+    Normal,
+    Number(f32),
+    Pixels(f32),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CssSize {
     Auto,
@@ -67,6 +76,7 @@ pub(crate) struct BorderEdge {
 pub(crate) struct TextStyle {
     pub(crate) color: u32,
     pub(crate) font_size: f32,
+    pub(crate) line_height: LineHeight,
     pub(crate) font_weight: FontWeight,
     pub(crate) font_style: FontStyle,
     pub(crate) font_families: Vec<String>,
@@ -90,6 +100,7 @@ impl TextStyle {
         Self {
             color: DEFAULT_TEXT_COLOR,
             font_size: 16.0,
+            line_height: LineHeight::Normal,
             font_weight: FontWeight::Normal,
             font_families: Vec::new(),
             font_style: FontStyle::Normal,
@@ -119,6 +130,16 @@ enum FontSize {
     Initial,
 }
 
+#[derive(Clone, Copy)]
+enum LineHeightDeclaration {
+    Normal,
+    Number(f32),
+    Pixels(f32),
+    Em(f32),
+    Percentage(f32),
+    Inherit,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextColor {
     Value(u32),
@@ -130,6 +151,7 @@ enum TextColor {
 struct Declarations {
     color: Option<TextColor>,
     font_size: Option<FontSize>,
+    line_height: Option<LineHeightDeclaration>,
     font_weight: Option<FontWeight>,
     font_family: Option<Vec<String>>,
     font_style: Option<FontStyle>,
@@ -705,6 +727,12 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "line-height" => {
+                if let Some(value) = parse_line_height(&declaration.value) {
+                    parsed.line_height = Some(value);
+                }
+            }
+
             "font-weight" => {
                 if let Some(value) = parse_font_weight(&declaration.value) {
                     parsed.font_weight = Some(value);
@@ -894,6 +922,29 @@ fn parse_solid_border(value: &str) -> Option<BorderEdge> {
     })
 }
 
+fn parse_line_height(value: &str) -> Option<LineHeightDeclaration> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "normal" | "initial" => return Some(LineHeightDeclaration::Normal),
+        "inherit" | "unset" => return Some(LineHeightDeclaration::Inherit),
+        _ => {}
+    }
+    let nonnegative = |value: &str| {
+        let value = value.parse::<f32>().ok()?;
+        (value.is_finite() && value >= 0.0).then_some(value)
+    };
+    if let Some(number) = value.strip_suffix("px") {
+        return nonnegative(number).map(LineHeightDeclaration::Pixels);
+    }
+    if let Some(number) = value.strip_suffix("em") {
+        return nonnegative(number).map(LineHeightDeclaration::Em);
+    }
+    if let Some(number) = value.strip_suffix('%') {
+        return nonnegative(number).map(LineHeightDeclaration::Percentage);
+    }
+    nonnegative(&value).map(LineHeightDeclaration::Number)
+}
+
 fn parse_font_size(value: &str) -> Option<FontSize> {
     let value = value.trim().to_ascii_lowercase();
 
@@ -1068,6 +1119,7 @@ pub(crate) fn compute_style_with_ancestors(
     ancestors: &[Element<'_>],
 ) -> TextStyle {
     let parent_font_size = inherited_style.font_size;
+    let parent_line_height = inherited_style.line_height;
     let parent_color = inherited_style.color;
     let parent_white_space = inherited_style.white_space;
     let mut style = default_style(&element.tag, inherited_style);
@@ -1095,8 +1147,12 @@ pub(crate) fn compute_style_with_ancestors(
     // within each importance group.
     declarations.sort_by_key(|declaration| declaration.important);
 
+    let mut line_height = None;
     for declaration in declarations {
         let parsed = parse_text_declarations(std::slice::from_ref(declaration));
+        if parsed.line_height.is_some() {
+            line_height = parsed.line_height;
+        }
 
         apply_declarations(
             &mut style,
@@ -1105,6 +1161,22 @@ pub(crate) fn compute_style_with_ancestors(
             parent_color,
             parent_white_space,
         );
+    }
+
+    // Relative lengths and percentages resolve against the final computed
+    // font-size, independent of declaration order. Unitless factors inherit.
+    if let Some(line_height) = line_height {
+        let scaled = |factor: f32| {
+            ((f64::from(style.font_size) * f64::from(factor)).min(f64::from(f32::MAX))) as f32
+        };
+        style.line_height = match line_height {
+            LineHeightDeclaration::Normal => LineHeight::Normal,
+            LineHeightDeclaration::Number(value) => LineHeight::Number(value),
+            LineHeightDeclaration::Pixels(value) => LineHeight::Pixels(value),
+            LineHeightDeclaration::Em(value) => LineHeight::Pixels(scaled(value)),
+            LineHeightDeclaration::Percentage(value) => LineHeight::Pixels(scaled(value / 100.0)),
+            LineHeightDeclaration::Inherit => parent_line_height,
+        };
     }
 
     style
@@ -1346,6 +1418,50 @@ pub(crate) struct Element<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_height_cascades_after_font_size_and_inherits_correctly() {
+        let rules = build_author_rules(&[
+            "div { line-height: 150%; font-size: 20px } span { font-size: 10px }".to_owned(),
+        ]);
+        let div = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+        let span = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+        let parent = compute_style(&div, TextStyle::initial(), &rules);
+        assert_eq!(parent.line_height, LineHeight::Pixels(30.0));
+        let child = compute_style(&span, parent.clone(), &rules);
+        assert_eq!(child.font_size, 10.0);
+        assert_eq!(child.line_height, LineHeight::Pixels(30.0));
+
+        let rules = build_author_rules(&[
+            "div { line-height: 1.5; font-size: 20px } span { font-size: 10px }".to_owned(),
+        ]);
+        let parent = compute_style(&div, TextStyle::initial(), &rules);
+        assert_eq!(
+            compute_style(&span, parent, &rules).line_height,
+            LineHeight::Number(1.5)
+        );
+
+        let rules = build_author_rules(&[
+            "div { line-height: 2em !important; font-size: 10px; line-height: 4px }".to_owned(),
+        ]);
+        assert_eq!(
+            compute_style(&div, TextStyle::initial(), &rules).line_height,
+            LineHeight::Pixels(20.0)
+        );
+        assert!(parse_line_height("-1px").is_none());
+        assert!(parse_line_height("1 px").is_none());
+        assert!(parse_line_height("NaN").is_none());
+    }
 
     #[test]
     fn parses_css_font_weights() {
