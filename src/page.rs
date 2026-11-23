@@ -2684,7 +2684,6 @@ mod tests {
         for html in [
             "<div style='margin-bottom: -5px'>text</div>",
             "<div style='margin-top: 5px'>text</div>",
-            "<div style='padding-top: 5px'>text</div>",
             "<div><span style='padding-bottom: 5px'>text</span>",
             "<div><img></div>",
             "<div><br></div>",
@@ -3232,6 +3231,36 @@ mod tests {
             .collect();
 
         assert_eq!(rects, vec![(0, 24), (10, 5), (24, 10)]);
+    }
+
+    #[test]
+    fn preview_padding_contains_nested_margins_and_extends_background() {
+        let page = parse_html(
+            "https://example.test/",
+            concat!(
+                "<div style='padding-top:10px; padding-bottom:15px; background:blue'>",
+                "<div style='height:5px; margin-top:8px; margin-bottom:6px; background:orange'></div>",
+                "</div><div style='height:10px'></div>"
+            ),
+        );
+        let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
+        let rects: Vec<_> = preview.boxes.iter().map(|item| item.rect).collect();
+        assert_eq!((rects[0].y, rects[0].height), (0, 44));
+        assert_eq!((rects[1].y, rects[1].height), (18, 5));
+        assert_eq!((rects[2].y, rects[2].height), (44, 10));
+
+        let mut pixels = vec![0; 100 * 150];
+        crate::layout_debug::paint_preview_backgrounds(&mut pixels, 100, 150, &preview, 0);
+        assert_eq!(pixels[90 * 100 + 16], 0x00_00_00_FF);
+        assert_eq!(pixels[108 * 100 + 16], 0x00_FF_A5_00);
+        assert_eq!(pixels[133 * 100 + 16], 0x00_00_00_FF);
+
+        let fixed = parse_html(
+            "https://example.test/",
+            "<div style='height:7px; padding-top:3px; padding-bottom:4px'></div>",
+        );
+        let fixed = crate::layout_preview::PreviewLayout::build(&fixed, 100, None).unwrap();
+        assert_eq!(fixed.boxes[0].rect.height, 14);
     }
 
     #[test]

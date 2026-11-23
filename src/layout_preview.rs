@@ -273,10 +273,6 @@ impl PreviewLayout {
                         return Err(PreviewError::Replaced(block.source.indices().to_vec()));
                     };
 
-                    if block.style.padding_top != 0 || block.style.padding_bottom != 0 {
-                        return Err(PreviewError::Padding(block.source.indices().to_vec()));
-                    }
-
                     let index = self.boxes.len();
 
                     let block_left = left
@@ -331,7 +327,12 @@ impl PreviewLayout {
 
                     self.display_list.push(PreviewCommand::Block(index));
 
-                    let child_start = if is_root || block.style.border_top.width > 0 {
+                    // Padding, like a border, separates adjoining vertical margins.
+                    // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
+                    let child_start = if is_root
+                        || block.style.border_top.width > 0
+                        || block.style.padding_top > 0
+                    {
                         FlowStart::RootContent
                     } else {
                         FlowStart::Collapsed
@@ -346,13 +347,16 @@ impl PreviewLayout {
                         content_width,
                         start
                             .checked_add(block.style.border_top.width)
+                            .and_then(|value| value.checked_add(block.style.padding_top))
                             .ok_or(PreviewError::SizeOverflow)?,
                         child_start,
                     )?;
 
-                    // The root element's margins do not collapse with its children.
+                    // Root, border and padding separate bottom margins from children.
                     // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
-                    if (is_root || block.style.border_bottom.width > 0)
+                    if (is_root
+                        || block.style.border_bottom.width > 0
+                        || block.style.padding_bottom > 0)
                         && block.style.height == CssSize::Auto
                     {
                         if let Some(group) = child_flow.trailing_margin.take() {
@@ -377,12 +381,15 @@ impl PreviewLayout {
 
                             start
                                 .checked_add(block.style.border_top.width)
+                                .and_then(|value| value.checked_add(block.style.padding_top))
                                 .and_then(|value| value.checked_add(height))
                                 .ok_or(PreviewError::SizeOverflow)?
                         }
                     };
 
                     let end = end
+                        .checked_add(block.style.padding_bottom)
+                        .ok_or(PreviewError::SizeOverflow)?
                         .checked_add(block.style.border_bottom.width)
                         .ok_or(PreviewError::SizeOverflow)?;
 
@@ -579,7 +586,7 @@ fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
     let mut current = block;
 
     loop {
-        if current.style.border_top.width > 0 {
+        if current.style.border_top.width > 0 || current.style.padding_top > 0 {
             break;
         }
 
@@ -620,6 +627,8 @@ fn leading_margin(block: &BlockBox<'_>) -> Result<PendingMargin, PreviewError> {
             && !matches!(child.style.height, CssSize::Pixels(height) if height > 0)
             && child.style.border_top.width == 0
             && child.style.border_bottom.width == 0
+            && child.style.padding_top == 0
+            && child.style.padding_bottom == 0
         {
             return Err(PreviewError::EmptyBlock(child.source.indices().to_vec()));
         }

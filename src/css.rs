@@ -576,6 +576,16 @@ pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
             "margin-top" => parsed.margin_before.is_some(),
             "margin-bottom" => parsed.margin_after.is_some(),
 
+            "padding-top" => {
+                parsed.padding_top.is_some()
+                    && preview_horizontal_margin_supported(&declaration.value)
+            }
+
+            "padding-bottom" => {
+                parsed.padding_bottom.is_some()
+                    && preview_horizontal_margin_supported(&declaration.value)
+            }
+
             "margin-left" => {
                 parsed.margin_left.is_some()
                     && preview_horizontal_margin_supported(&declaration.value)
@@ -2758,6 +2768,9 @@ mod tests {
     fn audit_accepts_integer_inches_and_rejects_unsupported_values() {
         assert!(audit_preview_declarations("width: 2in; height: 1in").is_ok());
         assert!(audit_preview_declarations("height: 0.5in").is_err());
+        assert!(audit_preview_declarations("padding-top: 10px; padding-bottom: 1in").is_ok());
+        assert!(audit_preview_declarations("padding-top: 0.1px").is_err());
+        assert!(audit_preview_declarations("padding-bottom: -1px").is_err());
         assert!(audit_preview_declarations("border-left: 2px solid black").is_ok());
         assert!(audit_preview_declarations("border-right: 2px solid blue").is_ok());
         assert!(audit_preview_declarations("border-left: 2px dashed black").is_err());
