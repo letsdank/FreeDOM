@@ -9,7 +9,7 @@ use crate::{
         raster::{Color as RasterColor, Surface as RasterSurface},
     },
     inline_layout::{InlineFonts, PositionedTextRun},
-    layout_debug::{clear_preview_content, paint_preview_box},
+    layout_debug::{clear_preview_content, fill_preview_rect, paint_preview_box},
     layout_preview::{PreviewCommand, PreviewLayout},
     page::{BlockContent, Page, ResolvedFont},
     page_layout::{
@@ -316,6 +316,10 @@ pub(crate) fn paint_preview_scene(
                 if let Some(item) = layout.boxes.get(*index) {
                     paint_preview_box(pixels, width, height, item, scroll_y);
                 }
+            }
+
+            PreviewCommand::InlineBackground { rect, color } => {
+                fill_preview_rect(pixels, width, height, *rect, scroll_y, *color);
             }
 
             PreviewCommand::Text {

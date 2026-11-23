@@ -2745,6 +2745,74 @@ mod tests {
     }
 
     #[test]
+    fn preview_paints_simple_inline_background_without_coloring_adjacent_text() {
+        use crate::{
+            layout_preview::{PreviewCommand, PreviewLayout},
+            render::{GlyphRasterCache, paint_preview_scene},
+        };
+        let page = parse_html(
+            "https://example.test/",
+            "<div><span style='background:blue'>A</span>B</div>",
+        );
+        let layout = PreviewLayout::build(&page, 100, None).unwrap();
+        let background = layout
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                PreviewCommand::InlineBackground { rect, .. } => Some(rect),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                background.x,
+                background.y,
+                background.width,
+                background.height
+            ),
+            (16, 0, 8, 8)
+        );
+        let mut pixels = vec![0; 100 * 120];
+        paint_preview_scene(
+            &mut pixels,
+            100,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+        assert_eq!(pixels[90 * 100 + 16], 0x00_00_00_FF);
+        let reference = parse_html("https://example.test/", "<div><span>A</span>B</div>");
+        let reference_layout = PreviewLayout::build(&reference, 100, None).unwrap();
+        let mut reference_pixels = vec![0; 100 * 120];
+        paint_preview_scene(
+            &mut reference_pixels,
+            100,
+            120,
+            &reference,
+            &reference_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+        for y in 90..98 {
+            assert_eq!(
+                &pixels[y * 100 + 24..y * 100 + 32],
+                &reference_pixels[y * 100 + 24..y * 100 + 32]
+            );
+        }
+        assert!((90..98).any(|y| pixels[y * 100 + 16..y * 100 + 24].contains(&0)));
+
+        let unsupported = parse_html(
+            "https://example.test/",
+            "<div><span style='background:blue'>A B</span></div>",
+        );
+        assert!(PreviewLayout::build(&unsupported, 100, None).is_err());
+    }
+
+    #[test]
     fn preview_reports_unsupported_content() {
         for html in [
             "<div style='margin-bottom: -5px'>text</div>",

@@ -464,6 +464,18 @@ fn compare_xhtml_preview(
             }
         };
 
+        if layout.display_list.iter().any(|command| {
+            matches!(
+                command,
+                crate::layout_preview::PreviewCommand::InlineBackground { .. }
+            )
+        }) {
+            return PreviewResult::Unsupported {
+                document: label,
+                reason: "experimental inline background geometry".into(),
+            };
+        }
+
         let mut pixels = vec![0; pixel_count];
         let mut cache = GlyphRasterCache::new();
 
@@ -565,6 +577,18 @@ mod tests {
                 } if actual == document
             ));
         }
+    }
+
+    #[test]
+    fn does_not_count_experimental_inline_background_as_a_comparison() {
+        let source = "<html xmlns='http://www.w3.org/1999/xhtml'><body><div><span style='background:blue'>A</span></div></body></html>";
+        assert!(matches!(
+            compare_xhtml_preview(source, source, 320, 200),
+            PreviewResult::Unsupported {
+                document: "test",
+                ..
+            }
+        ));
     }
 
     #[test]

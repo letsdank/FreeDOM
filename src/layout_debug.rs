@@ -214,7 +214,7 @@ pub(crate) fn paint_preview_box(
     }
 }
 
-fn fill_preview_rect(
+pub(crate) fn fill_preview_rect(
     pixels: &mut [u32],
     width: usize,
     height: usize,

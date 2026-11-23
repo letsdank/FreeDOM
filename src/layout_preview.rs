@@ -8,14 +8,17 @@
 
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
-    css::{BackgroundColor, BorderEdge, CssSize, LineHeight, TextStyle, WhiteSpace},
+    css::{
+        BackgroundColor, BorderEdge, CssSize, FontStyle, FontWeight, LineHeight, TextStyle,
+        WhiteSpace,
+    },
     graphics::font::TrueTypeFont,
     inline_layout::{
         InlineFonts, InlineTextFragment, PositionedTextRun, layout_inline_words, same_font,
         same_font_except_weight, split_styled_words,
     },
     page::Page,
-    page_layout::{CONTENT_HORIZONTAL_PADDING, LayoutRect},
+    page_layout::{CONTENT_HORIZONTAL_PADDING, LayoutRect, text_metrics},
     styled_tree::SourcePath,
 };
 use std::fmt::Write;
@@ -37,6 +40,10 @@ pub(crate) struct PreviewLayout {
 
 pub(crate) enum PreviewCommand {
     Block(usize),
+    InlineBackground {
+        rect: LayoutRect,
+        color: u32,
+    },
     Text {
         rect: LayoutRect,
         text: String,
@@ -500,6 +507,9 @@ impl PreviewLayout {
                         || inherited.line_height != LineHeight::Normal
                         || fragments.iter().any(|fragment| {
                             fragment.style.color != inherited.color
+                                || (fragment.style_source.is_some()
+                                    && fragment.style.background_color
+                                        != BackgroundColor::Transparent)
                                 || fragment.style.line_height != inherited.line_height
                                 || !same_font(inherited, fragment.style)
                         });
@@ -512,6 +522,61 @@ impl PreviewLayout {
                         fallback,
                         use_positioned_runs,
                     );
+
+                    let background_styles: std::collections::HashMap<_, _> = fragments
+                        .iter()
+                        .filter_map(|fragment| {
+                            let source = fragment.style_source?;
+                            (fragment.style.background_color != BackgroundColor::Transparent)
+                                .then_some((source.indices(), fragment.style))
+                        })
+                        .collect();
+
+                    for run in runs.iter().filter(|_| !background_styles.is_empty()) {
+                        for span in &run.sources {
+                            let Some(source) = &span.source else { continue };
+                            let Some(style) = background_styles.get(source.indices()).copied()
+                            else {
+                                continue;
+                            };
+                            let BackgroundColor::Opaque(color) = style.background_color else {
+                                continue;
+                            };
+                            // Restrict this preview to the current unshaped bitmap path.
+                            // The CSS inline box is not generally the glyph's ink bounds.
+                            if fonts.get(style).or(fallback).is_some()
+                                || style.line_height != LineHeight::Normal
+                                || inherited.line_height != LineHeight::Normal
+                                || inherited.font_weight != FontWeight::Normal
+                                || inherited.font_style != FontStyle::Normal
+                                || style.font_weight != FontWeight::Normal
+                                || style.font_style != FontStyle::Normal
+                                || style.font_size <= 0.0
+                            {
+                                return Err(PreviewError::InlineStyle(source.indices().to_vec()));
+                            }
+                            let Some(advance) = &span.advance else {
+                                return Err(PreviewError::InlineStyle(source.indices().to_vec()));
+                            };
+                            let x_start = advance.start.floor() as i32;
+                            let x_end = advance.end.ceil() as i32;
+                            let x = left
+                                .checked_add(run.x)
+                                .and_then(|x| x.checked_add(x_start))
+                                .ok_or(PreviewError::SizeOverflow)?;
+                            let y = cursor
+                                .checked_add(run.y)
+                                .ok_or(PreviewError::SizeOverflow)?;
+                            let rect = LayoutRect {
+                                x,
+                                y,
+                                width: x_end.saturating_sub(x_start),
+                                height: text_metrics(None, style.font_size).glyph_height,
+                            };
+                            self.display_list
+                                .push(PreviewCommand::InlineBackground { rect, color });
+                        }
+                    }
 
                     self.display_list.push(PreviewCommand::Text {
                         rect: LayoutRect {
@@ -566,7 +631,7 @@ impl PreviewLayout {
 
         let runs = self.display_list.iter().flat_map(|command| match command {
             PreviewCommand::Text { runs, .. } => runs.as_slice(),
-            PreviewCommand::Block(_) => &[],
+            PreviewCommand::Block(_) | PreviewCommand::InlineBackground { .. } => &[],
         });
         for run in runs.filter(|run| !run.sources.is_empty()).take(32) {
             let sources: Vec<_> = run
@@ -700,8 +765,15 @@ fn collect_styled_fragments<'a>(
                 if style.padding_top != 0 || style.padding_bottom != 0 {
                     return Err(PreviewError::Padding(source.indices().to_vec()));
                 }
-                if style.background_color != BackgroundColor::Transparent
-                    || style.border_top.width != 0
+                if style.background_color != BackgroundColor::Transparent {
+                    let [InlineItem::Text { text, .. }] = children.as_slice() else {
+                        return Err(PreviewError::InlineStyle(source.indices().to_vec()));
+                    };
+                    if text.is_empty() || text.chars().any(char::is_whitespace) {
+                        return Err(PreviewError::InlineStyle(source.indices().to_vec()));
+                    }
+                }
+                if style.border_top.width != 0
                     || style.border_bottom.width != 0
                     || style.border_left.width != 0
                     || style.border_right.width != 0
