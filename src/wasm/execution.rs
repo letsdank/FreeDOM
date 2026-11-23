@@ -7,6 +7,7 @@
 //! <https://webassembly.github.io/spec/core/valid/instructions.html#expressions>
 //! <https://webassembly.github.io/spec/core/exec/instructions.html>
 //! <https://webassembly.github.io/spec/core/exec/numerics.html#op-iadd>
+//! <https://webassembly.github.io/spec/core/exec/numerics.html#integer-operations>
 
 use std::{collections::HashMap, fmt};
 
@@ -149,7 +150,13 @@ pub(crate) fn validate_function(
                 depth += 1;
                 max_stack_depth = max_stack_depth.max(depth);
             }
-            InstructionKind::I32Add => {
+            InstructionKind::I32Add
+            | InstructionKind::I32Sub
+            | InstructionKind::I32Mul
+            | InstructionKind::I32DivS
+            | InstructionKind::I32DivU
+            | InstructionKind::I32RemS
+            | InstructionKind::I32RemU => {
                 if depth < 2 {
                     return Err(FunctionError::StackUnderflow {
                         offset: instruction.offset,
@@ -189,6 +196,12 @@ fn validate_local_index(index: u32, count: u64, offset: usize) -> Result<(), Fun
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExecutionError {
     AllocationFailed,
+    IntegerDivideByZero {
+        offset: usize,
+    },
+    IntegerOverflow {
+        offset: usize,
+    },
     ArgumentCountMismatch {
         expected: usize,
         actual: usize,
@@ -202,6 +215,12 @@ impl fmt::Display for ExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AllocationFailed => write!(formatter, "cannot allocate execution state"),
+            Self::IntegerDivideByZero { offset } => {
+                write!(formatter, "integer divide by zero at byte {offset}")
+            }
+            Self::IntegerOverflow { offset } => {
+                write!(formatter, "integer overflow at byte {offset}")
+            }
             Self::ArgumentCountMismatch { expected, actual } => write!(
                 formatter,
                 "incorrect argument count: expected {expected}, found {actual}"
@@ -263,10 +282,38 @@ pub(crate) fn execute_function(
                 }
             }
             InstructionKind::I32Const(value) => stack.push(value),
-            InstructionKind::I32Add => {
+            InstructionKind::I32Add
+            | InstructionKind::I32Sub
+            | InstructionKind::I32Mul
+            | InstructionKind::I32DivS
+            | InstructionKind::I32DivU
+            | InstructionKind::I32RemS
+            | InstructionKind::I32RemU => {
                 let right = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
                 let left = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
-                stack.push(left.wrapping_add(right));
+                let offset = instruction.offset;
+                let value = match instruction.kind {
+                    InstructionKind::I32Add => left.wrapping_add(right),
+                    InstructionKind::I32Sub => left.wrapping_sub(right),
+                    InstructionKind::I32Mul => left.wrapping_mul(right),
+                    InstructionKind::I32DivS
+                    | InstructionKind::I32DivU
+                    | InstructionKind::I32RemS
+                    | InstructionKind::I32RemU
+                        if right == 0 =>
+                    {
+                        return Err(ExecutionError::IntegerDivideByZero { offset });
+                    }
+                    InstructionKind::I32DivS => left
+                        .checked_div(right)
+                        .ok_or(ExecutionError::IntegerOverflow { offset })?,
+                    InstructionKind::I32DivU => ((left as u32) / (right as u32)) as i32,
+                    // MIN % -1 is defined as zero in Wasm, unlike signed division.
+                    InstructionKind::I32RemS => left.wrapping_rem(right),
+                    InstructionKind::I32RemU => ((left as u32) % (right as u32)) as i32,
+                    _ => return Err(ExecutionError::InvalidValidatedStack),
+                };
+                stack.push(value);
             }
         }
     }
@@ -363,10 +410,10 @@ mod tests {
                 offset: 24,
             })
         ));
-        let unsupported = body(&[0x6b, 0x0b]);
+        let unsupported = body(&[0x71, 0x0b]);
         assert!(matches!(
             validate_function(&declarations, 0, &unsupported),
-            Err(FunctionError::Decode(error)) if error.kind == BinaryErrorKind::UnsupportedOpcode(0x6b)
+            Err(FunctionError::Decode(error)) if error.kind == BinaryErrorKind::UnsupportedOpcode(0x71)
         ));
         let local_body = FunctionBody {
             locals: vec![LocalGroup {
@@ -419,6 +466,94 @@ mod tests {
                 available: 1
             })
         ));
+    }
+
+    #[test]
+    fn executes_i32_arithmetic_from_binary_and_reports_traps() {
+        // (func (param i32 i32) (result i32) local.get 0 local.get 1 <op>)
+        let template = b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7f\x7f\x01\x7f\x03\x02\x01\x00\x0a\x09\x01\x07\x00\x20\x00\x20\x01\x6a\x0b";
+        let cases = [
+            (0x6a, i32::MAX, 1, Ok(i32::MIN)),
+            (0x6b, 3, 7, Ok(-4)),
+            (0x6b, i32::MIN, 1, Ok(i32::MAX)),
+            (0x6c, i32::MAX, 2, Ok(-2)),
+            (0x6d, -7, 2, Ok(-3)),
+            (0x6e, -1, 2, Ok(i32::MAX)),
+            (0x6f, -7, 2, Ok(-1)),
+            (0x6f, i32::MIN, -1, Ok(0)),
+            (0x70, -1, 2, Ok(1)),
+            (
+                0x6d,
+                i32::MIN,
+                -1,
+                Err(ExecutionError::IntegerOverflow {
+                    offset: template.len() - 2,
+                }),
+            ),
+            (
+                0x6d,
+                1,
+                0,
+                Err(ExecutionError::IntegerDivideByZero {
+                    offset: template.len() - 2,
+                }),
+            ),
+            (
+                0x6e,
+                1,
+                0,
+                Err(ExecutionError::IntegerDivideByZero {
+                    offset: template.len() - 2,
+                }),
+            ),
+            (
+                0x6f,
+                1,
+                0,
+                Err(ExecutionError::IntegerDivideByZero {
+                    offset: template.len() - 2,
+                }),
+            ),
+            (
+                0x70,
+                1,
+                0,
+                Err(ExecutionError::IntegerDivideByZero {
+                    offset: template.len() - 2,
+                }),
+            ),
+        ];
+        for (opcode, left, right, expected) in cases {
+            let mut bytes = template.to_vec();
+            let index = bytes.len() - 2;
+            bytes[index] = opcode;
+            let module = scan_module(&bytes).unwrap();
+            let declarations = decode_declarations(&module).unwrap();
+            let bodies = decode_bodies(&module).unwrap();
+            let linked = link_functions(&declarations, &bodies).unwrap();
+            let (type_index, body) = linked.iter().next().unwrap();
+            let function = validate_function(&declarations, type_index, body).unwrap();
+            assert_eq!(
+                execute_function(&function, &[left, right]),
+                expected.map(Some),
+                "opcode {opcode:#x}, operands {left}, {right}"
+            );
+
+            let instructions = [0x20, 0x00, opcode, 0x0b];
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 20,
+                instructions: &instructions,
+            };
+            assert!(matches!(
+                validate_function(&declarations, type_index, &body),
+                Err(FunctionError::StackUnderflow {
+                    offset: 22,
+                    needed: 2,
+                    available: 1,
+                })
+            ));
+        }
     }
 
     #[test]

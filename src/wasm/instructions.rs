@@ -22,6 +22,12 @@ pub(crate) enum InstructionKind {
     LocalTee(u32),
     I32Const(i32),
     I32Add,
+    I32Sub,
+    I32Mul,
+    I32DivS,
+    I32DivU,
+    I32RemS,
+    I32RemU,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +67,12 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x22 => InstructionKind::LocalTee(reader.read_u32_leb()?),
             0x41 => InstructionKind::I32Const(reader.read_i32_leb()?),
             0x6a => InstructionKind::I32Add,
+            0x6b => InstructionKind::I32Sub,
+            0x6c => InstructionKind::I32Mul,
+            0x6d => InstructionKind::I32DivS,
+            0x6e => InstructionKind::I32DivU,
+            0x6f => InstructionKind::I32RemS,
+            0x70 => InstructionKind::I32RemU,
             opcode => {
                 return Err(BinaryError::new(
                     offset,
@@ -103,7 +115,7 @@ mod tests {
             (&[0x41], 11, BinaryErrorKind::UnexpectedEnd),
             (&[0x20, 0x80], 12, BinaryErrorKind::UnexpectedEnd),
             (&[0x41, 0x00], 12, BinaryErrorKind::MissingExpressionEnd),
-            (&[0x6b, 0x0b], 10, BinaryErrorKind::UnsupportedOpcode(0x6b)),
+            (&[0x71, 0x0b], 10, BinaryErrorKind::UnsupportedOpcode(0x71)),
             (&[0x0b, 0x00], 11, BinaryErrorKind::TrailingExpressionData),
             (
                 &[0x41, 0x80, 0x80, 0x80, 0x80, 0x08, 0x0b],
