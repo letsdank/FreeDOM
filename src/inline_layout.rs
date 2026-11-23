@@ -27,9 +27,18 @@ pub(crate) struct PositionedTextRun {
     pub(crate) width: i32,
     // A run may combine multiple origins to preserve shaping and kerning.
     pub(crate) sources: Vec<InlineSourceSpan>,
+    pub(crate) leading_space: Option<InlineSpace>,
     pub(crate) text: String,
     pub(crate) style: TextStyle,
     pub(crate) link: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InlineSpace {
+    pub(crate) source: SourcePath,
+    // X and width are relative to the containing line, not the word.
+    pub(crate) x: i32,
+    pub(crate) width: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +141,7 @@ pub(crate) struct InlineWordPart<'a> {
 
 pub(crate) struct InlineWord<'a> {
     pub(crate) space_before: Option<&'a TextStyle>,
+    pub(crate) space_before_source: Option<&'a SourcePath>,
     pub(crate) parts: Vec<InlineWordPart<'a>>,
 }
 
@@ -327,8 +337,9 @@ pub(crate) fn layout_inline_words(
             fonts.position_source_spans(run, fallback);
         }
 
+        let space_width = fonts.space_width(word, fallback);
         let placement = wrap.place_word_with_wrap(
-            fonts.space_width(word, fallback),
+            space_width,
             measured.width(),
             inherited.white_space != WhiteSpace::Nowrap,
         );
@@ -339,7 +350,7 @@ pub(crate) fn layout_inline_words(
             metrics = base;
         }
 
-        for run in measured.runs {
+        for (run_index, run) in measured.runs.into_iter().enumerate() {
             let font = fonts.get(run.style).or(fallback);
 
             let run_metrics =
@@ -359,6 +370,19 @@ pub(crate) fn layout_inline_words(
                     above_subpixels: run_metrics.above_subpixels,
                     width: run.width,
                     sources: run.sources,
+                    leading_space: if run_index == 0
+                        && !placement.wrapped
+                        && placement.x > 0
+                        && space_width > 0
+                    {
+                        word.space_before_source.map(|source| InlineSpace {
+                            source: source.clone(),
+                            x: placement.x.saturating_sub(space_width),
+                            width: space_width,
+                        })
+                    } else {
+                        None
+                    },
                     text: run.text.into_owned(),
                     style: run.style.clone(),
                     link: run.link.map(str::to_owned),
@@ -468,6 +492,7 @@ struct PendingInlineRun {
     above_subpixels: i64,
     width: i32,
     sources: Vec<InlineSourceSpan>,
+    leading_space: Option<InlineSpace>,
     text: String,
     style: TextStyle,
     link: Option<String>,
@@ -498,6 +523,7 @@ fn finish_inline_line(
             offset_y: fraction,
             width: run.width,
             sources: run.sources,
+            leading_space: run.leading_space,
             text: run.text,
             style: run.style,
             link: run.link,
@@ -840,6 +866,7 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
     let mut words = Vec::new();
     let mut in_word = false;
     let mut pending_space = None;
+    let mut pending_space_source = None;
 
     for fragment in fragments {
         let mut start = 0;
@@ -851,6 +878,7 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
                         &mut words,
                         &mut in_word,
                         &mut pending_space,
+                        &mut pending_space_source,
                         &fragment.text[start..index],
                         fragment.style,
                         fragment.style_source,
@@ -861,6 +889,7 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
                 if in_word {
                     in_word = false;
                     pending_space = Some(fragment.style);
+                    pending_space_source = fragment.style_source;
                 }
 
                 start = index + character.len_utf8();
@@ -872,6 +901,7 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
                 &mut words,
                 &mut in_word,
                 &mut pending_space,
+                &mut pending_space_source,
                 &fragment.text[start..],
                 fragment.style,
                 fragment.style_source,
@@ -887,6 +917,7 @@ fn push_word_part<'a>(
     words: &mut Vec<InlineWord<'a>>,
     in_word: &mut bool,
     pending_space: &mut Option<&'a TextStyle>,
+    pending_space_source: &mut Option<&'a SourcePath>,
     text: &'a str,
     style: &'a TextStyle,
     style_source: Option<&'a SourcePath>,
@@ -908,6 +939,7 @@ fn push_word_part<'a>(
     } else {
         words.push(InlineWord {
             space_before: pending_space.take(),
+            space_before_source: pending_space_source.take(),
             parts: vec![part],
         });
 
@@ -981,6 +1013,7 @@ mod tests {
 
         let word = InlineWord {
             space_before: None,
+            space_before_source: None,
             parts: vec![
                 InlineWordPart {
                     text: "h",
@@ -1044,6 +1077,7 @@ mod tests {
 
         let empty = InlineWord {
             space_before: None,
+            space_before_source: None,
             parts: Vec::new(),
         };
 
@@ -1054,6 +1088,7 @@ mod tests {
 
         let word = InlineWord {
             space_before: None,
+            space_before_source: None,
             parts: vec![
                 InlineWordPart {
                     text: "a",
@@ -1217,6 +1252,7 @@ mod tests {
                 above_subpixels: small_metrics.above_subpixels,
                 width: 0,
                 sources: vec![],
+                leading_space: None,
                 text: "small".into(),
                 style: small,
                 link: None,
@@ -1227,6 +1263,7 @@ mod tests {
                 above_subpixels: large_metrics.above_subpixels,
                 width: 0,
                 sources: vec![],
+                leading_space: None,
                 text: "large".into(),
                 style: large,
                 link: None,
@@ -1324,6 +1361,7 @@ mod tests {
                 above_subpixels: 85,
                 width: 0,
                 sources: vec![],
+                leading_space: None,
                 text: "a".into(),
                 style: style.clone(),
                 link: None,
@@ -1334,6 +1372,7 @@ mod tests {
                 above_subpixels: 98,
                 width: 0,
                 sources: vec![],
+                leading_space: None,
                 text: "b".into(),
                 style,
                 link: None,
@@ -1403,6 +1442,7 @@ mod tests {
                 above_subpixels: small_metrics.above_subpixels,
                 width: 0,
                 sources: vec![],
+                leading_space: None,
                 text: "ߊ".into(),
                 style: small.clone(),
                 link: None,
@@ -1413,6 +1453,7 @@ mod tests {
                 above_subpixels: large_metrics.above_subpixels,
                 width: 0,
                 sources: vec![],
+                leading_space: None,
                 text: "ߊ".into(),
                 style: large,
                 link: None,
@@ -1532,6 +1573,7 @@ mod tests {
 
         let word = InlineWord {
             space_before: None,
+            space_before_source: None,
             parts: vec![
                 InlineWordPart {
                     text: "A",

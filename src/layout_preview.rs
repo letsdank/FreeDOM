@@ -534,8 +534,16 @@ impl PreviewLayout {
                     let mut backgrounds: Vec<(SourcePath, LayoutRect, u32)> = Vec::new();
 
                     for run in runs.iter().filter(|_| !background_styles.is_empty()) {
-                        for span in &run.sources {
-                            let Some(source) = &span.source else { continue };
+                        let spaces = run
+                            .leading_space
+                            .iter()
+                            .map(|space| (&space.source, Some((space.x, space.width)), None));
+                        let spans = run.sources.iter().filter_map(|span| {
+                            span.source
+                                .as_ref()
+                                .map(|source| (source, None, Some(span)))
+                        });
+                        for (source, space, span) in spaces.chain(spans) {
                             let Some(style) = background_styles.get(source.indices()).copied()
                             else {
                                 continue;
@@ -556,14 +564,25 @@ impl PreviewLayout {
                             {
                                 return Err(PreviewError::InlineStyle(source.indices().to_vec()));
                             }
-                            let Some(advance) = &span.advance else {
-                                return Err(PreviewError::InlineStyle(source.indices().to_vec()));
+                            let (relative_x, span_width) = if let Some((x, width)) = space {
+                                (x, width)
+                            } else {
+                                let Some(advance) = span.and_then(|span| span.advance.as_ref())
+                                else {
+                                    return Err(PreviewError::InlineStyle(
+                                        source.indices().to_vec(),
+                                    ));
+                                };
+                                let x_start = advance.start.floor() as i32;
+                                let x_end = advance.end.ceil() as i32;
+                                let x = run
+                                    .x
+                                    .checked_add(x_start)
+                                    .ok_or(PreviewError::SizeOverflow)?;
+                                (x, x_end.saturating_sub(x_start))
                             };
-                            let x_start = advance.start.floor() as i32;
-                            let x_end = advance.end.ceil() as i32;
                             let x = left
-                                .checked_add(run.x)
-                                .and_then(|x| x.checked_add(x_start))
+                                .checked_add(relative_x)
                                 .ok_or(PreviewError::SizeOverflow)?;
                             let y = cursor
                                 .checked_add(run.y)
@@ -571,7 +590,7 @@ impl PreviewLayout {
                             let rect = LayoutRect {
                                 x,
                                 y,
-                                width: x_end.saturating_sub(x_start),
+                                width: span_width,
                                 height: text_metrics(None, style.font_size).glyph_height,
                             };
                             if let Some((previous_source, previous, previous_color)) =
@@ -791,12 +810,11 @@ fn collect_styled_fragments<'a>(
                     let [InlineItem::Text { text, .. }] = children.as_slice() else {
                         return Err(PreviewError::InlineStyle(source.indices().to_vec()));
                     };
-                    // Only collapsed single ASCII spaces between words are represented.
+                    // Segment-break transformation is not implemented here.
                     if text.is_empty()
-                        || text.starts_with(' ')
-                        || text.ends_with(' ')
-                        || text.contains("  ")
-                        || text.chars().any(|ch| ch.is_whitespace() && ch != ' ')
+                        || text
+                            .chars()
+                            .any(|ch| ch.is_whitespace() && !matches!(ch, ' ' | '\t'))
                     {
                         return Err(PreviewError::InlineStyle(source.indices().to_vec()));
                     }

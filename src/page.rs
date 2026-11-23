@@ -2846,7 +2846,54 @@ mod tests {
             );
         }
 
-        for text in [" A", "A ", "A  B", "A\tB"] {
+        for (html, width, expected) in [
+            (
+                "A<span style='background:blue'>  B</span>",
+                100,
+                vec![(24, 0, 16)],
+            ),
+            (
+                "A <span style='background:blue'> B</span>",
+                100,
+                vec![(32, 0, 8)],
+            ),
+            (
+                "A<span style='background:blue'> </span>B",
+                100,
+                vec![(24, 0, 8)],
+            ),
+            (
+                "<span style='background:blue'>A </span>B",
+                100,
+                vec![(16, 0, 16)],
+            ),
+            (
+                "<span style='background:blue'>A</span> B",
+                100,
+                vec![(16, 0, 8)],
+            ),
+            (
+                "A<span style='background:blue'> B</span>",
+                48,
+                vec![(16, 10, 8)],
+            ),
+        ] {
+            let page = parse_html("https://example.test/", &format!("<div>{html}</div"));
+            let preview = PreviewLayout::build(&page, width, None).unwrap();
+            let rects: Vec<_> = preview
+                .display_list
+                .iter()
+                .filter_map(|command| match command {
+                    PreviewCommand::InlineBackground { rect, .. } => {
+                        Some((rect.x, rect.y, rect.width))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(rects, expected, "{html}");
+        }
+
+        for text in ["A\nB", "A\rB", "A\u{a0}B"] {
             let html = format!("<div><span style='background:blue'>{text}</span></div>");
             let unsupported = parse_html("https://example.test/", &html);
             assert!(
@@ -4178,6 +4225,7 @@ mod tests {
                         offset_y: 0.0,
                         width: 0,
                         sources: vec![],
+                        leading_space: None,
                         text: "ߊ".into(),
                         style: vector_style,
                         link: None,
@@ -4189,6 +4237,7 @@ mod tests {
                         offset_y: 0.0,
                         width: 0,
                         sources: vec![],
+                        leading_space: None,
                         text: "A".into(),
                         style: bitmap_style,
                         link: None,
