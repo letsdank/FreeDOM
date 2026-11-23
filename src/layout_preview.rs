@@ -576,6 +576,7 @@ impl PreviewLayout {
                     (
                         span.range.clone(),
                         span.source.as_ref().map(SourcePath::indices),
+                        span.advance.clone(),
                     )
                 })
                 .collect();

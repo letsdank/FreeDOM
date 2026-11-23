@@ -2700,7 +2700,9 @@ mod tests {
         assert_eq!(runs[0].text, "aб");
         assert_eq!(runs[0].sources[0].range, 0..1);
         assert_eq!(runs[0].sources[0].source, None);
+        assert_eq!(runs[0].sources[0].advance, Some(0.0..8.0));
         assert_eq!(runs[0].sources[1].range, 1..3);
+        assert_eq!(runs[0].sources[1].advance, Some(8.0..16.0));
         assert_eq!(
             runs[0].sources[1].source.as_ref().unwrap().indices(),
             &[0, 1]
@@ -2712,6 +2714,34 @@ mod tests {
         );
         assert!(runs.iter().all(|run| run.width > 0));
         assert!(preview.format_debug().contains("inline sources="));
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/fonts/noto/nko-hmtx.woff2");
+        let bytes = normalize_font_container(std::fs::read(path).unwrap()).unwrap();
+        let font = crate::graphics::font::TrueTypeFont::parse(&bytes).unwrap();
+        let page = parse_html("https://example.test/", "<div>ߊ<span>ߊ</span></div>");
+        let preview = PreviewLayout::build(&page, 100, Some(&bytes)).unwrap();
+        let run = preview
+            .display_list
+            .iter()
+            .find_map(|item| match item {
+                PreviewCommand::Text { runs, .. } => runs.first(),
+                _ => None,
+            })
+            .unwrap();
+        let mut glyph_positions = Vec::new();
+        let advance = crate::graphics::font::layout::visit_positioned_glyphs(
+            &[&font],
+            &run.text,
+            run.style.font_size,
+            |_, _, x| {
+                glyph_positions.push(x);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(run.sources[0].advance, Some(0.0..glyph_positions[1]));
+        assert_eq!(run.sources[1].advance, Some(glyph_positions[1]..advance));
     }
 
     #[test]

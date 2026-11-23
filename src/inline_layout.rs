@@ -38,6 +38,9 @@ pub(crate) struct InlineSourceSpan {
     pub(crate) range: std::ops::Range<usize>,
     // None denotes text using the enclosing block style.
     pub(crate) source: Option<SourcePath>,
+    // Pen positions relative to the run, excluding synthetic ink overhang.
+    // None means the current font metrics could not be resolved.
+    pub(crate) advance: Option<std::ops::Range<f32>>,
 }
 
 pub(crate) fn same_font(left: &TextStyle, right: &TextStyle) -> bool {
@@ -319,7 +322,10 @@ pub(crate) fn layout_inline_words(
     let mut pending = Vec::new();
 
     for word in words {
-        let measured = fonts.measure_word(word, fallback);
+        let mut measured = fonts.measure_word(word, fallback);
+        for run in &mut measured.runs {
+            fonts.position_source_spans(run, fallback);
+        }
 
         let placement = wrap.place_word_with_wrap(
             fonts.space_width(word, fallback),
@@ -510,6 +516,73 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
         fallback: Option<&TrueTypeFont<'_>>,
     ) -> bool {
         self.measure_vector_word(word, fallback).is_some()
+    }
+
+    fn position_source_spans(
+        &self,
+        run: &mut MeasuredRun<'_>,
+        fallback: Option<&TrueTypeFont<'_>>,
+    ) {
+        if run.sources.is_empty() {
+            return;
+        }
+
+        let mut positions = vec![f32::NAN; run.sources.len()];
+        let mut next = 0;
+        let mut record = |offset: usize, pen: f32| {
+            while next < run.sources.len() && run.sources[next].range.start == offset {
+                positions[next] = pen;
+                next += 1;
+            }
+        };
+
+        let size = run.style.font_size;
+        let font = self.get(run.style).or(fallback);
+        let stack = self.stack(run.style);
+        let end = if size == 0.0 {
+            for (offset, _) in run.text.char_indices() {
+                record(offset, 0.0);
+            }
+            Some(0.0)
+        } else if let Some(font) = font {
+            let mut visit = |offset, _, _, pen| {
+                record(offset, pen);
+                Ok(())
+            };
+            if stack.is_empty() {
+                crate::graphics::font::layout::visit_positioned_glyphs_with_offsets(
+                    &[font],
+                    &run.text,
+                    size,
+                    &mut visit,
+                )
+                .ok()
+            } else {
+                crate::graphics::font::layout::visit_positioned_glyphs_with_offsets(
+                    stack, &run.text, size, &mut visit,
+                )
+                .ok()
+            }
+        } else {
+            let mut pen = 0_i32;
+            let advance = if size >= 24.0 { 16 } else { 8 };
+            for (offset, _) in run.text.char_indices() {
+                record(offset, pen as f32);
+                pen = pen.saturating_add(advance);
+            }
+            Some(pen as f32)
+        };
+
+        let Some(end) = end.filter(|value| value.is_finite()) else {
+            return;
+        };
+        if positions.iter().any(|value| !value.is_finite()) {
+            return;
+        }
+        // The next glyph's pen position includes kerning across a source boundary.
+        for (index, span) in run.sources.iter_mut().enumerate() {
+            span.advance = Some(positions[index]..positions.get(index + 1).copied().unwrap_or(end));
+        }
     }
 
     fn measure_word<'a>(
@@ -731,12 +804,14 @@ fn measure_styled_word<'a>(
                     Some(InlineSourceSpan {
                         range,
                         source: previous,
+                        ..
                     }) if *previous == source => {
                         range.end = end;
                     }
                     _ => sources.push(InlineSourceSpan {
                         range: offset..end,
                         source,
+                        advance: None,
                     }),
                 }
                 offset = end;

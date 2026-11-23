@@ -112,6 +112,23 @@ where
     F: FnMut(usize, u16, f32) -> Result<(), FontError>,
     T: PositionedFont,
 {
+    visit_positioned_glyphs_with_offsets(fonts, text, font_size, |_, index, glyph, pen| {
+        visit(index, glyph, pen)
+    })
+}
+
+// UTF-8 offsets refer to the original text; this remains per-character layout,
+// not cluster shaping.
+pub(crate) fn visit_positioned_glyphs_with_offsets<F, T>(
+    fonts: &[T],
+    text: &str,
+    font_size: f32,
+    mut visit: F,
+) -> Result<f32, FontError>
+where
+    F: FnMut(usize, usize, u16, f32) -> Result<(), FontError>,
+    T: PositionedFont,
+{
     let first = fonts.first().ok_or_else(|| FontError {
         offset: 0,
         message: "font list is empty".to_owned(),
@@ -122,7 +139,7 @@ where
     let mut pen_x = 0.0;
     let mut previous_glyph: Option<(usize, u16)> = None;
 
-    for character in text.chars() {
+    for (offset, character) in text.char_indices() {
         let (index, glyph_id) = select_positioned_glyph(fonts, character);
         let font = fonts[index].font();
         let scale = text_scale(font, font_size)?;
@@ -138,7 +155,7 @@ where
             }
         }
 
-        visit(index, glyph_id, pen_x)?;
+        visit(offset, index, glyph_id, pen_x)?;
 
         pen_x += f32::from(metric.advance_width) * scale;
         previous_glyph = Some((index, glyph_id));
