@@ -19,6 +19,8 @@ use crate::{
 };
 
 pub(crate) struct PositionedTextRun {
+    // Distinguishes lines even when their vertical coordinate coincide.
+    pub(crate) line_index: usize,
     pub(crate) x: i32,
     pub(crate) offset_x: f32,
     pub(crate) y: i32,
@@ -328,6 +330,7 @@ pub(crate) fn layout_inline_words(
     let mut wrap = TextWrap::new(0, width);
     let mut metrics = base;
     let mut line_top = 0_i32;
+    let mut line_index = 0_usize;
     let mut output = Vec::new();
     let mut pending = Vec::new();
 
@@ -345,8 +348,9 @@ pub(crate) fn layout_inline_words(
         );
 
         if placement.wrapped {
-            finish_inline_line(&mut pending, &mut output, metrics, line_top);
+            finish_inline_line(&mut pending, &mut output, metrics, line_top, line_index);
             line_top = line_top.saturating_add(metrics.height());
+            line_index = line_index.saturating_add(1);
             metrics = base;
         }
 
@@ -391,7 +395,7 @@ pub(crate) fn layout_inline_words(
         }
     }
 
-    finish_inline_line(&mut pending, &mut output, metrics, line_top);
+    finish_inline_line(&mut pending, &mut output, metrics, line_top, line_index);
 
     (line_top.saturating_add(metrics.height()), output)
 }
@@ -503,6 +507,7 @@ fn finish_inline_line(
     output: &mut Vec<PositionedTextRun>,
     metrics: InlineLineMetrics,
     line_top: i32,
+    line_index: usize,
 ) {
     let steps = i64::from(GLYPH_SUBPIXEL_STEPS);
 
@@ -517,6 +522,7 @@ fn finish_inline_line(
         let fraction = offset.rem_euclid(steps) as f32 / GLYPH_SUBPIXEL_STEPS as f32;
 
         output.push(PositionedTextRun {
+            line_index,
             x: run.x,
             offset_x: run.offset_x,
             y: line_top.saturating_add(whole),
@@ -1272,7 +1278,7 @@ mod tests {
 
         let mut runs = Vec::new();
 
-        finish_inline_line(&mut pending, &mut runs, line_metrics, 20);
+        finish_inline_line(&mut pending, &mut runs, line_metrics, 20, 0);
 
         assert!(pending.is_empty());
         assert_eq!(runs.len(), 2);
@@ -1381,7 +1387,7 @@ mod tests {
 
         let mut runs = Vec::new();
 
-        finish_inline_line(&mut pending, &mut runs, line, 10);
+        finish_inline_line(&mut pending, &mut runs, line, 10, 0);
 
         assert_eq!(runs.len(), 2);
         assert_eq!((runs[0].y, runs[0].offset_y), (11, 0.625));
@@ -1461,7 +1467,7 @@ mod tests {
         ];
 
         let mut runs = Vec::new();
-        finish_inline_line(&mut pending, &mut runs, line, 0);
+        finish_inline_line(&mut pending, &mut runs, line, 0, 0);
 
         assert_eq!(runs[0].offset_y, 0.5);
         assert_eq!(runs[1].offset_y, 0.0);

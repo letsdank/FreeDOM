@@ -1456,6 +1456,16 @@ mod tests {
             run.y as f32 + run.offset_y + font.line_metrics(run.style.font_size).unwrap().ascent
         };
         assert!((baseline(&runs[0]) - baseline(&runs[1])).abs() <= 0.125);
+
+        let page = parse_html(
+            "https://example.test",
+            "<div style='line-height:0'>A B</div>",
+        );
+        let layout = PageLayout::build(&page, 48, None);
+        let runs = layout.block_text_runs(0).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].y, runs[1].y);
+        assert_eq!((runs[0].line_index, runs[1].line_index), (0, 1));
     }
 
     #[test]
@@ -2981,6 +2991,24 @@ mod tests {
         assert!((95..98).any(|y| {
             (16..24).any(|x| original[y * 48 + x] == 0 && actual[y * 48 + x] == 0x00_00_00_FF)
         }));
+
+        let short = parse_html(
+            "https://example.test/",
+            "<div style='line-height:4px'><span style='background:blue;padding-top:3px'>A B</span></div>",
+        );
+        let preview = PreviewLayout::build(&short, 48, None).unwrap();
+        let backgrounds: Vec<_> = preview
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                PreviewCommand::InlineBackground { rect, .. } => {
+                    Some((rect.x, rect.y, rect.height))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(backgrounds.len(), 2);
+        assert_eq!(backgrounds[1].1 - backgrounds[0].1, 4);
     }
 
     #[test]
@@ -4299,6 +4327,7 @@ mod tests {
                 style: bitmap_style.clone(),
                 runs: vec![
                     PositionedTextRun {
+                        line_index: 0,
                         x: 0,
                         offset_x: 0.0,
                         y: vector_y,
@@ -4311,6 +4340,7 @@ mod tests {
                         link: None,
                     },
                     PositionedTextRun {
+                        line_index: 0,
                         x: 90,
                         offset_x: 0.0,
                         y: bitmap_y,

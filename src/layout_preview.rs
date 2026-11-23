@@ -539,7 +539,7 @@ impl PreviewLayout {
                         })
                         .collect();
 
-                    let mut backgrounds: Vec<(SourcePath, i32, LayoutRect, u32)> = Vec::new();
+                    let mut backgrounds: Vec<(SourcePath, usize, LayoutRect, u32)> = Vec::new();
 
                     for run in runs.iter().filter(|_| !background_styles.is_empty()) {
                         let spaces = run
@@ -562,8 +562,7 @@ impl PreviewLayout {
                             // Restrict this preview to the current unshaped bitmap path.
                             // The CSS inline box is not generally the glyph's ink bounds.
                             if fonts.get(style).or(fallback).is_some()
-                                || style.line_height != LineHeight::Normal
-                                || inherited.line_height != LineHeight::Normal
+                                || style.line_height != inherited.line_height
                                 || inherited.font_weight != FontWeight::Normal
                                 || inherited.font_style != FontStyle::Normal
                                 || style.font_weight != FontWeight::Normal
@@ -607,11 +606,15 @@ impl PreviewLayout {
                                 width: span_width,
                                 height,
                             };
-                            if let Some((previous_source, previous_y, previous, previous_color)) =
-                                backgrounds.last_mut()
+                            if let Some((
+                                previous_source,
+                                previous_line,
+                                previous,
+                                previous_color,
+                            )) = backgrounds.last_mut()
                             {
                                 if previous_source == source
-                                    && *previous_y == run.y
+                                    && *previous_line == run.line_index
                                     && previous.y == rect.y
                                     && *previous_color == color
                                 {
@@ -625,7 +628,7 @@ impl PreviewLayout {
                                     continue;
                                 }
                             }
-                            backgrounds.push((source.clone(), run.y, rect, color));
+                            backgrounds.push((source.clone(), run.line_index, rect, color));
                         }
                     }
 
@@ -644,7 +647,7 @@ impl PreviewLayout {
                     } else {
                         if runs.iter().any(|run| {
                             fonts.get(&run.style).or(fallback).is_some()
-                                || run.style.line_height != LineHeight::Normal
+                                || run.style.line_height != inherited.line_height
                                 || run.offset_x != 0.0
                                 || run.offset_y != 0.0
                         }) {
@@ -755,7 +758,7 @@ impl PreviewLayout {
 fn append_ordered_bitmap_inline(
     output: &mut Vec<PreviewCommand>,
     runs: &[PositionedTextRun],
-    backgrounds: &[(SourcePath, i32, LayoutRect, u32)],
+    backgrounds: &[(SourcePath, usize, LayoutRect, u32)],
     left: i32,
     top: i32,
 ) -> Result<(), PreviewError> {
@@ -765,22 +768,23 @@ fn append_ordered_bitmap_inline(
         .map(|(index, (source, y, _, _))| ((source.indices(), *y), index))
         .collect();
     let mut painted = vec![false; backgrounds.len()];
-    let mut emit_background = |source: &SourcePath, y: i32, output: &mut Vec<PreviewCommand>| {
-        if let Some(&index) = indices.get(&(source.indices(), y)) {
-            if !painted[index] {
-                let (_, _, rect, color) = &backgrounds[index];
-                output.push(PreviewCommand::InlineBackground {
-                    rect: *rect,
-                    color: *color,
-                });
-                painted[index] = true;
+    let mut emit_background =
+        |source: &SourcePath, line: usize, output: &mut Vec<PreviewCommand>| {
+            if let Some(&index) = indices.get(&(source.indices(), line)) {
+                if !painted[index] {
+                    let (_, _, rect, color) = &backgrounds[index];
+                    output.push(PreviewCommand::InlineBackground {
+                        rect: *rect,
+                        color: *color,
+                    });
+                    painted[index] = true;
+                }
             }
-        }
-    };
+        };
 
     for run in runs {
         if let Some(space) = &run.leading_space {
-            emit_background(&space.source, run.y, output);
+            emit_background(&space.source, run.line_index, output);
         }
         let y = top.checked_add(run.y).ok_or(PreviewError::SizeOverflow)?;
         let x = left.checked_add(run.x).ok_or(PreviewError::SizeOverflow)?;
@@ -796,7 +800,7 @@ fn append_ordered_bitmap_inline(
         }
         for span in &run.sources {
             if let Some(source) = &span.source {
-                emit_background(source, run.y, output);
+                emit_background(source, run.line_index, output);
             }
             let Some(advance) = &span.advance else {
                 return Err(PreviewError::InlineStyle(Vec::new()));
