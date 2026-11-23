@@ -89,6 +89,7 @@ impl PendingMargin {
 struct FlowResult {
     end: i32,
     trailing_margin: Option<PendingMargin>,
+    has_line_boxes: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -235,6 +236,7 @@ impl PreviewLayout {
         let mut cursor = top;
         let mut pending_margin: Option<PendingMargin> = None;
         let mut at_start = true;
+        let mut has_line_boxes = false;
 
         for child in children {
             match child {
@@ -365,6 +367,7 @@ impl PreviewLayout {
                             .ok_or(PreviewError::SizeOverflow)?,
                         child_start,
                     )?;
+                    has_line_boxes |= child_flow.has_line_boxes;
 
                     // Root, border and padding separate bottom margins from children.
                     // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
@@ -409,11 +412,16 @@ impl PreviewLayout {
 
                     let height = end.checked_sub(start).ok_or(PreviewError::SizeOverflow)?;
 
-                    if height < 0 || (height == 0 && !children.is_empty()) {
+                    if height < 0
+                        || (height == 0 && !child_flow.has_line_boxes && !children.is_empty())
+                    {
                         return Err(PreviewError::EmptyBlock(block.source.indices().to_vec()));
                     }
 
-                    if height == 0 {
+                    // A zero-height line box containing text still prevents an
+                    // element's margins from collapsing through it.
+                    // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
+                    if height == 0 && !child_flow.has_line_boxes {
                         let Some(mut group) = previous else {
                             return Err(PreviewError::EmptyBlock(block.source.indices().to_vec()));
                         };
@@ -455,6 +463,7 @@ impl PreviewLayout {
                         continue;
                     }
 
+                    has_line_boxes = true;
                     at_start = false;
 
                     if let Some(group) = pending_margin.take() {
@@ -678,6 +687,7 @@ impl PreviewLayout {
         Ok(FlowResult {
             end: cursor,
             trailing_margin: pending_margin,
+            has_line_boxes,
         })
     }
 

@@ -3009,6 +3009,85 @@ mod tests {
             .collect();
         assert_eq!(backgrounds.len(), 2);
         assert_eq!(backgrounds[1].1 - backgrounds[0].1, 4);
+
+        let zero = |text| {
+            parse_html(
+                "https://example.test/",
+                &format!(
+                    "<div style='padding-top:10px'><div style='line-height:0'><span style='background:blue'>{text}</span></div></div>"
+                ),
+            )
+        };
+        let page = zero("A B");
+        let reference = zero("B");
+        let layout = PreviewLayout::build(&page, 48, None).unwrap();
+        let reference_layout = PreviewLayout::build(&reference, 48, None).unwrap();
+        assert_eq!(layout.boxes[0].rect.height, 10);
+        assert_eq!(layout.boxes[1].rect.height, 0);
+        assert_eq!(
+            layout
+                .display_list
+                .iter()
+                .filter(|command| matches!(command, PreviewCommand::InlineBackground { .. }))
+                .count(),
+            2
+        );
+        let mut pixels = vec![0; 48 * 120];
+        let mut reference_pixels = vec![0; 48 * 120];
+        paint_preview_scene(
+            &mut pixels,
+            48,
+            120,
+            &page,
+            &layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+        paint_preview_scene(
+            &mut reference_pixels,
+            48,
+            120,
+            &reference,
+            &reference_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+        assert_eq!(pixels, reference_pixels);
+        assert!(pixels[96 * 48..104 * 48].contains(&0x00_00_00_FF));
+
+        let plain = parse_html(
+            "https://example.test/",
+            "<div style='padding-top:10px'><div style='line-height:0'>A</div></div>",
+        );
+        let plain_layout = PreviewLayout::build(&plain, 48, None).unwrap();
+        let mut plain_pixels = vec![0; 48 * 120];
+        paint_preview_scene(
+            &mut plain_pixels,
+            48,
+            120,
+            &plain,
+            &plain_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+        assert!(plain_pixels[96 * 48..104 * 48].contains(&0));
+
+        let margins = parse_html(
+            "https://example.test/",
+            "<div style='height:10px;margin-bottom:8px'></div><div style='line-height:0;margin-top:12px;margin-bottom:7px'>X</div><div style='height:10px;margin-top:5px'></div>",
+        );
+        let layout = PreviewLayout::build(&margins, 100, None).unwrap();
+        assert_eq!(
+            layout
+                .boxes
+                .iter()
+                .map(|item| item.rect.y)
+                .collect::<Vec<_>>(),
+            vec![0, 22, 29]
+        );
     }
 
     #[test]
