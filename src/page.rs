@@ -1459,6 +1459,41 @@ mod tests {
     }
 
     #[test]
+    fn negative_margin_does_not_hide_an_earlier_line_from_scroll_extent() {
+        use crate::{
+            page_layout::{CONTENT_TOP, PageLayout},
+            render::{BlockRasterCache, GlyphRasterCache, paint},
+        };
+
+        let page = parse_html(
+            "https://example.test",
+            "<div style='line-height:20px;margin-bottom:-15px'>A</div>\
+            <div style='line-height:0'>B</div>",
+        );
+        let layout = PageLayout::build(&page, 300, None);
+        assert_eq!(layout.block_height(0), 20);
+        assert_eq!(layout.block_top(1), 5);
+        assert_eq!(layout.content_height(), 20);
+
+        let (width, height) = (300, CONTENT_TOP as usize + 10);
+        let result = paint(
+            &mut vec![0; width * height],
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+        assert_eq!(result.max_scroll_y, 10);
+    }
+
+    #[test]
     fn inline_style_overrides_author_rules() {
         let page = parse_html(
             "https://example.test",

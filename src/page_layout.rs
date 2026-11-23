@@ -1,7 +1,8 @@
 use crate::{
-    css::{FontStyle, FontWeight},
+    css::{FontStyle, FontWeight, LineHeight},
+    graphics::font::render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
     graphics::{font::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
-    inline_layout::{PositionedTextRun, layout_text_block, layout_uniform_fallback},
+    inline_layout::{InlineFonts, PositionedTextRun, layout_text_block, layout_uniform_fallback},
     page::{BlockContent, Page, ResolvedFont},
 };
 
@@ -19,12 +20,15 @@ pub(crate) struct PageLayout {
     viewport_width: usize,
     blocks: Vec<BlockLayout>,
     content_height: i32,
+    text_overflow: bool,
 }
 
 struct BlockLayout {
     top: i32,
     width: i32,
     height: i32,
+    paint_top: i32,
+    paint_bottom: i32,
     text_runs: Option<Vec<PositionedTextRun>>,
 }
 
@@ -129,6 +133,8 @@ impl PageLayout {
 
         let mut blocks = Vec::with_capacity(page.blocks.len());
         let mut top = 0_i32;
+        let mut scroll_bottom = 0_i32;
+        let mut text_overflow = false;
 
         for block in &page.blocks {
             let (block_width, height, text_runs) = match &block.content {
@@ -211,14 +217,32 @@ impl PageLayout {
                 BlockContent::PendingImage(_) => (0, 0, None),
             };
 
+            let (paint_top, paint_bottom) = text_runs
+                .as_ref()
+                .filter(|runs| {
+                    runs.iter()
+                        .any(|run| run.style.line_height != LineHeight::Normal)
+                })
+                .map(|runs| {
+                    let fonts = InlineFonts::from_styles(page, runs.iter().map(|run| &run.style));
+                    text_paint_bounds(&fonts, runs, height, fallback_font.as_ref())
+                })
+                .unwrap_or((0, height));
+            text_overflow |= paint_top < 0 || paint_bottom > height;
+
             blocks.push(BlockLayout {
                 top,
                 width: block_width,
                 height,
+                paint_top,
+                paint_bottom,
                 text_runs,
             });
 
             if !matches!(&block.content, BlockContent::PendingImage(_)) {
+                // Scrollable overflow includes line boxes, not just the final flow cursor.
+                // https://www.w3.org/TR/css-overflow-3/#overflow-concepts
+                scroll_bottom = scroll_bottom.max(top.saturating_add(height));
                 top = top
                     .saturating_add(height)
                     .saturating_add(block.style.margin_after);
@@ -228,7 +252,8 @@ impl PageLayout {
         Self {
             viewport_width,
             blocks,
-            content_height: top.max(0),
+            content_height: scroll_bottom.max(top),
+            text_overflow,
         }
     }
 
@@ -242,6 +267,17 @@ impl PageLayout {
 
     pub(crate) fn block_height(&self, index: usize) -> i32 {
         self.blocks[index].height
+    }
+
+    pub(crate) fn block_paint_bounds(&self, index: usize) -> (i32, i32) {
+        (
+            self.blocks[index].paint_top,
+            self.blocks[index].paint_bottom,
+        )
+    }
+
+    pub(crate) fn has_text_overflow(&self) -> bool {
+        self.text_overflow
     }
 
     pub(crate) fn content_height(&self) -> i32 {
@@ -285,6 +321,81 @@ impl PageLayout {
     pub(crate) fn block_text_runs(&self, index: usize) -> Option<&[PositionedTextRun]> {
         self.blocks.get(index)?.text_runs.as_deref()
     }
+}
+
+// Conservative bounds include the font-wide head bounding box, rather than
+// assuming that glyph ink is contained by the font's line metrics.
+// <https://learn.microsoft.com/en-us/typography/opentype/spec/head>
+pub(crate) fn text_paint_bounds(
+    fonts: &InlineFonts<'_, '_>,
+    runs: &[PositionedTextRun],
+    height: i32,
+    fallback: Option<&TrueTypeFont<'_>>,
+) -> (i32, i32) {
+    let mut top = 0_i32;
+    let mut bottom = height;
+    for run in runs {
+        if run.style.font_size <= 0.0 {
+            continue;
+        }
+        let font = fonts.get(&run.style).or(fallback);
+        let (ink_top, ink_bottom) = text_ink_bounds(
+            font,
+            fonts.stack(&run.style),
+            run.style.font_size,
+            run.offset_y,
+        );
+        top = top.min(run.y.saturating_add(ink_top));
+        bottom = bottom.max(run.y.saturating_add(ink_bottom));
+    }
+    (top, bottom)
+}
+
+/// Vertical bounds relative to a text run's y, including bitmap fallback.
+pub(crate) fn text_ink_bounds(
+    font: Option<&TrueTypeFont<'_>>,
+    stack: &[ResolvedFont<'_>],
+    size: f32,
+    offset_y: f32,
+) -> (i32, i32) {
+    if size <= 0.0 {
+        return (0, 0);
+    }
+    let bitmap_height = if size >= 24.0 { 16 } else { 8 };
+    let (mut top, mut bottom) = (0_i32, bitmap_height);
+    let Some(font) = font else {
+        return (top, bottom);
+    };
+    let Some(ascent) =
+        stack_ascent(stack, size).or_else(|| font.line_metrics(size).map(|m| m.ascent))
+    else {
+        return (top, bottom);
+    };
+    let Some((baseline, phase)) = split_subpixel_position(ascent + offset_y) else {
+        return (top, bottom);
+    };
+    let phase = f32::from(phase) / GLYPH_SUBPIXEL_STEPS as f32;
+    let mut include_font = |font: &TrueTypeFont<'_>| {
+        let head = font.head();
+        if head.y_min > head.y_max {
+            top = i32::MIN;
+            bottom = i32::MAX;
+            return;
+        }
+        let scale = size / f32::from(head.units_per_em);
+        let upper = (-f32::from(head.y_max) * scale + phase - 2.0).floor() as i32;
+        let lower = (-f32::from(head.y_min) * scale + phase + 2.0).ceil() as i32;
+        top = top.min(baseline.saturating_add(upper));
+        bottom = bottom.max(baseline.saturating_add(lower));
+    };
+    if stack.is_empty() {
+        include_font(font);
+    } else {
+        for entry in stack {
+            include_font(&entry.font);
+        }
+    }
+    (top, bottom)
 }
 
 pub(crate) fn text_metrics(vector_font: Option<&TrueTypeFont<'_>>, font_size: f32) -> TextMetrics {
@@ -545,6 +656,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn text_ink_bounds_include_font_head_extrema() {
+        use crate::graphics::font::{
+            normalize_font_container,
+            sfnt::{SfntFont, TableTag},
+        };
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/fonts/noto/nko-hmtx.woff2");
+        let mut data = normalize_font_container(std::fs::read(path).unwrap()).unwrap();
+        let offset = SfntFont::parse(&data)
+            .unwrap()
+            .table_record(TableTag::HEAD)
+            .unwrap()
+            .offset;
+        data[offset + 38..offset + 40].copy_from_slice(&i16::MIN.to_be_bytes());
+        data[offset + 42..offset + 44].copy_from_slice(&i16::MAX.to_be_bytes());
+        let font = TrueTypeFont::parse(&data).unwrap();
+        let (top, bottom) = text_ink_bounds(Some(&font), &[], 16.0, 0.0);
+        assert!(top < -8 && bottom > 16);
+    }
+
+    #[test]
     fn measures_wrapped_bitmap_text_once_per_line() {
         let height = measure_wrapped_text(
             "aa aa",
@@ -569,23 +701,30 @@ mod tests {
                     top: 0,
                     width: 68,
                     height: 10,
+                    paint_top: 0,
+                    paint_bottom: 10,
                     text_runs: None,
                 },
                 BlockLayout {
                     top: 10,
                     width: 30,
                     height: 12,
+                    paint_top: 0,
+                    paint_bottom: 12,
                     text_runs: None,
                 },
                 BlockLayout {
                     top: 10,
                     width: 12,
                     height: 4,
+                    paint_top: 0,
+                    paint_bottom: 4,
                     text_runs: None,
                 },
             ],
 
             content_height: 22,
+            text_overflow: false,
         };
 
         assert_eq!(layout.block_at_viewport_point(16, 90, 130, 0), Some(0));

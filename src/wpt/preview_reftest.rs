@@ -719,6 +719,20 @@ mod tests {
                 && entry.result == BatchResult::Compared(PreviewResult::Match)
         }));
 
+        // <https://github.com/web-platform-tests/wpt/blob/master/css/CSS2/linebox/line-height-125.xht>
+        // The saved upstream WPT uses features the preview cannot yet run.
+        // Reporting unsupported is not a WPT result or a match.
+        assert!(entries.iter().any(|entry| {
+            entry.path.ends_with("linebox/line-height-125.xht")
+                && matches!(
+                    &entry.result,
+                    BatchResult::Compared(PreviewResult::Unsupported {
+                        document: "test",
+                        reason
+                    }) if reason.contains("line-height")
+                )
+        }));
+
         assert!(entries.iter().any(|entry| {
             entry
                 .path

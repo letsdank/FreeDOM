@@ -25,6 +25,8 @@ pub enum IndexToLocFormat {
 pub struct HeadTable {
     pub units_per_em: u16,
     pub index_to_loc_format: IndexToLocFormat,
+    pub y_min: i16,
+    pub y_max: i16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -292,6 +294,8 @@ impl HeadTable {
         Ok(Self {
             units_per_em,
             index_to_loc_format,
+            y_min: read_i16(table, 38, offset)?,
+            y_max: read_i16(table, 42, offset)?,
         })
     }
 }

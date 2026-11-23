@@ -1,5 +1,5 @@
 use crate::{
-    css::{FontStyle, FontWeight},
+    css::{FontStyle, FontWeight, LineHeight},
     graphics::{
         font::{
             TextOutline, TrueTypeFont, normalize_font_container, rasterize_text_outline,
@@ -15,7 +15,7 @@ use crate::{
     page_layout::{
         CONTENT_TOP, PageLayout, TextWrap, bitmap_block_size, split_layout_words, stack_ascent,
         stack_text_metrics, stack_word_width, svg_block_size, synthetic_bold_offset,
-        synthetic_italic_shear,
+        synthetic_italic_shear, text_ink_bounds, text_paint_bounds,
     },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -326,9 +326,20 @@ pub(crate) fn paint_preview_scene(
             } => {
                 let relative_y = i64::from(rect.y) - i64::from(scroll_y);
 
-                if rect.height <= 0
-                    || relative_y >= content_height as i64
-                    || relative_y + i64::from(rect.height) <= 0
+                let fonts = InlineFonts::from_styles(
+                    page,
+                    std::iter::once(style).chain(runs.iter().map(|run| &run.style)),
+                );
+                let (paint_top, paint_bottom) = if runs
+                    .iter()
+                    .any(|run| run.style.line_height != LineHeight::Normal)
+                {
+                    text_paint_bounds(&fonts, runs, rect.height, fallback.as_ref())
+                } else {
+                    (0, rect.height)
+                };
+                if relative_y + i64::from(paint_top) >= content_height as i64
+                    || relative_y + i64::from(paint_bottom) <= 0
                 {
                     continue;
                 }
@@ -336,11 +347,6 @@ pub(crate) fn paint_preview_scene(
                 let Ok(y) = i32::try_from(relative_y) else {
                     continue;
                 };
-
-                let fonts = InlineFonts::from_styles(
-                    page,
-                    std::iter::once(style).chain(runs.iter().map(|run| &run.style)),
-                );
 
                 // Restrict text painting to the page content below the toolbar.
                 let content_pixels = &mut pixels[content_top * width..width * height];
@@ -624,11 +630,28 @@ pub(crate) fn paint(
 
     let mut link_regions = Vec::new();
     let slow_block_threshold = Duration::from_millis(16);
+    // Opaque block catches erase adjacent overflowing ink. Composite only
+    // intersecting blocks directly, while preserving other block caches.
+    let direct_blocks = layout.has_text_overflow();
+    let mut painted_ink: Option<(i64, i64)> = None;
+    let content_top = (CONTENT_TOP as usize).min(height);
+    let content_start = content_top.saturating_mul(width);
+    let content_end = height.saturating_mul(width);
+    let content_height = height - content_top;
 
     for (index, block) in page.blocks.iter().enumerate() {
-        let y = CONTENT_TOP + layout.block_top(index) - scroll_y;
+        let y = CONTENT_TOP
+            .saturating_add(layout.block_top(index))
+            .saturating_sub(scroll_y);
+        let (paint_top, paint_bottom) = layout.block_paint_bounds(index);
+        let block_top = i64::from(y);
+        let block_bottom = block_top + i64::from(layout.block_height(index));
+        let overlaps_ink =
+            painted_ink.is_some_and(|(top, bottom)| block_top < bottom && block_bottom > top);
 
-        if y + layout.block_height(index) <= CONTENT_TOP || y >= height as i32 {
+        if i64::from(y) + i64::from(paint_bottom) <= i64::from(CONTENT_TOP)
+            || i64::from(y) + i64::from(paint_top) >= height as i64
+        {
             continue;
         }
 
@@ -636,7 +659,12 @@ pub(crate) fn paint(
 
         match &block.content {
             BlockContent::Svg(svg) => {
-                if let Some(cached) = cache_visual_block(block_raster_cache, page, index, width) {
+                let cached = if overlaps_ink {
+                    None
+                } else {
+                    cache_visual_block(block_raster_cache, page, index, width)
+                };
+                if let Some(cached) = cached {
                     cached.blit_to(pixels, width, height, 16, y);
                 } else {
                     let available_width = width.saturating_sub(32);
@@ -644,92 +672,119 @@ pub(crate) fn paint(
 
                     if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT)
                     {
-                        surface.blit_xrgb8888(pixels, width, height, 16, y);
+                        if direct_blocks {
+                            if let Some(content) = pixels.get_mut(content_start..content_end) {
+                                surface.blit_xrgb8888(
+                                    content,
+                                    width,
+                                    content_height,
+                                    16,
+                                    y.saturating_sub(content_top as i32),
+                                );
+                            }
+                        } else {
+                            surface.blit_xrgb8888(pixels, width, height, 16, y);
+                        }
                     }
                 }
             }
 
             BlockContent::Bitmap(bitmap) => {
-                if let Some(cached) = cache_visual_block(block_raster_cache, page, index, width) {
+                let cached = if overlaps_ink {
+                    None
+                } else {
+                    cache_visual_block(block_raster_cache, page, index, width)
+                };
+                if let Some(cached) = cached {
                     cached.blit_to(pixels, width, height, 16, y);
                 } else {
                     let available_width = width.saturating_sub(32);
                     let (image_width, image_height) = bitmap_block_size(bitmap, available_width);
 
-                    bitmap.blit_scaled_xrgb8888(
-                        pixels,
-                        width,
-                        height,
-                        16,
-                        y,
-                        image_width,
-                        image_height,
-                    );
+                    if direct_blocks {
+                        if let Some(content) = pixels.get_mut(content_start..content_end) {
+                            bitmap.blit_scaled_xrgb8888(
+                                content,
+                                width,
+                                content_height,
+                                16,
+                                y.saturating_sub(content_top as i32),
+                                image_width,
+                                image_height,
+                            );
+                        }
+                    } else {
+                        bitmap.blit_scaled_xrgb8888(
+                            pixels,
+                            width,
+                            height,
+                            16,
+                            y,
+                            image_width,
+                            image_height,
+                        );
+                    }
                 }
             }
 
-            BlockContent::Text(text) => {
-                if let Some(cached) = cache_text_block(
-                    block_raster_cache,
-                    page,
-                    layout,
-                    index,
-                    width,
-                    fallback_font.as_ref(),
-                    glyph_raster_cache,
-                ) {
+            BlockContent::Text(_) => {
+                let own_overflow = paint_top < 0 || paint_bottom > layout.block_height(index);
+                let cached = if own_overflow || overlaps_ink {
+                    None
+                } else {
+                    cache_text_block(
+                        block_raster_cache,
+                        page,
+                        layout,
+                        index,
+                        width,
+                        fallback_font.as_ref(),
+                        glyph_raster_cache,
+                    )
+                };
+                if let Some(cached) = cached {
                     cached.blit_to(pixels, width, height, 16, y);
                     cached.append_link_regions(&mut link_regions, 16, y);
-                } else if let Some(runs) = layout.block_text_runs(index) {
-                    draw_positioned_text(
-                        pixels,
-                        width,
-                        height,
-                        16,
-                        y,
-                        width as i32 - 16,
-                        runs,
-                        page,
-                        fallback_font.as_ref(),
-                        block.link.as_deref(),
-                        CONTENT_TOP,
-                        &mut link_regions,
-                        glyph_raster_cache,
-                    );
+                } else if direct_blocks {
+                    if let Some(content) = pixels.get_mut(content_start..content_end) {
+                        let first_link = link_regions.len();
+                        let relative_y = y.saturating_sub(content_top as i32);
+                        draw_uncached_text_block(
+                            content,
+                            width,
+                            content_height,
+                            relative_y,
+                            page,
+                            layout,
+                            index,
+                            fallback_font.as_ref(),
+                            0,
+                            &mut link_regions,
+                            glyph_raster_cache,
+                        );
+                        for region in &mut link_regions[first_link..] {
+                            let top = region.y.saturating_add(content_top as i32);
+                            let bottom = top.saturating_add(region.height).min(height as i32);
+                            region.y = top.max(content_top as i32);
+                            region.height = bottom.saturating_sub(region.y).max(0);
+                        }
+                    }
+                    let top = i64::from(y) + i64::from(paint_top);
+                    let bottom = i64::from(y) + i64::from(paint_bottom);
+                    painted_ink = Some(match painted_ink {
+                        Some((old_top, old_bottom)) => (old_top.min(top), old_bottom.max(bottom)),
+                        None => (top, bottom),
+                    });
                 } else {
-                    let page_fonts = page.vector_fonts_for_style(&block.style);
-                    let page_font = page_fonts.first().map(|entry| &entry.font);
-                    let vector_font = page_font.or(fallback_font.as_ref());
-
-                    let font_stack = if page_fonts.len() > 1 {
-                        page_fonts.as_slice()
-                    } else {
-                        &[]
-                    };
-
-                    let (weight, style) = page_fonts
-                        .first()
-                        .map(|entry| entry.synthesis)
-                        .unwrap_or((block.style.font_weight, block.style.font_style));
-
-                    draw_wrapped_text(
+                    draw_uncached_text_block(
                         pixels,
                         width,
                         height,
-                        16,
-                        0.0,
                         y,
-                        0.0,
-                        width as i32 - 16,
-                        &text.text,
-                        block.style.font_size,
-                        weight,
-                        block.style.font_weight,
-                        style,
-                        block.style.color,
-                        block.link.as_deref(),
-                        vector_font,
-                        font_stack,
+                        page,
+                        layout,
+                        index,
+                        fallback_font.as_ref(),
                         CONTENT_TOP,
                         &mut link_regions,
                         glyph_raster_cache,
@@ -738,6 +793,7 @@ pub(crate) fn paint(
             }
 
             BlockContent::Canvas(canvas) => {
+                // blit_canvas uses window coordinates and clips to CONTENT_TOP.
                 blit_canvas(canvas.canvas.surface(), pixels, width, height, 16, y);
             }
 
@@ -774,6 +830,78 @@ pub(crate) fn paint(
             .saturating_sub(content_viewport_height)
             .max(0),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_uncached_text_block(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    y: i32,
+    page: &Page,
+    layout: &PageLayout,
+    index: usize,
+    fallback: Option<&TrueTypeFont<'_>>,
+    visible_top: i32,
+    links: &mut Vec<LinkRegion>,
+    glyph_cache: &mut GlyphRasterCache,
+) {
+    let block = &page.blocks[index];
+    let BlockContent::Text(text) = &block.content else {
+        return;
+    };
+    let right = i32::try_from(width.saturating_sub(16)).unwrap_or(i32::MAX);
+    if let Some(runs) = layout.block_text_runs(index) {
+        draw_positioned_text(
+            pixels,
+            width,
+            height,
+            16,
+            y,
+            right,
+            runs,
+            page,
+            fallback,
+            block.link.as_deref(),
+            visible_top,
+            links,
+            glyph_cache,
+        );
+        return;
+    }
+    let fonts = page.vector_fonts_for_style(&block.style);
+    let font = fonts.first().map(|entry| &entry.font).or(fallback);
+    let stack = if fonts.len() > 1 {
+        fonts.as_slice()
+    } else {
+        &[]
+    };
+    let (weight, style) = fonts
+        .first()
+        .map(|entry| entry.synthesis)
+        .unwrap_or((block.style.font_weight, block.style.font_style));
+    draw_wrapped_text(
+        pixels,
+        width,
+        height,
+        16,
+        0.0,
+        y,
+        0.0,
+        right,
+        &text.text,
+        block.style.font_size,
+        weight,
+        block.style.font_weight,
+        style,
+        block.style.color,
+        block.link.as_deref(),
+        font,
+        stack,
+        visible_top,
+        links,
+        glyph_cache,
+    );
 }
 
 // A canvas is mutable: render it directly and only visit visible pixels.
@@ -914,6 +1042,7 @@ fn draw_wrapped_text(
     }
 
     let metrics = stack_text_metrics(vector_font, font_stack, font_size);
+    let (ink_top, ink_bottom) = text_ink_bounds(vector_font, font_stack, font_size, offset_y);
     let mut wrap = TextWrap::new(left, right);
 
     for word in split_layout_words(text) {
@@ -933,13 +1062,8 @@ fn draw_wrapped_text(
         }
 
         let word_x = placement.x;
-        let visibility_padding = if offset_y == 0.0 { 0 } else { 1 };
-
-        let is_visible = y
-            .saturating_add(metrics.glyph_height)
-            .saturating_add(visibility_padding)
-            > visible_top
-            && y.saturating_sub(visibility_padding) < height as i32;
+        let is_visible =
+            y.saturating_add(ink_bottom) > visible_top && y.saturating_add(ink_top) < height as i32;
 
         if is_visible {
             let rendered_with_vector_font = vector_font.is_some_and(|font| {
@@ -1324,6 +1448,144 @@ fn fill_rect(
 mod tests {
     use super::*;
     use crate::page_layout::measure_wrapped_text;
+
+    #[test]
+    fn line_height_zero_paints_outside_block_and_clips_to_content() {
+        let page=crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><body><div style='line-height:20px'>header</div><div style='line-height:0'><a href='/x' style='color:red'>XXXX</a></div><div style='color:blue'>i</div></body></html>"
+        ).unwrap();
+        let (width, height) = (128, 150);
+        let layout = PageLayout::build(&page, width, None);
+        assert!(layout.has_text_overflow());
+        assert_eq!(layout.block_height(1), 0);
+        let (top, bottom) = layout.block_paint_bounds(1);
+        assert!(top < 0 && bottom > 0);
+        let mut pixels = vec![0; width * height];
+        let mut cache = BlockRasterCache::new();
+        let result = paint(
+            &mut pixels,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut cache,
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+        let boundary = (CONTENT_TOP + layout.block_top(1)) as usize;
+        assert!(
+            (boundary..boundary + 4)
+                .any(|y| pixels[y * width + 24..y * width + 48].contains(&0x00ff0000))
+        );
+        assert!(
+            result
+                .link_regions
+                .iter()
+                .any(|region| region.target() == "https://example.test/x")
+        );
+        assert!(cache.cached(1).is_none());
+        assert!(
+            cache.cached(0).is_some(),
+            "unaffected blocks should stay checked"
+        );
+        assert!(
+            cache.cached(2).is_none(),
+            "overlapping blocks cannot use an opaque cache"
+        );
+
+        let mut scrolled = vec![0; width * height];
+        let result = paint(
+            &mut scrolled,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            20,
+            false,
+        );
+        let empty = crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><body/></html>",
+        )
+        .unwrap();
+        let empty_layout = PageLayout::build(&empty, width, None);
+        let mut empty_pixels = vec![0; width * height];
+        paint(
+            &mut empty_pixels,
+            width,
+            height,
+            &empty,
+            &empty_layout,
+            "",
+            "",
+            None,
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+        assert_eq!(
+            &scrolled[..CONTENT_TOP as usize * width],
+            &empty_pixels[..CONTENT_TOP as usize * width]
+        );
+        assert!(
+            result
+                .link_regions
+                .iter()
+                .all(|region| region.y >= CONTENT_TOP)
+        );
+        assert!(
+            result
+                .link_regions
+                .iter()
+                .any(|region| { region.target() == "https://example.test/x" && region.height > 0 })
+        );
+    }
+
+    #[test]
+    fn vector_glyph_survives_zero_height_line() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/fonts/noto/nko-hmtx.woff2");
+        let font = normalize_font_container(std::fs::read(path).unwrap()).unwrap();
+        let page=crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><body><div style='line-height:40px'>ߊ</div><div style='line-height:0;font-size:32px;color:red'>ߊ</div></body></html>"
+        ).unwrap();
+        let (width, height) = (128, 170);
+        let layout = PageLayout::build(&page, width, Some(&font));
+        assert!(layout.has_text_overflow());
+        assert_eq!(layout.block_height(1), 0);
+        let mut pixels = vec![0; width * height];
+        paint(
+            &mut pixels,
+            width,
+            height,
+            &page,
+            &layout,
+            "",
+            "",
+            Some(&font),
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            0,
+            false,
+        );
+        assert!(pixels[CONTENT_TOP as usize * width..].iter().any(|pixel| {
+            let red = (pixel >> 16) & 0xff;
+            let green = (pixel >> 8) & 0xff;
+            red > green && green < 240
+        }));
+    }
 
     #[test]
     fn wrapped_text_advances_once_per_word_and_line() {
@@ -2112,5 +2374,45 @@ mod tests {
             assert_eq!(pixels[90 * 64 + 16], expected);
             assert_eq!(pixels[89 * 64 + 16], BACKGROUND);
         }
+    }
+
+    #[test]
+    fn canvas_renders_and_clips_when_text_overflows() {
+        let mut page=crate::page::parse_xhtml_for_test(
+            "https://example.test/",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><body><div style='line-height:0'>X</div><canvas width='4' height='4'></canvas></body></html>",
+        ).unwrap();
+        let layout = PageLayout::build(&page, 64, None);
+        assert!(layout.has_text_overflow());
+        let index = page
+            .blocks
+            .iter()
+            .position(|block| matches!(block.content, BlockContent::Canvas(_)))
+            .unwrap();
+        let BlockContent::Canvas(canvas) = &mut page.blocks[index].content else {
+            unreachable!();
+        };
+        canvas
+            .canvas
+            .set_fill_style(RasterColor::rgba(255, 0, 0, 255));
+        canvas.canvas.fill_rect(0.0, 0.0, 4.0, 4.0);
+
+        let mut pixels = vec![0; 64 * 100];
+        paint(
+            &mut pixels,
+            64,
+            100,
+            &page,
+            &layout,
+            "",
+            "",
+            None,
+            &mut BlockRasterCache::new(),
+            &mut GlyphRasterCache::new(),
+            2,
+            false,
+        );
+        assert_eq!(pixels[90 * 64 + 16], 0xff0000);
+        assert_eq!(pixels[89 * 64 + 16], BACKGROUND);
     }
 }
