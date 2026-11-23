@@ -8,6 +8,7 @@
 //! <https://webassembly.github.io/spec/core/exec/instructions.html>
 //! <https://webassembly.github.io/spec/core/exec/numerics.html#op-iadd>
 //! <https://webassembly.github.io/spec/core/exec/numerics.html#integer-operations>
+//! <https://webassembly.github.io/spec/core/binary/instructions.html#numeric-instructions>
 
 use std::{collections::HashMap, fmt};
 
@@ -150,13 +151,32 @@ pub(crate) fn validate_function(
                 depth += 1;
                 max_stack_depth = max_stack_depth.max(depth);
             }
+            InstructionKind::I32Eqz => {
+                if depth == 0 {
+                    return Err(FunctionError::StackUnderflow {
+                        offset: instruction.offset,
+                        needed: 1,
+                        available: 0,
+                    });
+                }
+            }
             InstructionKind::I32Add
             | InstructionKind::I32Sub
             | InstructionKind::I32Mul
             | InstructionKind::I32DivS
             | InstructionKind::I32DivU
             | InstructionKind::I32RemS
-            | InstructionKind::I32RemU => {
+            | InstructionKind::I32RemU
+            | InstructionKind::I32Eq
+            | InstructionKind::I32Ne
+            | InstructionKind::I32LtS
+            | InstructionKind::I32LtU
+            | InstructionKind::I32GtS
+            | InstructionKind::I32GtU
+            | InstructionKind::I32LeS
+            | InstructionKind::I32LeU
+            | InstructionKind::I32GeS
+            | InstructionKind::I32GeU => {
                 if depth < 2 {
                     return Err(FunctionError::StackUnderflow {
                         offset: instruction.offset,
@@ -282,6 +302,39 @@ pub(crate) fn execute_function(
                 }
             }
             InstructionKind::I32Const(value) => stack.push(value),
+            InstructionKind::I32Eqz => {
+                let value = stack
+                    .last_mut()
+                    .ok_or(ExecutionError::InvalidValidatedStack)?;
+                *value = i32::from(*value == 0);
+            }
+            InstructionKind::I32Eq
+            | InstructionKind::I32Ne
+            | InstructionKind::I32LtS
+            | InstructionKind::I32LtU
+            | InstructionKind::I32GtS
+            | InstructionKind::I32GtU
+            | InstructionKind::I32LeS
+            | InstructionKind::I32LeU
+            | InstructionKind::I32GeS
+            | InstructionKind::I32GeU => {
+                let right = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let left = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let value = match instruction.kind {
+                    InstructionKind::I32Eq => left == right,
+                    InstructionKind::I32Ne => left != right,
+                    InstructionKind::I32LtS => left < right,
+                    InstructionKind::I32LtU => (left as u32) < (right as u32),
+                    InstructionKind::I32GtS => left > right,
+                    InstructionKind::I32GtU => (left as u32) > (right as u32),
+                    InstructionKind::I32LeS => left <= right,
+                    InstructionKind::I32LeU => (left as u32) <= (right as u32),
+                    InstructionKind::I32GeS => left >= right,
+                    InstructionKind::I32GeU => (left as u32) >= (right as u32),
+                    _ => return Err(ExecutionError::InvalidValidatedStack),
+                };
+                stack.push(i32::from(value));
+            }
             InstructionKind::I32Add
             | InstructionKind::I32Sub
             | InstructionKind::I32Mul
@@ -561,6 +614,94 @@ mod tests {
                 })
             ));
         }
+    }
+
+    #[test]
+    fn executes_i32_comparisons_and_checks_stack_arity() {
+        // Expected results for (-1, 1), (5, 5), and (1, -1), respectively.
+        let cases = [
+            ("i32.eq", 0x46, [0, 1, 0]),
+            ("i32.ne", 0x47, [1, 0, 1]),
+            ("i32.lt_s", 0x48, [1, 0, 0]),
+            ("i32.lt_u", 0x49, [0, 0, 1]),
+            ("i32.gt_s", 0x4a, [0, 0, 1]),
+            ("i32.gt_u", 0x4b, [1, 0, 0]),
+            ("i32.le_s", 0x4c, [1, 1, 0]),
+            ("i32.le_u", 0x4d, [0, 1, 1]),
+            ("i32.ge_s", 0x4e, [0, 1, 1]),
+            ("i32.ge_u", 0x4f, [1, 1, 0]),
+        ];
+        for (op, opcode, expected) in cases {
+            assert_eq!(expression(op), [opcode, 0x0b]);
+            let bytes = module(&format!(
+                "(module (func (param i32 i32) (result i32) local.get 0 local.get 1 {op}))"
+            ));
+            let framed = scan_module(&bytes).unwrap();
+            let declarations = decode_declarations(&framed).unwrap();
+            let bodies = decode_bodies(&framed).unwrap();
+            let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+            for (arguments, result) in [
+                ([-1, 1], expected[0]),
+                ([5, 5], expected[1]),
+                ([1, -1], expected[2]),
+            ] {
+                assert_eq!(
+                    execute_function(&function, &arguments),
+                    Ok(Some(result)),
+                    "{op} {arguments:?}"
+                );
+            }
+            for (source, available) in [(op.to_owned(), 0), (format!("local.get 0 {op}"), 1)] {
+                let instructions = expression(&source);
+                let body = FunctionBody {
+                    locals: vec![],
+                    instructions_offset: 20,
+                    instructions: &instructions,
+                };
+                assert!(matches!(
+                    validate_function(&declarations, 0, &body),
+                    Err(FunctionError::StackUnderflow {
+                        offset,
+                        needed: 2,
+                        available: actual
+                    }) if offset == 20 + available * 2 && actual == available
+                ));
+            }
+        }
+
+        assert_eq!(expression("i32.eqz"), [0x45, 0x0b]);
+        let bytes = module("(module (func (param i32) (result i32) local.get 0 i32.eqz))");
+        let framed = scan_module(&bytes).unwrap();
+        let declarations = decode_declarations(&framed).unwrap();
+        let bodies = decode_bodies(&framed).unwrap();
+        let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+        for (argument, expected) in [(0, 1), (-1, 0), (i32::MIN, 0), (i32::MAX, 0)] {
+            assert_eq!(execute_function(&function, &[argument]), Ok(Some(expected)));
+        }
+        let bytes = module(
+            "(module (func (param i32) (result i32)
+            local.get 0 i32.eqz i32.const 41 i32.add))",
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let composed_declarations = decode_declarations(&framed).unwrap();
+        let composed_bodies = decode_bodies(&framed).unwrap();
+        let composed = validate_function(&composed_declarations, 0, &composed_bodies[0]).unwrap();
+        assert_eq!(execute_function(&composed, &[0]), Ok(Some(42)));
+        assert_eq!(execute_function(&composed, &[1]), Ok(Some(41)));
+        let instructions = expression("i32.eqz");
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 20,
+            instructions: &instructions,
+        };
+        assert!(matches!(
+            validate_function(&declarations, 0, &body),
+            Err(FunctionError::StackUnderflow {
+                offset: 20,
+                needed: 1,
+                available: 0,
+            })
+        ));
     }
 
     #[test]

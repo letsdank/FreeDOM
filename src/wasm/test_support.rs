@@ -144,6 +144,17 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
                 out,
             );
         }
+        "i32.eqz" => out.push(0x45),
+        "i32.eq" => out.push(0x46),
+        "i32.ne" => out.push(0x47),
+        "i32.lt_s" => out.push(0x48),
+        "i32.lt_u" => out.push(0x49),
+        "i32.gt_s" => out.push(0x4a),
+        "i32.gt_u" => out.push(0x4b),
+        "i32.le_s" => out.push(0x4c),
+        "i32.le_u" => out.push(0x4d),
+        "i32.ge_s" => out.push(0x4e),
+        "i32.ge_u" => out.push(0x4f),
         "i32.add" => out.push(0x6a),
         "i32.sub" => out.push(0x6b),
         "i32.mul" => out.push(0x6c),
