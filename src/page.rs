@@ -2805,11 +2805,55 @@ mod tests {
         }
         assert!((90..98).any(|y| pixels[y * 100 + 16..y * 100 + 24].contains(&0)));
 
-        let unsupported = parse_html(
+        let words = parse_html(
             "https://example.test/",
             "<div><span style='background:blue'>A B</span></div>",
         );
-        assert!(PreviewLayout::build(&unsupported, 100, None).is_err());
+        for (width, expected) in [
+            (100, vec![(16, 0, 24)]),
+            (48, vec![(16, 0, 8), (16, 10, 8)]),
+        ] {
+            let layout = PreviewLayout::build(&words, width, None).unwrap();
+            let rectangles: Vec<_> = layout
+                .display_list
+                .iter()
+                .filter_map(|command| match command {
+                    PreviewCommand::InlineBackground { rect, .. } => {
+                        Some((rect.x, rect.y, rect.width))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(rectangles, expected);
+            let mut image = vec![0; width * 120];
+            paint_preview_scene(
+                &mut image,
+                width,
+                120,
+                &words,
+                &layout,
+                None,
+                0,
+                &mut GlyphRasterCache::new(),
+            );
+            assert_eq!(
+                image[90 * width + 24],
+                if width == 100 {
+                    0x00_00_00_FF
+                } else {
+                    crate::render::BACKGROUND
+                }
+            );
+        }
+
+        for text in [" A", "A ", "A  B", "A\tB"] {
+            let html = format!("<div><span style='background:blue'>{text}</span></div>");
+            let unsupported = parse_html("https://example.test/", &html);
+            assert!(
+                PreviewLayout::build(&unsupported, 100, None).is_err(),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

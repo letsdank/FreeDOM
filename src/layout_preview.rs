@@ -531,6 +531,7 @@ impl PreviewLayout {
                                 .then_some((source.indices(), fragment.style))
                         })
                         .collect();
+                    let mut backgrounds: Vec<(SourcePath, LayoutRect, u32)> = Vec::new();
 
                     for run in runs.iter().filter(|_| !background_styles.is_empty()) {
                         for span in &run.sources {
@@ -573,9 +574,30 @@ impl PreviewLayout {
                                 width: x_end.saturating_sub(x_start),
                                 height: text_metrics(None, style.font_size).glyph_height,
                             };
-                            self.display_list
-                                .push(PreviewCommand::InlineBackground { rect, color });
+                            if let Some((previous_source, previous, previous_color)) =
+                                backgrounds.last_mut()
+                            {
+                                if previous_source == source
+                                    && previous.y == rect.y
+                                    && *previous_color == color
+                                {
+                                    let right = rect
+                                        .x
+                                        .checked_add(rect.width)
+                                        .ok_or(PreviewError::SizeOverflow)?;
+                                    previous.width = right
+                                        .checked_sub(previous.x)
+                                        .ok_or(PreviewError::SizeOverflow)?;
+                                    continue;
+                                }
+                            }
+                            backgrounds.push((source.clone(), rect, color));
                         }
+                    }
+
+                    for (_, rect, color) in backgrounds {
+                        self.display_list
+                            .push(PreviewCommand::InlineBackground { rect, color });
                     }
 
                     self.display_list.push(PreviewCommand::Text {
@@ -769,7 +791,13 @@ fn collect_styled_fragments<'a>(
                     let [InlineItem::Text { text, .. }] = children.as_slice() else {
                         return Err(PreviewError::InlineStyle(source.indices().to_vec()));
                     };
-                    if text.is_empty() || text.chars().any(char::is_whitespace) {
+                    // Only collapsed single ASCII spaces between words are represented.
+                    if text.is_empty()
+                        || text.starts_with(' ')
+                        || text.ends_with(' ')
+                        || text.contains("  ")
+                        || text.chars().any(|ch| ch.is_whitespace() && ch != ' ')
+                    {
                         return Err(PreviewError::InlineStyle(source.indices().to_vec()));
                     }
                 }
