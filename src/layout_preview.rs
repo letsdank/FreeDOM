@@ -531,6 +531,24 @@ impl PreviewLayout {
                                 .then_some((source.indices(), fragment.style))
                         })
                         .collect();
+
+                    // This display list paints inline backgrounds before the text run.
+                    // Reject overlapping lines until inline painting follows CSS order.
+                    // https://www.w3.org/TR/CSS22/zindex.html#painting-order
+                    if let Some((source, _)) = background_styles
+                        .iter()
+                        .find(|(_, style)| style.padding_top != 0 || style.padding_bottom != 0)
+                    {
+                        let first_y = runs.first().map(|run| run.y);
+                        if runs.iter().any(|run| {
+                            Some(run.y) != first_y
+                                || run.style.font_weight != FontWeight::Normal
+                                || run.style.font_style != FontStyle::Normal
+                                || run.style.line_height != LineHeight::Normal
+                        }) {
+                            return Err(PreviewError::Padding(source.to_vec()));
+                        }
+                    }
                     let mut backgrounds: Vec<(SourcePath, LayoutRect, u32)> = Vec::new();
 
                     for run in runs.iter().filter(|_| !background_styles.is_empty()) {
@@ -586,12 +604,18 @@ impl PreviewLayout {
                                 .ok_or(PreviewError::SizeOverflow)?;
                             let y = cursor
                                 .checked_add(run.y)
+                                .and_then(|y| y.checked_sub(style.padding_top))
+                                .ok_or(PreviewError::SizeOverflow)?;
+                            let height = text_metrics(None, style.font_size)
+                                .glyph_height
+                                .checked_add(style.padding_top)
+                                .and_then(|height| height.checked_add(style.padding_bottom))
                                 .ok_or(PreviewError::SizeOverflow)?;
                             let rect = LayoutRect {
                                 x,
                                 y,
                                 width: span_width,
-                                height: text_metrics(None, style.font_size).glyph_height,
+                                height,
                             };
                             if let Some((previous_source, previous, previous_color)) =
                                 backgrounds.last_mut()
@@ -803,7 +827,9 @@ fn collect_styled_fragments<'a>(
                 children,
                 ..
             } => {
-                if style.padding_top != 0 || style.padding_bottom != 0 {
+                if (style.padding_top != 0 || style.padding_bottom != 0)
+                    && style.background_color == BackgroundColor::Transparent
+                {
                     return Err(PreviewError::Padding(source.indices().to_vec()));
                 }
                 if style.background_color != BackgroundColor::Transparent {

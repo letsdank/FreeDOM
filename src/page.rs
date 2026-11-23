@@ -2904,6 +2904,56 @@ mod tests {
     }
 
     #[test]
+    fn preview_expands_inline_background_without_expanding_the_line() {
+        use crate::{
+            layout_preview::{PreviewCommand, PreviewLayout},
+            render::{BACKGROUND, GlyphRasterCache, paint_preview_scene},
+        };
+        let page = parse_html(
+            "https://example.test/",
+            "<div style='padding-top:8px'><span style='background:blue;padding-top:3px;padding-bottom:4px'>A</span> B</div><div>C</div>",
+        );
+        let preview = PreviewLayout::build(&page, 100, None).unwrap();
+        let rect = preview
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                PreviewCommand::InlineBackground { rect, .. } => Some(rect),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!((rect.x, rect.y, rect.width, rect.height), (16, 5, 8, 15));
+        assert_eq!(
+            (preview.boxes[0].rect.y, preview.boxes[0].rect.height),
+            (0, 18)
+        );
+        assert_eq!(preview.boxes[1].rect.y, 18);
+
+        let mut pixels = vec![0; 100 * 130];
+        paint_preview_scene(
+            &mut pixels,
+            100,
+            130,
+            &page,
+            &preview,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+        assert_eq!(pixels[95 * 100 + 16], 0x00_00_00_FF);
+        assert_eq!(pixels[94 * 100 + 16], BACKGROUND);
+
+        let wrapped = parse_html(
+            "https://example.test/",
+            "<div><span style='background:blue;padding-top:3px;padding-bottom:4px'>A B</span></div>",
+        );
+        assert!(matches!(
+            PreviewLayout::build(&wrapped, 48, None),
+            Err(crate::layout_preview::PreviewError::Padding(_))
+        ));
+    }
+
+    #[test]
     fn preview_reports_unsupported_content() {
         for html in [
             "<div style='margin-bottom: -5px'>text</div>",
