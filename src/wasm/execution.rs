@@ -327,6 +327,7 @@ pub(crate) fn execute_function(
 #[cfg(test)]
 mod tests {
     use super::{ExecutionError, FunctionError, execute_function, validate_function};
+    use crate::wasm::test_support::{expression, module};
     use crate::wasm::{
         BinaryErrorKind,
         binary::scan_module,
@@ -336,9 +337,8 @@ mod tests {
 
     #[test]
     fn decodes_links_checks_and_executes_a_binary_function() {
-        // (module (func (export "f") (result i32) i32.const 42))
-        let bytes=b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x06\x01\x04\x00\x41\x2a\x0b";
-        let module = scan_module(bytes).unwrap();
+        let bytes = module(r#"(module (func (export "f") (result i32) i32.const 42))"#);
+        let module = scan_module(&bytes).unwrap();
         let declarations = decode_declarations(&module).unwrap();
         let bodies = decode_bodies(&module).unwrap();
         let linked = link_functions(&declarations, &bodies).unwrap();
@@ -371,7 +371,8 @@ mod tests {
             instructions_offset: 20,
             instructions,
         };
-        let minus_one = body(&[0x41, 0x7f, 0x0b]);
+        let minus_one_instructions = expression("i32.const -1");
+        let minus_one = body(&minus_one_instructions);
         assert_eq!(
             execute_function(
                 &validate_function(&declarations, 0, &minus_one).unwrap(),
@@ -380,7 +381,8 @@ mod tests {
             .unwrap(),
             Some(-1)
         );
-        let empty = body(&[0x0b]);
+        let empty_instructions = expression("");
+        let empty = body(&empty_instructions);
         assert_eq!(
             execute_function(&validate_function(&declarations, 1, &empty).unwrap(), &[]).unwrap(),
             None
@@ -401,7 +403,8 @@ mod tests {
                 offset: 20,
             })
         ));
-        let excess = body(&[0x41, 0x01, 0x41, 0x02, 0x0b]);
+        let excess_instructions = expression("i32.const 1 i32.const 2");
+        let excess = body(&excess_instructions);
         assert!(matches!(
             validate_function(&declarations, 0, &excess),
             Err(FunctionError::ResultStackMismatch {
@@ -430,9 +433,11 @@ mod tests {
 
     #[test]
     fn executes_addition_and_rejects_stack_underflow() {
-        // (module (func (export "f") (result i32) i32.const 20 i32.const 22 i32.add))
-        let bytes=b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x09\x01\x07\x00\x41\x14\x41\x16\x6a\x0b";
-        let module = scan_module(bytes).unwrap();
+        let bytes = module(
+            r#"(module (func (export "f") (result i32)
+            i32.const 20 i32.const 22 i32.add))"#,
+        );
+        let module = scan_module(&bytes).unwrap();
         let declarations = decode_declarations(&module).unwrap();
         let bodies = decode_bodies(&module).unwrap();
         let linked = link_functions(&declarations, &bodies).unwrap();
@@ -440,10 +445,11 @@ mod tests {
         let function = validate_function(&declarations, type_index, body).unwrap();
         assert_eq!(execute_function(&function, &[]).unwrap(), Some(42));
 
+        let overflow_instructions = expression("i32.const 2147483647 i32.const 1 i32.add");
         let overflow = FunctionBody {
             locals: vec![],
             instructions_offset: 20,
-            instructions: &[0x41, 0xff, 0xff, 0xff, 0xff, 0x07, 0x41, 0x01, 0x6a, 0x0b],
+            instructions: &overflow_instructions,
         };
         assert_eq!(
             execute_function(
@@ -453,10 +459,11 @@ mod tests {
             .unwrap(),
             Some(i32::MIN)
         );
+        let underflow_instructions = expression("i32.const 1 i32.add");
         let underflow = FunctionBody {
             locals: vec![],
             instructions_offset: 20,
-            instructions: &[0x41, 0x01, 0x6a, 0x0b],
+            instructions: &underflow_instructions,
         };
         assert!(matches!(
             validate_function(&declarations, 0, &underflow),
@@ -470,20 +477,20 @@ mod tests {
 
     #[test]
     fn executes_i32_arithmetic_from_binary_and_reports_traps() {
-        // (func (param i32 i32) (result i32) local.get 0 local.get 1 <op>)
-        let template = b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7f\x7f\x01\x7f\x03\x02\x01\x00\x0a\x09\x01\x07\x00\x20\x00\x20\x01\x6a\x0b";
+        let template =
+            module("(module (func (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))");
         let cases = [
-            (0x6a, i32::MAX, 1, Ok(i32::MIN)),
-            (0x6b, 3, 7, Ok(-4)),
-            (0x6b, i32::MIN, 1, Ok(i32::MAX)),
-            (0x6c, i32::MAX, 2, Ok(-2)),
-            (0x6d, -7, 2, Ok(-3)),
-            (0x6e, -1, 2, Ok(i32::MAX)),
-            (0x6f, -7, 2, Ok(-1)),
-            (0x6f, i32::MIN, -1, Ok(0)),
-            (0x70, -1, 2, Ok(1)),
+            ("i32.add", i32::MAX, 1, Ok(i32::MIN)),
+            ("i32.sub", 3, 7, Ok(-4)),
+            ("i32.sub", i32::MIN, 1, Ok(i32::MAX)),
+            ("i32.mul", i32::MAX, 2, Ok(-2)),
+            ("i32.div_s", -7, 2, Ok(-3)),
+            ("i32.div_u", -1, 2, Ok(i32::MAX)),
+            ("i32.rem_s", -7, 2, Ok(-1)),
+            ("i32.rem_s", i32::MIN, -1, Ok(0)),
+            ("i32.rem_u", -1, 2, Ok(1)),
             (
-                0x6d,
+                "i32.div_s",
                 i32::MIN,
                 -1,
                 Err(ExecutionError::IntegerOverflow {
@@ -491,7 +498,7 @@ mod tests {
                 }),
             ),
             (
-                0x6d,
+                "i32.div_s",
                 1,
                 0,
                 Err(ExecutionError::IntegerDivideByZero {
@@ -499,7 +506,7 @@ mod tests {
                 }),
             ),
             (
-                0x6e,
+                "i32.div_u",
                 1,
                 0,
                 Err(ExecutionError::IntegerDivideByZero {
@@ -507,7 +514,7 @@ mod tests {
                 }),
             ),
             (
-                0x6f,
+                "i32.rem_s",
                 1,
                 0,
                 Err(ExecutionError::IntegerDivideByZero {
@@ -515,7 +522,7 @@ mod tests {
                 }),
             ),
             (
-                0x70,
+                "i32.rem_u",
                 1,
                 0,
                 Err(ExecutionError::IntegerDivideByZero {
@@ -524,22 +531,22 @@ mod tests {
             ),
         ];
         for (opcode, left, right, expected) in cases {
-            let mut bytes = template.to_vec();
-            let index = bytes.len() - 2;
-            bytes[index] = opcode;
-            let module = scan_module(&bytes).unwrap();
-            let declarations = decode_declarations(&module).unwrap();
-            let bodies = decode_bodies(&module).unwrap();
+            let bytes = module(&format!(
+                "(module (func (param i32 i32) (result i32) local.get 0 local.get 1 {opcode}))",
+            ));
+            let framed = scan_module(&bytes).unwrap();
+            let declarations = decode_declarations(&framed).unwrap();
+            let bodies = decode_bodies(&framed).unwrap();
             let linked = link_functions(&declarations, &bodies).unwrap();
             let (type_index, body) = linked.iter().next().unwrap();
             let function = validate_function(&declarations, type_index, body).unwrap();
             assert_eq!(
                 execute_function(&function, &[left, right]),
                 expected.map(Some),
-                "opcode {opcode:#x}, operands {left}, {right}"
+                "instruciton {opcode}, operands {left}, {right}"
             );
 
-            let instructions = [0x20, 0x00, opcode, 0x0b];
+            let instructions = expression(&format!("local.get 0 {opcode}"));
             let body = FunctionBody {
                 locals: vec![],
                 instructions_offset: 20,
@@ -558,9 +565,11 @@ mod tests {
 
     #[test]
     fn executes_function_parameters_and_checks_local_indices() {
-        // (func (export "f") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add)
-        let bytes=b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7f\x7f\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x09\x01\x07\x00\x20\x00\x20\x01\x6a\x0b";
-        let module = scan_module(bytes).unwrap();
+        let bytes = module(
+            r#"(module (func (export "f") (param i32 i32) (result i32)
+            local.get 0 local.get 1 i32.add))"#,
+        );
+        let module = scan_module(&bytes).unwrap();
         let declarations = decode_declarations(&module).unwrap();
         let bodies = decode_bodies(&module).unwrap();
         let linked = link_functions(&declarations, &bodies).unwrap();
@@ -586,10 +595,11 @@ mod tests {
             })
         );
 
+        let bad_index_instructions = expression("local.get 2");
         let bad_index = FunctionBody {
             locals: vec![],
             instructions_offset: 20,
-            instructions: &[0x20, 0x02, 0x0b],
+            instructions: &bad_index_instructions,
         };
         assert!(matches!(
             validate_function(&declarations, type_index, &bad_index),
@@ -598,10 +608,11 @@ mod tests {
                 offset: 20,
             })
         ));
+        let huge_index_instructions = expression("local.get 4294967295");
         let huge_index = FunctionBody {
             locals: vec![],
             instructions_offset: 20,
-            instructions: &[0x20, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x0b],
+            instructions: &huge_index_instructions,
         };
         assert!(matches!(
             validate_function(&declarations, type_index, &huge_index),
@@ -614,9 +625,11 @@ mod tests {
 
     #[test]
     fn reads_zero_initialized_locals_after_parameters() {
-        // One i32 parameter, two i32 locals, return parameter + second local.
-        let bytes=b"\0asm\x01\0\0\0\x01\x06\x01\x60\x01\x7f\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x0b\x01\x09\x01\x02\x7f\x20\x00\x20\x02\x6a\x0b";
-        let module = scan_module(bytes).unwrap();
+        let bytes = module(
+            r#"(module (func (export "f") (param i32) (result i32)
+            (local i32 i32) local.get 0 local.get 2 i32.add))"#,
+        );
+        let module = scan_module(&bytes).unwrap();
         let declarations = decode_declarations(&module).unwrap();
         let bodies = decode_bodies(&module).unwrap();
         let linked = link_functions(&declarations, &bodies).unwrap();
@@ -625,13 +638,14 @@ mod tests {
         assert_eq!(execute_function(&function, &[57]).unwrap(), Some(57));
         assert_eq!(execute_function(&function, &[-5]).unwrap(), Some(-5));
 
+        let bad_instructions = expression("local.get 3");
         let bad = FunctionBody {
             locals: vec![LocalGroup {
                 count: 2,
                 value_type: ValueType::I32,
             }],
             instructions_offset: 20,
-            instructions: &[0x20, 0x03, 0x0b],
+            instructions: &bad_instructions,
         };
         assert!(matches!(
             validate_function(&declarations, type_index, &bad),
@@ -641,13 +655,14 @@ mod tests {
             })
         ));
 
+        let many_local_instructions = expression("local.get 1000000000");
         let many_locals = FunctionBody {
             locals: vec![LocalGroup {
                 count: 1_000_000_000,
                 value_type: ValueType::I32,
             }],
             instructions_offset: 20,
-            instructions: &[0x20, 0x80, 0x94, 0xeb, 0xdc, 0x03, 0x0b],
+            instructions: &many_local_instructions,
         };
         let function = validate_function(&declarations, type_index, &many_locals).unwrap();
         assert_eq!(execute_function(&function, &[57]).unwrap(), Some(0));
@@ -655,9 +670,12 @@ mod tests {
 
     #[test]
     fn executes_local_set_and_tee_with_isolated_call_state() {
-        // f(x): local.tee saves x + 1; local.set also updates the parameter.
-        let bytes=b"\0asm\x01\0\0\0\x01\x06\x01\x60\x01\x7f\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x14\x01\x12\x01\x01\x7f\x20\x00\x41\x01\x6a\x22\x01\x21\x00\x20\x01\x20\x00\x6a\x0b";
-        let module = scan_module(bytes).unwrap();
+        let bytes = module(
+            r#"(module (func (export "f") (param i32) (result i32) (local i32)
+            local.get 0 i32.const 1 i32.add local.tee 1 local.set 0
+            local.get 1 local.get 0 i32.add))"#,
+        );
+        let module = scan_module(&bytes).unwrap();
         let declarations = decode_declarations(&module).unwrap();
         let bodies = decode_bodies(&module).unwrap();
         let linked = link_functions(&declarations, &bodies).unwrap();
@@ -666,24 +684,24 @@ mod tests {
         assert_eq!(execute_function(&function, &[20]).unwrap(), Some(42));
         assert_eq!(execute_function(&function, &[-5]).unwrap(), Some(-8));
 
+        let overwrite_instructions = expression("i32.const 0 local.set 0 local.get 0");
         let overwrite_with_zero = FunctionBody {
             locals: vec![],
             instructions_offset: 0,
-            instructions: &[0x41, 0x00, 0x21, 0x00, 0x20, 0x00, 0x0b],
+            instructions: &overwrite_instructions,
         };
         let zero_function = validate_function(&declarations, index, &overwrite_with_zero).unwrap();
         assert_eq!(execute_function(&zero_function, &[7]).unwrap(), Some(0));
 
+        let huge_instructions =
+            expression("i32.const 42 local.set 1000000000 local.get 1000000000");
         let huge = FunctionBody {
             locals: vec![LocalGroup {
                 count: 1_000_000_000,
                 value_type: ValueType::I32,
             }],
             instructions_offset: 0,
-            instructions: &[
-                0x41, 0x2a, 0x21, 0x80, 0x94, 0xeb, 0xdc, 0x03, 0x20, 0x80, 0x94, 0xeb, 0xdc, 0x03,
-                0x0b,
-            ],
+            instructions: &huge_instructions,
         };
         let huge_function = validate_function(&declarations, index, &huge).unwrap();
         assert_eq!(execute_function(&huge_function, &[0]).unwrap(), Some(42));
@@ -698,8 +716,8 @@ mod tests {
             }],
             function_types: vec![],
         };
-        for opcode in [0x21, 0x22] {
-            let instructions = [opcode, 0x00, 0x0b];
+        for opcode in ["local.set", "local.tee"] {
+            let instructions = expression(&format!("{opcode} 0"));
             let body = FunctionBody {
                 locals: vec![],
                 instructions_offset: 20,
@@ -713,7 +731,7 @@ mod tests {
                     available: 0,
                 })
             ));
-            let instructions = [0x41, 0x01, opcode, 0x01, 0x0b];
+            let instructions = expression(&format!("i32.const 1 {opcode} 1"));
             let body = FunctionBody {
                 locals: vec![],
                 instructions_offset: 20,

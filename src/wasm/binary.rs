@@ -133,16 +133,16 @@ fn section_rank(id: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{BinaryErrorKind, scan_module};
+    use crate::wasm::test_support::module;
 
     const HEADER: &[u8] = b"\0asm\x01\0\0\0";
 
     #[test]
     fn scans_a_real_function_module_and_custom_sections() {
-        // module (func (export "f") (result i32) i32.const 42))
-        let bytes = [
-            0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 0, 3, 1, b'x', 0xff, 1, 5, 1, 0x60, 0, 1, 0x7f, 3, 2,
-            1, 0, 7, 5, 1, 1, b'f', 0, 0, 10, 6, 1, 4, 0, 0x41, 42, 0x0b, 0, 1, 0,
-        ];
+        let mut bytes = module(r#"(module (func (export "f") (result i32) i32.const 42))"#);
+        // The assembler does not support custom sections; exercise framing directly.
+        bytes.splice(8..8, [0, 3, 1, b'x', 0xff]);
+        bytes.extend_from_slice(&[0, 1, 0]);
         let module = scan_module(&bytes).unwrap();
         assert_eq!(
             module

@@ -90,13 +90,14 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
 #[cfg(test)]
 mod tests {
     use super::{BinaryErrorKind, Instruction, InstructionKind, decode_expression};
+    use crate::wasm::test_support::module;
     use crate::wasm::{binary::scan_module, code::decode_bodies};
 
     #[test]
     fn decodes_real_function_body_and_preserves_offsets() {
-        let bytes=b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x06\x01\x04\x00\x41\x2a\x0b";
-        let module = scan_module(bytes).unwrap();
-        let bodies = decode_bodies(&module).unwrap();
+        let bytes = module(r#"(module (func (export "f") (result i32) i32.const 42))"#);
+        let framed = scan_module(&bytes).unwrap();
+        let bodies = decode_bodies(&framed).unwrap();
         let expression = decode_expression(&bodies[0]).unwrap();
         assert_eq!(
             expression.instructions,

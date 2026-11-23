@@ -23,6 +23,9 @@ pub(crate) mod instructions;
 #[path = "wasm/reader.rs"]
 mod reader;
 
+#[cfg(test)]
+mod test_support;
+
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

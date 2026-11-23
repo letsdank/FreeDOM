@@ -121,13 +121,17 @@ mod tests {
         BinaryErrorKind, FunctionCountMismatch, LocalGroup, ValueType, decode_bodies,
         link_functions,
     };
+    use crate::wasm::test_support::module;
     use crate::wasm::{binary::scan_module, decode::decode_declarations};
 
     #[test]
     fn connects_multiple_function_bodies_without_expanding_locals() {
-        // (func (result i32) i32.const 42), followed by a function with locals.
-        let bytes=b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x03\x02\x00\x00\x0a\x0f\x02\x04\x00\x41\x2a\x0b\x08\x02\x03\x7f\x02\x7e\x41\x00\x0b";
-        let module = scan_module(bytes).unwrap();
+        let bytes = module(
+            "(module
+            (func (result i32) i32.const 42)
+            (func (result i32) (local i32 i32 i32 i64 i64) i32.const 0))",
+        );
+        let module = scan_module(&bytes).unwrap();
         let declarations = decode_declarations(&module).unwrap();
         let bodies = decode_bodies(&module).unwrap();
         let linked = link_functions(&declarations, &bodies).unwrap();

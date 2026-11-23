@@ -116,12 +116,12 @@ pub(super) fn read_value_type(reader: &mut Reader<'_>) -> Result<ValueType, Bina
 mod tests {
     use super::{BinaryErrorKind, FunctionType, ValueType, decode_declarations};
     use crate::wasm::binary::scan_module;
+    use crate::wasm::test_support::module;
 
     #[test]
     fn decodes_a_function_module_and_numeric_signatures() {
-        // (module (func (export "f") (result i32) i32.const 42))
-        let module=b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x06\x01\x04\x00\x41\x2a\x0b";
-        let declarations = decode_declarations(&scan_module(module).unwrap()).unwrap();
+        let bytes = module(r#"(module (func (export "f") (result i32) i32.const 42))"#);
+        let declarations = decode_declarations(&scan_module(&bytes).unwrap()).unwrap();
         assert_eq!(
             declarations.types,
             [FunctionType {
@@ -131,8 +131,8 @@ mod tests {
         );
         assert_eq!(declarations.function_types, [0]);
 
-        let numeric = b"\0asm\x01\0\0\0\x01\x0a\x01\x60\x04\x7f\x7e\x7d\x7c\x02\x7e\x7d";
-        let declarations = decode_declarations(&scan_module(numeric).unwrap()).unwrap();
+        let numeric = module("(module (type (func (param i32 i64 f32 f64) (result i64 f32))))");
+        let declarations = decode_declarations(&scan_module(&numeric).unwrap()).unwrap();
         assert_eq!(
             declarations.types[0].parameters,
             [
