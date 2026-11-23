@@ -2680,6 +2680,41 @@ mod tests {
     }
 
     #[test]
+    fn preview_keeps_inline_sources_when_words_are_measured_together() {
+        use crate::layout_preview::{PreviewCommand, PreviewLayout};
+
+        let page = parse_html(
+            "https://example.test/",
+            "<div>a<span>б</span> <span>cd</span></div>",
+        );
+        let preview = PreviewLayout::build(&page, 100, None).unwrap();
+        let runs = preview
+            .display_list
+            .iter()
+            .find_map(|item| match item {
+                PreviewCommand::Text { runs, .. } => Some(runs),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].text, "aб");
+        assert_eq!(runs[0].sources[0].range, 0..1);
+        assert_eq!(runs[0].sources[0].source, None);
+        assert_eq!(runs[0].sources[1].range, 1..3);
+        assert_eq!(
+            runs[0].sources[1].source.as_ref().unwrap().indices(),
+            &[0, 1]
+        );
+        assert_eq!(runs[1].sources[0].range, 0..2);
+        assert_eq!(
+            runs[1].sources[0].source.as_ref().unwrap().indices(),
+            &[0, 3]
+        );
+        assert!(runs.iter().all(|run| run.width > 0));
+        assert!(preview.format_debug().contains("inline sources="));
+    }
+
+    #[test]
     fn preview_reports_unsupported_content() {
         for html in [
             "<div style='margin-bottom: -5px'>text</div>",
@@ -3999,6 +4034,8 @@ mod tests {
                         offset_x: 0.0,
                         y: vector_y,
                         offset_y: 0.0,
+                        width: 0,
+                        sources: vec![],
                         text: "ߊ".into(),
                         style: vector_style,
                         link: None,
@@ -4008,6 +4045,8 @@ mod tests {
                         offset_x: 0.0,
                         y: bitmap_y,
                         offset_y: 0.0,
+                        width: 0,
+                        sources: vec![],
                         text: "A".into(),
                         style: bitmap_style,
                         link: None,

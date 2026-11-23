@@ -23,9 +23,21 @@ pub(crate) struct PositionedTextRun {
     pub(crate) offset_x: f32,
     pub(crate) y: i32,
     pub(crate) offset_y: f32,
+    // Measured run width, not the CSS inline box or an individual source width.
+    pub(crate) width: i32,
+    // A run may combine multiple origins to preserve shaping and kerning.
+    pub(crate) sources: Vec<InlineSourceSpan>,
     pub(crate) text: String,
     pub(crate) style: TextStyle,
     pub(crate) link: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InlineSourceSpan {
+    // Byte offsets into PositionedTextRun::text, not glyph coordinates.
+    pub(crate) range: std::ops::Range<usize>,
+    // None denotes text using the enclosing block style.
+    pub(crate) source: Option<SourcePath>,
 }
 
 pub(crate) fn same_font(left: &TextStyle, right: &TextStyle) -> bool {
@@ -111,6 +123,7 @@ pub(crate) struct InlineTextFragment<'a> {
 pub(crate) struct InlineWordPart<'a> {
     pub(crate) text: &'a str,
     pub(crate) style: &'a TextStyle,
+    pub(crate) style_source: Option<&'a SourcePath>,
     pub(crate) link: Option<&'a str>,
 }
 
@@ -338,6 +351,8 @@ pub(crate) fn layout_inline_words(
                     x: placement.x.saturating_add(run.x),
                     offset_x: run.offset_x,
                     above_subpixels: run_metrics.above_subpixels,
+                    width: run.width,
+                    sources: run.sources,
                     text: run.text.into_owned(),
                     style: run.style.clone(),
                     link: run.link.map(str::to_owned),
@@ -445,6 +460,8 @@ struct PendingInlineRun {
     x: i32,
     offset_x: f32,
     above_subpixels: i64,
+    width: i32,
+    sources: Vec<InlineSourceSpan>,
     text: String,
     style: TextStyle,
     link: Option<String>,
@@ -473,6 +490,8 @@ fn finish_inline_line(
             offset_x: run.offset_x,
             y: line_top.saturating_add(whole),
             offset_y: fraction,
+            width: run.width,
+            sources: run.sources,
             text: run.text,
             style: run.style,
             link: run.link,
@@ -638,6 +657,7 @@ struct MeasuredRun<'a> {
     x: i32,
     offset_x: f32,
     width: i32,
+    sources: Vec<InlineSourceSpan>,
     text: std::borrow::Cow<'a, str>,
     style: &'a TextStyle,
     link: Option<&'a str>,
@@ -698,10 +718,36 @@ fn measure_styled_word<'a>(
 
         let (width, advance) = measure(text.as_ref(), style);
 
+        let mut sources = Vec::new();
+        if word.parts[start..index]
+            .iter()
+            .any(|part| part.style_source.is_some())
+        {
+            let mut offset = 0;
+            for part in &word.parts[start..index] {
+                let source = part.style_source.cloned();
+                let end = offset + part.text.len();
+                match sources.last_mut() {
+                    Some(InlineSourceSpan {
+                        range,
+                        source: previous,
+                    }) if *previous == source => {
+                        range.end = end;
+                    }
+                    _ => sources.push(InlineSourceSpan {
+                        range: offset..end,
+                        source,
+                    }),
+                }
+                offset = end;
+            }
+        }
+
         runs.push(MeasuredRun {
             x,
             offset_x: 0.0,
             width,
+            sources,
             text,
             style,
             link,
@@ -732,6 +778,7 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
                         &mut pending_space,
                         &fragment.text[start..index],
                         fragment.style,
+                        fragment.style_source,
                         fragment.link,
                     );
                 }
@@ -752,6 +799,7 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
                 &mut pending_space,
                 &fragment.text[start..],
                 fragment.style,
+                fragment.style_source,
                 fragment.link,
             );
         }
@@ -766,9 +814,15 @@ fn push_word_part<'a>(
     pending_space: &mut Option<&'a TextStyle>,
     text: &'a str,
     style: &'a TextStyle,
+    style_source: Option<&'a SourcePath>,
     link: Option<&'a str>,
 ) {
-    let part = InlineWordPart { text, style, link };
+    let part = InlineWordPart {
+        text,
+        style,
+        style_source,
+        link,
+    };
 
     if *in_word {
         words
@@ -856,16 +910,19 @@ mod tests {
                 InlineWordPart {
                     text: "h",
                     style: &normal,
+                    style_source: None,
                     link: None,
                 },
                 InlineWordPart {
                     text: "el",
                     style: &normal,
+                    style_source: None,
                     link: None,
                 },
                 InlineWordPart {
                     text: "lo",
                     style: &bold,
+                    style_source: None,
                     link: None,
                 },
             ],
@@ -926,11 +983,13 @@ mod tests {
                 InlineWordPart {
                     text: "a",
                     style: &normal,
+                    style_source: None,
                     link: None,
                 },
                 InlineWordPart {
                     text: "b",
                     style: &bold,
+                    style_source: None,
                     link: None,
                 },
             ],
@@ -1081,6 +1140,8 @@ mod tests {
                 x: 4,
                 offset_x: 0.0,
                 above_subpixels: small_metrics.above_subpixels,
+                width: 0,
+                sources: vec![],
                 text: "small".into(),
                 style: small,
                 link: None,
@@ -1089,6 +1150,8 @@ mod tests {
                 x: 40,
                 offset_x: 0.0,
                 above_subpixels: large_metrics.above_subpixels,
+                width: 0,
+                sources: vec![],
                 text: "large".into(),
                 style: large,
                 link: None,
@@ -1184,6 +1247,8 @@ mod tests {
                 x: 0,
                 offset_x: 0.0,
                 above_subpixels: 85,
+                width: 0,
+                sources: vec![],
                 text: "a".into(),
                 style: style.clone(),
                 link: None,
@@ -1192,6 +1257,8 @@ mod tests {
                 x: 20,
                 offset_x: 0.0,
                 above_subpixels: 98,
+                width: 0,
+                sources: vec![],
                 text: "b".into(),
                 style,
                 link: None,
@@ -1259,6 +1326,8 @@ mod tests {
                 x: 0,
                 offset_x: 0.0,
                 above_subpixels: small_metrics.above_subpixels,
+                width: 0,
+                sources: vec![],
                 text: "ߊ".into(),
                 style: small.clone(),
                 link: None,
@@ -1267,6 +1336,8 @@ mod tests {
                 x: 100,
                 offset_x: 0.0,
                 above_subpixels: large_metrics.above_subpixels,
+                width: 0,
+                sources: vec![],
                 text: "ߊ".into(),
                 style: large,
                 link: None,
@@ -1390,11 +1461,13 @@ mod tests {
                 InlineWordPart {
                     text: "A",
                     style: &bold,
+                    style_source: None,
                     link: None,
                 },
                 InlineWordPart {
                     text: ".",
                     style: &normal,
+                    style_source: None,
                     link: None,
                 },
             ],

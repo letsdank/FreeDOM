@@ -564,6 +564,28 @@ impl PreviewLayout {
             );
         }
 
+        let runs = self.display_list.iter().flat_map(|command| match command {
+            PreviewCommand::Text { runs, .. } => runs.as_slice(),
+            PreviewCommand::Block(_) => &[],
+        });
+        for run in runs.filter(|run| !run.sources.is_empty()).take(32) {
+            let sources: Vec<_> = run
+                .sources
+                .iter()
+                .map(|span| {
+                    (
+                        span.range.clone(),
+                        span.source.as_ref().map(SourcePath::indices),
+                    )
+                })
+                .collect();
+            let _ = writeln!(
+                output,
+                "  inline sources={sources:?} relative_x={} relative_y={} width={}",
+                run.x, run.y, run.width
+            );
+        }
+
         if self.boxes.len() > 32 {
             output.push_str("  ... output limit reached\n");
         }
