@@ -1,7 +1,7 @@
 //! A deliberately small WAT assembler for Wasm tests.
 //!
 //! Supports function modules with numeric parameters, results and locals,
-//! inline exports, standalone function types, and straight-line instructions.
+//! inline exports, standalone function types, and selected instructions.
 //! This is not a general WAT parser or a module validator. Tests of malformed
 //! binaries should use explicit bytes instead.
 //!
@@ -17,6 +17,7 @@ struct Function {
     instructions: Vec<u8>,
 }
 
+#[derive(Clone)]
 struct Tokens<'a> {
     source: &'a str,
     cursor: usize,
@@ -118,6 +119,20 @@ fn section(module: &mut Vec<u8>, id: u8, content: &[u8]) {
 
 fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
     match token {
+        "if" => {
+            out.push(0x04);
+            if tokens.clone().next() == Some("(") {
+                tokens.expect("(");
+                tokens.expect("result");
+                tokens.expect("i32");
+                tokens.expect(")");
+                out.push(0x7f);
+            } else {
+                out.push(0x40);
+            }
+        }
+        "else" => out.push(0x05),
+        "end" => out.push(0x0b),
         "i32.const" => {
             out.push(0x41);
             i32_leb(
@@ -166,7 +181,7 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
     }
 }
 
-/// Assembles a straight-line instruction sequence, including the final end.
+/// Assembles an instruction sequence, including the final end.
 pub(super) fn expression(source: &str) -> Vec<u8> {
     let mut tokens = Tokens::new(source);
     let mut out = Vec::new();
@@ -357,6 +372,10 @@ mod tests {
             [
                 0x41, 0x80, 0x80, 0x80, 0x80, 0x78, 0x20, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x0b
             ]
+        );
+        assert_eq!(
+            expression("i32.const 1 if (result i32) i32.const 2 else i32.const 3 end"),
+            [0x41, 1, 0x04, 0x7f, 0x41, 2, 0x05, 0x41, 3, 0x0b, 0x0b]
         );
     }
 

@@ -1,8 +1,8 @@
-//! A decoder for a small, straight-line subset of Wasm function expressions.
+//! A decoder for a small subset of Wasm function expressions.
 //!
 //! A successful decode only establishes that this subset was decoded; it does
 //! not validate operand or result types, nor execute the expression. Nested
-//! control instructions and other opcodes are currently unsupported.
+//! control instructions other than if/else and other opcodes are unsupported.
 //!
 //! <https://webassembly.github.io/spec/core/binary/instructions.html>
 
@@ -17,6 +17,15 @@ pub(crate) struct Instruction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstructionKind {
+    /// Targets are instruction indices, resolved during decoding.
+    If {
+        returns_i32: bool,
+        false_target: usize,
+    },
+    Else {
+        end_target: usize,
+    },
+    End,
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
@@ -51,7 +60,9 @@ pub(crate) struct Expression {
 /// Decodes a complete function expression from an already framed body.
 pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, BinaryError> {
     let mut reader = Reader::new(body.instructions, body.instructions_offset);
-    let mut instructions = Vec::new();
+    let mut instructions: Vec<Instruction> = Vec::new();
+    // Each entry tracks the opening if and its optional else instruction.
+    let mut control: Vec<(usize, Option<usize>)> = Vec::new();
     loop {
         let offset = reader.offset();
         if reader.is_empty() {
@@ -61,6 +72,58 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             ));
         }
         let kind = match reader.read_byte()? {
+            0x04 => {
+                let type_offset = reader.offset();
+                let returns_i32 = match reader.read_byte()? {
+                    0x40 => false,
+                    0x7f => true,
+                    other => {
+                        return Err(BinaryError::new(
+                            type_offset,
+                            BinaryErrorKind::UnsupportedBlockType(other),
+                        ));
+                    }
+                };
+                control
+                    .try_reserve(1)
+                    .map_err(|_| BinaryError::new(offset, BinaryErrorKind::AllocationFailed))?;
+                control.push((instructions.len(), None));
+                InstructionKind::If {
+                    returns_i32,
+                    false_target: usize::MAX,
+                }
+            }
+            0x05 => {
+                let Some((if_index, else_index)) = control.last_mut() else {
+                    return Err(BinaryError::new(offset, BinaryErrorKind::UnexpectedElse));
+                };
+                if else_index.is_some() {
+                    return Err(BinaryError::new(offset, BinaryErrorKind::UnexpectedElse));
+                }
+                *else_index = Some(instructions.len());
+                let target = instructions.len() + 1;
+                if let InstructionKind::If { false_target, .. } = &mut instructions[*if_index].kind
+                {
+                    *false_target = target;
+                }
+                InstructionKind::Else {
+                    end_target: usize::MAX,
+                }
+            }
+            0x0b if !control.is_empty() => {
+                let (if_index, else_index) = control.pop().expect("checked nonempty");
+                let target = instructions.len() + 1;
+                if let Some(index) = else_index {
+                    if let InstructionKind::Else { end_target } = &mut instructions[index].kind {
+                        *end_target = target;
+                    }
+                } else if let InstructionKind::If { false_target, .. } =
+                    &mut instructions[if_index].kind
+                {
+                    *false_target = target;
+                }
+                InstructionKind::End
+            }
             0x0b => {
                 if !reader.is_empty() {
                     return Err(BinaryError::new(
@@ -154,6 +217,43 @@ mod tests {
             };
             let error = decode_expression(&body).unwrap_err();
             assert_eq!((error.offset, &error.kind), (*offset, kind));
+        }
+    }
+
+    #[test]
+    fn reports_malformed_if_structure_and_unsupported_block_types() {
+        let cases: &[(&[u8], usize, BinaryErrorKind)] = &[
+            (&[0x05, 0x0b], 10, BinaryErrorKind::UnexpectedElse),
+            (&[0x04], 11, BinaryErrorKind::UnexpectedEnd),
+            (
+                &[0x04, 0x7e],
+                11,
+                BinaryErrorKind::UnsupportedBlockType(0x7e),
+            ),
+            (
+                &[0x04, 0x40, 0x05, 0x05, 0x0b, 0x0b],
+                13,
+                BinaryErrorKind::UnexpectedElse,
+            ),
+            (
+                &[0x04, 0x40, 0x0b],
+                13,
+                BinaryErrorKind::MissingExpressionEnd,
+            ),
+            (
+                &[0x04, 0x40, 0x0b, 0x0b, 0x00],
+                14,
+                BinaryErrorKind::TrailingExpressionData,
+            ),
+        ];
+        for (bytes, offset, kind) in cases {
+            let body = crate::wasm::code::FunctionBody {
+                locals: vec![],
+                instructions_offset: 10,
+                instructions: bytes,
+            };
+            let error = decode_expression(&body).unwrap_err();
+            assert_eq!((error.offset, &error.kind), (*offset, kind), "{bytes:?}");
         }
     }
 }

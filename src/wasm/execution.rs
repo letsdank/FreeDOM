@@ -1,4 +1,4 @@
-//! Validation and execution of a small, straight-line function subset.
+//! Validation and execution of a small function subset with if/else.
 //!
 //! Only functions with i32 parameters and locals, returning either
 //! nothing or one i32, are supported. An accepted function is not evidence
@@ -25,6 +25,7 @@ pub(crate) enum FunctionError {
     /// The signature can be valid Wasm even though it is not supported here.
     UnsupportedSignature,
     UnsupportedLocals,
+    AllocationFailed,
     Decode(BinaryError),
     InvalidLocalIndex {
         index: u32,
@@ -40,6 +41,14 @@ pub(crate) enum FunctionError {
         actual: usize,
         offset: usize,
     },
+    BranchStackMismatch {
+        offset: usize,
+        expected: usize,
+        actual: usize,
+    },
+    MissingElseForResult {
+        offset: usize,
+    },
 }
 
 impl fmt::Display for FunctionError {
@@ -50,6 +59,7 @@ impl fmt::Display for FunctionError {
             }
             Self::UnsupportedSignature => write!(formatter, "unsupported function signature"),
             Self::UnsupportedLocals => write!(formatter, "unsupported function locals"),
+            Self::AllocationFailed => write!(formatter, "cannot allocate validation state"),
             Self::Decode(error) => write!(formatter, "{error}"),
             Self::InvalidLocalIndex { index, offset } => {
                 write!(formatter, "unknown local index {index} at byte {offset}")
@@ -70,6 +80,20 @@ impl fmt::Display for FunctionError {
                 formatter,
                 "function result stack mismatch at byte {offset}: expected {expected}, found {actual}"
             ),
+            Self::BranchStackMismatch {
+                offset,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "branch result stack mismatch at byte {offset}: expected {expected}, found {actual}"
+            ),
+            Self::MissingElseForResult { offset } => {
+                write!(
+                    formatter,
+                    "if with a result requires an else at byte {offset}"
+                )
+            }
         }
     }
 }
@@ -127,8 +151,59 @@ pub(crate) fn validate_function(
     // All values in the currently supported subset are i32.
     let mut depth = 0_usize;
     let mut max_stack_depth = 0_usize;
+    struct IfFrame {
+        height: usize,
+        results: usize,
+        has_else: bool,
+    }
+    let mut controls: Vec<IfFrame> = Vec::new();
     for instruction in &expression.instructions {
+        // A branch cannot consume values below its own entry height.
+        let base = controls.last().map_or(0, |frame| frame.height);
+        let available = depth - base;
         match instruction.kind {
+            InstructionKind::If { returns_i32, .. } => {
+                if available < 1 {
+                    return Err(FunctionError::StackUnderflow {
+                        offset: instruction.offset,
+                        needed: 1,
+                        available,
+                    });
+                }
+                depth -= 1;
+                controls
+                    .try_reserve(1)
+                    .map_err(|_| FunctionError::AllocationFailed)?;
+                controls.push(IfFrame {
+                    height: depth,
+                    results: usize::from(returns_i32),
+                    has_else: false,
+                });
+            }
+            InstructionKind::Else { .. } | InstructionKind::End => {
+                let frame = controls
+                    .last_mut()
+                    .expect("decoder checked control structure");
+                let actual = depth - frame.height;
+                if actual != frame.results {
+                    return Err(FunctionError::BranchStackMismatch {
+                        offset: instruction.offset,
+                        expected: frame.results,
+                        actual,
+                    });
+                }
+                if matches!(instruction.kind, InstructionKind::Else { .. }) {
+                    frame.has_else = true;
+                    depth = frame.height;
+                } else {
+                    if frame.results != 0 && !frame.has_else {
+                        return Err(FunctionError::MissingElseForResult {
+                            offset: instruction.offset,
+                        });
+                    }
+                    controls.pop();
+                }
+            }
             InstructionKind::LocalGet(index) => {
                 validate_local_index(index, local_index_count, instruction.offset)?;
                 depth += 1;
@@ -136,11 +211,11 @@ pub(crate) fn validate_function(
             }
             InstructionKind::LocalSet(index) | InstructionKind::LocalTee(index) => {
                 validate_local_index(index, local_index_count, instruction.offset)?;
-                if depth == 0 {
+                if available == 0 {
                     return Err(FunctionError::StackUnderflow {
                         offset: instruction.offset,
                         needed: 1,
-                        available: 0,
+                        available,
                     });
                 }
                 if matches!(instruction.kind, InstructionKind::LocalSet(_)) {
@@ -152,11 +227,11 @@ pub(crate) fn validate_function(
                 max_stack_depth = max_stack_depth.max(depth);
             }
             InstructionKind::I32Eqz => {
-                if depth == 0 {
+                if available == 0 {
                     return Err(FunctionError::StackUnderflow {
                         offset: instruction.offset,
                         needed: 1,
-                        available: 0,
+                        available,
                     });
                 }
             }
@@ -177,11 +252,11 @@ pub(crate) fn validate_function(
             | InstructionKind::I32LeU
             | InstructionKind::I32GeS
             | InstructionKind::I32GeU => {
-                if depth < 2 {
+                if available < 2 {
                     return Err(FunctionError::StackUnderflow {
                         offset: instruction.offset,
                         needed: 2,
-                        available: depth,
+                        available,
                     });
                 }
                 depth -= 1;
@@ -271,8 +346,27 @@ pub(crate) fn execute_function(
     // Store only modified locals, including modified parameters. Unmodified
     // locals are zero and need no allocation even when a group is very large.
     let mut modified_locals: HashMap<u32, i32> = HashMap::new();
-    for instruction in &function.expression.instructions {
+    let mut pc = 0_usize;
+    while let Some(instruction) = function.expression.instructions.get(pc) {
         match instruction.kind {
+            InstructionKind::If { false_target, .. } => {
+                let condition = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                if condition == 0 {
+                    if false_target > function.expression.instructions.len() {
+                        return Err(ExecutionError::InvalidValidatedStack);
+                    }
+                    pc = false_target;
+                    continue;
+                }
+            }
+            InstructionKind::Else { end_target } => {
+                if end_target > function.expression.instructions.len() {
+                    return Err(ExecutionError::InvalidValidatedStack);
+                }
+                pc = end_target;
+                continue;
+            }
+            InstructionKind::End => {}
             InstructionKind::LocalGet(index) => {
                 if u64::from(index) >= function.local_index_count {
                     return Err(ExecutionError::InvalidValidatedLocal);
@@ -369,6 +463,7 @@ pub(crate) fn execute_function(
                 stack.push(value);
             }
         }
+        pc += 1;
     }
     match (function.returns_i32, stack.as_slice()) {
         (false, []) => Ok(None),
@@ -702,6 +797,124 @@ mod tests {
                 available: 0,
             })
         ));
+    }
+
+    #[test]
+    fn executes_nested_if_branches_and_skips_untaken_traps() {
+        let wat = "(module (func (param i32 i32) (result i32)
+            local.get 0
+            if (result i32)
+                local.get 1
+                if (result i32) i32.const 11 else i32.const 22 end
+                else
+                    i32.const 44 i32.const 2 i32.div_s
+                end))";
+        let bytes = module(wat);
+        let framed = scan_module(&bytes).unwrap();
+        let declarations = decode_declarations(&framed).unwrap();
+        let bodies = decode_bodies(&framed).unwrap();
+        let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+        assert_eq!(execute_function(&function, &[0, 1]), Ok(Some(22)));
+        assert_eq!(execute_function(&function, &[1, 0]), Ok(Some(22)));
+        assert_eq!(execute_function(&function, &[-1, 1]), Ok(Some(11)));
+
+        let bytes = module(
+            "(module (func (param i32) (result i32)
+            local.get 0 if (result i32) i32.const 42
+            else i32.const 1 i32.const 0 i32.div_s end))",
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let declarations = decode_declarations(&framed).unwrap();
+        let bodies = decode_bodies(&framed).unwrap();
+        let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+        assert_eq!(execute_function(&function, &[1]), Ok(Some(42)));
+        assert!(matches!(
+            execute_function(&function, &[0]),
+            Err(ExecutionError::IntegerDivideByZero { .. })
+        ));
+
+        let bytes = module(
+            "(module (func (param i32) (result i32) (local i32)
+            local.get 0 if i32.const 42 local.set 1 end local.get 1))",
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let declarations = decode_declarations(&framed).unwrap();
+        let bodies = decode_bodies(&framed).unwrap();
+        let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+        assert_eq!(execute_function(&function, &[0]), Ok(Some(0)));
+        assert_eq!(execute_function(&function, &[1]), Ok(Some(42)));
+
+        let bytes = module(
+            "(module (func (param i32) (result i32)
+            i32.const 10 local.get 0
+            if (result i32) i32.const 2 else i32.const 3 end
+            i32.add))",
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let declarations = decode_declarations(&framed).unwrap();
+        let bodies = decode_bodies(&framed).unwrap();
+        let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+        assert_eq!(execute_function(&function, &[0]), Ok(Some(13)));
+        assert_eq!(execute_function(&function, &[1]), Ok(Some(12)));
+    }
+
+    #[test]
+    fn validates_if_branches_and_protects_the_outer_stack() {
+        let declarations = Declarations {
+            types: vec![FunctionType {
+                parameters: vec![],
+                results: vec![ValueType::I32],
+            }],
+            function_types: vec![],
+        };
+        let cases = [
+            ("if end", "underflow"),
+            ("i32.const 99 i32.const 1 if i32.eqz end", "underflow"),
+            (
+                "i32.const 1 if (result i32) i32.const 1 end",
+                "missing_else",
+            ),
+            ("i32.const 1 if (result i32) i32.const 1 else end", "branch"),
+            ("i32.const 1 if (result i32) else i32.const 1 end", "branch"),
+            ("i32.const 1 if i32.const 1 end", "branch"),
+        ];
+        for (source, expected) in cases {
+            let instructions = expression(source);
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 0,
+                instructions: &instructions,
+            };
+            let error = match validate_function(&declarations, 0, &body) {
+                Ok(_) => panic!("unexpectedly accepted {source}"),
+                Err(error) => error,
+            };
+            assert!(
+                match expected {
+                    "underflow" =>
+                        matches!(error, FunctionError::StackUnderflow { available: 0, .. }),
+                    "missing_else" => matches!(error, FunctionError::MissingElseForResult { .. }),
+                    "branch" => matches!(error, FunctionError::BranchStackMismatch { .. }),
+                    _ => false,
+                },
+                "{source}: {error:?}"
+            );
+        }
+
+        // Deeply nested valid input must not use the native call stack.
+        let source = format!(
+            "{}{}i32.const 42",
+            "i32.const 1 if ".repeat(4096),
+            "end ".repeat(4096)
+        );
+        let instructions = expression(&source);
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 0,
+            instructions: &instructions,
+        };
+        let function = validate_function(&declarations, 0, &body).unwrap();
+        assert_eq!(execute_function(&function, &[]), Ok(Some(42)));
     }
 
     #[test]

@@ -50,6 +50,8 @@ pub(crate) enum BinaryErrorKind {
     TrailingSectionData(u8),
     TooManyLocals,
     UnsupportedOpcode(u8),
+    UnsupportedBlockType(u8),
+    UnexpectedElse,
     MissingExpressionEnd,
     TrailingExpressionData,
     SizeOverflow,
@@ -96,6 +98,13 @@ impl fmt::Display for BinaryError {
             BinaryErrorKind::UnsupportedOpcode(opcode) => {
                 write!(formatter, "unsupported opcode 0x{opcode:02x}")
             }
+            BinaryErrorKind::UnsupportedBlockType(byte) => {
+                write!(
+                    formatter,
+                    "unsupported block type starting with 0x{byte:02x}"
+                )
+            }
+            BinaryErrorKind::UnexpectedElse => write!(formatter, "unexpected else"),
             BinaryErrorKind::MissingExpressionEnd => write!(formatter, "missing expression end"),
             BinaryErrorKind::TrailingExpressionData => {
                 write!(formatter, "trailing bytes after expression end")
