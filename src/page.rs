@@ -1459,6 +1459,58 @@ mod tests {
     }
 
     #[test]
+    fn vertical_padding_moves_text_and_the_next_block() {
+        use crate::{
+            page_layout::{CONTENT_TOP, PageLayout},
+            render::{BlockRasterCache, GlyphRasterCache, paint},
+        };
+
+        for line_height in ["", "line-height:20px;"] {
+            let html = |padding| format!("<div style='{line_height}{padding}'>A</div><div>B</div>");
+            let plain = parse_html("https://example.test", &html(""));
+            let padded = parse_html(
+                "https://example.test",
+                &html("padding-top:10px;padding-bottom:5px"),
+            );
+            let plain_layout = PageLayout::build(&plain, 300, None);
+            let padded_layout = PageLayout::build(&padded, 300, None);
+            assert_eq!(
+                padded_layout.block_height(0),
+                plain_layout.block_height(0) + 15
+            );
+            assert_eq!(padded_layout.block_top(1), plain_layout.block_top(1) + 15);
+
+            let (width, height) = (300, 180);
+            let render = |page: &Page, layout: &PageLayout| {
+                let mut pixels = vec![0; width * height];
+                paint(
+                    &mut pixels,
+                    width,
+                    height,
+                    page,
+                    layout,
+                    "",
+                    "",
+                    None,
+                    &mut BlockRasterCache::new(),
+                    &mut GlyphRasterCache::new(),
+                    0,
+                    false,
+                );
+                pixels
+            };
+            let plain_pixels = render(&plain, &plain_layout);
+            let padded_pixels = render(&padded, &padded_layout);
+            let first = CONTENT_TOP as usize;
+            let text_height = plain_layout.block_height(0) as usize;
+            assert_eq!(
+                &plain_pixels[first * width..(first + text_height) * width],
+                &padded_pixels[(first + 10) * width..(first + 10 + text_height) * width]
+            );
+        }
+    }
+
+    #[test]
     fn negative_margin_does_not_hide_an_earlier_line_from_scroll_extent() {
         use crate::{
             page_layout::{CONTENT_TOP, PageLayout},
@@ -2632,6 +2684,8 @@ mod tests {
         for html in [
             "<div style='margin-bottom: -5px'>text</div>",
             "<div style='margin-top: 5px'>text</div>",
+            "<div style='padding-top: 5px'>text</div>",
+            "<div><span style='padding-bottom: 5px'>text</span>",
             "<div><img></div>",
             "<div><br></div>",
             "<div><span style='font-size: 32px'>text</span></div>",

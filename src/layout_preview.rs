@@ -95,6 +95,7 @@ pub(crate) enum PreviewError {
     SizeOverflow,
     EmptyBlock(Vec<usize>),
     InlineStyle(Vec<usize>),
+    Padding(Vec<usize>),
     SideBorder(Vec<usize>),
 }
 
@@ -147,6 +148,10 @@ impl std::fmt::Display for PreviewError {
                     formatter,
                     "inline color, background, border or horizontal margin is not supported at {path:?}"
                 )
+            }
+
+            Self::Padding(path) => {
+                write!(formatter, "padding is not supported at {path:?}")
             }
 
             Self::SideBorder(path) => {
@@ -267,6 +272,10 @@ impl PreviewLayout {
                     let BlockContent::Flow(children) = &block.content else {
                         return Err(PreviewError::Replaced(block.source.indices().to_vec()));
                     };
+
+                    if block.style.padding_top != 0 || block.style.padding_bottom != 0 {
+                        return Err(PreviewError::Padding(block.source.indices().to_vec()));
+                    }
 
                     let index = self.boxes.len();
 
@@ -656,6 +665,9 @@ fn collect_styled_fragments<'a>(
                 children,
                 ..
             } => {
+                if style.padding_top != 0 || style.padding_bottom != 0 {
+                    return Err(PreviewError::Padding(source.indices().to_vec()));
+                }
                 if style.background_color != BackgroundColor::Transparent
                     || style.border_top.width != 0
                     || style.border_bottom.width != 0

@@ -137,7 +137,7 @@ impl PageLayout {
         let mut text_overflow = false;
 
         for block in &page.blocks {
-            let (block_width, height, text_runs) = match &block.content {
+            let (block_width, mut height, mut text_runs) = match &block.content {
                 BlockContent::Svg(svg) => {
                     let (width, height) = svg_block_size(svg, available_width);
 
@@ -216,6 +216,19 @@ impl PageLayout {
 
                 BlockContent::PendingImage(_) => (0, 0, None),
             };
+
+            // This flattened renderer can currently apply padding only to a text block
+            // itself; it does not model padding on enclosing or inline boxes.
+            if matches!(&block.content, BlockContent::Text(_)) {
+                if let Some(runs) = &mut text_runs {
+                    for run in runs {
+                        run.y = run.y.saturating_add(block.style.padding_top);
+                    }
+                }
+                height = height
+                    .saturating_add(block.style.padding_top)
+                    .saturating_add(block.style.padding_bottom);
+            }
 
             let (paint_top, paint_bottom) = text_runs
                 .as_ref()

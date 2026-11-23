@@ -84,6 +84,8 @@ pub(crate) struct TextStyle {
     pub(crate) margin_after: i32,
     pub(crate) margin_left: i32,
     pub(crate) margin_right: i32,
+    pub(crate) padding_top: i32,
+    pub(crate) padding_bottom: i32,
     pub(crate) display: Display,
     pub(crate) width: CssSize,
     pub(crate) height: CssSize,
@@ -108,6 +110,8 @@ impl TextStyle {
             margin_after: 0,
             margin_left: 0,
             margin_right: 0,
+            padding_top: 0,
+            padding_bottom: 0,
             display: Display::Inline,
             width: CssSize::Auto,
             height: CssSize::Auto,
@@ -160,6 +164,8 @@ struct Declarations {
     margin_after: Option<i32>,
     margin_left: Option<i32>,
     margin_right: Option<i32>,
+    padding_top: Option<i32>,
+    padding_bottom: Option<i32>,
     width: Option<CssSize>,
     height: Option<CssSize>,
     background_color: Option<BackgroundColor>,
@@ -788,6 +794,18 @@ fn parse_text_declarations(declarations: &[CssDeclaration]) -> Declarations {
                 }
             }
 
+            "padding-top" => {
+                if let Some(value) = parse_padding_length(&declaration.value) {
+                    parsed.padding_top = Some(value);
+                }
+            }
+
+            "padding-bottom" => {
+                if let Some(value) = parse_padding_length(&declaration.value) {
+                    parsed.padding_bottom = Some(value);
+                }
+            }
+
             "margin" => {
                 if let Some((top, right, bottom, left)) = parse_margin_shorthand(&declaration.value)
                 {
@@ -1046,6 +1064,22 @@ fn parse_margin_length(value: &str) -> Option<i32> {
     Some(rounded as i32)
 }
 
+// Partial padding support: px, in and unitless zero; negative lengths are invalid.
+// https://www.w3.org/TR/CSS22/box.html#padding-properties
+fn parse_padding_length(value: &str) -> Option<i32> {
+    let input = value.trim().to_ascii_lowercase();
+    let number = input
+        .strip_suffix("px")
+        .or_else(|| input.strip_suffix("in"))
+        .unwrap_or(&input)
+        .parse::<f64>()
+        .ok()?;
+    if number < 0.0 {
+        return None;
+    }
+    parse_margin_length(&input)
+}
+
 // CSS 2.2 sections 10.2 and 10.5:
 // https://www.w3.org/TR/CSS22/visudet.html#the-width-property
 // https://www.w3.org/TR/CSS22/visudet.html#the-height-property
@@ -1189,6 +1223,8 @@ fn default_style(tag: &str, inherited_style: TextStyle) -> TextStyle {
     style.margin_after = 0;
     style.margin_left = 0;
     style.margin_right = 0;
+    style.padding_top = 0;
+    style.padding_bottom = 0;
     style.width = CssSize::Auto;
     style.height = CssSize::Auto;
     style.background_color = BackgroundColor::Transparent;
@@ -1365,6 +1401,14 @@ fn apply_declarations(
 
     if let Some(margin_right) = declarations.margin_right {
         style.margin_right = margin_right;
+    }
+
+    if let Some(padding_top) = declarations.padding_top {
+        style.padding_top = padding_top;
+    }
+
+    if let Some(padding_bottom) = declarations.padding_bottom {
+        style.padding_bottom = padding_bottom;
     }
 
     if let Some(width) = declarations.width {
@@ -2053,6 +2097,31 @@ mod tests {
         let style = compute_style(&element, parent, &[]);
 
         assert_eq!(style.color, 0x00_FF_00_00);
+    }
+
+    #[test]
+    fn vertical_padding_cascades_and_does_not_inherit() {
+        for input in ["-0.1px", "-1px", "2", "auto", "1em", "NaNpx"] {
+            assert_eq!(parse_padding_length(input), None, "{input}");
+        }
+        assert_eq!(parse_padding_length(".5in"), Some(48));
+
+        let element = Element {
+            tag: "div",
+            id: None,
+            classes: &[],
+            inline_style: Some("padding-top: 8px; padding-top: -0.1px; padding-bottom: 5px"),
+        };
+        let style = compute_style(&element, TextStyle::initial(), &[]);
+        assert_eq!((style.padding_top, style.padding_bottom), (8, 5));
+        let child = Element {
+            tag: "span",
+            id: None,
+            classes: &[],
+            inline_style: None,
+        };
+        let style = compute_style(&child, style, &[]);
+        assert_eq!((style.padding_top, style.padding_bottom), (0, 0));
     }
 
     #[test]
