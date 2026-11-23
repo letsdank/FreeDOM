@@ -44,6 +44,13 @@ pub(crate) enum PreviewCommand {
         rect: LayoutRect,
         color: u32,
     },
+    InlineText {
+        x: i32,
+        y: i32,
+        text: String,
+        style: TextStyle,
+        source: Option<SourcePath>,
+    },
     Text {
         rect: LayoutRect,
         text: String,
@@ -532,24 +539,7 @@ impl PreviewLayout {
                         })
                         .collect();
 
-                    // This display list paints inline backgrounds before the text run.
-                    // Reject overlapping lines until inline painting follows CSS order.
-                    // https://www.w3.org/TR/CSS22/zindex.html#painting-order
-                    if let Some((source, _)) = background_styles
-                        .iter()
-                        .find(|(_, style)| style.padding_top != 0 || style.padding_bottom != 0)
-                    {
-                        let first_y = runs.first().map(|run| run.y);
-                        if runs.iter().any(|run| {
-                            Some(run.y) != first_y
-                                || run.style.font_weight != FontWeight::Normal
-                                || run.style.font_style != FontStyle::Normal
-                                || run.style.line_height != LineHeight::Normal
-                        }) {
-                            return Err(PreviewError::Padding(source.to_vec()));
-                        }
-                    }
-                    let mut backgrounds: Vec<(SourcePath, LayoutRect, u32)> = Vec::new();
+                    let mut backgrounds: Vec<(SourcePath, i32, LayoutRect, u32)> = Vec::new();
 
                     for run in runs.iter().filter(|_| !background_styles.is_empty()) {
                         let spaces = run
@@ -617,10 +607,11 @@ impl PreviewLayout {
                                 width: span_width,
                                 height,
                             };
-                            if let Some((previous_source, previous, previous_color)) =
+                            if let Some((previous_source, previous_y, previous, previous_color)) =
                                 backgrounds.last_mut()
                             {
                                 if previous_source == source
+                                    && *previous_y == run.y
                                     && previous.y == rect.y
                                     && *previous_color == color
                                 {
@@ -634,26 +625,39 @@ impl PreviewLayout {
                                     continue;
                                 }
                             }
-                            backgrounds.push((source.clone(), rect, color));
+                            backgrounds.push((source.clone(), run.y, rect, color));
                         }
                     }
 
-                    for (_, rect, color) in backgrounds {
-                        self.display_list
-                            .push(PreviewCommand::InlineBackground { rect, color });
+                    if backgrounds.is_empty() {
+                        self.display_list.push(PreviewCommand::Text {
+                            rect: LayoutRect {
+                                x: left,
+                                y: cursor,
+                                width,
+                                height,
+                            },
+                            text,
+                            style: inherited.clone(),
+                            runs,
+                        });
+                    } else {
+                        if runs.iter().any(|run| {
+                            fonts.get(&run.style).or(fallback).is_some()
+                                || run.style.line_height != LineHeight::Normal
+                                || run.offset_x != 0.0
+                                || run.offset_y != 0.0
+                        }) {
+                            return Err(PreviewError::InlineFont(Vec::new()));
+                        }
+                        append_ordered_bitmap_inline(
+                            &mut self.display_list,
+                            &runs,
+                            &backgrounds,
+                            left,
+                            cursor,
+                        )?;
                     }
-
-                    self.display_list.push(PreviewCommand::Text {
-                        rect: LayoutRect {
-                            x: left,
-                            y: cursor,
-                            width,
-                            height,
-                        },
-                        text,
-                        style: inherited.clone(),
-                        runs,
-                    });
 
                     cursor = cursor
                         .checked_add(height)
@@ -696,7 +700,9 @@ impl PreviewLayout {
 
         let runs = self.display_list.iter().flat_map(|command| match command {
             PreviewCommand::Text { runs, .. } => runs.as_slice(),
-            PreviewCommand::Block(_) | PreviewCommand::InlineBackground { .. } => &[],
+            PreviewCommand::Block(_)
+            | PreviewCommand::InlineBackground { .. }
+            | PreviewCommand::InlineText { .. } => &[],
         });
         for run in runs.filter(|run| !run.sources.is_empty()).take(32) {
             let sources: Vec<_> = run
@@ -717,12 +723,103 @@ impl PreviewLayout {
             );
         }
 
+        for command in self
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                PreviewCommand::InlineText {
+                    x,
+                    y,
+                    source: Some(source),
+                    ..
+                } => Some((x, y, source)),
+                _ => None,
+            })
+            .take(32)
+        {
+            let (x, y, source) = command;
+            let _ = writeln!(output, "  inline source={:?} x={x} y={y}", source.indices());
+        }
+
         if self.boxes.len() > 32 {
             output.push_str("  ... output limit reached\n");
         }
 
         output
     }
+}
+
+// Bitmap-only preview: preserve inline/line painting order without remeasuring
+// source fragments or losing the positioning calculated for the whole word.
+// https://www.w3.org/TR/CSS22/zindex.html#painting-order
+fn append_ordered_bitmap_inline(
+    output: &mut Vec<PreviewCommand>,
+    runs: &[PositionedTextRun],
+    backgrounds: &[(SourcePath, i32, LayoutRect, u32)],
+    left: i32,
+    top: i32,
+) -> Result<(), PreviewError> {
+    let indices: std::collections::HashMap<_, _> = backgrounds
+        .iter()
+        .enumerate()
+        .map(|(index, (source, y, _, _))| ((source.indices(), *y), index))
+        .collect();
+    let mut painted = vec![false; backgrounds.len()];
+    let mut emit_background = |source: &SourcePath, y: i32, output: &mut Vec<PreviewCommand>| {
+        if let Some(&index) = indices.get(&(source.indices(), y)) {
+            if !painted[index] {
+                let (_, _, rect, color) = &backgrounds[index];
+                output.push(PreviewCommand::InlineBackground {
+                    rect: *rect,
+                    color: *color,
+                });
+                painted[index] = true;
+            }
+        }
+    };
+
+    for run in runs {
+        if let Some(space) = &run.leading_space {
+            emit_background(&space.source, run.y, output);
+        }
+        let y = top.checked_add(run.y).ok_or(PreviewError::SizeOverflow)?;
+        let x = left.checked_add(run.x).ok_or(PreviewError::SizeOverflow)?;
+        if run.sources.is_empty() {
+            output.push(PreviewCommand::InlineText {
+                x,
+                y,
+                text: run.text.clone(),
+                style: run.style.clone(),
+                source: None,
+            });
+            continue;
+        }
+        for span in &run.sources {
+            if let Some(source) = &span.source {
+                emit_background(source, run.y, output);
+            }
+            let Some(advance) = &span.advance else {
+                return Err(PreviewError::InlineStyle(Vec::new()));
+            };
+            let Some(text) = run.text.get(span.range.clone()) else {
+                return Err(PreviewError::InlineStyle(Vec::new()));
+            };
+            let x = x
+                .checked_add(advance.start as i32)
+                .ok_or(PreviewError::SizeOverflow)?;
+            output.push(PreviewCommand::InlineText {
+                x,
+                y,
+                text: text.to_owned(),
+                style: run.style.clone(),
+                source: span.source.clone(),
+            });
+        }
+    }
+    if painted.iter().any(|painted| !painted) {
+        return Err(PreviewError::InlineStyle(Vec::new()));
+    }
+    Ok(())
 }
 
 // CSS 2.2 section 8.3.1:

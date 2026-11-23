@@ -322,6 +322,46 @@ pub(crate) fn paint_preview_scene(
                 fill_preview_rect(pixels, width, height, *rect, scroll_y, *color);
             }
 
+            PreviewCommand::InlineText {
+                x, y, text, style, ..
+            } => {
+                if style.font_size == 0.0 {
+                    continue;
+                }
+                let relative_y = i64::from(*y) - i64::from(scroll_y);
+                let Ok(y) = i32::try_from(relative_y) else {
+                    continue;
+                };
+                let metrics = crate::page_layout::text_metrics(None, style.font_size);
+                if y.saturating_add(metrics.glyph_height) <= 0 || y >= content_height as i32 {
+                    continue;
+                }
+                let content_pixels = &mut pixels[content_top * width..width * height];
+                let scale = metrics.bitmap_scale;
+                draw_text_line(
+                    content_pixels,
+                    width,
+                    content_height,
+                    *x,
+                    y,
+                    text,
+                    scale,
+                    style.color,
+                );
+                if style.font_weight == FontWeight::Bold {
+                    draw_text_line(
+                        content_pixels,
+                        width,
+                        content_height,
+                        x.saturating_add(1),
+                        y,
+                        text,
+                        scale,
+                        style.color,
+                    );
+                }
+            }
+
             PreviewCommand::Text {
                 rect,
                 text,

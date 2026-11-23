@@ -2947,10 +2947,40 @@ mod tests {
             "https://example.test/",
             "<div><span style='background:blue;padding-top:3px;padding-bottom:4px'>A B</span></div>",
         );
-        assert!(matches!(
-            PreviewLayout::build(&wrapped, 48, None),
-            Err(crate::layout_preview::PreviewError::Padding(_))
-        ));
+        assert!(PreviewLayout::build(&wrapped, 48, None).is_ok());
+
+        let overlapping = parse_html(
+            "https://example.test/",
+            "<div><span>A</span> <span style='background:blue;padding-top:5px'>B</span></div>",
+        );
+        let reference = parse_html("https://example.test/", "<div><span>A</span> B</div>");
+        let overlapping_layout = PreviewLayout::build(&overlapping, 48, None).unwrap();
+        let reference_layout = PreviewLayout::build(&reference, 48, None).unwrap();
+        let mut actual = vec![0; 48 * 120];
+        let mut original = vec![0; 48 * 120];
+        paint_preview_scene(
+            &mut actual,
+            48,
+            120,
+            &overlapping,
+            &overlapping_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+        paint_preview_scene(
+            &mut original,
+            48,
+            120,
+            &reference,
+            &reference_layout,
+            None,
+            0,
+            &mut GlyphRasterCache::new(),
+        );
+        assert!((95..98).any(|y| {
+            (16..24).any(|x| original[y * 48 + x] == 0 && actual[y * 48 + x] == 0x00_00_00_FF)
+        }));
     }
 
     #[test]
