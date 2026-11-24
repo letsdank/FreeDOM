@@ -1,9 +1,12 @@
 //! Checked defined functions for direct calls, not a complete Wasm instance.
 //!
-//! Imports are rejected because they change the function index space. Other
-//! sections (including exports and start) are not validated or instantiated.
+//! Imports are rejected because they change the function index space. Export
+//! names and function indices are checked; non-function export indices and
+//! other sections, including start, are not validated or instantiated.
 //!
 //! <https://webassembly.github.io/spec/core/binary/modules.html>
+
+use std::{collections::HashMap, fmt};
 
 use super::{
     BinaryError,
@@ -11,6 +14,7 @@ use super::{
     code::{FunctionCountMismatch, decode_bodies, link_functions},
     decode::decode_declarations,
     execution::{ExecutionError, FunctionError, ValidatedFunction, execute_function_set},
+    export::{ExportKind, decode_exports},
 };
 
 #[derive(Debug)]
@@ -19,12 +23,40 @@ pub(crate) enum FunctionSetError {
     Binary(BinaryError),
     FunctionCount(FunctionCountMismatch),
     Function { index: usize, error: FunctionError },
+    DuplicateExportName { offset: usize },
+    InvalidFunctionExport { index: u32, offset: usize },
     AllocationFailed,
 }
 
 pub(crate) struct FunctionSet {
     functions: Vec<ValidatedFunction>,
+    exports: HashMap<String, ExportDescriptor>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExportDescriptor {
+    kind: ExportKind,
+    index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExportCallError {
+    UnknownExport,
+    NotFunction(ExportKind),
+    Execution(ExecutionError),
+}
+
+impl fmt::Display for ExportCallError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownExport => write!(formatter, "unknown export"),
+            Self::NotFunction(kind) => write!(formatter, "export is not a function: {kind:?}"),
+            Self::Execution(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ExportCallError {}
 
 impl FunctionSet {
     /// Builds and checks defined functions only, rejecting any import section.
@@ -46,7 +78,40 @@ impl FunctionSet {
                     .map_err(|error| FunctionSetError::Function { index, error })?,
             );
         }
-        Ok(Self { functions })
+        let mut exports = HashMap::new();
+        for export in decode_exports(module).map_err(FunctionSetError::Binary)? {
+            if exports.contains_key(export.name) {
+                return Err(FunctionSetError::DuplicateExportName {
+                    offset: export.name_offset,
+                });
+            }
+            if export.kind == ExportKind::Function
+                && usize::try_from(export.index)
+                    .ok()
+                    .filter(|index| *index < functions.len())
+                    .is_none()
+            {
+                return Err(FunctionSetError::InvalidFunctionExport {
+                    index: export.index,
+                    offset: export.index_offset,
+                });
+            }
+            exports
+                .try_reserve(1)
+                .map_err(|_| FunctionSetError::AllocationFailed)?;
+            let mut name = String::new();
+            name.try_reserve_exact(export.name.len())
+                .map_err(|_| FunctionSetError::AllocationFailed)?;
+            name.push_str(export.name);
+            exports.insert(
+                name,
+                ExportDescriptor {
+                    kind: export.kind,
+                    index: export.index,
+                },
+            );
+        }
+        Ok(Self { functions, exports })
     }
 
     /// Invokes a defined function with a shared host instruction budget.
@@ -58,16 +123,116 @@ impl FunctionSet {
     ) -> Result<Option<i32>, ExecutionError> {
         execute_function_set(&self.functions, index, arguments, fuel)
     }
+
+    /// Invokes a function export by its exact, case-sensitive UTF-8 name.
+    pub(crate) fn execute_export(
+        &self,
+        name: &str,
+        arguments: &[i32],
+        fuel: u64,
+    ) -> Result<Option<i32>, ExportCallError> {
+        let export = self
+            .exports
+            .get(name)
+            .ok_or(ExportCallError::UnknownExport)?;
+        if export.kind != ExportKind::Function {
+            return Err(ExportCallError::NotFunction(export.kind));
+        }
+        self.execute(export.index, arguments, fuel)
+            .map_err(ExportCallError::Execution)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FunctionSet, FunctionSetError};
+    use super::{ExportCallError, FunctionSet, FunctionSetError};
     use crate::wasm::{
         binary::scan_module,
         execution::{ExecutionError, FunctionError, execute_function_with_fuel},
+        export::ExportKind,
         test_support::{expression, module},
     };
+
+    #[test]
+    fn calls_function_exports_by_exact_name() {
+        let set = {
+            let bytes = module(
+                r#"(module
+                (func (result i32) i32.const 2)
+                (func (export "sum") (export "Сумма") (export "") (param i32) (result i32)
+                    local.get 0 call 0 i32.add))"#,
+            );
+            FunctionSet::from_framed(&scan_module(&bytes).unwrap()).unwrap()
+        };
+        for name in ["sum", "Сумма", ""] {
+            assert_eq!(set.execute_export(name, &[40], 10), Ok(Some(42)));
+            assert_eq!(
+                set.execute_export("SUM", &[40], 10),
+                Err(ExportCallError::UnknownExport)
+            );
+            assert_eq!(
+                set.execute_export("sum", &[], 10),
+                Err(ExportCallError::Execution(
+                    ExecutionError::ArgumentCountMismatch {
+                        expected: 1,
+                        actual: 0
+                    }
+                ))
+            );
+            assert_eq!(
+                set.execute_export("sum", &[40], 0),
+                Err(ExportCallError::Execution(ExecutionError::FuelExhausted))
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_and_invalid_function_exports() {
+        let bytes = module(r#"(module (func (export "f")) (func (export "f")))"#);
+        let framed = scan_module(&bytes).unwrap();
+        assert!(matches!(
+            FunctionSet::from_framed(&framed),
+            Err(FunctionSetError::DuplicateExportName { .. })
+        ));
+
+        let mut bytes = module(r#"(module (func (export "f")))"#);
+        let framed = scan_module(&bytes).unwrap();
+        let export = super::decode_exports(&framed).unwrap()[0];
+        let offset = export.index_offset;
+        bytes[offset] = 1;
+        let framed = scan_module(&bytes).unwrap();
+        assert!(matches!(
+            FunctionSet::from_framed(&framed),
+            Err(FunctionSetError::InvalidFunctionExport {
+                index: 1,
+                offset: found
+            }) if found == offset
+        ));
+    }
+
+    #[test]
+    fn distinguishes_non_function_exports() {
+        let mut bytes = module(r#"(module (func (export "memory")))"#);
+        let framed = scan_module(&bytes).unwrap();
+        let offset = framed
+            .sections
+            .iter()
+            .find(|section| section.id == 7)
+            .unwrap()
+            .offset;
+        // Add a real memory section, then change the export descriptor to memory.
+        bytes.splice(offset..offset, [5, 3, 1, 0, 1]);
+        let framed = scan_module(&bytes).unwrap();
+        let export = super::decode_exports(&framed).unwrap()[0];
+        let kind_offset = export.index_offset - 1;
+        bytes[kind_offset] = 2;
+        let framed = scan_module(&bytes).unwrap();
+        let set = FunctionSet::from_framed(&framed).unwrap();
+        assert_eq!(
+            set.execute_export("memory", &[], 10),
+            Err(ExportCallError::NotFunction(ExportKind::Memory))
+        );
+    }
 
     #[test]
     fn calls_functions_with_isolated_arguments_and_returns() {

@@ -17,6 +17,9 @@ pub(crate) mod decode;
 #[path = "wasm/execution.rs"]
 pub(crate) mod execution;
 
+#[path = "wasm/export.rs"]
+pub(crate) mod export;
+
 #[path = "wasm/instructions.rs"]
 pub(crate) mod instructions;
 
@@ -48,6 +51,7 @@ pub(crate) enum BinaryErrorKind {
     DuplicateSection(u8),
     OutOfOrderSection(u8),
     InvalidNameUtf8,
+    InvalidExportKind(u8),
     UnsupportedTypeForm(u8),
     UnsupportedValueType(u8),
     TrailingSectionData(u8),
@@ -87,7 +91,10 @@ impl fmt::Display for BinaryError {
             BinaryErrorKind::OutOfOrderSection(id) => {
                 write!(formatter, "section {id} is out of order")
             }
-            BinaryErrorKind::InvalidNameUtf8 => write!(formatter, "invalid UTF-8 section name"),
+            BinaryErrorKind::InvalidNameUtf8 => write!(formatter, "invalid UTF-8 name"),
+            BinaryErrorKind::InvalidExportKind(kind) => {
+                write!(formatter, "invalid export kind 0x{kind:02x}")
+            }
             BinaryErrorKind::UnsupportedTypeForm(byte) => {
                 write!(formatter, "unsupported type form 0x{byte:02x}")
             }
