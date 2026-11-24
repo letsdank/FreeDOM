@@ -41,6 +41,14 @@ pub(crate) enum InstructionKind {
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
+    I32Load {
+        align: u32,
+        offset: u64,
+    },
+    I32Store {
+        align: u32,
+        offset: u64,
+    },
     I32Const(i32),
     I32Eqz,
     I32Eq,
@@ -67,6 +75,18 @@ pub(crate) struct Expression {
     pub(crate) instructions: Vec<Instruction>,
     /// The expression's terminating 0x0b is a delimiter, not an instruction.
     pub(crate) end_offset: usize,
+}
+
+fn read_memory_immediate(reader: &mut Reader<'_>) -> Result<(u32, u64), BinaryError> {
+    let offset = reader.offset();
+    let align = reader.read_u32_leb()?;
+    if align >= 0x40 {
+        return Err(BinaryError::new(
+            offset,
+            BinaryErrorKind::UnsupportedMemoryImmediate,
+        ));
+    }
+    Ok((align, reader.read_u64_leb()?))
 }
 
 /// Decodes a complete function expression from an already framed body.
@@ -179,6 +199,14 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x10 => InstructionKind::Call(reader.read_u32_leb()?),
             0x21 => InstructionKind::LocalSet(reader.read_u32_leb()?),
             0x22 => InstructionKind::LocalTee(reader.read_u32_leb()?),
+            0x28 => {
+                let (align, offset) = read_memory_immediate(&mut reader)?;
+                InstructionKind::I32Load { align, offset }
+            }
+            0x36 => {
+                let (align, offset) = read_memory_immediate(&mut reader)?;
+                InstructionKind::I32Store { align, offset }
+            }
             0x41 => InstructionKind::I32Const(reader.read_i32_leb()?),
             0x45 => InstructionKind::I32Eqz,
             0x46 => InstructionKind::I32Eq,
@@ -237,6 +265,12 @@ mod tests {
     #[test]
     fn distinguishes_unsupported_truncated_and_trailing_input() {
         let cases: &[(&[u8], usize, BinaryErrorKind)] = &[
+            (
+                &[0x28, 0x40, 0, 0],
+                11,
+                BinaryErrorKind::UnsupportedMemoryImmediate,
+            ),
+            (&[0x28, 0x02], 12, BinaryErrorKind::UnexpectedEnd),
             (
                 &[0x02, 0x40, 0x05, 0x0b, 0x0b],
                 12,

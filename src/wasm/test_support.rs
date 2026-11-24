@@ -17,6 +17,12 @@ struct Function {
     instructions: Vec<u8>,
 }
 
+struct Memory {
+    minimum: u32,
+    maximum: Option<u32>,
+    exports: Vec<String>,
+}
+
 #[derive(Clone)]
 struct Tokens<'a> {
     source: &'a str,
@@ -107,6 +113,20 @@ fn i32_leb(mut value: i32, out: &mut Vec<u8>) {
     }
 }
 
+fn u64_leb(mut value: u64, out: &mut Vec<u8>) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
 fn count(value: usize, out: &mut Vec<u8>) {
     u32_leb(u32::try_from(value).expect("WAT test input too large"), out);
 }
@@ -151,6 +171,32 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
                     .expect("invalid instruction index"),
                 out,
             );
+        }
+        "i32.load" | "i32.store" => {
+            out.push(if token == "i32.load" { 0x28 } else { 0x36 });
+            let mut align = 2;
+            let mut offset = 0;
+            let mut seen_align = false;
+            let mut seen_offset = false;
+            while let Some(next) = tokens.clone().next() {
+                if let Some(value) = next.strip_prefix("offset=") {
+                    assert!(!seen_offset, "duplicate WAT offset");
+                    seen_offset = true;
+                    offset = value.parse().expect("invalid WAT offset");
+                    tokens.next();
+                } else if let Some(value) = next.strip_prefix("align=") {
+                    assert!(!seen_align, "duplicate WAT alignment");
+                    seen_align = true;
+                    let bytes: u32 = value.parse().expect("invalid WAT alignment");
+                    assert!(bytes.is_power_of_two(), "alignment must be a power of two");
+                    align = bytes.trailing_zeros();
+                    tokens.next();
+                } else {
+                    break;
+                }
+            }
+            u32_leb(align, out);
+            u64_leb(offset, out);
         }
         "i32.const" => {
             out.push(0x41);
@@ -218,11 +264,50 @@ pub(super) fn module(source: &str) -> Vec<u8> {
     tokens.expect("module");
     let mut functions = Vec::new();
     let mut signatures: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut memory: Option<Memory> = None;
     loop {
         match tokens.next().expect("unterminated module") {
             ")" => break,
             "(" => {
                 let kind = tokens.next().expect("missing module declaration");
+                if kind == "memory" {
+                    assert!(memory.is_none(), "multiple test memories are unsupported");
+                    let mut exports = Vec::new();
+                    while tokens.clone().next() == Some("(") {
+                        tokens.expect("(");
+                        tokens.expect("export");
+                        let name = tokens.next().expect("missing export name");
+                        assert!(
+                            name.starts_with('"') && name.ends_with('"'),
+                            "invalid export name"
+                        );
+                        exports.push(name[1..name.len() - 1].to_owned());
+                        tokens.expect(")");
+                    }
+                    let minimum = tokens
+                        .next()
+                        .expect("missing memory minimum")
+                        .parse()
+                        .expect("invalid memory minimum");
+                    let maximum = if tokens.clone().next() != Some(")") {
+                        Some(
+                            tokens
+                                .next()
+                                .expect("missing memory maximum")
+                                .parse()
+                                .expect("invalid memory maximum"),
+                        )
+                    } else {
+                        None
+                    };
+                    tokens.expect(")");
+                    memory = Some(Memory {
+                        minimum,
+                        maximum,
+                        exports,
+                    });
+                    continue;
+                }
                 if kind == "type" {
                     assert!(
                         functions.is_empty(),
@@ -303,7 +388,7 @@ pub(super) fn module(source: &str) -> Vec<u8> {
     assert!(tokens.next().is_none(), "trailing tokens after WAT module");
 
     let mut output = b"\0asm\x01\0\0\0".to_vec();
-    if functions.is_empty() && signatures.is_empty() {
+    if functions.is_empty() && signatures.is_empty() && memory.is_none() {
         return output;
     }
     let mut indices = Vec::new();
@@ -318,6 +403,7 @@ pub(super) fn module(source: &str) -> Vec<u8> {
             });
         indices.push(index);
     }
+    let has_types = !signatures.is_empty();
     let mut types = Vec::new();
     count(signatures.len(), &mut types);
     for (params, results) in signatures {
@@ -327,17 +413,27 @@ pub(super) fn module(source: &str) -> Vec<u8> {
         count(results.len(), &mut types);
         types.extend(results);
     }
-    section(&mut output, 1, &types);
-    if functions.is_empty() {
-        return output;
+    if has_types {
+        section(&mut output, 1, &types);
     }
     let mut declarations = Vec::new();
     count(indices.len(), &mut declarations);
     for index in indices {
         count(index, &mut declarations);
     }
-    section(&mut output, 3, &declarations);
-    let exports_count: usize = functions.iter().map(|f| f.exports.len()).sum();
+    if !functions.is_empty() {
+        section(&mut output, 3, &declarations);
+    }
+    if let Some(memory) = &memory {
+        let mut contents = vec![1, u8::from(memory.maximum.is_some())];
+        u32_leb(memory.minimum, &mut contents);
+        if let Some(maximum) = memory.maximum {
+            u32_leb(maximum, &mut contents);
+        }
+        section(&mut output, 5, &contents);
+    }
+    let exports_count: usize = functions.iter().map(|f| f.exports.len()).sum::<usize>()
+        + memory.as_ref().map_or(0, |memory| memory.exports.len());
     if exports_count != 0 {
         let mut exports = Vec::new();
         count(exports_count, &mut exports);
@@ -349,7 +445,18 @@ pub(super) fn module(source: &str) -> Vec<u8> {
                 count(index, &mut exports);
             }
         }
+        if let Some(memory) = &memory {
+            for name in &memory.exports {
+                count(name.len(), &mut exports);
+                exports.extend_from_slice(name.as_bytes());
+                exports.push(2);
+                exports.push(0);
+            }
+        }
         section(&mut output, 7, &exports);
+    }
+    if functions.is_empty() {
+        return output;
     }
     let mut code = Vec::new();
     count(functions.len(), &mut code);
@@ -385,7 +492,7 @@ mod tests {
         let wat = r#"(module (func (export "f") (result i32)
             i32.const 20 i32.const 22 i32.add))"#;
         assert_eq!(module(wat),
-        b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x09\x01\x07\x00\x41\x14\x41\x16\x6a\x0b");
+                   b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x09\x01\x07\x00\x41\x14\x41\x16\x6a\x0b");
         assert_eq!(
             expression("i32.const -2147483648 local.get 4294967295"),
             [
@@ -399,6 +506,10 @@ mod tests {
         assert_eq!(
             expression("block loop br_if 1 br 0 end end"),
             [0x02, 0x40, 0x03, 0x40, 0x0d, 1, 0x0c, 0, 0x0b, 0x0b, 0x0b]
+        );
+        assert_eq!(
+            expression("i32.load offset=17 align=1 i32.store"),
+            [0x28, 0, 17, 0x36, 2, 0, 0x0b]
         );
     }
 

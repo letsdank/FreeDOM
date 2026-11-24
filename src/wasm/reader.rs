@@ -68,6 +68,26 @@ impl<'a> Reader<'a> {
         unreachable!("a fifth byte with continuation is rejected")
     }
 
+    /// Accepts redundant groups within the ten-byte u64 limit.
+    pub(super) fn read_u64_leb(&mut self) -> Result<u64, BinaryError> {
+        let start = self.offset();
+        let mut value = 0_u64;
+        for index in 0..10 {
+            let byte = self.read_byte()?;
+            if index == 9 && byte & 0xfe != 0 {
+                return Err(BinaryError::new(
+                    start,
+                    BinaryErrorKind::InvalidUnsignedLeb64,
+                ));
+            }
+            value |= u64::from(byte & 0x7f) << (index * 7);
+            if byte & 0x80 == 0 {
+                return Ok(value);
+            }
+        }
+        unreachable!("a tenth byte with continuation is rejected")
+    }
+
     /// Accepts redundant sign-extension groups within the five-byte limit.
     pub(super) fn read_i32_leb(&mut self) -> Result<i32, BinaryError> {
         let start = self.offset();
@@ -122,6 +142,31 @@ mod tests {
         let error = Reader::new(&[0x80], 7).read_u32_leb().unwrap_err();
         assert_eq!(error.offset, 8);
         assert_eq!(error.kind, BinaryErrorKind::UnexpectedEnd);
+    }
+
+    #[test]
+    fn reads_u64_leb_boundaries_and_rejects_overflow() {
+        for (bytes, expected) in [
+            (&[0x80, 0x80, 0x80, 0x80, 0x80, 0x00][..], 0),
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01][..],
+                u64::MAX,
+            ),
+        ] {
+            let mut reader = Reader::new(bytes, 7);
+            assert_eq!(reader.read_u64_leb().unwrap(), expected);
+            assert!(reader.is_empty());
+        }
+        for bytes in [
+            &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02][..],
+            &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80][..],
+        ] {
+            let error = Reader::new(bytes, 7).read_u64_leb().unwrap_err();
+            assert_eq!(
+                (error.offset, error.kind),
+                (7, BinaryErrorKind::InvalidUnsignedLeb64)
+            );
+        }
     }
 
     #[test]

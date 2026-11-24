@@ -18,6 +18,7 @@ use super::{
     code::FunctionBody,
     decode::{Declarations, ValueType},
     instructions::{Expression, InstructionKind, decode_expression},
+    memory::LinearMemory,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +39,17 @@ pub(crate) enum FunctionError {
     },
     InvalidFunctionIndex {
         index: u32,
+        offset: usize,
+    },
+    MissingMemory {
+        offset: usize,
+    },
+    InvalidMemoryAlignment {
+        align: u32,
+        offset: usize,
+    },
+    InvalidMemoryOffset {
+        value: u64,
         offset: usize,
     },
     StackUnderflow {
@@ -78,6 +90,21 @@ impl fmt::Display for FunctionError {
             }
             Self::InvalidFunctionIndex { index, offset } => {
                 write!(formatter, "unknown function index {index} at byte {offset}")
+            }
+            Self::MissingMemory { offset } => {
+                write!(formatter, "memory is not defined at byte {offset}")
+            }
+            Self::InvalidMemoryAlignment { align, offset } => {
+                write!(
+                    formatter,
+                    "invalid i32 memory alignment {align} at byte {offset}"
+                )
+            }
+            Self::InvalidMemoryOffset { value, offset } => {
+                write!(
+                    formatter,
+                    "i32 memory offset {value} is too large at byte {offset}"
+                )
             }
             Self::StackUnderflow {
                 offset,
@@ -172,6 +199,15 @@ pub(crate) fn validate_function(
     declarations: &Declarations,
     type_index: u32,
     body: &FunctionBody<'_>,
+) -> Result<ValidatedFunction, FunctionError> {
+    validate_function_with_memory(declarations, type_index, body, false)
+}
+
+pub(crate) fn validate_function_with_memory(
+    declarations: &Declarations,
+    type_index: u32,
+    body: &FunctionBody<'_>,
+    has_memory: bool,
 ) -> Result<ValidatedFunction, FunctionError> {
     let signature = usize::try_from(type_index)
         .ok()
@@ -349,6 +385,36 @@ pub(crate) fn validate_function(
                 )?;
                 depth += signature.results.len();
             }
+            InstructionKind::I32Load { align, offset }
+            | InstructionKind::I32Store { align, offset } => {
+                if !has_memory {
+                    return Err(FunctionError::MissingMemory {
+                        offset: instruction.offset,
+                    });
+                }
+                if align > 2 {
+                    return Err(FunctionError::InvalidMemoryAlignment {
+                        align,
+                        offset: instruction.offset,
+                    });
+                }
+                if offset > u64::from(u32::MAX) {
+                    return Err(FunctionError::InvalidMemoryOffset {
+                        value: offset,
+                        offset: instruction.offset,
+                    });
+                }
+                let is_load = matches!(instruction.kind, InstructionKind::I32Load { .. });
+                pop_operands(
+                    &mut depth,
+                    controls.last().unwrap(),
+                    if is_load { 1 } else { 2 },
+                    instruction.offset,
+                )?;
+                if is_load {
+                    depth += 1;
+                }
+            }
             InstructionKind::LocalGet(index) => {
                 validate_local_index(index, local_index_count, instruction.offset)?;
                 depth += 1;
@@ -424,6 +490,10 @@ pub(crate) enum ExecutionError {
     CallDepthExceeded,
     CallRequiresFunctionSet,
     InvalidFunctionIndex(u32),
+    MemoryOutOfBounds {
+        offset: usize,
+    },
+    InvalidValidatedMemory,
     IntegerDivideByZero {
         offset: usize,
     },
@@ -449,8 +519,12 @@ impl fmt::Display for ExecutionError {
                 write!(formatter, "call requires a checked function set")
             }
             Self::InvalidFunctionIndex(index) => {
-                write!(formatter, "unknown functin index {index}")
+                write!(formatter, "unknown function index {index}")
             }
+            Self::MemoryOutOfBounds { offset } => {
+                write!(formatter, "out of bounds memory access at byte {offset}")
+            }
+            Self::InvalidValidatedMemory => write!(formatter, "validated memory is not available"),
             Self::IntegerDivideByZero { offset } => {
                 write!(formatter, "integer divide by zero at byte {offset}")
             }
@@ -484,7 +558,7 @@ pub(crate) fn execute_function_with_fuel(
     mut fuel: u64,
 ) -> Result<Option<i32>, ExecutionError> {
     let mut frame = ExecutionFrame::new(0, function, arguments)?;
-    match resume_frame(&mut frame, function, &mut fuel)? {
+    match resume_frame(&mut frame, function, &mut fuel, &mut None)? {
         FrameEvent::Done(result) => Ok(result),
         FrameEvent::Call(_) => Err(ExecutionError::CallRequiresFunctionSet),
     }
@@ -538,6 +612,7 @@ enum FrameEvent {
 
 pub(super) fn execute_function_set(
     functions: &[ValidatedFunction],
+    memory: &mut Option<LinearMemory>,
     index: u32,
     arguments: &[i32],
     mut fuel: u64,
@@ -555,7 +630,7 @@ pub(super) fn execute_function_set(
     loop {
         let frame = frames.last_mut().expect("root frame exists");
         let function = &functions[frame.function_index];
-        match resume_frame(frame, function, &mut fuel)? {
+        match resume_frame(frame, function, &mut fuel, memory)? {
             FrameEvent::Done(result) => {
                 frames.pop();
                 match frames.last_mut() {
@@ -597,6 +672,7 @@ fn resume_frame(
     frame: &mut ExecutionFrame,
     function: &ValidatedFunction,
     fuel: &mut u64,
+    memory: &mut Option<LinearMemory>,
 ) -> Result<FrameEvent, ExecutionError> {
     let ExecutionFrame {
         arguments,
@@ -612,6 +688,28 @@ fn resume_frame(
         }
         *fuel -= 1;
         match instruction.kind {
+            InstructionKind::I32Load { offset, .. } => {
+                let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let value = memory
+                    .as_ref()
+                    .ok_or(ExecutionError::InvalidValidatedMemory)?
+                    .load_i32(address, offset)
+                    .ok_or(ExecutionError::MemoryOutOfBounds {
+                        offset: instruction.offset,
+                    })?;
+                stack.push(value);
+            }
+            InstructionKind::I32Store { offset, .. } => {
+                let value = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                memory
+                    .as_mut()
+                    .ok_or(ExecutionError::InvalidValidatedMemory)?
+                    .store_i32(address, offset, value)
+                    .ok_or(ExecutionError::MemoryOutOfBounds {
+                        offset: instruction.offset,
+                    })?;
+            }
             InstructionKind::Call(index) => {
                 *pc = position + 1;
                 return Ok(FrameEvent::Call(index));

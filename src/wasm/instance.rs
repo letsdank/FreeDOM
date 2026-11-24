@@ -1,8 +1,9 @@
 //! Checked defined functions for direct calls, not a complete Wasm instance.
 //!
 //! Imports are rejected because they change the function index space. Export
-//! names and function indices are checked; non-function export indices and
-//! other sections, including start, are not validated or instantiated.
+//! names, function indices and memory indices are checked Other export
+//! indices and other sections are not fully validated. Start functions and
+//! data segments are rejected until their initialization semantics exist.
 //!
 //! <https://webassembly.github.io/spec/core/binary/modules.html>
 
@@ -15,22 +16,28 @@ use super::{
     decode::decode_declarations,
     execution::{ExecutionError, FunctionError, ValidatedFunction, execute_function_set},
     export::{ExportKind, decode_exports},
+    memory::{LinearMemory, MemoryError, decode_memory},
 };
 
 #[derive(Debug)]
 pub(crate) enum FunctionSetError {
     UnsupportedImports,
+    UnsupportedStart,
+    UnsupportedDataSegments,
+    Memory(MemoryError),
     Binary(BinaryError),
     FunctionCount(FunctionCountMismatch),
     Function { index: usize, error: FunctionError },
     DuplicateExportName { offset: usize },
     InvalidFunctionExport { index: u32, offset: usize },
+    InvalidMemoryExport { index: u32, offset: usize },
     AllocationFailed,
 }
 
 pub(crate) struct FunctionSet {
     functions: Vec<ValidatedFunction>,
     exports: HashMap<String, ExportDescriptor>,
+    memory: Option<LinearMemory>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +71,13 @@ impl FunctionSet {
         if module.sections.iter().any(|section| section.id == 2) {
             return Err(FunctionSetError::UnsupportedImports);
         }
+        if module.sections.iter().any(|section| section.id == 8) {
+            return Err(FunctionSetError::UnsupportedStart);
+        }
+        if module.sections.iter().any(|section| section.id == 11) {
+            return Err(FunctionSetError::UnsupportedDataSegments);
+        }
+        let memory_type = decode_memory(module).map_err(FunctionSetError::Memory)?;
         let declarations = decode_declarations(module).map_err(FunctionSetError::Binary)?;
         let bodies = decode_bodies(module).map_err(FunctionSetError::Binary)?;
         let linked =
@@ -74,8 +88,13 @@ impl FunctionSet {
             .map_err(|_| FunctionSetError::AllocationFailed)?;
         for (index, (type_index, body)) in linked.iter().enumerate() {
             functions.push(
-                super::execution::validate_function(&declarations, type_index, body)
-                    .map_err(|error| FunctionSetError::Function { index, error })?,
+                super::execution::validate_function_with_memory(
+                    &declarations,
+                    type_index,
+                    body,
+                    memory_type.is_some(),
+                )
+                .map_err(|error| FunctionSetError::Function { index, error })?,
             );
         }
         let mut exports = HashMap::new();
@@ -96,6 +115,12 @@ impl FunctionSet {
                     offset: export.index_offset,
                 });
             }
+            if export.kind == ExportKind::Memory && (export.index != 0 || memory_type.is_none()) {
+                return Err(FunctionSetError::InvalidMemoryExport {
+                    index: export.index,
+                    offset: export.index_offset,
+                });
+            }
             exports
                 .try_reserve(1)
                 .map_err(|_| FunctionSetError::AllocationFailed)?;
@@ -111,22 +136,30 @@ impl FunctionSet {
                 },
             );
         }
-        Ok(Self { functions, exports })
+        let memory = memory_type
+            .map(LinearMemory::new)
+            .transpose()
+            .map_err(FunctionSetError::Memory)?;
+        Ok(Self {
+            functions,
+            exports,
+            memory,
+        })
     }
 
     /// Invokes a defined function with a shared host instruction budget.
     pub(crate) fn execute(
-        &self,
+        &mut self,
         index: u32,
         arguments: &[i32],
         fuel: u64,
     ) -> Result<Option<i32>, ExecutionError> {
-        execute_function_set(&self.functions, index, arguments, fuel)
+        execute_function_set(&self.functions, &mut self.memory, index, arguments, fuel)
     }
 
     /// Invokes a function export by its exact, case-sensitive UTF-8 name.
     pub(crate) fn execute_export(
-        &self,
+        &mut self,
         name: &str,
         arguments: &[i32],
         fuel: u64,
@@ -155,7 +188,7 @@ mod tests {
 
     #[test]
     fn calls_function_exports_by_exact_name() {
-        let set = {
+        let mut set = {
             let bytes = module(
                 r#"(module
                 (func (result i32) i32.const 2)
@@ -227,11 +260,146 @@ mod tests {
         let kind_offset = export.index_offset - 1;
         bytes[kind_offset] = 2;
         let framed = scan_module(&bytes).unwrap();
-        let set = FunctionSet::from_framed(&framed).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
         assert_eq!(
             set.execute_export("memory", &[], 10),
             Err(ExportCallError::NotFunction(ExportKind::Memory))
         );
+    }
+
+    #[test]
+    fn memory_is_shared_by_calls_and_persists_after_traps() {
+        let bytes = module(
+            r#"(module
+            (memory (export "mem") 1 2)
+            (func (export "put") (param i32 i32) local.get 0 local.get 1 i32.store offset=2 align=1)
+            (func (export "get") (param i32) (result i32) local.get 0 i32.load offset=2 align=1)
+            (func (export "raw") (param i32) (result i32) local.get 0 i32.load align=1)
+            (func (export "trap-after-write") (local i32)
+                i32.const 0 i32.const 99 i32.store
+                i32.const 65536 i32.load local.set 0)
+            (func (export "overflow") (result i32) i32.const 1 i32.load offset=4294967295)
+            (func (export "indirect") (param i32 i32) local.get 0 local.get 1 call 0))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
+        let mut other = FunctionSet::from_framed(&framed).unwrap();
+        assert_eq!(set.execute_export("get", &[1], 100), Ok(Some(0)));
+        assert_eq!(
+            set.execute_export("indirect", &[1, 0x01020304], 100),
+            Ok(None)
+        );
+        assert_eq!(set.execute_export("get", &[1], 100), Ok(Some(0x01020304)));
+        assert_eq!(set.execute_export("raw", &[2], 100), Ok(Some(0x02030400)));
+        assert_eq!(other.execute_export("get", &[1], 100), Ok(Some(0)));
+
+        assert_eq!(set.execute_export("put", &[65530, 42], 100), Ok(None));
+        assert!(matches!(
+            set.execute_export("put", &[65531, 7], 100),
+            Err(ExportCallError::Execution(
+                ExecutionError::MemoryOutOfBounds { .. }
+            ))
+        ));
+        assert_eq!(set.execute_export("raw", &[65532], 100), Ok(Some(42)));
+        for (name, args) in [
+            ("raw", &[-1][..]),
+            ("overflow", &[][..]),
+            ("trap-after-write", &[][..]),
+        ] {
+            assert!(
+                matches!(
+                    set.execute_export(name, args, 100),
+                    Err(ExportCallError::Execution(
+                        ExecutionError::MemoryOutOfBounds { .. }
+                    ))
+                ),
+                "{name}"
+            );
+        }
+        assert_eq!(set.execute_export("raw", &[0], 100), Ok(Some(99)));
+        assert_eq!(
+            set.execute_export("mem", &[], 100),
+            Err(ExportCallError::NotFunction(ExportKind::Memory))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_memory_use_and_unsupported_initialization() {
+        let cases = [
+            ("(module (func (result i32) i32.const 0 i32.load))", true),
+            (
+                "(module (memory 1) (func (result i32) i32.const 0 i32.load align=8))",
+                false,
+            ),
+        ];
+        for (wat, missing) in cases {
+            let bytes = module(wat);
+            let framed = scan_module(&bytes).unwrap();
+            let error = match FunctionSet::from_framed(&framed) {
+                Ok(_) => panic!("unexpectedly accepted {wat}"),
+                Err(error) => error,
+            };
+            assert!(
+                if missing {
+                    matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::MissingMemory { .. },
+                            ..
+                        }
+                    )
+                } else {
+                    matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::InvalidMemoryAlignment { align: 3, .. },
+                            ..
+                        }
+                    )
+                },
+                "{wat}: {error:?}"
+            );
+        }
+        let bytes = module(
+            "(module (memory 1) (func (result i32) i32.const 0 i32.load offset=4294967296))",
+        );
+        let framed = scan_module(&bytes).unwrap();
+        assert!(matches!(
+            FunctionSet::from_framed(&framed),
+            Err(FunctionSetError::Function {
+                error: FunctionError::InvalidMemoryOffset {
+                    value: 4294967296,
+                    ..
+                },
+                ..
+            })
+        ));
+        let mut bytes = module("(module (memory 1))");
+        // Even an empty data section remains unsupported until initialization is implemented.
+        bytes.extend_from_slice(&[11, 1, 0]);
+        let framed = scan_module(&bytes).unwrap();
+        assert!(matches!(
+            FunctionSet::from_framed(&framed),
+            Err(FunctionSetError::UnsupportedDataSegments)
+        ));
+
+        let mut bytes = module("(module (memory 1))");
+        bytes.extend_from_slice(&[8, 1, 0]);
+        let framed = scan_module(&bytes).unwrap();
+        assert!(matches!(
+            FunctionSet::from_framed(&framed),
+            Err(FunctionSetError::UnsupportedStart)
+        ));
+
+        let mut bytes = module(r#"(module (memory (export "mem") 1))"#);
+        let framed = scan_module(&bytes).unwrap();
+        let offset = super::decode_exports(&framed).unwrap()[0].index_offset;
+        bytes[offset] = 1;
+        let framed = scan_module(&bytes).unwrap();
+        assert!(matches!(
+            FunctionSet::from_framed(&framed),
+            Err(FunctionSetError::InvalidMemoryExport { index: 1, .. })
+        ));
     }
 
     #[test]
@@ -246,7 +414,7 @@ mod tests {
             (func (param i32) (result i32) local.get 0 call 2 local.get 0))",
         );
         let framed = scan_module(&bytes).unwrap();
-        let set = FunctionSet::from_framed(&framed).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
         assert_eq!(set.execute(1, &[9, 4], 100), Ok(Some(5)));
         assert_eq!(set.execute(1, &[4, 9], 100), Ok(Some(-5)));
         assert_eq!(set.execute(3, &[], 100), Ok(Some(42)));
@@ -273,7 +441,7 @@ mod tests {
             end))",
         );
         let framed = scan_module(&bytes).unwrap();
-        let set = FunctionSet::from_framed(&framed).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
         assert_eq!(set.execute(0, &[5], 1000), Ok(Some(15)));
         assert_eq!(set.execute(0, &[5], 10), Err(ExecutionError::FuelExhausted));
         assert_eq!(
@@ -292,7 +460,7 @@ mod tests {
             (func (result i32) call 2))",
         );
         let framed = scan_module(&bytes).unwrap();
-        let set = FunctionSet::from_framed(&framed).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
         assert_eq!(set.execute(1, &[], 2), Ok(Some(42)));
         assert_eq!(set.execute(1, &[], 1), Err(ExecutionError::FuelExhausted));
         assert_eq!(

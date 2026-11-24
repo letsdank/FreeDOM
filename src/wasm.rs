@@ -26,6 +26,9 @@ pub(crate) mod instructions;
 #[path = "wasm/instance.rs"]
 pub(crate) mod instance;
 
+#[path = "wasm/memory.rs"]
+pub(crate) mod memory;
+
 #[path = "wasm/reader.rs"]
 mod reader;
 
@@ -46,6 +49,7 @@ pub(crate) enum BinaryErrorKind {
     InvalidMagic,
     UnsupportedVersion([u8; 4]),
     InvalidUnsignedLeb128,
+    InvalidUnsignedLeb64,
     InvalidSignedLeb128,
     InvalidSectionId(u8),
     DuplicateSection(u8),
@@ -58,6 +62,7 @@ pub(crate) enum BinaryErrorKind {
     TooManyLocals,
     UnsupportedOpcode(u8),
     UnsupportedBlockType(u8),
+    UnsupportedMemoryImmediate,
     UnexpectedElse,
     MissingExpressionEnd,
     TrailingExpressionData,
@@ -85,6 +90,7 @@ impl fmt::Display for BinaryError {
                 write!(formatter, "unsupported version {version:02x?}")
             }
             BinaryErrorKind::InvalidUnsignedLeb128 => write!(formatter, "invalid u32 LEB128"),
+            BinaryErrorKind::InvalidUnsignedLeb64 => write!(formatter, "invalid u64 LEB128"),
             BinaryErrorKind::InvalidSignedLeb128 => write!(formatter, "invalid i32 LEB128"),
             BinaryErrorKind::InvalidSectionId(id) => write!(formatter, "invalid section id {id}"),
             BinaryErrorKind::DuplicateSection(id) => write!(formatter, "duplicate section {id}"),
@@ -112,6 +118,12 @@ impl fmt::Display for BinaryError {
                 write!(
                     formatter,
                     "unsupported block type starting with 0x{byte:02x}"
+                )
+            }
+            BinaryErrorKind::UnsupportedMemoryImmediate => {
+                write!(
+                    formatter,
+                    "multi-memory instruction encoding is not supported"
                 )
             }
             BinaryErrorKind::UnexpectedElse => write!(formatter, "unexpected else"),
