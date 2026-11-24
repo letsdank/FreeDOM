@@ -1,9 +1,9 @@
 //! Checked defined functions for direct calls, not a complete Wasm instance.
 //!
 //! Imports are rejected because they change the function index space. Export
-//! names, function indices and memory indices are checked Other export
-//! indices and other sections are not fully validated. Start functions and
-//! data segments are rejected until their initialization semantics exist.
+//! names, function indices and memory indices are checked. Other export
+//! indices and sections are not fully validated. Active data segments are
+//! initialized; imports, start functions and passive segments are unsupported.
 //!
 //! <https://webassembly.github.io/spec/core/binary/modules.html>
 
@@ -13,24 +13,45 @@ use super::{
     BinaryError,
     binary::FramedModule,
     code::{FunctionCountMismatch, decode_bodies, link_functions},
+    data::{DataError, decode_data},
     decode::decode_declarations,
     execution::{ExecutionError, FunctionError, ValidatedFunction, execute_function_set},
     export::{ExportKind, decode_exports},
-    memory::{LinearMemory, MemoryError, decode_memory},
+    memory::{LinearMemory, MemoryError, PAGE_SIZE, decode_memory},
 };
 
 #[derive(Debug)]
 pub(crate) enum FunctionSetError {
     UnsupportedImports,
     UnsupportedStart,
-    UnsupportedDataSegments,
+    Data(DataError),
+    InvalidDataMemory {
+        index: u32,
+        offset: usize,
+    },
+    DataOutOfBounds {
+        segment: usize,
+        address: u32,
+        length: usize,
+    },
     Memory(MemoryError),
     Binary(BinaryError),
     FunctionCount(FunctionCountMismatch),
-    Function { index: usize, error: FunctionError },
-    DuplicateExportName { offset: usize },
-    InvalidFunctionExport { index: u32, offset: usize },
-    InvalidMemoryExport { index: u32, offset: usize },
+    Function {
+        index: usize,
+        error: FunctionError,
+    },
+    DuplicateExportName {
+        offset: usize,
+    },
+    InvalidFunctionExport {
+        index: u32,
+        offset: usize,
+    },
+    InvalidMemoryExport {
+        index: u32,
+        offset: usize,
+    },
     AllocationFailed,
 }
 
@@ -74,10 +95,27 @@ impl FunctionSet {
         if module.sections.iter().any(|section| section.id == 8) {
             return Err(FunctionSetError::UnsupportedStart);
         }
-        if module.sections.iter().any(|section| section.id == 11) {
-            return Err(FunctionSetError::UnsupportedDataSegments);
-        }
         let memory_type = decode_memory(module).map_err(FunctionSetError::Memory)?;
+        let data = decode_data(module).map_err(FunctionSetError::Data)?;
+        for (segment_index, segment) in data.iter().enumerate() {
+            if segment.memory_index != 0 || memory_type.is_none() {
+                return Err(FunctionSetError::InvalidDataMemory {
+                    index: segment.memory_index,
+                    offset: segment.memory_index_offset,
+                });
+            }
+            let size = u64::from(memory_type.expect("checked memory").minimum) * PAGE_SIZE as u64;
+            let end = u64::try_from(segment.bytes.len())
+                .ok()
+                .and_then(|length| u64::from(segment.address).checked_add(length));
+            if end.is_none_or(|end| end > size) {
+                return Err(FunctionSetError::DataOutOfBounds {
+                    segment: segment_index,
+                    address: segment.address,
+                    length: segment.bytes.len(),
+                });
+            }
+        }
         let declarations = decode_declarations(module).map_err(FunctionSetError::Binary)?;
         let bodies = decode_bodies(module).map_err(FunctionSetError::Binary)?;
         let linked =
@@ -136,10 +174,21 @@ impl FunctionSet {
                 },
             );
         }
-        let memory = memory_type
+        let mut memory = memory_type
             .map(LinearMemory::new)
             .transpose()
             .map_err(FunctionSetError::Memory)?;
+        for (index, segment) in data.iter().enumerate() {
+            memory
+                .as_mut()
+                .expect("data memory checked")
+                .initialize(segment.address, segment.bytes)
+                .ok_or(FunctionSetError::DataOutOfBounds {
+                    segment: index,
+                    address: segment.address,
+                    length: segment.bytes.len(),
+                })?;
+        }
         Ok(Self {
             functions,
             exports,
@@ -324,6 +373,58 @@ mod tests {
     }
 
     #[test]
+    fn initializes_active_data_in_order_and_keeps_instances_independent() {
+        let bytes = module(
+            r#"(module (memory 1)
+            (data (i32.const 1) "\01\02" "\03\04")
+            (data (memory 0) (i32.const 3) "\aa\bb")
+            (data (i32.const 65536) "")
+            (func (export "load") (param i32) (result i32) local.get 0 i32.load align=1)
+            (func (export "store") (param i32 i32) local.get 0 local.get 1 i32.store align=1))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut first = FunctionSet::from_framed(&framed).unwrap();
+        let mut second = FunctionSet::from_framed(&framed).unwrap();
+        let expected = i32::from_le_bytes([1, 2, 0xaa, 0xbb]);
+        assert_eq!(first.execute_export("load", &[1], 100), Ok(Some(expected)));
+        assert_eq!(second.execute_export("load", &[1], 100), Ok(Some(expected)));
+        assert_eq!(second.execute_export("load", &[1], 100), Ok(Some(expected)));
+    }
+
+    #[test]
+    fn rejects_data_with_missing_memory_or_out_of_bounds_initialization() {
+        for wat in [
+            r#"(module (data (i32.const 0) "a"))"#,
+            r#"(module (memory 1) (data (memory 1) (i32.const 0) "a"))"#,
+        ] {
+            let bytes = module(wat);
+            let framed = scan_module(&bytes).unwrap();
+            assert!(
+                matches!(
+                    FunctionSet::from_framed(&framed),
+                    Err(FunctionSetError::InvalidDataMemory { .. })
+                ),
+                "{wat}"
+            );
+        }
+        for wat in [
+            r#"(module (memory 1) (data (i32.const 65534) "abc"))"#,
+            r#"(module (memory 1) (data (i32.const 65537) ""))"#,
+            r#"(module (memory 1) (data (i32.const -1) ""))"#,
+        ] {
+            let bytes = module(wat);
+            let framed = scan_module(&bytes).unwrap();
+            assert!(
+                matches!(
+                    FunctionSet::from_framed(&framed),
+                    Err(FunctionSetError::DataOutOfBounds { .. })
+                ),
+                "{wat}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_invalid_memory_use_and_unsupported_initialization() {
         let cases = [
             ("(module (func (result i32) i32.const 0 i32.load))", true),
@@ -375,13 +476,10 @@ mod tests {
             })
         ));
         let mut bytes = module("(module (memory 1))");
-        // Even an empty data section remains unsupported until initialization is implemented.
+        // An empty data section has no effect.
         bytes.extend_from_slice(&[11, 1, 0]);
         let framed = scan_module(&bytes).unwrap();
-        assert!(matches!(
-            FunctionSet::from_framed(&framed),
-            Err(FunctionSetError::UnsupportedDataSegments)
-        ));
+        assert!(FunctionSet::from_framed(&framed).is_ok());
 
         let mut bytes = module("(module (memory 1))");
         bytes.extend_from_slice(&[8, 1, 0]);

@@ -8,7 +8,7 @@
 
 use super::{BinaryError, BinaryErrorKind, binary::FramedModule, reader::Reader};
 
-const PAGE_SIZE: usize = 65_536;
+pub(super) const PAGE_SIZE: usize = 65_536;
 const WASM32_MAX_PAGES: u32 = 65_536;
 const HOST_MAX_INITIAL_PAGES: u32 = 1024;
 
@@ -92,6 +92,15 @@ impl LinearMemory {
             .map_err(|_| MemoryError::AllocationFailed)?;
         bytes.resize(len, 0);
         Ok(Self { bytes })
+    }
+
+    /// Initializes bytes of an active segment, including zero-length segments.
+    pub(crate) fn initialize(&mut self, address: u32, bytes: &[u8]) -> Option<()> {
+        let start = usize::try_from(address).ok()?;
+        let end = start.checked_add(bytes.len())?;
+
+        self.bytes.get_mut(start..end)?.copy_from_slice(bytes);
+        Some(())
     }
 
     fn range(&self, address: i32, offset: u64) -> Option<std::ops::Range<usize>> {

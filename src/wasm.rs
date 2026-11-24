@@ -11,6 +11,9 @@ pub(crate) mod binary;
 #[path = "wasm/code.rs"]
 pub(crate) mod code;
 
+#[path = "wasm/data.rs"]
+pub(crate) mod data;
+
 #[path = "wasm/decode.rs"]
 pub(crate) mod decode;
 

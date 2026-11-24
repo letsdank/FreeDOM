@@ -23,6 +23,12 @@ struct Memory {
     exports: Vec<String>,
 }
 
+struct Data {
+    memory_index: Option<u32>,
+    address: i32,
+    bytes: Vec<u8>,
+}
+
 #[derive(Clone)]
 struct Tokens<'a> {
     source: &'a str,
@@ -46,10 +52,10 @@ impl<'a> Tokens<'a> {
         } else if first == b'"' {
             self.cursor += 1;
             while self.cursor < source.len() && source[self.cursor] != b'"' {
-                assert_ne!(
-                    source[self.cursor], b'\\',
-                    "WAT string escapes are not supported"
-                );
+                if source[self.cursor] == b'\\' {
+                    self.cursor += 1;
+                    assert!(self.cursor < source.len(), "unterminated WAT escape");
+                }
                 self.cursor += 1;
             }
             assert!(self.cursor < source.len(), "unterminated WAT string");
@@ -72,6 +78,47 @@ impl<'a> Tokens<'a> {
             "expected WAT token {expected:?}"
         );
     }
+}
+
+fn string_bytes(token: &str) -> Vec<u8> {
+    assert!(
+        token.starts_with('"') && token.ends_with('"'),
+        "expected WAT string"
+    );
+    let input = &token.as_bytes()[1..token.len() - 1];
+    let mut out = Vec::new();
+    let mut position = 0;
+    while position < input.len() {
+        let byte = input[position];
+        position += 1;
+        if byte != b'\\' {
+            out.push(byte);
+            continue;
+        }
+        let escaped = *input.get(position).expect("incomplete WAT escape");
+        position += 1;
+        match escaped {
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'"' | b'\'' | b'\\' => out.push(escaped),
+            first if first.is_ascii_hexdigit() => {
+                let second = *input.get(position).expect("incomplete WAT hex escape");
+                position += 1;
+                let value = (first as char).to_digit(16).unwrap() * 16
+                    + (second as char)
+                        .to_digit(16)
+                        .expect("invalid WAT hex escape");
+                out.push(value as u8);
+            }
+            _ => panic!("unsupported WAT string escape"),
+        }
+    }
+    out
+}
+
+fn string_name(token: &str) -> String {
+    String::from_utf8(string_bytes(token)).expect("export name must be valid UTF-8")
 }
 
 fn value_type(token: &str) -> u8 {
@@ -265,11 +312,50 @@ pub(super) fn module(source: &str) -> Vec<u8> {
     let mut functions = Vec::new();
     let mut signatures: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut memory: Option<Memory> = None;
+    let mut data: Vec<Data> = Vec::new();
     loop {
         match tokens.next().expect("unterminated module") {
             ")" => break,
             "(" => {
                 let kind = tokens.next().expect("missing module declaration");
+                if kind == "data" {
+                    tokens.expect("(");
+                    let mut field = tokens.next().expect("missing data offset");
+                    let memory_index = if field == "memory" {
+                        let index = tokens
+                            .next()
+                            .expect("missing data memory index")
+                            .parse()
+                            .expect("invalid data memory index");
+                        tokens.expect(")");
+                        tokens.expect("(");
+                        field = tokens.next().expect("missing data offset");
+                        Some(index)
+                    } else {
+                        None
+                    };
+                    assert_eq!(field, "i32.const", "unsupported data offset");
+                    let address = tokens
+                        .next()
+                        .expect("missing data offset")
+                        .parse()
+                        .expect("invalid data offset");
+                    tokens.expect(")");
+                    let mut bytes = Vec::new();
+                    loop {
+                        let token = tokens.next().expect("unterminated data segment");
+                        if token == ")" {
+                            break;
+                        }
+                        bytes.extend(string_bytes(token));
+                    }
+                    data.push(Data {
+                        memory_index,
+                        address,
+                        bytes,
+                    });
+                    continue;
+                }
                 if kind == "memory" {
                     assert!(memory.is_none(), "multiple test memories are unsupported");
                     let mut exports = Vec::new();
@@ -281,7 +367,7 @@ pub(super) fn module(source: &str) -> Vec<u8> {
                             name.starts_with('"') && name.ends_with('"'),
                             "invalid export name"
                         );
-                        exports.push(name[1..name.len() - 1].to_owned());
+                        exports.push(string_name(name));
                         tokens.expect(")");
                     }
                     let minimum = tokens
@@ -357,7 +443,7 @@ pub(super) fn module(source: &str) -> Vec<u8> {
                                     name.starts_with('"') && name.ends_with('"'),
                                     "invalid export name"
                                 );
-                                function.exports.push(name[1..name.len() - 1].to_owned());
+                                function.exports.push(string_name(name));
                                 tokens.expect(")");
                             }
                             kind @ ("param" | "result" | "local") => {
@@ -388,7 +474,7 @@ pub(super) fn module(source: &str) -> Vec<u8> {
     assert!(tokens.next().is_none(), "trailing tokens after WAT module");
 
     let mut output = b"\0asm\x01\0\0\0".to_vec();
-    if functions.is_empty() && signatures.is_empty() && memory.is_none() {
+    if functions.is_empty() && signatures.is_empty() && memory.is_none() && data.is_empty() {
         return output;
     }
     let mut indices = Vec::new();
@@ -455,30 +541,48 @@ pub(super) fn module(source: &str) -> Vec<u8> {
         }
         section(&mut output, 7, &exports);
     }
-    if functions.is_empty() {
-        return output;
-    }
-    let mut code = Vec::new();
-    count(functions.len(), &mut code);
-    for f in functions {
-        let mut body = Vec::new();
-        let mut groups: Vec<(u32, u8)> = Vec::new();
-        for local in f.locals {
-            match groups.last_mut() {
-                Some((n, ty)) if *ty == local => *n += 1,
-                _ => groups.push((1, local)),
+    if !functions.is_empty() {
+        let mut code = Vec::new();
+        count(functions.len(), &mut code);
+        for f in functions {
+            let mut body = Vec::new();
+            let mut groups: Vec<(u32, u8)> = Vec::new();
+            for local in f.locals {
+                match groups.last_mut() {
+                    Some((n, ty)) if *ty == local => *n += 1,
+                    _ => groups.push((1, local)),
+                }
             }
+            count(groups.len(), &mut body);
+            for (n, ty) in groups {
+                u32_leb(n, &mut body);
+                body.push(ty);
+            }
+            body.extend(f.instructions);
+            count(body.len(), &mut code);
+            code.extend(body);
         }
-        count(groups.len(), &mut body);
-        for (n, ty) in groups {
-            u32_leb(n, &mut body);
-            body.push(ty);
-        }
-        body.extend(f.instructions);
-        count(body.len(), &mut code);
-        code.extend(body);
+        section(&mut output, 10, &code);
     }
-    section(&mut output, 10, &code);
+    if !data.is_empty() {
+        let mut contents = Vec::new();
+        count(data.len(), &mut contents);
+        for segment in data {
+            u32_leb(
+                if segment.memory_index.is_some() { 2 } else { 0 },
+                &mut contents,
+            );
+            if let Some(index) = segment.memory_index {
+                u32_leb(index, &mut contents);
+            }
+            contents.push(0x41);
+            i32_leb(segment.address, &mut contents);
+            contents.push(0x0b);
+            count(segment.bytes.len(), &mut contents);
+            contents.extend(segment.bytes);
+        }
+        section(&mut output, 11, &contents);
+    }
     output
 }
 
@@ -493,6 +597,10 @@ mod tests {
             i32.const 20 i32.const 22 i32.add))"#;
         assert_eq!(module(wat),
                    b"\0asm\x01\0\0\0\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x05\x01\x01f\x00\x00\x0a\x09\x01\x07\x00\x41\x14\x41\x16\x6a\x0b");
+        assert_eq!(
+            module(r#"(module (memory 1) (data (i32.const 0) "hi"))"#),
+            b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x0b\x08\x01\x00\x41\x00\x0b\x02hi"
+        );
         assert_eq!(
             expression("i32.const -2147483648 local.get 4294967295"),
             [
