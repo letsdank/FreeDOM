@@ -137,14 +137,18 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
         }
         "else" => out.push(0x05),
         "end" => out.push(0x0b),
-        "br" | "br_if" => {
-            out.push(if token == "br" { 0x0c } else { 0x0d });
+        "br" | "br_if" | "call" => {
+            out.push(match token {
+                "br" => 0x0c,
+                "br_if" => 0x0d,
+                _ => 0x10,
+            });
             u32_leb(
                 tokens
                     .next()
-                    .expect("missing label index")
+                    .expect("missing instruction index")
                     .parse()
-                    .expect("invalid label index"),
+                    .expect("invalid instruction index"),
                 out,
             );
         }

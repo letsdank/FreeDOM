@@ -20,6 +20,9 @@ pub(crate) mod execution;
 #[path = "wasm/instructions.rs"]
 pub(crate) mod instructions;
 
+#[path = "wasm/instance.rs"]
+pub(crate) mod instance;
+
 #[path = "wasm/reader.rs"]
 mod reader;
 

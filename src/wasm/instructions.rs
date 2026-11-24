@@ -2,7 +2,7 @@
 //!
 //! A successful decode only establishes that this subset was decoded; it does
 //! not validate operand or result types, nor execute the expression. Nested
-//! control instructions outside block, loop, if/else and branches are unsupported.
+//! control instructions outside block, loop, if/else, branches and calls are unsupported.
 //!
 //! <https://webassembly.github.io/spec/core/binary/instructions.html>
 
@@ -37,6 +37,7 @@ pub(crate) enum InstructionKind {
     End,
     Br(u32),
     BrIf(u32),
+    Call(u32),
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
@@ -175,6 +176,7 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x20 => InstructionKind::LocalGet(reader.read_u32_leb()?),
             0x0c => InstructionKind::Br(reader.read_u32_leb()?),
             0x0d => InstructionKind::BrIf(reader.read_u32_leb()?),
+            0x10 => InstructionKind::Call(reader.read_u32_leb()?),
             0x21 => InstructionKind::LocalSet(reader.read_u32_leb()?),
             0x22 => InstructionKind::LocalTee(reader.read_u32_leb()?),
             0x41 => InstructionKind::I32Const(reader.read_i32_leb()?),

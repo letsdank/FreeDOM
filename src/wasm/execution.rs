@@ -36,6 +36,10 @@ pub(crate) enum FunctionError {
         index: u32,
         offset: usize,
     },
+    InvalidFunctionIndex {
+        index: u32,
+        offset: usize,
+    },
     StackUnderflow {
         offset: usize,
         needed: usize,
@@ -71,6 +75,9 @@ impl fmt::Display for FunctionError {
             }
             Self::InvalidLabelIndex { index, offset } => {
                 write!(formatter, "unknown label index {index} at byte {offset}")
+            }
+            Self::InvalidFunctionIndex { index, offset } => {
+                write!(formatter, "unknown function index {index} at byte {offset}")
             }
             Self::StackUnderflow {
                 offset,
@@ -316,6 +323,32 @@ pub(crate) fn validate_function(
                     frame.unreachable = true;
                 }
             }
+            InstructionKind::Call(index) => {
+                let type_index = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| declarations.function_types.get(i))
+                    .copied()
+                    .ok_or(FunctionError::InvalidFunctionIndex {
+                        index,
+                        offset: instruction.offset,
+                    })?;
+                let signature = usize::try_from(type_index)
+                    .ok()
+                    .and_then(|i| declarations.types.get(i))
+                    .ok_or(FunctionError::UnknownTypeIndex(type_index))?;
+                if signature.parameters.iter().any(|ty| *ty != ValueType::I32)
+                    || !matches!(signature.results.as_slice(), [] | [ValueType::I32])
+                {
+                    return Err(FunctionError::UnsupportedSignature);
+                }
+                pop_operands(
+                    &mut depth,
+                    controls.last().unwrap(),
+                    signature.parameters.len(),
+                    instruction.offset,
+                )?;
+                depth += signature.results.len();
+            }
             InstructionKind::LocalGet(index) => {
                 validate_local_index(index, local_index_count, instruction.offset)?;
                 depth += 1;
@@ -388,6 +421,9 @@ pub(crate) enum ExecutionError {
     AllocationFailed,
     /// Host execution budget, not a WebAssembly trap.
     FuelExhausted,
+    CallDepthExceeded,
+    CallRequiresFunctionSet,
+    InvalidFunctionIndex(u32),
     IntegerDivideByZero {
         offset: usize,
     },
@@ -408,6 +444,13 @@ impl fmt::Display for ExecutionError {
         match self {
             Self::AllocationFailed => write!(formatter, "cannot allocate execution state"),
             Self::FuelExhausted => write!(formatter, "execution step limit exceeded"),
+            Self::CallDepthExceeded => write!(formatter, "host call depth limit exceeded"),
+            Self::CallRequiresFunctionSet => {
+                write!(formatter, "call requires a checked function set")
+            }
+            Self::InvalidFunctionIndex(index) => {
+                write!(formatter, "unknown functin index {index}")
+            }
             Self::IntegerDivideByZero { offset } => {
                 write!(formatter, "integer divide by zero at byte {offset}")
             }
@@ -440,26 +483,139 @@ pub(crate) fn execute_function_with_fuel(
     arguments: &[i32],
     mut fuel: u64,
 ) -> Result<Option<i32>, ExecutionError> {
-    if arguments.len() != function.parameter_count {
-        return Err(ExecutionError::ArgumentCountMismatch {
-            expected: function.parameter_count,
-            actual: arguments.len(),
-        });
+    let mut frame = ExecutionFrame::new(0, function, arguments)?;
+    match resume_frame(&mut frame, function, &mut fuel)? {
+        FrameEvent::Done(result) => Ok(result),
+        FrameEvent::Call(_) => Err(ExecutionError::CallRequiresFunctionSet),
     }
-    let mut stack: Vec<i32> = Vec::new();
-    stack
-        .try_reserve_exact(function.max_stack_depth)
+}
+
+struct ExecutionFrame {
+    function_index: usize,
+    arguments: Vec<i32>,
+    stack: Vec<i32>,
+    modified_locals: HashMap<u32, i32>,
+    pc: usize,
+}
+
+impl ExecutionFrame {
+    fn new(
+        function_index: usize,
+        function: &ValidatedFunction,
+        arguments: &[i32],
+    ) -> Result<Self, ExecutionError> {
+        if arguments.len() != function.parameter_count {
+            return Err(ExecutionError::ArgumentCountMismatch {
+                expected: function.parameter_count,
+                actual: arguments.len(),
+            });
+        }
+        let mut stack: Vec<i32> = Vec::new();
+        stack
+            .try_reserve_exact(function.max_stack_depth)
+            .map_err(|_| ExecutionError::AllocationFailed)?;
+        let mut copied_arguments = Vec::new();
+        copied_arguments
+            .try_reserve_exact(arguments.len())
+            .map_err(|_| ExecutionError::AllocationFailed)?;
+        copied_arguments.extend_from_slice(arguments);
+        // Store only modified locals, including modified parameters. Unmodified
+        // locals are zero and need no allocation even when a group is very large.
+        Ok(Self {
+            function_index,
+            arguments: copied_arguments,
+            stack,
+            modified_locals: HashMap::new(),
+            pc: 0,
+        })
+    }
+}
+
+enum FrameEvent {
+    Call(u32),
+    Done(Option<i32>),
+}
+
+pub(super) fn execute_function_set(
+    functions: &[ValidatedFunction],
+    index: u32,
+    arguments: &[i32],
+    mut fuel: u64,
+) -> Result<Option<i32>, ExecutionError> {
+    const MAX_CALL_DEPTH: usize = 1024;
+    let index = usize::try_from(index)
+        .ok()
+        .filter(|i| *i < functions.len())
+        .ok_or(ExecutionError::InvalidFunctionIndex(index))?;
+    let mut frames = Vec::new();
+    frames
+        .try_reserve(1)
         .map_err(|_| ExecutionError::AllocationFailed)?;
-    // Store only modified locals, including modified parameters. Unmodified
-    // locals are zero and need no allocation even when a group is very large.
-    let mut modified_locals: HashMap<u32, i32> = HashMap::new();
-    let mut pc = 0_usize;
-    while let Some(instruction) = function.expression.instructions.get(pc) {
-        if fuel == 0 {
+    frames.push(ExecutionFrame::new(index, &functions[index], arguments)?);
+    loop {
+        let frame = frames.last_mut().expect("root frame exists");
+        let function = &functions[frame.function_index];
+        match resume_frame(frame, function, &mut fuel)? {
+            FrameEvent::Done(result) => {
+                frames.pop();
+                match frames.last_mut() {
+                    Some(caller) => {
+                        if let Some(value) = result {
+                            caller.stack.push(value);
+                        }
+                    }
+                    None => return Ok(result),
+                }
+            }
+            FrameEvent::Call(index) => {
+                if frames.len() >= MAX_CALL_DEPTH {
+                    return Err(ExecutionError::CallDepthExceeded);
+                }
+                let callee_index = usize::try_from(index)
+                    .ok()
+                    .filter(|i| *i < functions.len())
+                    .ok_or(ExecutionError::InvalidFunctionIndex(index))?;
+                let callee = &functions[callee_index];
+                frames
+                    .try_reserve(1)
+                    .map_err(|_| ExecutionError::AllocationFailed)?;
+                let caller = frames.last_mut().expect("caller exists");
+                let start = caller
+                    .stack
+                    .len()
+                    .checked_sub(callee.parameter_count)
+                    .ok_or(ExecutionError::InvalidValidatedStack)?;
+                let next = ExecutionFrame::new(callee_index, callee, &caller.stack[start..])?;
+                caller.stack.truncate(start);
+                frames.push(next);
+            }
+        }
+    }
+}
+
+fn resume_frame(
+    frame: &mut ExecutionFrame,
+    function: &ValidatedFunction,
+    fuel: &mut u64,
+) -> Result<FrameEvent, ExecutionError> {
+    let ExecutionFrame {
+        arguments,
+        stack,
+        modified_locals,
+        pc,
+        ..
+    } = frame;
+    let mut position = *pc;
+    while let Some(instruction) = function.expression.instructions.get(position) {
+        if *fuel == 0 {
             return Err(ExecutionError::FuelExhausted);
         }
-        fuel -= 1;
+        *fuel -= 1;
         match instruction.kind {
+            InstructionKind::Call(index) => {
+                *pc = position + 1;
+                return Ok(FrameEvent::Call(index));
+            }
             InstructionKind::Block { .. } | InstructionKind::Loop { .. } => {}
             InstructionKind::Br(_) | InstructionKind::BrIf(_) => {
                 let taken = if matches!(instruction.kind, InstructionKind::BrIf(_)) {
@@ -470,7 +626,7 @@ pub(crate) fn execute_function_with_fuel(
                 if taken {
                     let target = function
                         .branches
-                        .get(pc)
+                        .get(position)
                         .copied()
                         .flatten()
                         .ok_or(ExecutionError::InvalidValidatedStack)?;
@@ -488,7 +644,7 @@ pub(crate) fn execute_function_with_fuel(
                     if let Some(result) = result {
                         stack.push(result);
                     }
-                    pc = target.instruction;
+                    position = target.instruction;
                     continue;
                 }
             }
@@ -498,7 +654,7 @@ pub(crate) fn execute_function_with_fuel(
                     if false_target > function.expression.instructions.len() {
                         return Err(ExecutionError::InvalidValidatedStack);
                     }
-                    pc = false_target;
+                    position = false_target;
                     continue;
                 }
             }
@@ -506,7 +662,7 @@ pub(crate) fn execute_function_with_fuel(
                 if end_target > function.expression.instructions.len() {
                     return Err(ExecutionError::InvalidValidatedStack);
                 }
-                pc = end_target;
+                position = end_target;
                 continue;
             }
             InstructionKind::End => {}
@@ -606,11 +762,11 @@ pub(crate) fn execute_function_with_fuel(
                 stack.push(value);
             }
         }
-        pc += 1;
+        position += 1;
     }
     match (function.returns_i32, stack.as_slice()) {
-        (false, []) => Ok(None),
-        (true, [value]) => Ok(Some(*value)),
+        (false, []) => Ok(FrameEvent::Done(None)),
+        (true, [value]) => Ok(FrameEvent::Done(Some(*value))),
         _ => Err(ExecutionError::InvalidValidatedStack),
     }
 }
