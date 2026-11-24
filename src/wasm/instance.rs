@@ -373,6 +373,112 @@ mod tests {
     }
 
     #[test]
+    fn grows_memory_without_losing_contents_or_exceeding_limits() {
+        let bytes = module(
+            r#"(module
+            (memory 1 2)
+            (data (i32.const 0) "\44\33\22\11")
+            (func (export "size") (result i32) memory.size)
+            (func (export "grow") (param i32) (result i32) local.get 0 memory.grow)
+            (func (export "load") (param i32) (result i32) local.get 0 i32.load))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
+        let mut other = FunctionSet::from_framed(&framed).unwrap();
+        assert_eq!(set.execute_export("size", &[], 100), Ok(Some(1)));
+        assert_eq!(set.execute_export("grow", &[0], 100), Ok(Some(1)));
+        assert!(matches!(
+            set.execute_export("load", &[65536], 100),
+            Err(ExportCallError::Execution(
+                ExecutionError::MemoryOutOfBounds { .. }
+            ))
+        ));
+        assert_eq!(set.execute_export("grow", &[1], 100), Ok(Some(1)));
+        assert_eq!(set.execute_export("size", &[], 100), Ok(Some(2)));
+        assert_eq!(set.execute_export("load", &[0], 100), Ok(Some(0x11223344)));
+        assert_eq!(set.execute_export("load", &[65536], 100), Ok(Some(0)));
+        assert_eq!(other.execute_export("size", &[], 100), Ok(Some(1)));
+        for delta in [1, -1] {
+            assert_eq!(set.execute_export("grow", &[delta], 100), Ok(Some(-1)));
+            assert_eq!(set.execute_export("size", &[], 100), Ok(Some(2)));
+            assert_eq!(set.execute_export("load", &[0], 100), Ok(Some(0x11223344)));
+        }
+    }
+
+    #[test]
+    fn memory_growth_enforces_host_cap_and_validates_index() {
+        let bytes = module(
+            r#"(module (memory 0)
+            (func (export "size") (result i32) memory.size)
+            (func (export "grow") (param i32) (result i32) local.get 0 memory.grow))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
+        assert_eq!(set.execute_export("grow", &[1025], 100), Ok(Some(-1)));
+        assert_eq!(set.execute_export("size", &[], 100), Ok(Some(0)));
+        assert_eq!(set.execute_export("grow", &[1], 100), Ok(Some(0)));
+        assert_eq!(set.execute_export("size", &[], 100), Ok(Some(1)));
+
+        let bytes = module(
+            r#"(module (memory 0 0)
+            (func (export "grow") (param i32) (result i32) local.get 0 memory.grow))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut zero = FunctionSet::from_framed(&framed).unwrap();
+        assert_eq!(zero.execute_export("grow", &[0], 100), Ok(Some(0)));
+        assert_eq!(zero.execute_export("grow", &[1], 100), Ok(Some(-1)));
+
+        for (wat, missing) in [
+            ("(module (func (result i32) memory.size))", true),
+            (
+                "(module (memory 1) (func (result i32) memory.size 1))",
+                false,
+            ),
+            (
+                "(module (memory 1) (func (result i32) i32.const 0 memory.grow 1))",
+                false,
+            ),
+        ] {
+            let bytes = module(wat);
+            let framed = scan_module(&bytes).unwrap();
+            let result = FunctionSet::from_framed(&framed);
+            assert!(
+                if missing {
+                    matches!(
+                        result,
+                        Err(FunctionSetError::Function {
+                            error: FunctionError::MissingMemory { .. },
+                            ..
+                        })
+                    )
+                } else {
+                    matches!(
+                        result,
+                        Err(FunctionSetError::Function {
+                            error: FunctionError::InvalidMemoryIndex { index: 1, .. },
+                            ..
+                        })
+                    )
+                },
+                "{wat}"
+            );
+        }
+        let bytes = module("(module (memory 1) (func (result i32) memory.grow))");
+        let framed = scan_module(&bytes).unwrap();
+        assert!(matches!(
+            FunctionSet::from_framed(&framed),
+            Err(FunctionSetError::Function {
+                error: FunctionError::StackUnderflow {
+                    needed: 1,
+                    available: 0,
+                    ..
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn initializes_active_data_in_order_and_keeps_instances_independent() {
         let bytes = module(
             r#"(module (memory 1)

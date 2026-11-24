@@ -49,6 +49,8 @@ pub(crate) enum InstructionKind {
         align: u32,
         offset: u64,
     },
+    MemorySize(u32),
+    MemoryGrow(u32),
     I32Const(i32),
     I32Eqz,
     I32Eq,
@@ -207,6 +209,8 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                 let (align, offset) = read_memory_immediate(&mut reader)?;
                 InstructionKind::I32Store { align, offset }
             }
+            0x3f => InstructionKind::MemorySize(reader.read_u32_leb()?),
+            0x40 => InstructionKind::MemoryGrow(reader.read_u32_leb()?),
             0x41 => InstructionKind::I32Const(reader.read_i32_leb()?),
             0x45 => InstructionKind::I32Eqz,
             0x46 => InstructionKind::I32Eq,
@@ -265,6 +269,8 @@ mod tests {
     #[test]
     fn distinguishes_unsupported_truncated_and_trailing_input() {
         let cases: &[(&[u8], usize, BinaryErrorKind)] = &[
+            (&[0x3f], 11, BinaryErrorKind::UnexpectedEnd),
+            (&[0x40, 0x80], 12, BinaryErrorKind::UnexpectedEnd),
             (
                 &[0x28, 0x40, 0, 0],
                 11,

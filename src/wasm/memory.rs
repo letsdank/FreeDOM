@@ -10,7 +10,7 @@ use super::{BinaryError, BinaryErrorKind, binary::FramedModule, reader::Reader};
 
 pub(super) const PAGE_SIZE: usize = 65_536;
 const WASM32_MAX_PAGES: u32 = 65_536;
-const HOST_MAX_INITIAL_PAGES: u32 = 1024;
+const HOST_MAX_PAGES: u32 = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MemoryType {
@@ -72,14 +72,15 @@ pub(crate) fn decode_memory(module: &FramedModule<'_>) -> Result<Option<MemoryTy
 
 pub(crate) struct LinearMemory {
     bytes: Vec<u8>,
+    maximum: Option<u32>,
 }
 
 impl LinearMemory {
     pub(crate) fn new(ty: MemoryType) -> Result<Self, MemoryError> {
-        if ty.minimum > HOST_MAX_INITIAL_PAGES {
+        if ty.minimum > HOST_MAX_PAGES {
             return Err(MemoryError::HostLimitExceeded {
                 minimum: ty.minimum,
-                limit: HOST_MAX_INITIAL_PAGES,
+                limit: HOST_MAX_PAGES,
             });
         }
         let len = usize::try_from(ty.minimum)
@@ -91,7 +92,31 @@ impl LinearMemory {
             .try_reserve_exact(len)
             .map_err(|_| MemoryError::AllocationFailed)?;
         bytes.resize(len, 0);
-        Ok(Self { bytes })
+        Ok(Self {
+            bytes,
+            maximum: ty.maximum,
+        })
+    }
+
+    /// Returns the current number of 64 KiB pages.
+    pub(crate) fn size_pages(&self) -> u32 {
+        (self.bytes.len() / PAGE_SIZE) as u32
+    }
+
+    /// Returns the previous size, or `None` without changing memory on failure.
+    pub(crate) fn grow(&mut self, delta: u32) -> Option<u32> {
+        let previous = self.size_pages();
+        let next = previous.checked_add(delta)?;
+        if next > WASM32_MAX_PAGES
+            || next > HOST_MAX_PAGES
+            || self.maximum.is_some_and(|maximum| next > maximum)
+        {
+            return None;
+        }
+        let len = usize::try_from(next).ok()?.checked_mul(PAGE_SIZE)?;
+        self.bytes.try_reserve_exact(len - self.bytes.len()).ok()?;
+        self.bytes.resize(len, 0);
+        Some(previous)
     }
 
     /// Initializes bytes of an active segment, including zero-length segments.

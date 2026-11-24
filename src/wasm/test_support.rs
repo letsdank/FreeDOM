@@ -219,6 +219,17 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
                 out,
             );
         }
+        "memory.size" | "memory.grow" => {
+            out.push(if token == "memory.size" { 0x3f } else { 0x40 });
+            let index = tokens
+                .clone()
+                .next()
+                .and_then(|value| value.parse::<u32>().ok());
+            if index.is_some() {
+                tokens.next();
+            }
+            u32_leb(index.unwrap_or(0), out);
+        }
         "i32.load" | "i32.store" => {
             out.push(if token == "i32.load" { 0x28 } else { 0x36 });
             let mut align = 2;
@@ -618,6 +629,10 @@ mod tests {
         assert_eq!(
             expression("i32.load offset=17 align=1 i32.store"),
             [0x28, 0, 17, 0x36, 2, 0, 0x0b]
+        );
+        assert_eq!(
+            expression("memory.size memory.grow 0"),
+            [0x3f, 0, 0x40, 0, 0x0b]
         );
     }
 

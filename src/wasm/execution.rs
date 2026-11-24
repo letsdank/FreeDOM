@@ -44,6 +44,10 @@ pub(crate) enum FunctionError {
     MissingMemory {
         offset: usize,
     },
+    InvalidMemoryIndex {
+        index: u32,
+        offset: usize,
+    },
     InvalidMemoryAlignment {
         align: u32,
         offset: usize,
@@ -93,6 +97,9 @@ impl fmt::Display for FunctionError {
             }
             Self::MissingMemory { offset } => {
                 write!(formatter, "memory is not defined at byte {offset}")
+            }
+            Self::InvalidMemoryIndex { index, offset } => {
+                write!(formatter, "unknown memory index {index} at byte {offset}")
             }
             Self::InvalidMemoryAlignment { align, offset } => {
                 write!(
@@ -415,6 +422,23 @@ pub(crate) fn validate_function_with_memory(
                     depth += 1;
                 }
             }
+            InstructionKind::MemorySize(index) | InstructionKind::MemoryGrow(index) => {
+                if !has_memory {
+                    return Err(FunctionError::MissingMemory {
+                        offset: instruction.offset,
+                    });
+                }
+                if index != 0 {
+                    return Err(FunctionError::InvalidMemoryIndex {
+                        index,
+                        offset: instruction.offset,
+                    });
+                }
+                if matches!(instruction.kind, InstructionKind::MemoryGrow(_)) {
+                    pop_operands(&mut depth, controls.last().unwrap(), 1, instruction.offset)?;
+                }
+                depth += 1;
+            }
             InstructionKind::LocalGet(index) => {
                 validate_local_index(index, local_index_count, instruction.offset)?;
                 depth += 1;
@@ -688,6 +712,21 @@ fn resume_frame(
         }
         *fuel -= 1;
         match instruction.kind {
+            InstructionKind::MemorySize(_) => {
+                let pages = memory
+                    .as_ref()
+                    .ok_or(ExecutionError::InvalidValidatedMemory)?
+                    .size_pages();
+                stack.push(pages as i32);
+            }
+            InstructionKind::MemoryGrow(_) => {
+                let delta = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)? as u32;
+                let previous = memory
+                    .as_mut()
+                    .ok_or(ExecutionError::InvalidValidatedMemory)?
+                    .grow(delta);
+                stack.push(previous.map_or(-1, |pages| pages as i32));
+            }
             InstructionKind::I32Load { offset, .. } => {
                 let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
                 let value = memory
