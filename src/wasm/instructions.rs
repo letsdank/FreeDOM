@@ -2,7 +2,7 @@
 //!
 //! A successful decode only establishes that this subset was decoded; it does
 //! not validate operand or result types, nor execute the expression. Nested
-//! control instructions other than if/else and other opcodes are unsupported.
+//! control instructions outside block, loop, if/else and branches are unsupported.
 //!
 //! <https://webassembly.github.io/spec/core/binary/instructions.html>
 
@@ -18,14 +18,25 @@ pub(crate) struct Instruction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstructionKind {
     /// Targets are instruction indices, resolved during decoding.
+    Block {
+        returns_i32: bool,
+        end_target: usize,
+    },
+    Loop {
+        returns_i32: bool,
+        end_target: usize,
+    },
     If {
         returns_i32: bool,
         false_target: usize,
+        end_target: usize,
     },
     Else {
         end_target: usize,
     },
     End,
+    Br(u32),
+    BrIf(u32),
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
@@ -61,7 +72,7 @@ pub(crate) struct Expression {
 pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, BinaryError> {
     let mut reader = Reader::new(body.instructions, body.instructions_offset);
     let mut instructions: Vec<Instruction> = Vec::new();
-    // Each entry tracks the opening if and its optional else instruction.
+    // Each entry tracks the opening control instruction and its optional else.
     let mut control: Vec<(usize, Option<usize>)> = Vec::new();
     loop {
         let offset = reader.offset();
@@ -72,7 +83,7 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             ));
         }
         let kind = match reader.read_byte()? {
-            0x04 => {
+            opcode @ (0x02 | 0x03 | 0x04) => {
                 let type_offset = reader.offset();
                 let returns_i32 = match reader.read_byte()? {
                     0x40 => false,
@@ -88,9 +99,20 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                     .try_reserve(1)
                     .map_err(|_| BinaryError::new(offset, BinaryErrorKind::AllocationFailed))?;
                 control.push((instructions.len(), None));
-                InstructionKind::If {
-                    returns_i32,
-                    false_target: usize::MAX,
+                match opcode {
+                    0x02 => InstructionKind::Block {
+                        returns_i32,
+                        end_target: usize::MAX,
+                    },
+                    0x03 => InstructionKind::Loop {
+                        returns_i32,
+                        end_target: usize::MAX,
+                    },
+                    _ => InstructionKind::If {
+                        returns_i32,
+                        false_target: usize::MAX,
+                        end_target: usize::MAX,
+                    },
                 }
             }
             0x05 => {
@@ -98,6 +120,9 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                     return Err(BinaryError::new(offset, BinaryErrorKind::UnexpectedElse));
                 };
                 if else_index.is_some() {
+                    return Err(BinaryError::new(offset, BinaryErrorKind::UnexpectedElse));
+                }
+                if !matches!(instructions[*if_index].kind, InstructionKind::If { .. }) {
                     return Err(BinaryError::new(offset, BinaryErrorKind::UnexpectedElse));
                 }
                 *else_index = Some(instructions.len());
@@ -113,14 +138,25 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x0b if !control.is_empty() => {
                 let (if_index, else_index) = control.pop().expect("checked nonempty");
                 let target = instructions.len() + 1;
+                match &mut instructions[if_index].kind {
+                    InstructionKind::Block { end_target, .. }
+                    | InstructionKind::Loop { end_target, .. } => *end_target = target,
+                    InstructionKind::If {
+                        false_target,
+                        end_target,
+                        ..
+                    } => {
+                        *end_target = target;
+                        if else_index.is_none() {
+                            *false_target = target;
+                        }
+                    }
+                    _ => unreachable!("control stack contains only opening instructions"),
+                }
                 if let Some(index) = else_index {
                     if let InstructionKind::Else { end_target } = &mut instructions[index].kind {
                         *end_target = target;
                     }
-                } else if let InstructionKind::If { false_target, .. } =
-                    &mut instructions[if_index].kind
-                {
-                    *false_target = target;
                 }
                 InstructionKind::End
             }
@@ -137,6 +173,8 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                 });
             }
             0x20 => InstructionKind::LocalGet(reader.read_u32_leb()?),
+            0x0c => InstructionKind::Br(reader.read_u32_leb()?),
+            0x0d => InstructionKind::BrIf(reader.read_u32_leb()?),
             0x21 => InstructionKind::LocalSet(reader.read_u32_leb()?),
             0x22 => InstructionKind::LocalTee(reader.read_u32_leb()?),
             0x41 => InstructionKind::I32Const(reader.read_i32_leb()?),
@@ -197,6 +235,12 @@ mod tests {
     #[test]
     fn distinguishes_unsupported_truncated_and_trailing_input() {
         let cases: &[(&[u8], usize, BinaryErrorKind)] = &[
+            (
+                &[0x02, 0x40, 0x05, 0x0b, 0x0b],
+                12,
+                BinaryErrorKind::UnexpectedElse,
+            ),
+            (&[0x0c, 0x80], 12, BinaryErrorKind::UnexpectedEnd),
             (&[], 10, BinaryErrorKind::MissingExpressionEnd),
             (&[0x41], 11, BinaryErrorKind::UnexpectedEnd),
             (&[0x20, 0x80], 12, BinaryErrorKind::UnexpectedEnd),

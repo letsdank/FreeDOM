@@ -1,4 +1,4 @@
-//! Validation and execution of a small function subset with if/else.
+//! Validation and execution of a small function subset with structured control.
 //!
 //! Only functions with i32 parameters and locals, returning either
 //! nothing or one i32, are supported. An accepted function is not evidence
@@ -9,6 +9,7 @@
 //! <https://webassembly.github.io/spec/core/exec/numerics.html#op-iadd>
 //! <https://webassembly.github.io/spec/core/exec/numerics.html#integer-operations>
 //! <https://webassembly.github.io/spec/core/binary/instructions.html#numeric-instructions>
+//! <https://webassembly.github.io/spec/core/appendix/algorithm.html>
 
 use std::{collections::HashMap, fmt};
 
@@ -28,6 +29,10 @@ pub(crate) enum FunctionError {
     AllocationFailed,
     Decode(BinaryError),
     InvalidLocalIndex {
+        index: u32,
+        offset: usize,
+    },
+    InvalidLabelIndex {
         index: u32,
         offset: usize,
     },
@@ -63,6 +68,9 @@ impl fmt::Display for FunctionError {
             Self::Decode(error) => write!(formatter, "{error}"),
             Self::InvalidLocalIndex { index, offset } => {
                 write!(formatter, "unknown local index {index} at byte {offset}")
+            }
+            Self::InvalidLabelIndex { index, offset } => {
+                write!(formatter, "unknown label index {index} at byte {offset}")
             }
             Self::StackUnderflow {
                 offset,
@@ -103,10 +111,53 @@ impl std::error::Error for FunctionError {}
 /// A decoded function checked against the subset above, not a validated module.
 pub(crate) struct ValidatedFunction {
     expression: Expression,
+    branches: Vec<Option<BranchTarget>>,
     returns_i32: bool,
     max_stack_depth: usize,
     parameter_count: usize,
     local_index_count: u64,
+}
+
+#[derive(Clone, Copy)]
+struct BranchTarget {
+    instruction: usize,
+    height: usize,
+    results: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlKind {
+    Function,
+    Block,
+    Loop,
+    If,
+}
+
+struct ControlFrame {
+    kind: ControlKind,
+    height: usize,
+    results: usize,
+    target: usize,
+    has_else: bool,
+    unreachable: bool,
+}
+
+fn pop_operands(
+    depth: &mut usize,
+    frame: &ControlFrame,
+    needed: usize,
+    offset: usize,
+) -> Result<(), FunctionError> {
+    let available = *depth - frame.height;
+    if available < needed && !frame.unreachable {
+        return Err(FunctionError::StackUnderflow {
+            offset,
+            needed,
+            available,
+        });
+    }
+    *depth -= available.min(needed);
+    Ok(())
 }
 
 /// Resolves the type and checks the expression's final operand stack.
@@ -151,33 +202,60 @@ pub(crate) fn validate_function(
     // All values in the currently supported subset are i32.
     let mut depth = 0_usize;
     let mut max_stack_depth = 0_usize;
-    struct IfFrame {
-        height: usize,
-        results: usize,
-        has_else: bool,
-    }
-    let mut controls: Vec<IfFrame> = Vec::new();
-    for instruction in &expression.instructions {
-        // A branch cannot consume values below its own entry height.
-        let base = controls.last().map_or(0, |frame| frame.height);
-        let available = depth - base;
+    let mut controls = Vec::new();
+    controls
+        .try_reserve(1)
+        .map_err(|_| FunctionError::AllocationFailed)?;
+    controls.push(ControlFrame {
+        kind: ControlKind::Function,
+        height: 0,
+        results: usize::from(returns_i32),
+        target: expression.instructions.len(),
+        has_else: false,
+        unreachable: false,
+    });
+    let mut branches = Vec::new();
+    branches
+        .try_reserve_exact(expression.instructions.len())
+        .map_err(|_| FunctionError::AllocationFailed)?;
+    branches.resize(expression.instructions.len(), None);
+    for (pc, instruction) in expression.instructions.iter().enumerate() {
         match instruction.kind {
-            InstructionKind::If { returns_i32, .. } => {
-                if available < 1 {
-                    return Err(FunctionError::StackUnderflow {
-                        offset: instruction.offset,
-                        needed: 1,
-                        available,
-                    });
+            InstructionKind::If {
+                returns_i32,
+                end_target,
+                ..
+            }
+            | InstructionKind::Block {
+                returns_i32,
+                end_target,
+            }
+            | InstructionKind::Loop {
+                returns_i32,
+                end_target,
+            } => {
+                let kind = match instruction.kind {
+                    InstructionKind::If { .. } => ControlKind::If,
+                    InstructionKind::Loop { .. } => ControlKind::Loop,
+                    _ => ControlKind::Block,
+                };
+                if kind == ControlKind::If {
+                    pop_operands(&mut depth, controls.last().unwrap(), 1, instruction.offset)?;
                 }
-                depth -= 1;
                 controls
                     .try_reserve(1)
                     .map_err(|_| FunctionError::AllocationFailed)?;
-                controls.push(IfFrame {
+                controls.push(ControlFrame {
+                    kind,
                     height: depth,
                     results: usize::from(returns_i32),
+                    target: if kind == ControlKind::Loop {
+                        pc + 1
+                    } else {
+                        end_target
+                    },
                     has_else: false,
+                    unreachable: false,
                 });
             }
             InstructionKind::Else { .. } | InstructionKind::End => {
@@ -185,7 +263,7 @@ pub(crate) fn validate_function(
                     .last_mut()
                     .expect("decoder checked control structure");
                 let actual = depth - frame.height;
-                if actual != frame.results {
+                if actual > frame.results || (actual < frame.results && !frame.unreachable) {
                     return Err(FunctionError::BranchStackMismatch {
                         offset: instruction.offset,
                         expected: frame.results,
@@ -194,46 +272,67 @@ pub(crate) fn validate_function(
                 }
                 if matches!(instruction.kind, InstructionKind::Else { .. }) {
                     frame.has_else = true;
+                    frame.unreachable = false;
                     depth = frame.height;
                 } else {
-                    if frame.results != 0 && !frame.has_else {
+                    if frame.kind == ControlKind::If && frame.results != 0 && !frame.has_else {
                         return Err(FunctionError::MissingElseForResult {
                             offset: instruction.offset,
                         });
                     }
+                    depth = frame.height + frame.results;
                     controls.pop();
+                }
+            }
+            InstructionKind::Br(index) | InstructionKind::BrIf(index) => {
+                let position = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| controls.len().checked_sub(index.checked_add(1)?))
+                    .ok_or(FunctionError::InvalidLabelIndex {
+                        index,
+                        offset: instruction.offset,
+                    })?;
+                let target = &controls[position];
+                let branch = BranchTarget {
+                    instruction: target.target,
+                    height: target.height,
+                    results: if target.kind == ControlKind::Loop {
+                        0
+                    } else {
+                        target.results
+                    },
+                };
+                let frame = controls.last().unwrap();
+                if matches!(instruction.kind, InstructionKind::BrIf(_)) {
+                    pop_operands(&mut depth, frame, 1, instruction.offset)?;
+                }
+                pop_operands(&mut depth, frame, branch.results, instruction.offset)?;
+                branches[pc] = Some(branch);
+                if matches!(instruction.kind, InstructionKind::BrIf(_)) {
+                    depth += branch.results;
+                } else {
+                    let frame = controls.last_mut().unwrap();
+                    depth = frame.height;
+                    frame.unreachable = true;
                 }
             }
             InstructionKind::LocalGet(index) => {
                 validate_local_index(index, local_index_count, instruction.offset)?;
                 depth += 1;
-                max_stack_depth = max_stack_depth.max(depth);
             }
             InstructionKind::LocalSet(index) | InstructionKind::LocalTee(index) => {
                 validate_local_index(index, local_index_count, instruction.offset)?;
-                if available == 0 {
-                    return Err(FunctionError::StackUnderflow {
-                        offset: instruction.offset,
-                        needed: 1,
-                        available,
-                    });
-                }
-                if matches!(instruction.kind, InstructionKind::LocalSet(_)) {
-                    depth -= 1;
+                pop_operands(&mut depth, controls.last().unwrap(), 1, instruction.offset)?;
+                if matches!(instruction.kind, InstructionKind::LocalTee(_)) {
+                    depth += 1;
                 }
             }
             InstructionKind::I32Const(_) => {
                 depth += 1;
-                max_stack_depth = max_stack_depth.max(depth);
             }
             InstructionKind::I32Eqz => {
-                if available == 0 {
-                    return Err(FunctionError::StackUnderflow {
-                        offset: instruction.offset,
-                        needed: 1,
-                        available,
-                    });
-                }
+                pop_operands(&mut depth, controls.last().unwrap(), 1, instruction.offset)?;
+                depth += 1;
             }
             InstructionKind::I32Add
             | InstructionKind::I32Sub
@@ -252,20 +351,15 @@ pub(crate) fn validate_function(
             | InstructionKind::I32LeU
             | InstructionKind::I32GeS
             | InstructionKind::I32GeU => {
-                if available < 2 {
-                    return Err(FunctionError::StackUnderflow {
-                        offset: instruction.offset,
-                        needed: 2,
-                        available,
-                    });
-                }
-                depth -= 1;
+                pop_operands(&mut depth, controls.last().unwrap(), 2, instruction.offset)?;
+                depth += 1;
             }
         }
+        max_stack_depth = max_stack_depth.max(depth);
     }
     let expected = usize::from(returns_i32);
     let actual = depth;
-    if actual != expected {
+    if actual > expected || (actual < expected && !controls[0].unreachable) {
         return Err(FunctionError::ResultStackMismatch {
             expected,
             actual,
@@ -274,6 +368,7 @@ pub(crate) fn validate_function(
     }
     Ok(ValidatedFunction {
         expression,
+        branches,
         returns_i32,
         max_stack_depth,
         parameter_count,
@@ -291,6 +386,8 @@ fn validate_local_index(index: u32, count: u64, offset: usize) -> Result<(), Fun
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExecutionError {
     AllocationFailed,
+    /// Host execution budget, not a WebAssembly trap.
+    FuelExhausted,
     IntegerDivideByZero {
         offset: usize,
     },
@@ -310,6 +407,7 @@ impl fmt::Display for ExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AllocationFailed => write!(formatter, "cannot allocate execution state"),
+            Self::FuelExhausted => write!(formatter, "execution step limit exceeded"),
             Self::IntegerDivideByZero { offset } => {
                 write!(formatter, "integer divide by zero at byte {offset}")
             }
@@ -328,10 +426,19 @@ impl fmt::Display for ExecutionError {
 
 impl std::error::Error for ExecutionError {}
 
-/// Executes a previously checked function. `None` denotes a void result.
+/// Executes with a default host budget. `None` denotes a void result.
 pub(crate) fn execute_function(
     function: &ValidatedFunction,
     arguments: &[i32],
+) -> Result<Option<i32>, ExecutionError> {
+    execute_function_with_fuel(function, arguments, 1_000_000)
+}
+
+/// Executes at most `fuel` decoded instructions; exhaustion is a host limit.
+pub(crate) fn execute_function_with_fuel(
+    function: &ValidatedFunction,
+    arguments: &[i32],
+    mut fuel: u64,
 ) -> Result<Option<i32>, ExecutionError> {
     if arguments.len() != function.parameter_count {
         return Err(ExecutionError::ArgumentCountMismatch {
@@ -348,7 +455,43 @@ pub(crate) fn execute_function(
     let mut modified_locals: HashMap<u32, i32> = HashMap::new();
     let mut pc = 0_usize;
     while let Some(instruction) = function.expression.instructions.get(pc) {
+        if fuel == 0 {
+            return Err(ExecutionError::FuelExhausted);
+        }
+        fuel -= 1;
         match instruction.kind {
+            InstructionKind::Block { .. } | InstructionKind::Loop { .. } => {}
+            InstructionKind::Br(_) | InstructionKind::BrIf(_) => {
+                let taken = if matches!(instruction.kind, InstructionKind::BrIf(_)) {
+                    stack.pop().ok_or(ExecutionError::InvalidValidatedStack)? != 0
+                } else {
+                    true
+                };
+                if taken {
+                    let target = function
+                        .branches
+                        .get(pc)
+                        .copied()
+                        .flatten()
+                        .ok_or(ExecutionError::InvalidValidatedStack)?;
+                    if target.instruction > function.expression.instructions.len()
+                        || stack.len() < target.height + target.results
+                    {
+                        return Err(ExecutionError::InvalidValidatedStack);
+                    }
+                    let result = if target.results == 1 {
+                        Some(stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?)
+                    } else {
+                        None
+                    };
+                    stack.truncate(target.height);
+                    if let Some(result) = result {
+                        stack.push(result);
+                    }
+                    pc = target.instruction;
+                    continue;
+                }
+            }
             InstructionKind::If { false_target, .. } => {
                 let condition = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
                 if condition == 0 {
@@ -474,7 +617,10 @@ pub(crate) fn execute_function(
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionError, FunctionError, execute_function, validate_function};
+    use super::{
+        ExecutionError, FunctionError, execute_function, execute_function_with_fuel,
+        validate_function,
+    };
     use crate::wasm::test_support::{expression, module};
     use crate::wasm::{
         BinaryErrorKind,
@@ -915,6 +1061,135 @@ mod tests {
         };
         let function = validate_function(&declarations, 0, &body).unwrap();
         assert_eq!(execute_function(&function, &[]), Ok(Some(42)));
+    }
+
+    #[test]
+    fn executes_blocks_loops_and_value_carrying_branches() {
+        let examples: &[(&str, &[i32], i32)] = &[
+            (
+                "(module (func (param i32) (result i32) (local i32)
+                loop local.get 1 local.get 0 i32.add local.set 1
+                    local.get 0 i32.const 1 i32.sub local.tee 0 br_if 0
+                end local.get 1))",
+                &[5],
+                15,
+            ),
+            (
+                "(module (func (result i32) i32.const 10 block (result i32)
+                i32.const 99 i32.const 32 br 0 i32.add end i32.add))",
+                &[],
+                42,
+            ),
+            (
+                "(module (func (param i32) (result i32) block (result i32)
+                i32.const 37 local.get 0 br_if 0 i32.const 5 i32.add end))",
+                &[0],
+                42,
+            ),
+            (
+                "(module (func (param i32) (result i32) block (result i32)
+                i32.const 37 local.get 0 br_if 0 i32.const 5 i32.add end))",
+                &[1],
+                37,
+            ),
+            (
+                "(module (func (result i32) block (result i32) block (result i32)
+                i32.const 42 br 1 end i32.const 3 i32.add end))",
+                &[],
+                42,
+            ),
+            ("(module (func (result i32) i32.const 42 br 0))", &[], 42),
+            (
+                "(module (func (result i32) block (result i32)
+                i32.const 1 if i32.const 42 br 1 end i32.const 0 end))",
+                &[],
+                42,
+            ),
+            (
+                "(module (func (result i32) loop (result i32) i32.const 42 end))",
+                &[],
+                42,
+            ),
+        ];
+        for (wat, args, expected) in examples {
+            let bytes = module(wat);
+            let framed = scan_module(&bytes).unwrap();
+            let declarations = decode_declarations(&framed).unwrap();
+            let bodies = decode_bodies(&framed).unwrap();
+            let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+            assert_eq!(
+                execute_function(&function, args),
+                Ok(Some(*expected)),
+                "{wat}"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_branches_and_limits_infinite_loops() {
+        let declarations = Declarations {
+            types: vec![FunctionType {
+                parameters: vec![],
+                results: vec![],
+            }],
+            function_types: vec![],
+        };
+        let instructions = expression("br 1");
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 20,
+            instructions: &instructions,
+        };
+        assert!(matches!(
+            validate_function(&declarations, 0, &body),
+            Err(FunctionError::InvalidLabelIndex {
+                index: 1,
+                offset: 20,
+            })
+        ));
+        let instructions = expression("block (result i32) i32.const 1 br_if 0 i32.const 42 end");
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 20,
+            instructions: &instructions,
+        };
+        assert!(matches!(
+            validate_function(&declarations, 0, &body),
+            Err(FunctionError::StackUnderflow {
+                needed: 1,
+                available: 0,
+                ..
+            })
+        ));
+        let instructions = expression("block br 0 i32.const 1 end");
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 20,
+            instructions: &instructions,
+        };
+        assert!(matches!(
+            validate_function(&declarations, 0, &body),
+            Err(FunctionError::BranchStackMismatch {
+                expected: 0,
+                actual: 1,
+                ..
+            })
+        ));
+        let instructions = expression("loop br 0 end");
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 20,
+            instructions: &instructions,
+        };
+        let function = validate_function(&declarations, 0, &body).unwrap();
+        assert_eq!(
+            execute_function_with_fuel(&function, &[], 20),
+            Err(ExecutionError::FuelExhausted)
+        );
+        assert_eq!(
+            execute_function_with_fuel(&function, &[], 0),
+            Err(ExecutionError::FuelExhausted)
+        );
     }
 
     #[test]

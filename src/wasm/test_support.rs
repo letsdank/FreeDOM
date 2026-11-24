@@ -119,8 +119,12 @@ fn section(module: &mut Vec<u8>, id: u8, content: &[u8]) {
 
 fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
     match token {
-        "if" => {
-            out.push(0x04);
+        "block" | "loop" | "if" => {
+            out.push(match token {
+                "block" => 0x02,
+                "loop" => 0x03,
+                _ => 0x04,
+            });
             if tokens.clone().next() == Some("(") {
                 tokens.expect("(");
                 tokens.expect("result");
@@ -133,6 +137,17 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
         }
         "else" => out.push(0x05),
         "end" => out.push(0x0b),
+        "br" | "br_if" => {
+            out.push(if token == "br" { 0x0c } else { 0x0d });
+            u32_leb(
+                tokens
+                    .next()
+                    .expect("missing label index")
+                    .parse()
+                    .expect("invalid label index"),
+                out,
+            );
+        }
         "i32.const" => {
             out.push(0x41);
             i32_leb(
@@ -376,6 +391,10 @@ mod tests {
         assert_eq!(
             expression("i32.const 1 if (result i32) i32.const 2 else i32.const 3 end"),
             [0x41, 1, 0x04, 0x7f, 0x41, 2, 0x05, 0x41, 3, 0x0b, 0x0b]
+        );
+        assert_eq!(
+            expression("block loop br_if 1 br 0 end end"),
+            [0x02, 0x40, 0x03, 0x40, 0x0d, 1, 0x0c, 0, 0x0b, 0x0b, 0x0b]
         );
     }
 
