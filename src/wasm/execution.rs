@@ -467,7 +467,10 @@ pub(crate) fn validate_function_with_memory(
             InstructionKind::I32Const(_) => {
                 depth += 1;
             }
-            InstructionKind::I32Eqz => {
+            InstructionKind::I32Eqz
+            | InstructionKind::I32Clz
+            | InstructionKind::I32Ctz
+            | InstructionKind::I32Popcnt => {
                 pop_operands(&mut depth, controls.last().unwrap(), 1, instruction.offset)?;
                 depth += 1;
             }
@@ -478,6 +481,14 @@ pub(crate) fn validate_function_with_memory(
             | InstructionKind::I32DivU
             | InstructionKind::I32RemS
             | InstructionKind::I32RemU
+            | InstructionKind::I32And
+            | InstructionKind::I32Or
+            | InstructionKind::I32Xor
+            | InstructionKind::I32Shl
+            | InstructionKind::I32ShrS
+            | InstructionKind::I32ShrU
+            | InstructionKind::I32Rotl
+            | InstructionKind::I32Rotr
             | InstructionKind::I32Eq
             | InstructionKind::I32Ne
             | InstructionKind::I32LtS
@@ -875,11 +886,20 @@ fn resume_frame(
                 }
             }
             InstructionKind::I32Const(value) => stack.push(value),
-            InstructionKind::I32Eqz => {
+            InstructionKind::I32Eqz
+            | InstructionKind::I32Clz
+            | InstructionKind::I32Ctz
+            | InstructionKind::I32Popcnt => {
                 let value = stack
                     .last_mut()
                     .ok_or(ExecutionError::InvalidValidatedStack)?;
-                *value = i32::from(*value == 0);
+                *value = match instruction.kind {
+                    InstructionKind::I32Eqz => i32::from(*value == 0),
+                    InstructionKind::I32Clz => value.leading_zeros() as i32,
+                    InstructionKind::I32Ctz => value.trailing_zeros() as i32,
+                    InstructionKind::I32Popcnt => value.count_ones() as i32,
+                    _ => return Err(ExecutionError::InvalidValidatedStack),
+                };
             }
             InstructionKind::I32Eq
             | InstructionKind::I32Ne
@@ -914,7 +934,15 @@ fn resume_frame(
             | InstructionKind::I32DivS
             | InstructionKind::I32DivU
             | InstructionKind::I32RemS
-            | InstructionKind::I32RemU => {
+            | InstructionKind::I32RemU
+            | InstructionKind::I32And
+            | InstructionKind::I32Or
+            | InstructionKind::I32Xor
+            | InstructionKind::I32Shl
+            | InstructionKind::I32ShrS
+            | InstructionKind::I32ShrU
+            | InstructionKind::I32Rotl
+            | InstructionKind::I32Rotr => {
                 let right = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
                 let left = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
                 let offset = instruction.offset;
@@ -922,6 +950,15 @@ fn resume_frame(
                     InstructionKind::I32Add => left.wrapping_add(right),
                     InstructionKind::I32Sub => left.wrapping_sub(right),
                     InstructionKind::I32Mul => left.wrapping_mul(right),
+                    InstructionKind::I32And => left & right,
+                    InstructionKind::I32Or => left | right,
+                    InstructionKind::I32Xor => left ^ right,
+                    // Wasm uses the low five bits of the shift operand.
+                    InstructionKind::I32Shl => left.wrapping_shl(right as u32),
+                    InstructionKind::I32ShrS => left.wrapping_shr(right as u32),
+                    InstructionKind::I32ShrU => (left as u32).wrapping_shr(right as u32) as i32,
+                    InstructionKind::I32Rotl => left.rotate_left(right as u32),
+                    InstructionKind::I32Rotr => left.rotate_right(right as u32),
                     InstructionKind::I32DivS
                     | InstructionKind::I32DivU
                     | InstructionKind::I32RemS
@@ -1043,10 +1080,10 @@ mod tests {
                 offset: 24,
             })
         ));
-        let unsupported = body(&[0x71, 0x0b]);
+        let unsupported = body(&[0x79, 0x0b]);
         assert!(matches!(
             validate_function(&declarations, 0, &unsupported),
-            Err(FunctionError::Decode(error)) if error.kind == BinaryErrorKind::UnsupportedOpcode(0x71)
+            Err(FunctionError::Decode(error)) if error.kind == BinaryErrorKind::UnsupportedOpcode(0x79)
         ));
         let local_body = FunctionBody {
             locals: vec![LocalGroup {
@@ -1526,6 +1563,104 @@ mod tests {
             execute_function_with_fuel(&function, &[], 0),
             Err(ExecutionError::FuelExhausted)
         );
+    }
+
+    #[test]
+    fn executes_i32_bitwise_shifts_and_rotations() {
+        let cases = [
+            ("i32.and", 0x71, 0x12345678, 0x0f0f0f0f, 0x02040608),
+            ("i32.or", 0x72, i32::MIN, 1, i32::MIN + 1),
+            ("i32.xor", 0x73, 5, 3, 6),
+            ("i32.shl", 0x74, 1, 31, i32::MIN),
+            ("i32.shl", 0x74, 1, 32, 1),
+            ("i32.shl", 0x74, 1, -1, i32::MIN),
+            ("i32.shr_s", 0x75, i32::MIN, 1, -1073741824),
+            ("i32.shr_s", 0x75, -1, 32, -1),
+            ("i32.shr_u", 0x76, -1, 1, i32::MAX),
+            ("i32.shr_u", 0x76, i32::MIN, -1, 1),
+            ("i32.rotl", 0x77, 1, -1, i32::MIN),
+            ("i32.rotr", 0x78, 1, 33, i32::MIN),
+            ("i32.rotr", 0x78, i32::MIN, -1, 1),
+        ];
+        for (op, opcode, left, right, expected) in cases {
+            assert_eq!(expression(op), [opcode, 0x0b]);
+            let bytes = module(&format!(
+                "(module (func (param i32 i32) (result i32) local.get 0 local.get 1 {op}))"
+            ));
+            let framed = scan_module(&bytes).unwrap();
+            let declarations = decode_declarations(&framed).unwrap();
+            let bodies = decode_bodies(&framed).unwrap();
+            let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+            assert_eq!(
+                execute_function(&function, &[left, right]),
+                Ok(Some(expected)),
+                "{op} {left} {right}"
+            );
+            let instructions = expression(&format!("local.get 0 {op}"));
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 20,
+                instructions: &instructions,
+            };
+            assert!(
+                matches!(
+                    validate_function(&declarations, 0, &body),
+                    Err(FunctionError::StackUnderflow {
+                        offset: 22,
+                        needed: 2,
+                        available: 1,
+                    })
+                ),
+                "{op}"
+            );
+        }
+    }
+
+    #[test]
+    fn executes_i32_bit_counts_including_zero() {
+        let cases = [
+            ("i32.clz", 0x67, 0, 32),
+            ("i32.clz", 0x67, 1, 31),
+            ("i32.clz", 0x67, -1, 0),
+            ("i32.ctz", 0x68, 0, 32),
+            ("i32.ctz", 0x68, i32::MIN, 31),
+            ("i32.ctz", 0x68, 12, 2),
+            ("i32.popcnt", 0x69, 0, 0),
+            ("i32.popcnt", 0x69, -1, 32),
+            ("i32.popcnt", 0x69, 0x12345678, 13),
+        ];
+        for (op, opcode, input, expected) in cases {
+            assert_eq!(expression(op), [opcode, 0x0b]);
+            let bytes = module(&format!(
+                "(module (func (param i32) (result i32) local.get 0 {op}))"
+            ));
+            let framed = scan_module(&bytes).unwrap();
+            let declarations = decode_declarations(&framed).unwrap();
+            let bodies = decode_bodies(&framed).unwrap();
+            let function = validate_function(&declarations, 0, &bodies[0]).unwrap();
+            assert_eq!(
+                execute_function(&function, &[input]),
+                Ok(Some(expected)),
+                "{op} {input}"
+            );
+            let instructions = expression(op);
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 20,
+                instructions: &instructions,
+            };
+            assert!(
+                matches!(
+                    validate_function(&declarations, 0, &body),
+                    Err(FunctionError::StackUnderflow {
+                        offset: 20,
+                        needed: 1,
+                        available: 0
+                    })
+                ),
+                "{op}"
+            );
+        }
     }
 
     #[test]

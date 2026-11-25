@@ -373,6 +373,21 @@ mod tests {
     }
 
     #[test]
+    fn bitwise_operations_work_with_linear_memory() {
+        let byte = module(
+            r#"(module (memory 1)
+            (data (i32.const 0) "\02")
+            (func (export "set-high-bit") (param i32) (result i32)
+                local.get 0 local.get 0 i32.load8_u i32.const 128 i32.or i32.store8
+                local.get 0 i32.load8_u))"#,
+        );
+        let framed = scan_module(&byte).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
+        assert_eq!(set.execute_export("set-high-bit", &[0], 100), Ok(Some(130)));
+        assert_eq!(set.execute_export("set-high-bit", &[0], 100), Ok(Some(130)));
+    }
+
+    #[test]
     fn reads_and_writes_single_bytes_with_correct_bounds_and_signs() {
         let bytes = module(
             r#"(module (memory 1)

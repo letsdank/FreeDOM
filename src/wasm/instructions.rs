@@ -75,6 +75,9 @@ pub(crate) enum InstructionKind {
     I32LeU,
     I32GeS,
     I32GeU,
+    I32Clz,
+    I32Ctz,
+    I32Popcnt,
     I32Add,
     I32Sub,
     I32Mul,
@@ -82,6 +85,14 @@ pub(crate) enum InstructionKind {
     I32DivU,
     I32RemS,
     I32RemU,
+    I32And,
+    I32Or,
+    I32Xor,
+    I32Shl,
+    I32ShrS,
+    I32ShrU,
+    I32Rotl,
+    I32Rotr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +258,9 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x4d => InstructionKind::I32LeU,
             0x4e => InstructionKind::I32GeS,
             0x4f => InstructionKind::I32GeU,
+            0x67 => InstructionKind::I32Clz,
+            0x68 => InstructionKind::I32Ctz,
+            0x69 => InstructionKind::I32Popcnt,
             0x6a => InstructionKind::I32Add,
             0x6b => InstructionKind::I32Sub,
             0x6c => InstructionKind::I32Mul,
@@ -254,6 +268,14 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x6e => InstructionKind::I32DivU,
             0x6f => InstructionKind::I32RemS,
             0x70 => InstructionKind::I32RemU,
+            0x71 => InstructionKind::I32And,
+            0x72 => InstructionKind::I32Or,
+            0x73 => InstructionKind::I32Xor,
+            0x74 => InstructionKind::I32Shl,
+            0x75 => InstructionKind::I32ShrS,
+            0x76 => InstructionKind::I32ShrU,
+            0x77 => InstructionKind::I32Rotl,
+            0x78 => InstructionKind::I32Rotr,
             opcode => {
                 return Err(BinaryError::new(
                     offset,
@@ -311,7 +333,7 @@ mod tests {
             (&[0x41], 11, BinaryErrorKind::UnexpectedEnd),
             (&[0x20, 0x80], 12, BinaryErrorKind::UnexpectedEnd),
             (&[0x41, 0x00], 12, BinaryErrorKind::MissingExpressionEnd),
-            (&[0x71, 0x0b], 10, BinaryErrorKind::UnsupportedOpcode(0x71)),
+            (&[0x79, 0x0b], 10, BinaryErrorKind::UnsupportedOpcode(0x79)),
             (&[0x0b, 0x00], 11, BinaryErrorKind::TrailingExpressionData),
             (
                 &[0x41, 0x80, 0x80, 0x80, 0x80, 0x08, 0x0b],
