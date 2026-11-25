@@ -128,9 +128,9 @@ impl LinearMemory {
         Some(())
     }
 
-    fn range(&self, address: i32, offset: u64) -> Option<std::ops::Range<usize>> {
+    fn range(&self, address: i32, offset: u64, width: u64) -> Option<std::ops::Range<usize>> {
         let start = u64::from(address as u32).checked_add(offset)?;
-        let end = start.checked_add(4)?;
+        let end = start.checked_add(width)?;
         if end > self.bytes.len() as u64 {
             return None;
         }
@@ -138,13 +138,24 @@ impl LinearMemory {
     }
 
     pub(crate) fn load_i32(&self, address: i32, offset: u64) -> Option<i32> {
-        let range = self.range(address, offset)?;
+        let range = self.range(address, offset, 4)?;
         Some(i32::from_le_bytes(self.bytes[range].try_into().ok()?))
     }
 
     pub(crate) fn store_i32(&mut self, address: i32, offset: u64, value: i32) -> Option<()> {
-        let range = self.range(address, offset)?;
+        let range = self.range(address, offset, 4)?;
         self.bytes[range].copy_from_slice(&value.to_le_bytes());
+        Some(())
+    }
+
+    pub(crate) fn load_u8(&self, address: i32, offset: u64) -> Option<u8> {
+        let range = self.range(address, offset, 1)?;
+        Some(self.bytes[range.start])
+    }
+
+    pub(crate) fn store_u8(&mut self, address: i32, offset: u64, value: i32) -> Option<()> {
+        let range = self.range(address, offset, 1)?;
+        self.bytes[range.start] = value as u8;
         Some(())
     }
 }

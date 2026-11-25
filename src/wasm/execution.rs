@@ -393,13 +393,22 @@ pub(crate) fn validate_function_with_memory(
                 depth += signature.results.len();
             }
             InstructionKind::I32Load { align, offset }
-            | InstructionKind::I32Store { align, offset } => {
+            | InstructionKind::I32Store { align, offset }
+            | InstructionKind::I32Load8S { align, offset }
+            | InstructionKind::I32Load8U { align, offset }
+            | InstructionKind::I32Store8 { align, offset } => {
                 if !has_memory {
                     return Err(FunctionError::MissingMemory {
                         offset: instruction.offset,
                     });
                 }
-                if align > 2 {
+                let is_byte = matches!(
+                    instruction.kind,
+                    InstructionKind::I32Load8S { .. }
+                        | InstructionKind::I32Load8U { .. }
+                        | InstructionKind::I32Store8 { .. }
+                );
+                if align > if is_byte { 0 } else { 2 } {
                     return Err(FunctionError::InvalidMemoryAlignment {
                         align,
                         offset: instruction.offset,
@@ -411,7 +420,12 @@ pub(crate) fn validate_function_with_memory(
                         offset: instruction.offset,
                     });
                 }
-                let is_load = matches!(instruction.kind, InstructionKind::I32Load { .. });
+                let is_load = matches!(
+                    instruction.kind,
+                    InstructionKind::I32Load { .. }
+                        | InstructionKind::I32Load8S { .. }
+                        | InstructionKind::I32Load8U { .. }
+                );
                 pop_operands(
                     &mut depth,
                     controls.last().unwrap(),
@@ -712,6 +726,35 @@ fn resume_frame(
         }
         *fuel -= 1;
         match instruction.kind {
+            InstructionKind::I32Load8S { offset, .. }
+            | InstructionKind::I32Load8U { offset, .. } => {
+                let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let value = memory
+                    .as_ref()
+                    .ok_or(ExecutionError::InvalidValidatedMemory)?
+                    .load_u8(address, offset)
+                    .ok_or(ExecutionError::MemoryOutOfBounds {
+                        offset: instruction.offset,
+                    })?;
+                stack.push(
+                    if matches!(instruction.kind, InstructionKind::I32Load8S { .. }) {
+                        i32::from(value as i8)
+                    } else {
+                        i32::from(value)
+                    },
+                );
+            }
+            InstructionKind::I32Store8 { offset, .. } => {
+                let value = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                memory
+                    .as_mut()
+                    .ok_or(ExecutionError::InvalidValidatedMemory)?
+                    .store_u8(address, offset, value)
+                    .ok_or(ExecutionError::MemoryOutOfBounds {
+                        offset: instruction.offset,
+                    })?;
+            }
             InstructionKind::MemorySize(_) => {
                 let pages = memory
                     .as_ref()

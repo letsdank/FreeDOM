@@ -230,9 +230,19 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
             }
             u32_leb(index.unwrap_or(0), out);
         }
-        "i32.load" | "i32.store" => {
-            out.push(if token == "i32.load" { 0x28 } else { 0x36 });
-            let mut align = 2;
+        "i32.load" | "i32.store" | "i32.load8_s" | "i32.load8_u" | "i32.store8" => {
+            out.push(match token {
+                "i32.load" => 0x28,
+                "i32.load8_s" => 0x2c,
+                "i32.load8_u" => 0x2d,
+                "i32.store" => 0x36,
+                _ => 0x3a,
+            });
+            let mut align = if matches!(token, "i32.load" | "i32.store") {
+                2
+            } else {
+                0
+            };
             let mut offset = 0;
             let mut seen_align = false;
             let mut seen_offset = false;
@@ -629,6 +639,10 @@ mod tests {
         assert_eq!(
             expression("i32.load offset=17 align=1 i32.store"),
             [0x28, 0, 17, 0x36, 2, 0, 0x0b]
+        );
+        assert_eq!(
+            expression("i32.load8_s i32.load8_u i32.store8"),
+            [0x2c, 0, 0, 0x2d, 0, 0, 0x3a, 0, 0, 0x0b]
         );
         assert_eq!(
             expression("memory.size memory.grow 0"),

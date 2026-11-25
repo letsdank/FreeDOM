@@ -49,6 +49,18 @@ pub(crate) enum InstructionKind {
         align: u32,
         offset: u64,
     },
+    I32Load8S {
+        align: u32,
+        offset: u64,
+    },
+    I32Load8U {
+        align: u32,
+        offset: u64,
+    },
+    I32Store8 {
+        align: u32,
+        offset: u64,
+    },
     MemorySize(u32),
     MemoryGrow(u32),
     I32Const(i32),
@@ -205,9 +217,21 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                 let (align, offset) = read_memory_immediate(&mut reader)?;
                 InstructionKind::I32Load { align, offset }
             }
+            0x2c => {
+                let (align, offset) = read_memory_immediate(&mut reader)?;
+                InstructionKind::I32Load8S { align, offset }
+            }
+            0x2d => {
+                let (align, offset) = read_memory_immediate(&mut reader)?;
+                InstructionKind::I32Load8U { align, offset }
+            }
             0x36 => {
                 let (align, offset) = read_memory_immediate(&mut reader)?;
                 InstructionKind::I32Store { align, offset }
+            }
+            0x3a => {
+                let (align, offset) = read_memory_immediate(&mut reader)?;
+                InstructionKind::I32Store8 { align, offset }
             }
             0x3f => InstructionKind::MemorySize(reader.read_u32_leb()?),
             0x40 => InstructionKind::MemoryGrow(reader.read_u32_leb()?),
