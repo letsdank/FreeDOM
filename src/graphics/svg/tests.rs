@@ -1,6 +1,6 @@
 use super::*;
 use crate::graphics::geometry::PathCommand;
-use crate::url::Url;
+use freedom_url::Url;
 
 #[test]
 fn parses_path_fill_and_group_transform() {

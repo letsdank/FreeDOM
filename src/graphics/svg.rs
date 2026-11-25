@@ -39,8 +39,8 @@ use crate::{
         raster::{Color, FillRule, Paint, StrokeLineCap, StrokeLineJoin},
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
-    url::Url,
 };
+use freedom_url::Url;
 use std::{error::Error, fmt};
 
 #[derive(Clone, Debug, PartialEq)]

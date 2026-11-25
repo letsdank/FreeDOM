@@ -14,9 +14,9 @@ use crate::{
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     javascript::{DocumentScriptSession, DocumentState},
     styled_tree::{SourcePath, StyledTree},
-    url::Url,
 };
 use anyhow::Result;
+use freedom_url::Url;
 
 pub(crate) enum BlockContent {
     Text(TextBlock),

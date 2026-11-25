@@ -8,8 +8,8 @@ use crate::{
     page::parse_xhtml_for_test,
     page_layout::CONTENT_TOP,
     render::{GlyphRasterCache, paint_preview_scene},
-    url::Url,
 };
+use freedom_url::Url;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]

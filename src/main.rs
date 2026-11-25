@@ -9,7 +9,6 @@ mod page_layout;
 mod performance;
 mod render;
 mod styled_tree;
-mod url;
 
 #[cfg(test)]
 mod xml;

@@ -1,4 +1,4 @@
-use crate::url::Url;
+use freedom_url::Url;
 use reqwest::{blocking::Client, header::CONTENT_TYPE, redirect::Policy};
 use std::{error::Error, fmt, time::Duration};
 

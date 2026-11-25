@@ -575,11 +575,16 @@ dependencies = [
  "anyhow",
  "flate2",
  "font8x8",
+ "freedom-url",
  "png",
  "reqwest",
  "softbuffer",
  "winit",
 ]
+
+[[package]]
+name = "freedom-url"
+version = "0.1.0"
 
 [[package]]
 name = "freedom-wasm"

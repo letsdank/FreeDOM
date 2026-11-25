@@ -8,7 +8,7 @@ use super::{
     HostError, HostRoots, HostValue, JsError, NativeFunction, PostfixStep, Statement,
     TestContextMethod, UserFunction, Value,
 };
-use crate::url::Url;
+use freedom_url::Url;
 use std::collections::{HashMap, VecDeque};
 
 const DEFAULT_EXECUTION_STEPS: usize = 1_000_000;

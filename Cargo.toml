@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/freedom-wasm"]
-default-members = [".", "crates/freedom-wasm"]
+members = ["crates/freedom-wasm", "crates/freedom-url"]
+default-members = [".", "crates/freedom-wasm", "crates/freedom-url"]
 resolver = "3"
 
 [dependencies]
 anyhow = "1"
+freedom-url = { path = "crates/freedom-url" }
 font8x8 = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "charset", "http2"] }
 softbuffer = "0.4"

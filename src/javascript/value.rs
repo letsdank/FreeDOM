@@ -4,7 +4,7 @@
 //!
 //! Object, string, and function semantics are not yet fully implemented.
 
-use crate::url::Url;
+use freedom_url::Url;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 use super::arguments::ArgumentsValue;

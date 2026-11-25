@@ -1,9 +1,7 @@
 use std::{collections::HashMap, fs};
 
-use crate::{
-    javascript::{JsonValue, parse_json},
-    url::Url,
-};
+use crate::javascript::{JsonValue, parse_json};
+use freedom_url::Url;
 
 struct UrlCase {
     fixture_index: usize,
