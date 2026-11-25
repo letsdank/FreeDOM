@@ -396,19 +396,25 @@ pub(crate) fn validate_function_with_memory(
             | InstructionKind::I32Store { align, offset }
             | InstructionKind::I32Load8S { align, offset }
             | InstructionKind::I32Load8U { align, offset }
-            | InstructionKind::I32Store8 { align, offset } => {
+            | InstructionKind::I32Store8 { align, offset }
+            | InstructionKind::I32Load16S { align, offset }
+            | InstructionKind::I32Load16U { align, offset }
+            | InstructionKind::I32Store16 { align, offset } => {
                 if !has_memory {
                     return Err(FunctionError::MissingMemory {
                         offset: instruction.offset,
                     });
                 }
-                let is_byte = matches!(
-                    instruction.kind,
+                let max_align = match instruction.kind {
                     InstructionKind::I32Load8S { .. }
-                        | InstructionKind::I32Load8U { .. }
-                        | InstructionKind::I32Store8 { .. }
-                );
-                if align > if is_byte { 0 } else { 2 } {
+                    | InstructionKind::I32Load8U { .. }
+                    | InstructionKind::I32Store8 { .. } => 0,
+                    InstructionKind::I32Load16S { .. }
+                    | InstructionKind::I32Load16U { .. }
+                    | InstructionKind::I32Store16 { .. } => 1,
+                    _ => 2,
+                };
+                if align > max_align {
                     return Err(FunctionError::InvalidMemoryAlignment {
                         align,
                         offset: instruction.offset,
@@ -425,6 +431,8 @@ pub(crate) fn validate_function_with_memory(
                     InstructionKind::I32Load { .. }
                         | InstructionKind::I32Load8S { .. }
                         | InstructionKind::I32Load8U { .. }
+                        | InstructionKind::I32Load16S { .. }
+                        | InstructionKind::I32Load16U { .. }
                 );
                 pop_operands(
                     &mut depth,
@@ -737,6 +745,35 @@ fn resume_frame(
         }
         *fuel -= 1;
         match instruction.kind {
+            InstructionKind::I32Load16S { offset, .. }
+            | InstructionKind::I32Load16U { offset, .. } => {
+                let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let value = memory
+                    .as_ref()
+                    .ok_or(ExecutionError::InvalidValidatedMemory)?
+                    .load_u16(address, offset)
+                    .ok_or(ExecutionError::MemoryOutOfBounds {
+                        offset: instruction.offset,
+                    })?;
+                stack.push(
+                    if matches!(instruction.kind, InstructionKind::I32Load16S { .. }) {
+                        i32::from(value as i16)
+                    } else {
+                        i32::from(value)
+                    },
+                );
+            }
+            InstructionKind::I32Store16 { offset, .. } => {
+                let value = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                memory
+                    .as_mut()
+                    .ok_or(ExecutionError::InvalidValidatedMemory)?
+                    .store_u16(address, offset, value)
+                    .ok_or(ExecutionError::MemoryOutOfBounds {
+                        offset: instruction.offset,
+                    })?;
+            }
             InstructionKind::I32Load8S { offset, .. }
             | InstructionKind::I32Load8U { offset, .. } => {
                 let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;

@@ -230,16 +230,22 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
             }
             u32_leb(index.unwrap_or(0), out);
         }
-        "i32.load" | "i32.store" | "i32.load8_s" | "i32.load8_u" | "i32.store8" => {
+        "i32.load" | "i32.store" | "i32.load8_s" | "i32.load8_u" | "i32.store8"
+        | "i32.load16_s" | "i32.load16_u" | "i32.store16" => {
             out.push(match token {
                 "i32.load" => 0x28,
                 "i32.load8_s" => 0x2c,
                 "i32.load8_u" => 0x2d,
+                "i32.load16_s" => 0x2e,
+                "i32.load16_u" => 0x2f,
                 "i32.store" => 0x36,
-                _ => 0x3a,
+                "i32.store8" => 0x3a,
+                _ => 0x3b,
             });
             let mut align = if matches!(token, "i32.load" | "i32.store") {
                 2
+            } else if matches!(token, "i32.load16_s" | "i32.load16_u" | "i32.store16") {
+                1
             } else {
                 0
             };
@@ -654,6 +660,10 @@ mod tests {
         assert_eq!(
             expression("i32.load8_s i32.load8_u i32.store8"),
             [0x2c, 0, 0, 0x2d, 0, 0, 0x3a, 0, 0, 0x0b]
+        );
+        assert_eq!(
+            expression("i32.load16_s i32.load16_u i32.store16"),
+            [0x2e, 1, 0, 0x2f, 1, 0, 0x3b, 1, 0, 0x0b]
         );
         assert_eq!(
             expression("memory.size memory.grow 0"),

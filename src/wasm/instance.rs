@@ -388,6 +388,145 @@ mod tests {
     }
 
     #[test]
+    fn reads_and_writes_16_bit_values_with_correct_bounds_and_signs() {
+        let bytes = module(
+            r#"(module (memory 1 2)
+            (data (i32.const 0) "\34\12\00\80\ff\ff\ff\7f")
+            (func (export "signed") (param i32) (result i32) local.get 0 i32.load16_s)
+            (func (export "unsigned") (param i32) (result i32) local.get 0 i32.load16_u align=1)
+            (func (export "offset") (param i32) (result i32) local.get 0 i32.load16_u offset=1)
+            (func (export "byte") (param i32) (result i32) local.get 0 i32.load8_u)
+            (func (export "store") (param i32 i32) local.get 0 local.get 1 i32.store16 align=1)
+            (func (export "grow") (param i32) (result i32) local.get 0 memory.grow)
+            (func (export "overflow") (result i32) i32.const 1 i32.load16_u offset=4294967295))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
+        for (address, signed, unsigned) in [
+            (0, 4660, 4660),
+            (2, -32768, 32768),
+            (4, -1, 65535),
+            (6, 32767, 32767),
+        ] {
+            assert_eq!(
+                set.execute_export("signed", &[address], 100),
+                Ok(Some(signed))
+            );
+            assert_eq!(
+                set.execute_export("unsigned", &[address], 100),
+                Ok(Some(unsigned))
+            );
+        }
+        assert_eq!(set.execute_export("offset", &[1], 100), Ok(Some(32768)));
+        assert_eq!(set.execute_export("store", &[1, 0x1234abcd], 100), Ok(None));
+        assert_eq!(set.execute_export("unsigned", &[1], 100), Ok(Some(0xabcd)));
+        assert_eq!(set.execute_export("byte", &[0], 100), Ok(Some(0x34)));
+        assert_eq!(set.execute_export("byte", &[3], 100), Ok(Some(0x80)));
+        assert_eq!(set.execute_export("store", &[65534, 0x1234], 100), Ok(None));
+        for (name, arguments) in [
+            ("unsigned", &[65535][..]),
+            ("signed", &[-1][..]),
+            ("offset", &[65534][..]),
+            ("store", &[65535, -1][..]),
+            ("overflow", &[][..]),
+        ] {
+            assert!(
+                matches!(
+                    set.execute_export(name, arguments, 100),
+                    Err(ExportCallError::Execution(
+                        ExecutionError::MemoryOutOfBounds { .. }
+                    ))
+                ),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            set.execute_export("unsigned", &[65534], 100),
+            Ok(Some(0x1234))
+        );
+        assert_eq!(set.execute_export("grow", &[1], 100), Ok(Some(1)));
+        assert_eq!(
+            set.execute_export("unsigned", &[65535], 100),
+            Ok(Some(0x12))
+        );
+    }
+
+    #[test]
+    fn validates_16_bit_memory_instructions() {
+        let cases = [
+            (
+                "(module (func (result i32) i32.const 0 i32.load16_u))",
+                "missing",
+            ),
+            (
+                "(module (memory 1) (func (result i32) i32.const 0 i32.load16_s align=4))",
+                "alignment",
+            ),
+            (
+                "(module (memory 1) (func i32.const 0 i32.const 0 i32.store16 align=4))",
+                "alignment",
+            ),
+            (
+                "(module (memory 1) (func i32.const 0 i32.store16))",
+                "underflow",
+            ),
+            (
+                "(module (memory 1) (func (result i32) i32.const 0 i32.load16_u offset=4294967296))",
+                "offset",
+            ),
+        ];
+        for (wat, expected) in cases {
+            let bytes = module(wat);
+            let framed = scan_module(&bytes).unwrap();
+            let error = match FunctionSet::from_framed(&framed) {
+                Ok(_) => panic!("unexpectedly accepted {wat}"),
+                Err(error) => error,
+            };
+            assert!(
+                match expected {
+                    "missing" => matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::MissingMemory { .. },
+                            ..
+                        }
+                    ),
+                    "alignment" => matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::InvalidMemoryAlignment { align: 2, .. },
+                            ..
+                        }
+                    ),
+                    "underflow" => matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::StackUnderflow {
+                                needed: 2,
+                                available: 1,
+                                ..
+                            },
+                            ..
+                        }
+                    ),
+                    "offset" => matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::InvalidMemoryOffset {
+                                value: 4294967296,
+                                ..
+                            },
+                            ..
+                        }
+                    ),
+                    _ => false,
+                },
+                "{wat}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn reads_and_writes_single_bytes_with_correct_bounds_and_signs() {
         let bytes = module(
             r#"(module (memory 1)

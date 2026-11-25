@@ -158,6 +158,17 @@ impl LinearMemory {
         self.bytes[range.start] = value as u8;
         Some(())
     }
+
+    pub(crate) fn load_u16(&self, address: i32, offset: u64) -> Option<u16> {
+        let range = self.range(address, offset, 2)?;
+        Some(u16::from_le_bytes(self.bytes[range].try_into().ok()?))
+    }
+
+    pub(crate) fn store_u16(&mut self, address: i32, offset: u64, value: i32) -> Option<()> {
+        let range = self.range(address, offset, 2)?;
+        self.bytes[range].copy_from_slice(&(value as u16).to_le_bytes());
+        Some(())
+    }
 }
 
 #[cfg(test)]
