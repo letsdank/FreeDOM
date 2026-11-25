@@ -20,9 +20,6 @@ mod html;
 #[allow(dead_code)]
 mod javascript;
 
-#[allow(dead_code)]
-mod wasm;
-
 pub mod graphics;
 
 #[cfg(test)]

@@ -3,6 +3,11 @@ name = "freedom"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["crates/freedom-wasm"]
+default-members = [".", "crates/freedom-wasm"]
+resolver = "3"
+
 [dependencies]
 anyhow = "1"
 font8x8 = "0.3"
