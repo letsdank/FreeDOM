@@ -8,10 +8,6 @@
 
 use crate::{
     box_tree::{BlockBox, BlockContent, BoxTree, BoxTreeError, FlowChild, InlineItem},
-    css::{
-        BackgroundColor, BorderEdge, CssSize, FontStyle, FontWeight, LineHeight, TextStyle,
-        WhiteSpace,
-    },
     graphics::font::TrueTypeFont,
     inline_layout::{
         InlineFonts, InlineTextFragment, PositionedTextRun, layout_inline_words, same_font,
@@ -20,6 +16,9 @@ use crate::{
     page::Page,
     page_layout::{CONTENT_HORIZONTAL_PADDING, LayoutRect, text_metrics},
     styled_tree::SourcePath,
+};
+use freedom_css::{
+    BackgroundColor, BorderEdge, CssSize, FontStyle, FontWeight, LineHeight, TextStyle, WhiteSpace,
 };
 use std::fmt::Write;
 
@@ -1039,11 +1038,8 @@ fn collect_text(
 mod tests {
     use super::{collapse_sibling_margins, collect_styled_fragments, collect_text};
 
-    use crate::{
-        box_tree::InlineItem,
-        css::{FontWeight, TextStyle},
-        styled_tree::SourcePath,
-    };
+    use crate::{box_tree::InlineItem, styled_tree::SourcePath};
+    use freedom_css::{FontWeight, TextStyle};
 
     #[test]
     fn collapses_signed_margins_without_overflow() {

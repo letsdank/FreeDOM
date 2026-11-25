@@ -5,7 +5,7 @@
 //! Rust strings contain only Unicode scalar values, so surrogate code points
 //! must be handled by the layer that decodes non-UTF-8 input.
 
-pub(crate) fn preprocess_input(source: &str) -> String {
+pub fn preprocess_input(source: &str) -> String {
     let mut output = String::with_capacity(source.len());
     let mut characters = source.chars().peekable();
 

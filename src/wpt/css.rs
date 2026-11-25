@@ -4,10 +4,8 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        css::{Element, TextStyle, build_author_rules, compute_style},
-        html::{Document, Node},
-    };
+    use crate::html::{Document, Node};
+    use freedom_css::{Element, TextStyle, build_author_rules, compute_style};
 
     #[test]
     fn wpt_trailing_braces_style_subset() {
@@ -87,7 +85,7 @@ mod tests {
                 .expect("WPT expectation must be a supported string");
 
             assert_eq!(
-                crate::css::preprocess_input(input.as_string().unwrap()),
+                freedom_css::preprocess_input(input.as_string().unwrap()),
                 expected.as_string().unwrap()
             );
 

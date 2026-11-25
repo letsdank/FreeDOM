@@ -1,0 +1,9 @@
+[package]
+name = "freedom-css"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+# Enables CSS helpers used by the browser's WPT and preview tests.
+test-support = []

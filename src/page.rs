@@ -1,8 +1,4 @@
 use crate::{
-    css::{
-        CssRule, Display, Element as CssElement, FontFaceRule, FontStyle, FontWeight, TextStyle,
-        build_author_rules, compute_style_with_ancestors, parse_font_faces,
-    },
     fetch::Fetcher,
     graphics::{
         canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
@@ -16,6 +12,10 @@ use crate::{
     styled_tree::{SourcePath, StyledTree},
 };
 use anyhow::Result;
+use freedom_css::{
+    CssRule, Display, Element as CssElement, FontFaceRule, FontStyle, FontWeight, TextStyle,
+    build_author_rules, compute_style_with_ancestors, parse_font_faces,
+};
 use freedom_url::Url;
 
 pub(crate) enum BlockContent {
@@ -1381,8 +1381,8 @@ fn flush(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::css::{FontStyle, FontWeight};
     use crate::graphics::raster::Color;
+    use freedom_css::{FontStyle, FontWeight};
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -3555,7 +3555,7 @@ mod tests {
         assert_eq!((rect.width, rect.height), (50, 20));
         assert_eq!(
             preview.boxes[2].background_color,
-            crate::css::BackgroundColor::Opaque(0x00_00_00_FF)
+            freedom_css::BackgroundColor::Opaque(0x00_00_00_FF)
         );
 
         let mut pixels = vec![0; 100 * 140];
@@ -4384,12 +4384,12 @@ mod tests {
             data,
         });
 
-        let mut vector_style = crate::css::TextStyle::initial();
+        let mut vector_style = freedom_css::TextStyle::initial();
         vector_style.font_families = vec!["Nko Test".into()];
         vector_style.font_size = vector_size;
         vector_style.color = 0x00_FF_00_00;
 
-        let mut bitmap_style = crate::css::TextStyle::initial();
+        let mut bitmap_style = freedom_css::TextStyle::initial();
         bitmap_style.color = 0x00_00_00_FF;
 
         // Construct the display list directly: layout still rejects mixed fonts.

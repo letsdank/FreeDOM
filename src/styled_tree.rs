@@ -8,11 +8,11 @@
 use std::fmt::Write;
 
 use crate::{
-    css::{CssRule, Display, TextStyle, compute_style_with_ancestors},
     html::{Document, Node},
     javascript::DocumentState,
     page::{ElementInfo, element_info},
 };
+use freedom_css::{CssRule, Display, TextStyle, compute_style_with_ancestors};
 
 /// Child indexes from the document root, valid only for this source snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -277,7 +277,7 @@ fn format_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::css::build_author_rules;
+    use freedom_css::build_author_rules;
 
     #[test]
     fn preserves_nesting_styles_and_source_paths() {

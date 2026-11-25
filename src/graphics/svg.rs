@@ -32,7 +32,6 @@ use self::viewport::{
 };
 
 use crate::{
-    css::{CascadeRule, build_cascade_rules, parse_declaration_list},
     graphics::{
         flatten::FlattenedPath,
         geometry::{Path, Point, Transform},
@@ -40,6 +39,7 @@ use crate::{
     },
     html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
 };
+use freedom_css::{CascadeRule, build_cascade_rules, parse_declaration_list};
 use freedom_url::Url;
 use std::{error::Error, fmt};
 

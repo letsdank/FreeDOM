@@ -3,14 +3,12 @@
 //! <https://html.spec.whatwg.org/multipage/canvas.html#canvasrenderingcontext2d>
 
 use super::{ElementMethod, HostRoots, Interpreter, JsError, ObjectStorage, RuntimeRoot, Value};
-use crate::{
-    css::parse_color,
-    graphics::{
-        canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
-        geometry::Transform,
-        raster::{Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle},
-    },
+use crate::graphics::{
+    canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
+    geometry::Transform,
+    raster::{Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle},
 };
+use freedom_css::parse_color;
 
 const CANVAS_SAVED_PROPERTIES: [&str; 7] = [
     "fillStyle",

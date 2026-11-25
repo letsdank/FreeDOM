@@ -375,7 +375,7 @@ fn audit_document(source: &str) -> Result<(), String> {
             }
 
             if let Some(style) = attribute("style") {
-                crate::css::audit_preview_declarations(style)?;
+                freedom_css::audit_preview_declarations(style)?;
             }
 
             if element.name == "style" {
@@ -405,7 +405,7 @@ fn audit_document(source: &str) -> Result<(), String> {
                     }
                 }
 
-                crate::css::audit_preview_stylesheet(&source)?;
+                freedom_css::audit_preview_stylesheet(&source)?;
             } else {
                 visit(&element.children)?;
             }

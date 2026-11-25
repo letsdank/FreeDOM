@@ -575,12 +575,17 @@ dependencies = [
  "anyhow",
  "flate2",
  "font8x8",
+ "freedom-css",
  "freedom-url",
  "png",
  "reqwest",
  "softbuffer",
  "winit",
 ]
+
+[[package]]
+name = "freedom-css"
+version = "0.1.0"
 
 [[package]]
 name = "freedom-url"

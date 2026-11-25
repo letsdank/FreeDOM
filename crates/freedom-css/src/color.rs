@@ -4,7 +4,7 @@
 //!
 //! Alpha and the full CSS color grammar are not supported here yet.
 
-pub(crate) fn parse_color(value: &str) -> Option<u32> {
+pub fn parse_color(value: &str) -> Option<u32> {
     let value = value.trim().to_ascii_lowercase();
 
     match value.as_str() {

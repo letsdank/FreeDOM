@@ -1,10 +1,10 @@
 use crate::{
-    css::{FontStyle, FontWeight, LineHeight},
     graphics::font::render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
     graphics::{font::TrueTypeFont, raster::Surface as RasterSurface, svg::SvgDocument},
     inline_layout::{InlineFonts, PositionedTextRun, layout_text_block, layout_uniform_fallback},
     page::{BlockContent, Page, ResolvedFont},
 };
+use freedom_css::{FontStyle, FontWeight, LineHeight};
 
 pub(crate) const CONTENT_TOP: i32 = 90;
 

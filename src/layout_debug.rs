@@ -3,11 +3,11 @@
 //! These are diagnostic rectangles, not yet CSS box-model boundaries.
 
 use crate::{
-    css::BackgroundColor,
     layout_preview::{PreviewBox, PreviewLayout},
     page_layout::{CONTENT_TOP, LayoutRect, PageLayout},
     render::BACKGROUND,
 };
+use freedom_css::BackgroundColor;
 
 const OUTLINE: u32 = 0x00_E8_3D_3D;
 const PREVIEW_OUTLINE: u32 = 0x00_2B_85_E8;
@@ -323,10 +323,10 @@ mod tests {
             source: SourcePath::from_indices(&[]),
             rect,
             background_color,
-            border_top: crate::css::BorderEdge::default(),
-            border_bottom: crate::css::BorderEdge::default(),
-            border_left: crate::css::BorderEdge::default(),
-            border_right: crate::css::BorderEdge::default(),
+            border_top: freedom_css::BorderEdge::default(),
+            border_bottom: freedom_css::BorderEdge::default(),
+            border_left: freedom_css::BorderEdge::default(),
+            border_right: freedom_css::BorderEdge::default(),
         };
 
         let layout = PreviewLayout {

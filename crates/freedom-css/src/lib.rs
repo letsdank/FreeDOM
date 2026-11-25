@@ -10,12 +10,12 @@ mod input;
 mod specificity;
 mod syntax;
 
-pub(crate) use self::color::parse_color;
+pub use self::color::parse_color;
 use self::comments::remove_css_comments;
 use self::ident::consume_identifier;
-pub(crate) use self::input::preprocess_input;
+pub use self::input::preprocess_input;
 use self::specificity::Specificity;
-pub(crate) use self::syntax::parse_declaration_list;
+pub use self::syntax::parse_declaration_list;
 
 // Temporary light-theme CanvasText until system colors are implemented.
 const DEFAULT_TEXT_COLOR: u32 = 0x00_00_00_00;
@@ -25,20 +25,20 @@ const DEFAULT_LINK_COLOR: u32 = 0x00_00_00_EE;
 const RELATIVE_FONT_SIZE_SCALE: f32 = 1.2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Display {
+pub enum Display {
     Inline,
     Block,
     None,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FontWeight {
+pub enum FontWeight {
     Normal,
     Bold,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FontStyle {
+pub enum FontStyle {
     Normal,
     Italic,
 }
@@ -46,14 +46,14 @@ pub(crate) enum FontStyle {
 /// Computed line-height; unitless factors remain relative when inherited.
 /// <https://www.w3.org/TR/CSS22/visudet.html#propdef-line-height>
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum LineHeight {
+pub enum LineHeight {
     Normal,
     Number(f32),
     Pixels(f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CssSize {
+pub enum CssSize {
     Auto,
     Pixels(i32),
 }
@@ -61,44 +61,44 @@ pub(crate) enum CssSize {
 // Partial CSS Text white-space support.
 // https://www.w3.org/TR/css-text-3/#white-space-property
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WhiteSpace {
+pub enum WhiteSpace {
     Normal,
     Nowrap,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BorderEdge {
-    pub(crate) width: i32,
-    pub(crate) color: u32,
+pub struct BorderEdge {
+    pub width: i32,
+    pub color: u32,
 }
 
 #[derive(Clone)]
-pub(crate) struct TextStyle {
-    pub(crate) color: u32,
-    pub(crate) font_size: f32,
-    pub(crate) line_height: LineHeight,
-    pub(crate) font_weight: FontWeight,
-    pub(crate) font_style: FontStyle,
-    pub(crate) font_families: Vec<String>,
-    pub(crate) margin_before: i32,
-    pub(crate) margin_after: i32,
-    pub(crate) margin_left: i32,
-    pub(crate) margin_right: i32,
-    pub(crate) padding_top: i32,
-    pub(crate) padding_bottom: i32,
-    pub(crate) display: Display,
-    pub(crate) width: CssSize,
-    pub(crate) height: CssSize,
-    pub(crate) background_color: BackgroundColor,
-    pub(crate) border_top: BorderEdge,
-    pub(crate) border_bottom: BorderEdge,
-    pub(crate) border_left: BorderEdge,
-    pub(crate) border_right: BorderEdge,
-    pub(crate) white_space: WhiteSpace,
+pub struct TextStyle {
+    pub color: u32,
+    pub font_size: f32,
+    pub line_height: LineHeight,
+    pub font_weight: FontWeight,
+    pub font_style: FontStyle,
+    pub font_families: Vec<String>,
+    pub margin_before: i32,
+    pub margin_after: i32,
+    pub margin_left: i32,
+    pub margin_right: i32,
+    pub padding_top: i32,
+    pub padding_bottom: i32,
+    pub display: Display,
+    pub width: CssSize,
+    pub height: CssSize,
+    pub background_color: BackgroundColor,
+    pub border_top: BorderEdge,
+    pub border_bottom: BorderEdge,
+    pub border_left: BorderEdge,
+    pub border_right: BorderEdge,
+    pub white_space: WhiteSpace,
 }
 
 impl TextStyle {
-    pub(crate) fn initial() -> Self {
+    pub fn initial() -> Self {
         Self {
             color: DEFAULT_TEXT_COLOR,
             font_size: 16.0,
@@ -183,7 +183,7 @@ enum WhiteSpaceDeclaration {
     Initial,
 }
 
-pub(crate) struct CssRule {
+pub struct CssRule {
     selector: Selector,
     specificity: Specificity,
     source_order: usize,
@@ -191,27 +191,27 @@ pub(crate) struct CssRule {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BackgroundColor {
+pub enum BackgroundColor {
     Transparent,
     Opaque(u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CssDeclaration {
-    pub(crate) name: String,
-    pub(crate) value: String,
-    pub(crate) important: bool,
+pub struct CssDeclaration {
+    pub name: String,
+    pub value: String,
+    pub important: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FontFaceRule {
-    pub(crate) family: String,
-    pub(crate) sources: Vec<String>,
-    pub(crate) font_weight: FontWeight,
-    pub(crate) font_style: FontStyle,
+pub struct FontFaceRule {
+    pub family: String,
+    pub sources: Vec<String>,
+    pub font_weight: FontWeight,
+    pub font_style: FontStyle,
 }
 
-pub(crate) struct CascadeRule {
+pub struct CascadeRule {
     selector: Selector,
     specificity: Specificity,
     source_order: usize,
@@ -226,7 +226,7 @@ struct Selector {
     ancestors: Vec<Selector>,
 }
 
-pub(crate) fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
+pub fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
     build_cascade_rules(stylesheets)
         .into_iter()
         .map(|rule| CssRule {
@@ -238,7 +238,7 @@ pub(crate) fn build_author_rules(stylesheets: &[String]) -> Vec<CssRule> {
         .collect()
 }
 
-pub(crate) fn build_cascade_rules(stylesheets: &[String]) -> Vec<CascadeRule> {
+pub fn build_cascade_rules(stylesheets: &[String]) -> Vec<CascadeRule> {
     let mut rules = Vec::new();
     let mut source_order = 0;
 
@@ -249,7 +249,7 @@ pub(crate) fn build_cascade_rules(stylesheets: &[String]) -> Vec<CascadeRule> {
     rules
 }
 
-pub(crate) fn parse_font_faces(stylesheets: &[String]) -> Vec<FontFaceRule> {
+pub fn parse_font_faces(stylesheets: &[String]) -> Vec<FontFaceRule> {
     stylesheets
         .iter()
         .flat_map(|stylesheet| parse_font_faces_in_stylesheet(stylesheet))
@@ -558,8 +558,8 @@ fn take_css_identifier(input: &str) -> Option<(String, &str)> {
 }
 
 /// A conservative check of CSS parser support, not a conformance guarantee.
-#[cfg(test)]
-pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn audit_preview_declarations(source: &str) -> Result<(), String> {
     for declaration in parse_declaration_list(source) {
         let parsed = parse_text_declarations(std::slice::from_ref(&declaration));
 
@@ -627,7 +627,7 @@ pub(crate) fn audit_preview_declarations(source: &str) -> Result<(), String> {
 }
 
 /// The preview stores horizontal margins as whole CSS pixels.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn preview_horizontal_margin_supported(value: &str) -> bool {
     if parse_margin_length(value).is_none() {
         return false;
@@ -651,7 +651,7 @@ fn preview_horizontal_margin_supported(value: &str) -> bool {
     exact_zero || integer
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn preview_margin_has_supported_horizontal(value: &str) -> bool {
     let components: Vec<_> = value.split_ascii_whitespace().collect();
 
@@ -669,8 +669,8 @@ fn preview_margin_has_supported_horizontal(value: &str) -> bool {
 }
 
 /// Checks only a restricted subset of stylesheet syntax.
-#[cfg(test)]
-pub(crate) fn audit_preview_stylesheet(source: &str) -> Result<(), String> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn audit_preview_stylesheet(source: &str) -> Result<(), String> {
     let source = remove_css_comments(&preprocess_input(source));
 
     if source
@@ -1146,8 +1146,8 @@ fn parse_margin_shorthand(value: &str) -> Option<(i32, i32, i32, i32)> {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn compute_style(
+#[cfg(any(test, feature = "test-support"))]
+pub fn compute_style(
     element: &Element<'_>,
     inherited_style: TextStyle,
     rules: &[CssRule],
@@ -1156,7 +1156,7 @@ pub(crate) fn compute_style(
 }
 
 /// Ancestors are ordered from the document root to the element's parent.
-pub(crate) fn compute_style_with_ancestors(
+pub fn compute_style_with_ancestors(
     element: &Element<'_>,
     inherited_style: TextStyle,
     rules: &[CssRule],
@@ -1339,7 +1339,7 @@ fn compound_matches(selector: &Selector, element: &Element<'_>) -> bool {
     tag_matches && id_matches && classes_match
 }
 
-pub(crate) fn matching_declarations<'a>(
+pub fn matching_declarations<'a>(
     rules: &'a [CascadeRule],
     element: &Element<'_>,
 ) -> Vec<&'a CssDeclaration> {
@@ -1462,11 +1462,11 @@ fn apply_declarations(
     }
 }
 
-pub(crate) struct Element<'a> {
-    pub(crate) tag: &'a str,
-    pub(crate) id: Option<&'a str>,
-    pub(crate) classes: &'a [String],
-    pub(crate) inline_style: Option<&'a str>,
+pub struct Element<'a> {
+    pub tag: &'a str,
+    pub id: Option<&'a str>,
+    pub classes: &'a [String],
+    pub inline_style: Option<&'a str>,
 }
 
 #[cfg(test)]

@@ -8,10 +8,8 @@
 
 use std::fmt::Write;
 
-use crate::{
-    css::{Display, TextStyle},
-    styled_tree::{SourcePath, StyledNode, StyledTree},
-};
+use crate::styled_tree::{SourcePath, StyledNode, StyledTree};
+use freedom_css::{Display, TextStyle};
 
 const MAX_NODES: usize = 20_000;
 const MAX_DEPTH: usize = 128;
@@ -421,7 +419,8 @@ fn format_inline(
 mod tests {
     use super::*;
 
-    use crate::{css::build_author_rules, html::Document, javascript::DocumentState};
+    use crate::{html::Document, javascript::DocumentState};
+    use freedom_css::build_author_rules;
 
     fn make_styled(input: &str) -> StyledTree {
         let html = Document::parse(input);

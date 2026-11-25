@@ -7,7 +7,7 @@ use super::{
     parse_paint, parse_stroke_dash_array, parse_stroke_dash_offset, parse_stroke_line_cap,
     parse_stroke_line_join, parse_stroke_miter_limit, parse_stroke_width,
 };
-use crate::css::{
+use freedom_css::{
     CascadeRule, Element as CssElement, matching_declarations, parse_declaration_list,
 };
 

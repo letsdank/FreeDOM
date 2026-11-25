@@ -54,7 +54,7 @@ pub(super) fn split_top_level_commas(source: &str) -> Vec<&str> {
     parts
 }
 
-pub(crate) fn parse_declaration_list(source: &str) -> Vec<CssDeclaration> {
+pub fn parse_declaration_list(source: &str) -> Vec<CssDeclaration> {
     let normalized = super::preprocess_input(source);
     let source = normalized.as_str();
     let mut declarations = Vec::new();

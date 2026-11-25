@@ -1,5 +1,4 @@
 use crate::{
-    css::{FontStyle, FontWeight, LineHeight},
     graphics::{
         font::{
             TextOutline, TrueTypeFont, normalize_font_container, rasterize_text_outline,
@@ -19,6 +18,7 @@ use crate::{
     },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
+use freedom_css::{FontStyle, FontWeight, LineHeight};
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -401,7 +401,7 @@ pub(crate) fn paint_preview_scene(
                      y: i32,
                      offset_y: f32,
                      text: &str,
-                     run_style: &crate::css::TextStyle| {
+                     run_style: &freedom_css::TextStyle| {
                         let font = fonts.get(run_style).or(fallback.as_ref());
                         let font_stack = fonts.stack(run_style);
 
@@ -501,7 +501,7 @@ fn cache_text_block<'cache>(
     };
 
     // An unwrapped line may paint into the right-hand page padding.
-    let content_width = if block.style.white_space == crate::css::WhiteSpace::Nowrap {
+    let content_width = if block.style.white_space == freedom_css::WhiteSpace::Nowrap {
         viewport_width.saturating_sub(16).max(1)
     } else {
         viewport_width.saturating_sub(32).max(1)

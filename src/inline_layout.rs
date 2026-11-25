@@ -5,7 +5,6 @@
 //! <https://www.w3.org/TR/css-text-3/#white-space-processing>
 
 use crate::{
-    css::{FontStyle, FontWeight, LineHeight, TextStyle, WhiteSpace},
     graphics::font::{
         TrueTypeFont,
         render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
@@ -17,6 +16,7 @@ use crate::{
     },
     styled_tree::SourcePath,
 };
+use freedom_css::{FontStyle, FontWeight, LineHeight, TextStyle, WhiteSpace};
 
 pub(crate) struct PositionedTextRun {
     // Distinguishes lines even when their vertical coordinate coincide.
@@ -955,7 +955,7 @@ fn push_word_part<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::css::{FontWeight, TextStyle};
+    use freedom_css::{FontWeight, TextStyle};
 
     #[test]
     fn splits_words_across_styled_fragments() {
