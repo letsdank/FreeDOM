@@ -38,6 +38,8 @@ pub(crate) enum InstructionKind {
     Br(u32),
     BrIf(u32),
     Call(u32),
+    Drop,
+    Select,
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
@@ -234,6 +236,8 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x0c => InstructionKind::Br(reader.read_u32_leb()?),
             0x0d => InstructionKind::BrIf(reader.read_u32_leb()?),
             0x10 => InstructionKind::Call(reader.read_u32_leb()?),
+            0x1a => InstructionKind::Drop,
+            0x1b => InstructionKind::Select,
             0x21 => InstructionKind::LocalSet(reader.read_u32_leb()?),
             0x22 => InstructionKind::LocalTee(reader.read_u32_leb()?),
             0x28 => {
@@ -339,6 +343,11 @@ mod tests {
     #[test]
     fn distinguishes_unsupported_truncated_and_trailing_input() {
         let cases: &[(&[u8], usize, BinaryErrorKind)] = &[
+            (
+                &[0x1c, 1, 0x7f, 0x0b],
+                10,
+                BinaryErrorKind::UnsupportedOpcode(0x1c),
+            ),
             (&[0x3f], 11, BinaryErrorKind::UnexpectedEnd),
             (&[0x40, 0x80], 12, BinaryErrorKind::UnexpectedEnd),
             (

@@ -475,6 +475,14 @@ pub(crate) fn validate_function_with_memory(
             InstructionKind::I32Const(_) => {
                 depth += 1;
             }
+            InstructionKind::Drop => {
+                pop_operands(&mut depth, controls.last().unwrap(), 1, instruction.offset)?;
+            }
+            InstructionKind::Select => {
+                // The supported runtime value subset contains only i32.
+                pop_operands(&mut depth, controls.last().unwrap(), 3, instruction.offset)?;
+                depth += 1;
+            }
             InstructionKind::I32Eqz
             | InstructionKind::I32Clz
             | InstructionKind::I32Ctz
@@ -745,6 +753,15 @@ fn resume_frame(
         }
         *fuel -= 1;
         match instruction.kind {
+            InstructionKind::Drop => {
+                stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+            }
+            InstructionKind::Select => {
+                let condition = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let second = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                let first = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+                stack.push(if condition != 0 { first } else { second });
+            }
             InstructionKind::I32Load16S { offset, .. }
             | InstructionKind::I32Load16U { offset, .. } => {
                 let address = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
@@ -1697,6 +1714,71 @@ mod tests {
                 ),
                 "{op}"
             );
+        }
+    }
+
+    #[test]
+    fn validates_drop_and_select_stack_effects() {
+        let declarations = Declarations {
+            types: vec![FunctionType {
+                parameters: vec![],
+                results: vec![ValueType::I32],
+            }],
+            function_types: vec![],
+        };
+        for (op, inputs, needed) in [
+            ("drop", 0, 1),
+            ("select", 0, 3),
+            ("select", 1, 3),
+            ("select", 2, 3),
+        ] {
+            let source = format!("{}{op}", "i32.const 1 ".repeat(inputs));
+            let instructions = expression(&source);
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 20,
+                instructions: &instructions,
+            };
+            assert!(
+                matches!(
+                    validate_function(&declarations, 0, &body),
+                    Err(FunctionError::StackUnderflow {
+                        offset,
+                        needed: n,
+                        available
+                    }) if offset == 20 + inputs * 2 && n == needed && available == inputs
+                ),
+                "{source}"
+            );
+        }
+        let instructions =
+            expression("i32.const 1 i32.const 1 if i32.const 2 i32.const 3 select end");
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 0,
+            instructions: &instructions,
+        };
+        assert!(matches!(
+            validate_function(&declarations, 0, &body),
+            Err(FunctionError::StackUnderflow {
+                needed: 3,
+                available: 2,
+                ..
+            })
+        ));
+
+        for source in [
+            "block (result i32) i32.const 42 br 0 select end",
+            "block br 0 drop end i32.const 42",
+        ] {
+            let instructions = expression(source);
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 0,
+                instructions: &instructions,
+            };
+            let function = validate_function(&declarations, 0, &body).unwrap();
+            assert_eq!(execute_function(&function, &[]), Ok(Some(42)), "{source}");
         }
     }
 

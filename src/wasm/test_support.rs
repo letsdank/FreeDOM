@@ -203,6 +203,8 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
             }
         }
         "else" => out.push(0x05),
+        "drop" => out.push(0x1a),
+        "select" => out.push(0x1b),
         "end" => out.push(0x0b),
         "br" | "br_if" | "call" => {
             out.push(match token {
@@ -669,6 +671,7 @@ mod tests {
             expression("memory.size memory.grow 0"),
             [0x3f, 0, 0x40, 0, 0x0b]
         );
+        assert_eq!(expression("drop select"), [0x1a, 0x1b, 0x0b]);
     }
 
     #[test]

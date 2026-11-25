@@ -373,6 +373,37 @@ mod tests {
     }
 
     #[test]
+    fn executes_drop_and_eager_select() {
+        let bytes = module(
+            r#"(module
+            (func (export "choose") (param i32 i32 i32) (result i32)
+                local.get 0 local.get 1 local.get 2 select)
+            (func (export "discard") (result i32)
+                i32.const 20 i32.const 999 drop i32.const 22 i32.add)
+            (func (export "void") i32.const 1 drop)
+            (func (export "eager") (result i32)
+                i32.const 42 i32.const 1 i32.const 0 i32.div_s i32.const 1 select))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
+        for (condition, expected) in [(0, 22), (1, 11), (-1, 11), (i32::MIN, 11)] {
+            assert_eq!(
+                set.execute_export("choose", &[11, 22, condition], 100),
+                Ok(Some(expected))
+            );
+        }
+        assert_eq!(set.execute_export("discard", &[], 100), Ok(Some(42)));
+        assert_eq!(set.execute_export("void", &[], 100), Ok(None));
+        // Both candidate-producing instructions execute before select.
+        assert!(matches!(
+            set.execute_export("eager", &[], 100),
+            Err(ExportCallError::Execution(
+                ExecutionError::IntegerDivideByZero { .. }
+            ))
+        ));
+    }
+
+    #[test]
     fn bitwise_operations_work_with_linear_memory() {
         let byte = module(
             r#"(module (memory 1)
