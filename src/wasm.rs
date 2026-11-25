@@ -23,6 +23,9 @@ pub(crate) mod execution;
 #[path = "wasm/export.rs"]
 pub(crate) mod export;
 
+#[path = "wasm/global.rs"]
+pub(crate) mod global;
+
 #[path = "wasm/instructions.rs"]
 pub(crate) mod instructions;
 

@@ -48,6 +48,8 @@ pub(crate) enum InstructionKind {
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
+    GlobalGet(u32),
+    GlobalSet(u32),
     I32Load {
         align: u32,
         offset: u64,
@@ -275,6 +277,8 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x1b => InstructionKind::Select,
             0x21 => InstructionKind::LocalSet(reader.read_u32_leb()?),
             0x22 => InstructionKind::LocalTee(reader.read_u32_leb()?),
+            0x23 => InstructionKind::GlobalGet(reader.read_u32_leb()?),
+            0x24 => InstructionKind::GlobalSet(reader.read_u32_leb()?),
             0x28 => {
                 let (align, offset) = read_memory_immediate(&mut reader)?;
                 InstructionKind::I32Load { align, offset }

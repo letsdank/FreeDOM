@@ -305,11 +305,13 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
                 out,
             );
         }
-        "local.get" | "local.set" | "local.tee" => {
+        "local.get" | "local.set" | "local.tee" | "global.get" | "global.set" => {
             out.push(match token {
                 "local.get" => 0x20,
                 "local.set" => 0x21,
-                _ => 0x22,
+                "local.tee" => 0x22,
+                "global.get" => 0x23,
+                _ => 0x24,
             });
             u32_leb(
                 tokens
@@ -374,11 +376,47 @@ pub(super) fn module(source: &str) -> Vec<u8> {
     let mut memory: Option<Memory> = None;
     let mut data: Vec<Data> = Vec::new();
     let mut start: Option<u32> = None;
+    let mut globals: Vec<(bool, i32, Vec<String>)> = Vec::new();
     loop {
         match tokens.next().expect("unterminated module") {
             ")" => break,
             "(" => {
                 let kind = tokens.next().expect("missing module declaration");
+                if kind == "global" {
+                    let mut exports = Vec::new();
+                    while tokens.clone().next() == Some("(") {
+                        let mut lookahead = tokens.clone();
+                        lookahead.next();
+                        if lookahead.next() != Some("export") {
+                            break;
+                        }
+                        tokens.expect("(");
+                        tokens.expect("export");
+                        exports.push(string_name(tokens.next().expect("missing export name")));
+                        tokens.expect(")");
+                    }
+                    let mutable = if tokens.clone().next() == Some("(") {
+                        tokens.expect("(");
+                        tokens.expect("mut");
+                        tokens.expect("i32");
+                        tokens.expect(")");
+                        true
+                    } else {
+                        tokens.expect("i32");
+                        false
+                    };
+                    tokens.expect("(");
+                    tokens.expect("i32.const");
+                    let value = tokens
+                        .next()
+                        .expect("missing initializer")
+                        .parse()
+                        .expect("invalid initializer");
+                    tokens.expect(")");
+                    tokens.expect(")");
+                    globals.push((mutable, value, exports));
+                    continue;
+                }
                 if kind == "start" {
                     assert!(start.is_none(), "multiple start declarations");
                     start = Some(
@@ -552,6 +590,7 @@ pub(super) fn module(source: &str) -> Vec<u8> {
         && memory.is_none()
         && data.is_empty()
         && start.is_none()
+        && globals.is_empty()
     {
         return output;
     }
@@ -596,8 +635,22 @@ pub(super) fn module(source: &str) -> Vec<u8> {
         }
         section(&mut output, 5, &contents);
     }
+    if !globals.is_empty() {
+        let mut contents = Vec::new();
+        count(globals.len(), &mut contents);
+        for (mutable, value, _) in &globals {
+            contents.extend([0x7f, u8::from(*mutable), 0x41]);
+            i32_leb(*value, &mut contents);
+            contents.push(0x0b);
+        }
+        section(&mut output, 6, &contents);
+    }
     let exports_count: usize = functions.iter().map(|f| f.exports.len()).sum::<usize>()
-        + memory.as_ref().map_or(0, |memory| memory.exports.len());
+        + memory.as_ref().map_or(0, |memory| memory.exports.len())
+        + globals
+            .iter()
+            .map(|(_, _, exports)| exports.len())
+            .sum::<usize>();
     if exports_count != 0 {
         let mut exports = Vec::new();
         count(exports_count, &mut exports);
@@ -615,6 +668,14 @@ pub(super) fn module(source: &str) -> Vec<u8> {
                 exports.extend_from_slice(name.as_bytes());
                 exports.push(2);
                 exports.push(0);
+            }
+        }
+        for (index, (_, _, names)) in globals.iter().enumerate() {
+            for name in names {
+                count(name.len(), &mut exports);
+                exports.extend_from_slice(name.as_bytes());
+                exports.push(3);
+                count(index, &mut exports);
             }
         }
         section(&mut output, 7, &exports);

@@ -19,6 +19,7 @@ use super::{
     decode::{decode_declarations, decode_start},
     execution::{ExecutionError, FunctionError, ValidatedFunction, execute_function_set},
     export::{ExportKind, decode_exports},
+    global::{Global, GlobalError, decode_globals},
     memory::{LinearMemory, MemoryError, PAGE_SIZE, decode_memory},
 };
 
@@ -34,6 +35,7 @@ pub(crate) enum FunctionSetError {
         offset: usize,
     },
     StartExecution(ExecutionError),
+    Global(GlobalError),
     Data(DataError),
     InvalidDataMemory {
         index: u32,
@@ -62,6 +64,10 @@ pub(crate) enum FunctionSetError {
         index: u32,
         offset: usize,
     },
+    InvalidGlobalExport {
+        index: u32,
+        offset: usize,
+    },
     AllocationFailed,
 }
 
@@ -69,6 +75,7 @@ pub(crate) struct FunctionSet {
     functions: Vec<ValidatedFunction>,
     exports: HashMap<String, ExportDescriptor>,
     memory: Option<LinearMemory>,
+    globals: Vec<Global>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +118,7 @@ impl FunctionSet {
             return Err(FunctionSetError::UnsupportedImports);
         }
         let start = decode_start(module).map_err(FunctionSetError::Binary)?;
+        let globals = decode_globals(module).map_err(FunctionSetError::Global)?;
         let memory_type = decode_memory(module).map_err(FunctionSetError::Memory)?;
         let data = decode_data(module).map_err(FunctionSetError::Data)?;
         for (segment_index, segment) in data.iter().enumerate() {
@@ -155,11 +163,12 @@ impl FunctionSet {
             .map_err(|_| FunctionSetError::AllocationFailed)?;
         for (index, (type_index, body)) in linked.iter().enumerate() {
             functions.push(
-                super::execution::validate_function_with_memory(
+                super::execution::validate_function_with_context(
                     &declarations,
                     type_index,
                     body,
                     memory_type.is_some(),
+                    &globals,
                 )
                 .map_err(|error| FunctionSetError::Function { index, error })?,
             );
@@ -184,6 +193,17 @@ impl FunctionSet {
             }
             if export.kind == ExportKind::Memory && (export.index != 0 || memory_type.is_none()) {
                 return Err(FunctionSetError::InvalidMemoryExport {
+                    index: export.index,
+                    offset: export.index_offset,
+                });
+            }
+            if export.kind == ExportKind::Global
+                && usize::try_from(export.index)
+                    .ok()
+                    .filter(|index| *index < globals.len())
+                    .is_none()
+            {
+                return Err(FunctionSetError::InvalidGlobalExport {
                     index: export.index,
                     offset: export.index_offset,
                 });
@@ -222,6 +242,7 @@ impl FunctionSet {
             functions,
             exports,
             memory,
+            globals,
         };
         // The start function runs after active data segments, before exposure.
         // https://webassembly.github.io/spec/core/exec/modules.html#instantiation
@@ -239,7 +260,14 @@ impl FunctionSet {
         arguments: &[i32],
         fuel: u64,
     ) -> Result<Option<i32>, ExecutionError> {
-        execute_function_set(&self.functions, &mut self.memory, index, arguments, fuel)
+        execute_function_set(
+            &self.functions,
+            &mut self.memory,
+            &mut self.globals,
+            index,
+            arguments,
+            fuel,
+        )
     }
 
     /// Invokes a function export by its exact, case-sensitive UTF-8 name.
@@ -270,6 +298,82 @@ mod tests {
         export::ExportKind,
         test_support::{expression, module},
     };
+
+    #[test]
+    fn globals_are_initialized_before_start_and_shared_only_within_an_instance() {
+        let bytes = module(
+            r#"(module
+            (global (mut i32) (i32.const 40))
+            (global i32 (i32.const 2))
+            (func call 3)
+            (func (export "get") (result i32) global.get 0)
+            (func (export "increment") global.get 0 i32.const 1 i32.add global.set 0)
+            (func global.get 0 global.get 1 i32.add global.set 0)
+            (start 0))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut first = FunctionSet::from_framed(&framed).unwrap();
+        let mut second = FunctionSet::from_framed(&framed).unwrap();
+        assert_eq!(first.execute_export("get", &[], 20).unwrap(), Some(42));
+        first.execute_export("increment", &[], 20).unwrap();
+        assert_eq!(first.execute_export("get", &[], 20).unwrap(), Some(43));
+        assert_eq!(second.execute_export("get", &[], 20).unwrap(), Some(42));
+    }
+
+    #[test]
+    fn global_access_requires_a_valid_index_and_mutability() {
+        for (wat, immutable) in [
+            ("(module (func (result i32) global.get 0))", false),
+            (
+                "(module (global (mut i32) (i32.const 0)) (func i32.const 1 global.set 1))",
+                false,
+            ),
+            (
+                "(module (global i32 (i32.const 0)) (func i32.const 1 global.set 0))",
+                true,
+            ),
+        ] {
+            let bytes = module(wat);
+            let result = FunctionSet::from_framed(&scan_module(&bytes).unwrap());
+            assert!(
+                if immutable {
+                    matches!(
+                        result,
+                        Err(FunctionSetError::Function {
+                            error: FunctionError::ImmutableGlobal { .. },
+                            ..
+                        })
+                    )
+                } else {
+                    matches!(
+                        result,
+                        Err(FunctionSetError::Function {
+                            error: FunctionError::InvalidGlobalIndex { .. },
+                            ..
+                        })
+                    )
+                },
+                "{wat}"
+            );
+        }
+        let bytes = module("(module (global (mut i32) (i32.const 0)) (func global.set 0))");
+        assert!(matches!(
+            FunctionSet::from_framed(&scan_module(&bytes).unwrap()),
+            Err(FunctionSetError::Function {
+                error: FunctionError::StackUnderflow { .. },
+                ..
+            })
+        ));
+        let mut bytes = module(r#"(module (global (export "g") i32 (i32.const -1)))"#);
+        let framed = scan_module(&bytes).unwrap();
+        let offset = super::decode_exports(&framed).unwrap()[0].index_offset;
+        assert!(FunctionSet::from_framed(&framed).is_ok());
+        bytes[offset] = 1;
+        assert!(matches!(
+            FunctionSet::from_framed(&scan_module(&bytes).unwrap()),
+            Err(FunctionSetError::InvalidGlobalExport { index: 1, .. })
+        ));
+    }
 
     #[test]
     fn start_initializes_memory_after_data_once_per_instance() {

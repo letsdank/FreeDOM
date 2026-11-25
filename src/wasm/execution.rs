@@ -17,6 +17,7 @@ use super::{
     BinaryError,
     code::FunctionBody,
     decode::{Declarations, ValueType},
+    global::Global,
     instructions::{Expression, InstructionKind, decode_expression},
     memory::LinearMemory,
 };
@@ -30,6 +31,14 @@ pub(crate) enum FunctionError {
     AllocationFailed,
     Decode(BinaryError),
     InvalidLocalIndex {
+        index: u32,
+        offset: usize,
+    },
+    InvalidGlobalIndex {
+        index: u32,
+        offset: usize,
+    },
+    ImmutableGlobal {
         index: u32,
         offset: usize,
     },
@@ -93,6 +102,12 @@ impl fmt::Display for FunctionError {
             Self::Decode(error) => write!(formatter, "{error}"),
             Self::InvalidLocalIndex { index, offset } => {
                 write!(formatter, "unknown local index {index} at byte {offset}")
+            }
+            Self::InvalidGlobalIndex { index, offset } => {
+                write!(formatter, "unknown global index {index} at byte {offset}")
+            }
+            Self::ImmutableGlobal { index, offset } => {
+                write!(formatter, "global {index} is immutable at byte {offset}")
             }
             Self::InvalidLabelIndex { index, offset } => {
                 write!(formatter, "unknown label index {index} at byte {offset}")
@@ -250,6 +265,16 @@ pub(crate) fn validate_function_with_memory(
     type_index: u32,
     body: &FunctionBody<'_>,
     has_memory: bool,
+) -> Result<ValidatedFunction, FunctionError> {
+    validate_function_with_context(declarations, type_index, body, has_memory, &[])
+}
+
+pub(super) fn validate_function_with_context(
+    declarations: &Declarations,
+    type_index: u32,
+    body: &FunctionBody<'_>,
+    has_memory: bool,
+    globals: &[Global],
 ) -> Result<ValidatedFunction, FunctionError> {
     let signature = usize::try_from(type_index)
         .ok()
@@ -540,6 +565,26 @@ pub(crate) fn validate_function_with_memory(
                 validate_local_index(index, local_index_count, instruction.offset)?;
                 depth += 1;
             }
+            InstructionKind::GlobalGet(index) | InstructionKind::GlobalSet(index) => {
+                let global = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| globals.get(index))
+                    .ok_or(FunctionError::InvalidGlobalIndex {
+                        index,
+                        offset: instruction.offset,
+                    })?;
+                if matches!(instruction.kind, InstructionKind::GlobalSet(_)) {
+                    if !global.mutable {
+                        return Err(FunctionError::ImmutableGlobal {
+                            index,
+                            offset: instruction.offset,
+                        });
+                    }
+                    pop_operands(&mut depth, controls.last().unwrap(), 1, instruction.offset)?;
+                } else {
+                    depth += 1;
+                }
+            }
             InstructionKind::LocalSet(index) | InstructionKind::LocalTee(index) => {
                 validate_local_index(index, local_index_count, instruction.offset)?;
                 pop_operands(&mut depth, controls.last().unwrap(), 1, instruction.offset)?;
@@ -651,6 +696,7 @@ pub(crate) enum ExecutionError {
     /// Defensive check for inconsistencies between validation and execution.
     InvalidValidatedStack,
     InvalidValidatedLocal,
+    InvalidValidatedGlobal,
 }
 
 impl fmt::Display for ExecutionError {
@@ -684,6 +730,7 @@ impl fmt::Display for ExecutionError {
             ),
             Self::InvalidValidatedStack => write!(formatter, "invalid validated operand stack"),
             Self::InvalidValidatedLocal => write!(formatter, "invalid validated local index"),
+            Self::InvalidValidatedGlobal => write!(formatter, "invalid validated global"),
         }
     }
 }
@@ -705,7 +752,7 @@ pub(crate) fn execute_function_with_fuel(
     mut fuel: u64,
 ) -> Result<Option<i32>, ExecutionError> {
     let mut frame = ExecutionFrame::new(0, function, arguments)?;
-    match resume_frame(&mut frame, function, &mut fuel, &mut None)? {
+    match resume_frame(&mut frame, function, &mut fuel, &mut None, &mut [])? {
         FrameEvent::Done(result) => Ok(result),
         FrameEvent::Call(_) => Err(ExecutionError::CallRequiresFunctionSet),
     }
@@ -760,6 +807,7 @@ enum FrameEvent {
 pub(super) fn execute_function_set(
     functions: &[ValidatedFunction],
     memory: &mut Option<LinearMemory>,
+    globals: &mut [Global],
     index: u32,
     arguments: &[i32],
     mut fuel: u64,
@@ -777,7 +825,7 @@ pub(super) fn execute_function_set(
     loop {
         let frame = frames.last_mut().expect("root frame exists");
         let function = &functions[frame.function_index];
-        match resume_frame(frame, function, &mut fuel, memory)? {
+        match resume_frame(frame, function, &mut fuel, memory, globals)? {
             FrameEvent::Done(result) => {
                 frames.pop();
                 match frames.last_mut() {
@@ -820,6 +868,7 @@ fn resume_frame(
     function: &ValidatedFunction,
     fuel: &mut u64,
     memory: &mut Option<LinearMemory>,
+    globals: &mut [Global],
 ) -> Result<FrameEvent, ExecutionError> {
     let ExecutionFrame {
         arguments,
@@ -1023,6 +1072,21 @@ fn resume_frame(
                 continue;
             }
             InstructionKind::End => {}
+            InstructionKind::GlobalGet(index) => {
+                let global = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| globals.get(index))
+                    .ok_or(ExecutionError::InvalidValidatedGlobal)?;
+                stack.push(global.value);
+            }
+            InstructionKind::GlobalSet(index) => {
+                let global = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| globals.get_mut(index))
+                    .filter(|global| global.mutable)
+                    .ok_or(ExecutionError::InvalidValidatedGlobal)?;
+                global.value = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
+            }
             InstructionKind::LocalGet(index) => {
                 if u64::from(index) >= function.local_index_count {
                     return Err(ExecutionError::InvalidValidatedLocal);
