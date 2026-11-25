@@ -1,4 +1,4 @@
-//! Decoding of function signatures and defined-function type indices.
+//! Decoding of function signatures, defined-function type indices and start.
 //!
 //! Only function types with numeric value types are supported so far. Other
 //! type forms and value types are reported as unsupported, not as invalid.
@@ -7,6 +7,7 @@
 //! <https://webassembly.github.io/spec/core/binary/modules.html#type-section>
 //! <https://webassembly.github.io/spec/core/binary/modules.html#function-section>
 //! <https://webassembly.github.io/spec/core/binary/types.html#function-types>
+//! <https://webassembly.github.io/spec/core/binary/modules.html#start-section>
 
 use super::{
     BinaryError, BinaryErrorKind,
@@ -48,6 +49,23 @@ pub(crate) fn decode_declarations(module: &FramedModule<'_>) -> Result<Declarati
         }
     }
     Ok(declarations)
+}
+
+/// Reads the optional start function index without validating its signature.
+pub(crate) fn decode_start(module: &FramedModule<'_>) -> Result<Option<(u32, usize)>, BinaryError> {
+    let Some(section) = module.sections.iter().find(|section| section.id == 8) else {
+        return Ok(None);
+    };
+    let mut reader = Reader::new(section.payload, section.payload_offset);
+    let offset = reader.offset();
+    let index = reader.read_u32_leb()?;
+    if !reader.is_empty() {
+        return Err(BinaryError::new(
+            reader.offset(),
+            BinaryErrorKind::TrailingSectionData(8),
+        ));
+    }
+    Ok(Some((index, offset)))
 }
 
 fn read_section<T>(
@@ -114,9 +132,40 @@ pub(super) fn read_value_type(reader: &mut Reader<'_>) -> Result<ValueType, Bina
 
 #[cfg(test)]
 mod tests {
-    use super::{BinaryErrorKind, FunctionType, ValueType, decode_declarations};
+    use super::{BinaryErrorKind, FunctionType, ValueType, decode_declarations, decode_start};
     use crate::wasm::binary::scan_module;
     use crate::wasm::test_support::module;
+
+    #[test]
+    fn decodes_start_section_and_rejects_malformed_payloads() {
+        let bytes = module("(module (func) (start 0))");
+        let framed = scan_module(&bytes).unwrap();
+        let section = framed
+            .sections
+            .iter()
+            .find(|section| section.id == 8)
+            .unwrap();
+        assert_eq!(
+            decode_start(&framed).unwrap(),
+            Some((0, section.payload_offset))
+        );
+        for (payload, kind, relative_offset) in [
+            (&[][..], BinaryErrorKind::UnexpectedEnd, 0),
+            (&[0, 0][..], BinaryErrorKind::TrailingSectionData(8), 1),
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0x10][..],
+                BinaryErrorKind::InvalidUnsignedLeb128,
+                0,
+            ),
+        ] {
+            let mut bytes = b"\0asm\x01\0\0\0".to_vec();
+            bytes.extend([8, payload.len() as u8]);
+            bytes.extend_from_slice(payload);
+            let error = decode_start(&scan_module(&bytes).unwrap()).unwrap_err();
+            assert_eq!(error.kind, kind);
+            assert_eq!(error.offset, 10 + relative_offset);
+        }
+    }
 
     #[test]
     fn decodes_a_function_module_and_numeric_signatures() {

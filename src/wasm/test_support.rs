@@ -373,11 +373,24 @@ pub(super) fn module(source: &str) -> Vec<u8> {
     let mut signatures: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut memory: Option<Memory> = None;
     let mut data: Vec<Data> = Vec::new();
+    let mut start: Option<u32> = None;
     loop {
         match tokens.next().expect("unterminated module") {
             ")" => break,
             "(" => {
                 let kind = tokens.next().expect("missing module declaration");
+                if kind == "start" {
+                    assert!(start.is_none(), "multiple start declarations");
+                    start = Some(
+                        tokens
+                            .next()
+                            .expect("missing start index")
+                            .parse()
+                            .expect("invalid start index"),
+                    );
+                    tokens.expect(")");
+                    continue;
+                }
                 if kind == "data" {
                     tokens.expect("(");
                     let mut field = tokens.next().expect("missing data offset");
@@ -534,7 +547,12 @@ pub(super) fn module(source: &str) -> Vec<u8> {
     assert!(tokens.next().is_none(), "trailing tokens after WAT module");
 
     let mut output = b"\0asm\x01\0\0\0".to_vec();
-    if functions.is_empty() && signatures.is_empty() && memory.is_none() && data.is_empty() {
+    if functions.is_empty()
+        && signatures.is_empty()
+        && memory.is_none()
+        && data.is_empty()
+        && start.is_none()
+    {
         return output;
     }
     let mut indices = Vec::new();
@@ -600,6 +618,11 @@ pub(super) fn module(source: &str) -> Vec<u8> {
             }
         }
         section(&mut output, 7, &exports);
+    }
+    if let Some(index) = start {
+        let mut contents = Vec::new();
+        u32_leb(index, &mut contents);
+        section(&mut output, 8, &contents);
     }
     if !functions.is_empty() {
         let mut code = Vec::new();

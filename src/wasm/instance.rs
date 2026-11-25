@@ -3,9 +3,11 @@
 //! Imports are rejected because they change the function index space. Export
 //! names, function indices and memory indices are checked. Other export
 //! indices and sections are not fully validated. Active data segments are
-//! initialized; imports, start functions and passive segments are unsupported.
+//! initialized before the optional start function; imports and passive segments
+//! are unsupported.
 //!
 //! <https://webassembly.github.io/spec/core/binary/modules.html>
+//! <https://webassembly.github.io/spec/core/valid/modules.html#start-function>
 
 use std::{collections::HashMap, fmt};
 
@@ -14,7 +16,7 @@ use super::{
     binary::FramedModule,
     code::{FunctionCountMismatch, decode_bodies, link_functions},
     data::{DataError, decode_data},
-    decode::decode_declarations,
+    decode::{decode_declarations, decode_start},
     execution::{ExecutionError, FunctionError, ValidatedFunction, execute_function_set},
     export::{ExportKind, decode_exports},
     memory::{LinearMemory, MemoryError, PAGE_SIZE, decode_memory},
@@ -23,7 +25,15 @@ use super::{
 #[derive(Debug)]
 pub(crate) enum FunctionSetError {
     UnsupportedImports,
-    UnsupportedStart,
+    InvalidStartFunction {
+        index: u32,
+        offset: usize,
+    },
+    InvalidStartSignature {
+        index: u32,
+        offset: usize,
+    },
+    StartExecution(ExecutionError),
     Data(DataError),
     InvalidDataMemory {
         index: u32,
@@ -87,14 +97,20 @@ impl fmt::Display for ExportCallError {
 impl std::error::Error for ExportCallError {}
 
 impl FunctionSet {
-    /// Builds and checks defined functions only, rejecting any import section.
+    /// Builds defined functions, rejecting imports; startup has a 1,000,000-step host budget.
     pub(crate) fn from_framed(module: &FramedModule<'_>) -> Result<Self, FunctionSetError> {
+        Self::from_framed_with_start_fuel(module, 1_000_000)
+    }
+
+    /// Builds a function set with a separate host instruction budget for startup.
+    pub(crate) fn from_framed_with_start_fuel(
+        module: &FramedModule<'_>,
+        start_fuel: u64,
+    ) -> Result<Self, FunctionSetError> {
         if module.sections.iter().any(|section| section.id == 2) {
             return Err(FunctionSetError::UnsupportedImports);
         }
-        if module.sections.iter().any(|section| section.id == 8) {
-            return Err(FunctionSetError::UnsupportedStart);
-        }
+        let start = decode_start(module).map_err(FunctionSetError::Binary)?;
         let memory_type = decode_memory(module).map_err(FunctionSetError::Memory)?;
         let data = decode_data(module).map_err(FunctionSetError::Data)?;
         for (segment_index, segment) in data.iter().enumerate() {
@@ -120,6 +136,19 @@ impl FunctionSet {
         let bodies = decode_bodies(module).map_err(FunctionSetError::Binary)?;
         let linked =
             link_functions(&declarations, &bodies).map_err(FunctionSetError::FunctionCount)?;
+        if let Some((index, offset)) = start {
+            let type_index = usize::try_from(index)
+                .ok()
+                .and_then(|index| declarations.function_types.get(index))
+                .ok_or(FunctionSetError::InvalidStartFunction { index, offset })?;
+            if let Some(ty) = usize::try_from(*type_index)
+                .ok()
+                .and_then(|index| declarations.types.get(index))
+                && (!ty.parameters.is_empty() || !ty.results.is_empty())
+            {
+                return Err(FunctionSetError::InvalidStartSignature { index, offset });
+            }
+        }
         let mut functions = Vec::new();
         functions
             .try_reserve_exact(bodies.len())
@@ -189,11 +218,18 @@ impl FunctionSet {
                     length: segment.bytes.len(),
                 })?;
         }
-        Ok(Self {
+        let mut set = Self {
             functions,
             exports,
             memory,
-        })
+        };
+        // The start function runs after active data segments, before exposure.
+        // https://webassembly.github.io/spec/core/exec/modules.html#instantiation
+        if let Some((index, _)) = start {
+            set.execute(index, &[], start_fuel)
+                .map_err(FunctionSetError::StartExecution)?;
+        }
+        Ok(set)
     }
 
     /// Invokes a defined function with a shared host instruction budget.
@@ -234,6 +270,69 @@ mod tests {
         export::ExportKind,
         test_support::{expression, module},
     };
+
+    #[test]
+    fn start_initializes_memory_after_data_once_per_instance() {
+        let bytes = module(
+            r#"(module
+            (memory 1)
+            (data (i32.const 0) "\29\00\00\00")
+            (func call 2)
+            (func (export "get") (result i32) i32.const 0 i32.load)
+            (func i32.const 0 i32.const 0 i32.load i32.const 1 i32.add i32.store)
+            (start 0))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut first = FunctionSet::from_framed(&framed).unwrap();
+        let mut second = FunctionSet::from_framed(&framed).unwrap();
+        for set in [&mut first, &mut second] {
+            assert_eq!(set.execute_export("get", &[], 20).unwrap(), Some(42));
+            assert_eq!(set.execute_export("get", &[], 20).unwrap(), Some(42));
+        }
+    }
+
+    #[test]
+    fn start_checks_index_signature_and_execution_budget() {
+        for wat in ["(module (start 0))", "(module (func) (start 1))"] {
+            let bytes = module(wat);
+            assert!(
+                matches!(
+                    FunctionSet::from_framed(&scan_module(&bytes).unwrap()),
+                    Err(FunctionSetError::InvalidStartFunction { .. })
+                ),
+                "{wat}"
+            );
+        }
+        for wat in [
+            "(module (func (param i32)) (start 0))",
+            "(module (func (result i32) i32.const 1) (start 0))",
+        ] {
+            let bytes = module(wat);
+            assert!(
+                matches!(
+                    FunctionSet::from_framed(&scan_module(&bytes).unwrap()),
+                    Err(FunctionSetError::InvalidStartSignature { .. })
+                ),
+                "{wat}"
+            );
+        }
+        let bytes = module("(module (func unreachable) (start 0))");
+        assert!(matches!(
+            FunctionSet::from_framed(&scan_module(&bytes).unwrap()),
+            Err(FunctionSetError::StartExecution(
+                ExecutionError::Unreachable { .. }
+            ))
+        ));
+        let bytes = module("(module (func loop br 0 end) (start 0))");
+        assert!(matches!(
+            FunctionSet::from_framed_with_start_fuel(&scan_module(&bytes).unwrap(), 8),
+            Err(FunctionSetError::StartExecution(
+                ExecutionError::FuelExhausted
+            ))
+        ));
+        let bytes = module("(module)");
+        assert!(FunctionSet::from_framed_with_start_fuel(&scan_module(&bytes).unwrap(), 0).is_ok());
+    }
 
     #[test]
     fn calls_function_exports_by_exact_name() {
@@ -1031,14 +1130,6 @@ mod tests {
         bytes.extend_from_slice(&[11, 1, 0]);
         let framed = scan_module(&bytes).unwrap();
         assert!(FunctionSet::from_framed(&framed).is_ok());
-
-        let mut bytes = module("(module (memory 1))");
-        bytes.extend_from_slice(&[8, 1, 0]);
-        let framed = scan_module(&bytes).unwrap();
-        assert!(matches!(
-            FunctionSet::from_framed(&framed),
-            Err(FunctionSetError::UnsupportedStart)
-        ));
 
         let mut bytes = module(r#"(module (memory (export "mem") 1))"#);
         let framed = scan_module(&bytes).unwrap();
