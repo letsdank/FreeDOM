@@ -186,6 +186,9 @@ fn section(module: &mut Vec<u8>, id: u8, content: &[u8]) {
 
 fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
     match token {
+        "unreachable" => out.push(0x00),
+        "nop" => out.push(0x01),
+        "return" => out.push(0x0f),
         "block" | "loop" | "if" => {
             out.push(match token {
                 "block" => 0x02,
@@ -672,6 +675,10 @@ mod tests {
             [0x3f, 0, 0x40, 0, 0x0b]
         );
         assert_eq!(expression("drop select"), [0x1a, 0x1b, 0x0b]);
+        assert_eq!(
+            expression("unreachable nop return"),
+            [0x00, 0x01, 0x0f, 0x0b]
+        );
     }
 
     #[test]

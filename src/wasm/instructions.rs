@@ -2,7 +2,7 @@
 //!
 //! A successful decode only establishes that this subset was decoded; it does
 //! not validate operand or result types, nor execute the expression. Nested
-//! control instructions outside block, loop, if/else, branches and calls are unsupported.
+//! Other control instructions and unsupported opcodes are reported explicitly.
 //!
 //! <https://webassembly.github.io/spec/core/binary/instructions.html>
 
@@ -17,6 +17,8 @@ pub(crate) struct Instruction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstructionKind {
+    Unreachable,
+    Nop,
     /// Targets are instruction indices, resolved during decoding.
     Block {
         returns_i32: bool,
@@ -37,6 +39,7 @@ pub(crate) enum InstructionKind {
     End,
     Br(u32),
     BrIf(u32),
+    Return,
     Call(u32),
     Drop,
     Select,
@@ -143,6 +146,8 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             ));
         }
         let kind = match reader.read_byte()? {
+            0x00 => InstructionKind::Unreachable,
+            0x01 => InstructionKind::Nop,
             opcode @ (0x02 | 0x03 | 0x04) => {
                 let type_offset = reader.offset();
                 let returns_i32 = match reader.read_byte()? {
@@ -235,6 +240,7 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
             0x20 => InstructionKind::LocalGet(reader.read_u32_leb()?),
             0x0c => InstructionKind::Br(reader.read_u32_leb()?),
             0x0d => InstructionKind::BrIf(reader.read_u32_leb()?),
+            0x0f => InstructionKind::Return,
             0x10 => InstructionKind::Call(reader.read_u32_leb()?),
             0x1a => InstructionKind::Drop,
             0x1b => InstructionKind::Select,

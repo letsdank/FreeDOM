@@ -334,14 +334,21 @@ pub(crate) fn validate_function_with_memory(
                     controls.pop();
                 }
             }
-            InstructionKind::Br(index) | InstructionKind::BrIf(index) => {
-                let position = usize::try_from(index)
-                    .ok()
-                    .and_then(|index| controls.len().checked_sub(index.checked_add(1)?))
-                    .ok_or(FunctionError::InvalidLabelIndex {
-                        index,
-                        offset: instruction.offset,
-                    })?;
+            kind
+            @ (InstructionKind::Br(_) | InstructionKind::BrIf(_) | InstructionKind::Return) => {
+                let position = match kind {
+                    InstructionKind::Return => 0,
+                    InstructionKind::Br(index) | InstructionKind::BrIf(index) => {
+                        usize::try_from(index)
+                            .ok()
+                            .and_then(|index| controls.len().checked_sub(index.checked_add(1)?))
+                            .ok_or(FunctionError::InvalidLabelIndex {
+                                index,
+                                offset: instruction.offset,
+                            })?
+                    }
+                    _ => unreachable!("matched branch or return"),
+                };
                 let target = &controls[position];
                 let branch = BranchTarget {
                     instruction: target.target,
@@ -365,6 +372,12 @@ pub(crate) fn validate_function_with_memory(
                     depth = frame.height;
                     frame.unreachable = true;
                 }
+            }
+            InstructionKind::Nop => {}
+            InstructionKind::Unreachable => {
+                let frame = controls.last_mut().unwrap();
+                depth = frame.height;
+                frame.unreachable = true;
             }
             InstructionKind::Call(index) => {
                 let type_index = usize::try_from(index)
@@ -559,6 +572,9 @@ pub(crate) enum ExecutionError {
         offset: usize,
     },
     InvalidValidatedMemory,
+    Unreachable {
+        offset: usize,
+    },
     IntegerDivideByZero {
         offset: usize,
     },
@@ -590,6 +606,9 @@ impl fmt::Display for ExecutionError {
                 write!(formatter, "out of bounds memory access at byte {offset}")
             }
             Self::InvalidValidatedMemory => write!(formatter, "validated memory is not available"),
+            Self::Unreachable { offset } => {
+                write!(formatter, "unreachable instruction at byte {offset}")
+            }
             Self::IntegerDivideByZero { offset } => {
                 write!(formatter, "integer divide by zero at byte {offset}")
             }
@@ -753,6 +772,12 @@ fn resume_frame(
         }
         *fuel -= 1;
         match instruction.kind {
+            InstructionKind::Nop => {}
+            InstructionKind::Unreachable => {
+                return Err(ExecutionError::Unreachable {
+                    offset: instruction.offset,
+                });
+            }
             InstructionKind::Drop => {
                 stack.pop().ok_or(ExecutionError::InvalidValidatedStack)?;
             }
@@ -862,7 +887,7 @@ fn resume_frame(
                 return Ok(FrameEvent::Call(index));
             }
             InstructionKind::Block { .. } | InstructionKind::Loop { .. } => {}
-            InstructionKind::Br(_) | InstructionKind::BrIf(_) => {
+            InstructionKind::Br(_) | InstructionKind::BrIf(_) | InstructionKind::Return => {
                 let taken = if matches!(instruction.kind, InstructionKind::BrIf(_)) {
                     stack.pop().ok_or(ExecutionError::InvalidValidatedStack)? != 0
                 } else {
@@ -1715,6 +1740,61 @@ mod tests {
                 "{op}"
             );
         }
+    }
+
+    #[test]
+    fn validates_return_and_unreachable_stack_effects() {
+        let declarations = Declarations {
+            types: vec![FunctionType {
+                parameters: vec![],
+                results: vec![ValueType::I32],
+            }],
+            function_types: vec![],
+        };
+        for source in ["return", "i32.const 42 i32.const 1 if return end"] {
+            let instructions = expression(source);
+            let body = FunctionBody {
+                locals: vec![],
+                instructions_offset: 0,
+                instructions: &instructions,
+            };
+            assert!(
+                matches!(
+                    validate_function(&declarations, 0, &body),
+                    Err(FunctionError::StackUnderflow {
+                        needed: 1,
+                        available: 0,
+                        ..
+                    })
+                ),
+                "{source}"
+            );
+        }
+        let instructions = expression("unreachable i32.const 1 i32.const 2");
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 0,
+            instructions: &instructions,
+        };
+        assert!(matches!(
+            validate_function(&declarations, 0, &body),
+            Err(FunctionError::ResultStackMismatch {
+                expected: 1,
+                actual: 2,
+                ..
+            })
+        ));
+
+        let instructions = expression("unreachable local.get 0");
+        let body = FunctionBody {
+            locals: vec![],
+            instructions_offset: 0,
+            instructions: &instructions,
+        };
+        assert!(matches!(
+            validate_function(&declarations, 0, &body),
+            Err(FunctionError::InvalidLocalIndex { index: 0, .. })
+        ));
     }
 
     #[test]

@@ -373,6 +373,49 @@ mod tests {
     }
 
     #[test]
+    fn executes_return_nop_and_unreachable() {
+        use crate::wasm::{
+            code::decode_bodies,
+            instructions::{InstructionKind, decode_expression},
+        };
+        let bytes = module(
+            r#"(module
+            (func (export "nested") (result i32)
+                i32.const 10 block i32.const 20 i32.const 42 return end i32.const 1 i32.add)
+            (func (export "void") i32.const 9 return)
+            (func (export "call") (result i32) call 0 i32.const 1 i32.add)
+            (func (export "trap") (param i32) (result i32)
+                local.get 0 if (result i32) unreachable else i32.const 9 end)
+            (func (export "nop") (result i32) nop i32.const 7))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let bodies = decode_bodies(&framed).unwrap();
+        let expression = decode_expression(&bodies[3]).unwrap();
+        let trap_offset = expression
+            .instructions
+            .iter()
+            .find(|instruction| matches!(instruction.kind, InstructionKind::Unreachable))
+            .unwrap()
+            .offset;
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
+        assert_eq!(set.execute_export("nested", &[], 100), Ok(Some(42)));
+        assert_eq!(set.execute_export("void", &[], 100), Ok(None));
+        assert_eq!(set.execute_export("call", &[], 100), Ok(Some(43)));
+        assert_eq!(set.execute_export("trap", &[0], 100), Ok(Some(9)));
+        assert_eq!(
+            set.execute_export("trap", &[-1], 100),
+            Err(ExportCallError::Execution(ExecutionError::Unreachable {
+                offset: trap_offset
+            }))
+        );
+        assert_eq!(set.execute_export("nop", &[], 2), Ok(Some(7)));
+        assert_eq!(
+            set.execute_export("nop", &[], 1),
+            Err(ExportCallError::Execution(ExecutionError::FuelExhausted))
+        );
+    }
+
+    #[test]
     fn executes_drop_and_eager_select() {
         let bytes = module(
             r#"(module
