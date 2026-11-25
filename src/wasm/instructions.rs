@@ -1,8 +1,8 @@
 //! A decoder for a small subset of Wasm function expressions.
 //!
 //! A successful decode only establishes that this subset was decoded; it does
-//! not validate operand or result types, nor execute the expression. Nested
-//! Other control instructions and unsupported opcodes are reported explicitly.
+//! not validate operand or result types, nor execute the expression.
+//! Unsupported control instructions and opcodes are reported explicitly.
 //!
 //! <https://webassembly.github.io/spec/core/binary/instructions.html>
 
@@ -39,6 +39,8 @@ pub(crate) enum InstructionKind {
     End,
     Br(u32),
     BrIf(u32),
+    /// Index into the expression's separately stored branch tables.
+    BrTable(usize),
     Return,
     Call(u32),
     Drop,
@@ -115,8 +117,15 @@ pub(crate) enum InstructionKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Expression {
     pub(crate) instructions: Vec<Instruction>,
+    pub(crate) branch_tables: Vec<BranchTable>,
     /// The expression's terminating 0x0b is a delimiter, not an instruction.
     pub(crate) end_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BranchTable {
+    pub(crate) labels: Vec<u32>,
+    pub(crate) default: u32,
 }
 
 fn read_memory_immediate(reader: &mut Reader<'_>) -> Result<(u32, u64), BinaryError> {
@@ -135,6 +144,7 @@ fn read_memory_immediate(reader: &mut Reader<'_>) -> Result<(u32, u64), BinaryEr
 pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, BinaryError> {
     let mut reader = Reader::new(body.instructions, body.instructions_offset);
     let mut instructions: Vec<Instruction> = Vec::new();
+    let mut branch_tables = Vec::new();
     // Each entry tracks the opening control instruction and its optional else.
     let mut control: Vec<(usize, Option<usize>)> = Vec::new();
     loop {
@@ -234,12 +244,31 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                 }
                 return Ok(Expression {
                     instructions,
+                    branch_tables,
                     end_offset: offset,
                 });
             }
             0x20 => InstructionKind::LocalGet(reader.read_u32_leb()?),
             0x0c => InstructionKind::Br(reader.read_u32_leb()?),
             0x0d => InstructionKind::BrIf(reader.read_u32_leb()?),
+            0x0e => {
+                let count = reader.read_u32_leb()?;
+                let mut labels = Vec::new();
+                for _ in 0..count {
+                    let label = reader.read_u32_leb()?;
+                    labels
+                        .try_reserve(1)
+                        .map_err(|_| BinaryError::new(offset, BinaryErrorKind::AllocationFailed))?;
+                    labels.push(label);
+                }
+                let default = reader.read_u32_leb()?;
+                branch_tables
+                    .try_reserve(1)
+                    .map_err(|_| BinaryError::new(offset, BinaryErrorKind::AllocationFailed))?;
+                let index = branch_tables.len();
+                branch_tables.push(BranchTable { labels, default });
+                InstructionKind::BrTable(index)
+            }
             0x0f => InstructionKind::Return,
             0x10 => InstructionKind::Call(reader.read_u32_leb()?),
             0x1a => InstructionKind::Drop,
@@ -349,6 +378,14 @@ mod tests {
     #[test]
     fn distinguishes_unsupported_truncated_and_trailing_input() {
         let cases: &[(&[u8], usize, BinaryErrorKind)] = &[
+            (
+                &[0x0e, 0xff, 0xff, 0xff, 0xff, 0x0f],
+                16,
+                BinaryErrorKind::UnexpectedEnd,
+            ),
+            (&[0x0e, 0x80], 12, BinaryErrorKind::UnexpectedEnd),
+            (&[0x0e, 0], 12, BinaryErrorKind::UnexpectedEnd),
+            (&[0x0e, 1, 0], 13, BinaryErrorKind::UnexpectedEnd),
             (
                 &[0x1c, 1, 0x7f, 0x0b],
                 10,

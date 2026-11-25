@@ -37,6 +37,11 @@ pub(crate) enum FunctionError {
         index: u32,
         offset: usize,
     },
+    BranchTableArityMismatch {
+        expected: usize,
+        actual: usize,
+        offset: usize,
+    },
     InvalidFunctionIndex {
         index: u32,
         offset: usize,
@@ -92,6 +97,14 @@ impl fmt::Display for FunctionError {
             Self::InvalidLabelIndex { index, offset } => {
                 write!(formatter, "unknown label index {index} at byte {offset}")
             }
+            Self::BranchTableArityMismatch {
+                expected,
+                actual,
+                offset,
+            } => write!(
+                formatter,
+                "branch table label arity mismatch at byte {offset}: expected {expected}, found {actual}"
+            ),
             Self::InvalidFunctionIndex { index, offset } => {
                 write!(formatter, "unknown function index {index} at byte {offset}")
             }
@@ -153,6 +166,7 @@ impl std::error::Error for FunctionError {}
 pub(crate) struct ValidatedFunction {
     expression: Expression,
     branches: Vec<Option<BranchTarget>>,
+    branch_tables: Vec<Vec<BranchTarget>>,
     returns_i32: bool,
     max_stack_depth: usize,
     parameter_count: usize,
@@ -181,6 +195,27 @@ struct ControlFrame {
     target: usize,
     has_else: bool,
     unreachable: bool,
+}
+
+fn resolve_label(
+    controls: &[ControlFrame],
+    index: u32,
+    offset: usize,
+) -> Result<BranchTarget, FunctionError> {
+    let position = usize::try_from(index)
+        .ok()
+        .and_then(|index| controls.len().checked_sub(index.checked_add(1)?))
+        .ok_or(FunctionError::InvalidLabelIndex { index, offset })?;
+    let target = &controls[position];
+    Ok(BranchTarget {
+        instruction: target.target,
+        height: target.height,
+        results: if target.kind == ControlKind::Loop {
+            0
+        } else {
+            target.results
+        },
+    })
 }
 
 fn pop_operands(
@@ -269,6 +304,11 @@ pub(crate) fn validate_function_with_memory(
         .try_reserve_exact(expression.instructions.len())
         .map_err(|_| FunctionError::AllocationFailed)?;
     branches.resize(expression.instructions.len(), None);
+    let mut branch_tables = Vec::new();
+    branch_tables
+        .try_reserve_exact(expression.branch_tables.len())
+        .map_err(|_| FunctionError::AllocationFailed)?;
+    branch_tables.resize_with(expression.branch_tables.len(), Vec::new);
     for (pc, instruction) in expression.instructions.iter().enumerate() {
         match instruction.kind {
             InstructionKind::If {
@@ -336,28 +376,19 @@ pub(crate) fn validate_function_with_memory(
             }
             kind
             @ (InstructionKind::Br(_) | InstructionKind::BrIf(_) | InstructionKind::Return) => {
-                let position = match kind {
-                    InstructionKind::Return => 0,
+                let branch = match kind {
+                    InstructionKind::Return => {
+                        let target = &controls[0];
+                        BranchTarget {
+                            instruction: target.target,
+                            height: target.height,
+                            results: target.results,
+                        }
+                    }
                     InstructionKind::Br(index) | InstructionKind::BrIf(index) => {
-                        usize::try_from(index)
-                            .ok()
-                            .and_then(|index| controls.len().checked_sub(index.checked_add(1)?))
-                            .ok_or(FunctionError::InvalidLabelIndex {
-                                index,
-                                offset: instruction.offset,
-                            })?
+                        resolve_label(&controls, index, instruction.offset)?
                     }
                     _ => unreachable!("matched branch or return"),
-                };
-                let target = &controls[position];
-                let branch = BranchTarget {
-                    instruction: target.target,
-                    height: target.height,
-                    results: if target.kind == ControlKind::Loop {
-                        0
-                    } else {
-                        target.results
-                    },
                 };
                 let frame = controls.last().unwrap();
                 if matches!(instruction.kind, InstructionKind::BrIf(_)) {
@@ -372,6 +403,37 @@ pub(crate) fn validate_function_with_memory(
                     depth = frame.height;
                     frame.unreachable = true;
                 }
+            }
+            InstructionKind::BrTable(index) => {
+                let table = &expression.branch_tables[index];
+                let default = resolve_label(&controls, table.default, instruction.offset)?;
+                let mut targets = Vec::new();
+                let count = table
+                    .labels
+                    .len()
+                    .checked_add(1)
+                    .ok_or(FunctionError::AllocationFailed)?;
+                targets
+                    .try_reserve_exact(count)
+                    .map_err(|_| FunctionError::AllocationFailed)?;
+                for label in &table.labels {
+                    let target = resolve_label(&controls, *label, instruction.offset)?;
+                    if target.results != default.results {
+                        return Err(FunctionError::BranchTableArityMismatch {
+                            expected: default.results,
+                            actual: target.results,
+                            offset: instruction.offset,
+                        });
+                    }
+                    targets.push(target);
+                }
+                targets.push(default);
+                let frame = controls.last_mut().unwrap();
+                pop_operands(&mut depth, frame, 1, instruction.offset)?;
+                pop_operands(&mut depth, frame, default.results, instruction.offset)?;
+                depth = frame.height;
+                frame.unreachable = true;
+                branch_tables[index] = targets;
             }
             InstructionKind::Nop => {}
             InstructionKind::Unreachable => {
@@ -546,6 +608,7 @@ pub(crate) fn validate_function_with_memory(
     Ok(ValidatedFunction {
         expression,
         branches,
+        branch_tables,
         returns_i32,
         max_stack_depth,
         parameter_count,
@@ -887,19 +950,43 @@ fn resume_frame(
                 return Ok(FrameEvent::Call(index));
             }
             InstructionKind::Block { .. } | InstructionKind::Loop { .. } => {}
-            InstructionKind::Br(_) | InstructionKind::BrIf(_) | InstructionKind::Return => {
-                let taken = if matches!(instruction.kind, InstructionKind::BrIf(_)) {
-                    stack.pop().ok_or(ExecutionError::InvalidValidatedStack)? != 0
-                } else {
-                    true
-                };
-                if taken {
-                    let target = function
-                        .branches
-                        .get(position)
-                        .copied()
-                        .flatten()
+            InstructionKind::Br(_)
+            | InstructionKind::BrIf(_)
+            | InstructionKind::BrTable(_)
+            | InstructionKind::Return => {
+                let target = if let InstructionKind::BrTable(index) = instruction.kind {
+                    let selector = stack.pop().ok_or(ExecutionError::InvalidValidatedStack)? as u32;
+                    let table = function
+                        .branch_tables
+                        .get(index)
                         .ok_or(ExecutionError::InvalidValidatedStack)?;
+                    let fallback = table.last().ok_or(ExecutionError::InvalidValidatedStack)?;
+                    Some(
+                        *usize::try_from(selector)
+                            .ok()
+                            .and_then(|index| table.get(index))
+                            .unwrap_or(fallback),
+                    )
+                } else {
+                    let taken = if matches!(instruction.kind, InstructionKind::BrIf(_)) {
+                        stack.pop().ok_or(ExecutionError::InvalidValidatedStack)? != 0
+                    } else {
+                        true
+                    };
+                    if taken {
+                        Some(
+                            function
+                                .branches
+                                .get(position)
+                                .copied()
+                                .flatten()
+                                .ok_or(ExecutionError::InvalidValidatedStack)?,
+                        )
+                    } else {
+                        None
+                    }
+                };
+                if let Some(target) = target {
                     if target.instruction > function.expression.instructions.len()
                         || stack.len() < target.height + target.results
                     {

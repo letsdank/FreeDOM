@@ -373,6 +373,100 @@ mod tests {
     }
 
     #[test]
+    fn executes_branch_tables_across_blocks_loops_and_the_function() {
+        let bytes = module(
+            r#"(module
+            (func (export "choose") (param i32) (result i32)
+                block (result i32) block (result i32)
+                    i32.const 99 i32.const 40 local.get 0 br_table 0 1 2
+                end i32.const 1 i32.add
+                end i32.const 1 i32.add)
+            (func (export "default") (result i32)
+                block (result i32) i32.const 42 i32.const 99 br_table 0 end)
+            (func (export "loop") (param i32) (result i32)
+                block loop local.get 0 i32.const 1 i32.sub local.tee 0 br_table 1 0 end end
+                local.get 0)
+            (func (export "unreachable") (result i32) unreachable br_table 0))"#,
+        );
+        let framed = scan_module(&bytes).unwrap();
+        let mut set = FunctionSet::from_framed(&framed).unwrap();
+        for (selector, expected) in [(0, 42), (1, 41), (2, 40), (-1, 40), (i32::MIN, 40)] {
+            assert_eq!(
+                set.execute_export("choose", &[selector], 100),
+                Ok(Some(expected))
+            );
+        }
+        assert_eq!(set.execute_export("default", &[], 100), Ok(Some(42)));
+        assert_eq!(set.execute_export("loop", &[3], 100), Ok(Some(0)));
+        assert!(matches!(
+            set.execute_export("unreachable", &[], 100),
+            Err(ExportCallError::Execution(
+                ExecutionError::Unreachable { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn validates_every_branch_table_target_and_stack() {
+        let cases = [
+            ("(module (func i32.const 0 br_table 1 0))", "index"),
+            ("(module (func i32.const 0 br_table 0 1))", "index"),
+            (
+                "(module (func (result i32) block (result i32) block i32.const 0 br_table 0 1 end i32.const 0 end))",
+                "arity",
+            ),
+            ("(module (func br_table 0))", "selector"),
+            (
+                "(module (func (result i32) i32.const 0 br_table 0))",
+                "result",
+            ),
+        ];
+        for (wat, expected) in cases {
+            let bytes = module(wat);
+            let framed = scan_module(&bytes).unwrap();
+            let error = match FunctionSet::from_framed(&framed) {
+                Ok(_) => panic!("unexpectedly accepted {wat}"),
+                Err(error) => error,
+            };
+            assert!(
+                match expected {
+                    "index" => matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::InvalidLabelIndex { index: 1, .. },
+                            ..
+                        }
+                    ),
+                    "arity" => matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::BranchTableArityMismatch {
+                                expected: 1,
+                                actual: 0,
+                                ..
+                            },
+                            ..
+                        }
+                    ),
+                    "selector" | "result" => matches!(
+                        error,
+                        FunctionSetError::Function {
+                            error: FunctionError::StackUnderflow {
+                                needed: 1,
+                                available: 0,
+                                ..
+                            },
+                            ..
+                        }
+                    ),
+                    _ => false,
+                },
+                "{wat}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn executes_return_nop_and_unreachable() {
         use crate::wasm::{
             code::decode_bodies,

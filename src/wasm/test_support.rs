@@ -209,6 +209,23 @@ fn instruction(token: &str, tokens: &mut Tokens<'_>, out: &mut Vec<u8>) {
         "drop" => out.push(0x1a),
         "select" => out.push(0x1b),
         "end" => out.push(0x0b),
+        "br_table" => {
+            let mut labels = Vec::new();
+            while let Some(index) = tokens
+                .clone()
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+            {
+                tokens.next();
+                labels.push(index);
+            }
+            assert!(!labels.is_empty(), "br_table needs a default label");
+            out.push(0x0e);
+            count(labels.len() - 1, out);
+            for index in labels {
+                u32_leb(index, out);
+            }
+        }
         "br" | "br_if" | "call" => {
             out.push(match token {
                 "br" => 0x0c,
@@ -658,6 +675,8 @@ mod tests {
             expression("block loop br_if 1 br 0 end end"),
             [0x02, 0x40, 0x03, 0x40, 0x0d, 1, 0x0c, 0, 0x0b, 0x0b, 0x0b]
         );
+        assert_eq!(expression("br_table 0 1 2"), [0x0e, 2, 0, 1, 2, 0x0b]);
+        assert_eq!(expression("br_table 0"), [0x0e, 0, 0, 0x0b]);
         assert_eq!(
             expression("i32.load offset=17 align=1 i32.store"),
             [0x28, 0, 17, 0x36, 2, 0, 0x0b]
