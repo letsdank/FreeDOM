@@ -89,7 +89,7 @@ pub(crate) use testharness_probe::{probe_testharness, probe_testharness_test};
 #[path = "javascript/session.rs"]
 mod session;
 
-pub(crate) use session::DocumentScriptSession;
+pub use session::DocumentScriptSession;
 
 /// Classification of parser and interpreter failures.
 ///

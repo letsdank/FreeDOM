@@ -7,12 +7,20 @@
 
 use super::{DocumentState, HostError, HostValue, Interpreter, JsError, parse_program};
 
-pub(crate) struct DocumentScriptSession {
+use freedom_canvas::Canvas2D;
+use std::collections::HashMap;
+
+/// A persistent classic-script session associated with one document snapshot.
+///
+/// This is a partial implementation: full realms and event loops are not yet
+/// supported, and the current interpreter still installs legacy WPT helpers.
+pub struct DocumentScriptSession {
     interpreter: Interpreter,
 }
 
 impl DocumentScriptSession {
-    pub(crate) fn new(document: &DocumentState) -> Self {
+    /// Creates a session initialized from a clone of the document snapshot.
+    pub fn new(document: &DocumentState) -> Self {
         let mut interpreter = Interpreter::new();
 
         interpreter.set_document(document.clone());
@@ -23,7 +31,8 @@ impl DocumentScriptSession {
     /// Executes a script and updates the caller's document snapshot.
     ///
     /// The caller should not independently modify the snapshot between calls.
-    pub(crate) fn evaluate(
+    /// Effects that occurred before a runtime exception are retained.
+    pub fn evaluate(
         &mut self,
         source: &str,
         document: &mut DocumentState,
@@ -44,9 +53,8 @@ impl DocumentScriptSession {
         result
     }
 
-    pub(crate) fn into_canvas_surfaces(
-        mut self,
-    ) -> std::collections::HashMap<u64, crate::graphics::canvas::Canvas2D> {
+    /// Consumes the session and returns its canvas surfaces keyed by DOM node ID.
+    pub fn into_canvas_surfaces(mut self) -> HashMap<u64, Canvas2D> {
         self.interpreter.take_canvas_surfaces()
     }
 }
