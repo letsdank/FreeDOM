@@ -152,6 +152,30 @@ impl CanvasHost {
             self.saved_dash_values -= stack.iter().map(|state| state.dash.len()).sum::<usize>();
         }
     }
+
+    fn reset_context(&mut self, node_id: u64, roots: &HostRoots) -> bool {
+        let Some(context) = self.contexts.get(&node_id).cloned() else {
+            return false;
+        };
+
+        self.surfaces.remove(&node_id);
+        self.dashes.remove(&node_id);
+        self.clear_saved_states(node_id);
+
+        for (name, value) in [
+            ("fillStyle", Value::String("#000000".to_owned())),
+            ("strokeStyle", Value::String("#000000".to_owned())),
+            ("lineWidth", Value::Number(1.0)),
+            ("lineCap", Value::String("butt".to_owned())),
+            ("lineJoin", Value::String("miter".to_owned())),
+            ("miterLimit", Value::Number(10.0)),
+            ("lineDashOffset", Value::Number(0.0)),
+        ] {
+            roots.write_ordinary_property(&context, name.to_owned(), value);
+        }
+
+        true
+    }
 }
 
 struct CanvasSavedState {
@@ -496,52 +520,10 @@ impl Interpreter {
 
     // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element
     pub(super) fn reset_canvas_attribute(&mut self, node_id: u64, name: &str) {
-        if !matches!(name, "width" | "height") || !self.canvas.contexts.contains_key(&node_id) {
+        if !matches!(name, "width" | "height")
+            || !self.canvas.reset_context(node_id, &self.host_roots)
+        {
             return;
-        }
-
-        self.canvas.surfaces.remove(&node_id);
-        self.canvas.dashes.remove(&node_id);
-        self.canvas.clear_saved_states(node_id);
-
-        if let Some(context) = self.canvas.contexts.get(&node_id) {
-            self.host_roots.write_ordinary_property(
-                context,
-                "fillStyle".to_owned(),
-                Value::String("#000000".to_owned()),
-            );
-
-            self.host_roots.write_ordinary_property(
-                context,
-                "strokeStyle".to_owned(),
-                Value::String("#000000".to_owned()),
-            );
-
-            self.host_roots.write_ordinary_property(
-                context,
-                "lineWidth".to_owned(),
-                Value::Number(1.0),
-            );
-            self.host_roots.write_ordinary_property(
-                context,
-                "lineCap".to_owned(),
-                Value::String("butt".to_owned()),
-            );
-            self.host_roots.write_ordinary_property(
-                context,
-                "lineJoin".to_owned(),
-                Value::String("miter".to_owned()),
-            );
-            self.host_roots.write_ordinary_property(
-                context,
-                "miterLimit".to_owned(),
-                Value::Number(10.0),
-            );
-            self.host_roots.write_ordinary_property(
-                context,
-                "lineDashOffset".to_owned(),
-                Value::Number(0.0),
-            );
         }
 
         self.ensure_canvas_surface(node_id);
