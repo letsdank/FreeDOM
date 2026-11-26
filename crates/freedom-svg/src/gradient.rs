@@ -8,7 +8,7 @@ use super::{
     parse_opacity, parse_solid_color, parse_transform_list,
 };
 
-use crate::graphics::raster::{Color, GradientSpread, GradientStop, LinearGradient};
+use freedom_graphics_core::raster::{Color, GradientSpread, GradientStop, LinearGradient};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GradientUnits {

@@ -3,7 +3,7 @@
 //! Specification: <https://www.w3.org/TR/SVG2/paths.html>
 
 use super::number::{NumberErrorKind, parse_number};
-use crate::graphics::geometry::{Path, Point};
+use freedom_graphics_core::geometry::{Path, Point};
 use std::{error::Error, fmt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -617,7 +617,7 @@ fn point_is_finite(point: Point) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::geometry::PathCommand;
+    use freedom_graphics_core::geometry::PathCommand;
 
     #[test]
     fn parses_line_commands_and_implicit_line_tos() {

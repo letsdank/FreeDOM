@@ -2,7 +2,7 @@
 
 use super::{SvgDocument, flattened_path_length, stroke_scale, view_box_transform};
 
-use crate::graphics::{
+use freedom_graphics_core::{
     flatten::{FlattenError, flatten_path},
     geometry::Transform,
     raster::{

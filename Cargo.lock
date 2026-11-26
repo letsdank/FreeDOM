@@ -579,6 +579,7 @@ dependencies = [
  "freedom-graphics-core",
  "freedom-html",
  "freedom-image",
+ "freedom-svg",
  "freedom-url",
  "reqwest",
  "softbuffer",
@@ -612,6 +613,16 @@ dependencies = [
  "flate2",
  "freedom-graphics-core",
  "png",
+]
+
+[[package]]
+name = "freedom-svg"
+version = "0.1.0"
+dependencies = [
+ "freedom-css",
+ "freedom-graphics-core",
+ "freedom-html",
+ "freedom-url",
 ]
 
 [[package]]

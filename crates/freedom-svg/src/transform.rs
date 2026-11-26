@@ -5,7 +5,7 @@
 use super::number::{NumberErrorKind, parse_number};
 use std::{error::Error, fmt};
 
-use crate::graphics::geometry::Transform;
+use freedom_graphics_core::geometry::Transform;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SvgTransformError {
@@ -237,7 +237,7 @@ fn transform_is_finite(transform: Transform) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::geometry::Point;
+    use freedom_graphics_core::geometry::Point;
 
     #[test]
     fn parses_svg_transform_lists_in_svg_order() {

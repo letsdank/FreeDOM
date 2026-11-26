@@ -1,5 +1,5 @@
 use super::*;
-use crate::graphics::geometry::PathCommand;
+use freedom_graphics_core::geometry::PathCommand;
 use freedom_url::Url;
 
 #[test]
