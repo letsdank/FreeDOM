@@ -49,6 +49,40 @@ impl CanvasHost {
         }
     }
 
+    fn ensure_surface(&mut self, node_id: u64, width: usize, height: usize) -> bool {
+        if let Some(existing) = self.surfaces.get(&node_id) {
+            if existing.surface().width() == width && existing.surface().height() == height {
+                return true;
+            }
+        }
+
+        self.surfaces.remove(&node_id);
+
+        let used: usize = self
+            .surfaces
+            .values()
+            .map(|canvas| canvas.surface().width() * canvas.surface().height())
+            .sum();
+
+        let Some(total) = width
+            .checked_mul(height)
+            .and_then(|pixels| used.checked_add(pixels))
+        else {
+            return false;
+        };
+
+        if total > MAX_PAGE_CANVAS_PIXELS || self.surfaces.len() >= MAX_PAGE_CANVASES {
+            return false;
+        }
+
+        let Some(canvas) = Canvas2D::new(width, height) else {
+            return false;
+        };
+
+        self.surfaces.insert(node_id, canvas);
+        true
+    }
+
     fn save_state(
         &mut self,
         node_id: u64,
@@ -376,39 +410,7 @@ impl Interpreter {
             return false;
         };
 
-        if let Some(existing) = self.canvas.surfaces.get(&node_id) {
-            if existing.surface().width() == width && existing.surface().height() == height {
-                return true;
-            }
-        }
-
-        self.canvas.surfaces.remove(&node_id);
-
-        let used: usize = self
-            .canvas
-            .surfaces
-            .values()
-            .map(|canvas| canvas.surface().width() * canvas.surface().height())
-            .sum();
-
-        let Some(total) = width
-            .checked_mul(height)
-            .and_then(|pixels| used.checked_add(pixels))
-        else {
-            return false;
-        };
-
-        if total > MAX_PAGE_CANVAS_PIXELS || self.canvas.surfaces.len() >= MAX_PAGE_CANVASES {
-            return false;
-        }
-
-        let Some(canvas) = Canvas2D::new(width, height) else {
-            return false;
-        };
-
-        self.canvas.surfaces.insert(node_id, canvas);
-
-        true
+        self.canvas.ensure_surface(node_id, width, height)
     }
 
     fn canvas_rect_arguments(
@@ -1071,9 +1073,37 @@ fn canvas_color(owner: &HostRoots, context: &ObjectStorage, property: &str) -> C
 #[cfg(test)]
 mod tests {
     use super::{
-        CanvasHost, CanvasSavedState, HostRoots, Interpreter, MAX_SAVED_CANVAS_STATES, RuntimeRoot,
-        Transform, Value,
+        CanvasHost, CanvasSavedState, Color, HostRoots, Interpreter, MAX_PAGE_CANVAS_PIXELS,
+        MAX_PAGE_CANVASES, MAX_SAVED_CANVAS_STATES, RuntimeRoot, Transform, Value,
     };
+
+    #[test]
+    fn canvas_host_reuses_resizes_and_limits_surfaces() {
+        let mut host = CanvasHost::default();
+        assert!(host.ensure_surface(1, 2, 1));
+        host.surfaces
+            .get_mut(&1)
+            .unwrap()
+            .fill_rect(0.0, 0.0, 1.0, 1.0);
+        assert!(host.ensure_surface(1, 2, 1));
+        assert_eq!(host.surfaces[&1].surface().pixel(0, 0), Some(Color::BLACK));
+
+        assert!(host.ensure_surface(1, 1, 1));
+        assert_eq!(
+            host.surfaces[&1].surface().pixel(0, 0),
+            Some(Color::TRANSPARENT)
+        );
+        assert!(!host.ensure_surface(1, usize::MAX, 2));
+        assert!(!host.surfaces.contains_key(&1));
+        assert!(!host.ensure_surface(1, MAX_PAGE_CANVAS_PIXELS + 1, 1));
+        assert!(!host.ensure_surface(1, 16_385, 1));
+
+        for node_id in 0..MAX_PAGE_CANVASES as u64 {
+            assert!(host.ensure_surface(node_id, 0, 0));
+        }
+        assert!(host.ensure_surface(0, 0, 0));
+        assert!(!host.ensure_surface(MAX_PAGE_CANVASES as u64, 0, 0));
+    }
 
     #[test]
     fn saved_state_accounting_is_shared_and_cleared_per_canvas() {
