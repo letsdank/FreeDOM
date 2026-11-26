@@ -1,0 +1,8 @@
+[package]
+name = "freedom-canvas"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+freedom-graphics-core = { path = "../freedom-graphics-core" }

@@ -1,7 +1,8 @@
 use crate::{
     fetch::Fetcher,
     graphics::{
-        canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
+        MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES,
+        canvas::{Canvas2D, parse_canvas_dimension},
         font::normalize_font_container,
         image::{decode_jpeg, decode_png_for_display},
         raster::Surface as RasterSurface,

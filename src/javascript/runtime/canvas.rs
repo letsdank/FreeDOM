@@ -4,7 +4,8 @@
 
 use super::{ElementMethod, HostRoots, Interpreter, JsError, ObjectStorage, RuntimeRoot, Value};
 use crate::graphics::{
-    canvas::{Canvas2D, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES, parse_canvas_dimension},
+    MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES,
+    canvas::{Canvas2D, parse_canvas_dimension},
     geometry::Transform,
     raster::{Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle},
 };

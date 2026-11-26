@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg"]
-default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg"]
+members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg", "crates/freedom-canvas"]
+default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg", "crates/freedom-canvas"]
 resolver = "3"
 
 [dependencies]
 anyhow = "1"
+freedom-canvas = { path = "crates/freedom-canvas" }
 freedom-css = { path = "crates/freedom-css" }
 freedom-font = { path = "crates/freedom-font" }
 freedom-graphics-core = { path = "crates/freedom-graphics-core" }

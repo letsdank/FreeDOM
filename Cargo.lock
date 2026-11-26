@@ -574,6 +574,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "font8x8",
+ "freedom-canvas",
  "freedom-css",
  "freedom-font",
  "freedom-graphics-core",
@@ -584,6 +585,13 @@ dependencies = [
  "reqwest",
  "softbuffer",
  "winit",
+]
+
+[[package]]
+name = "freedom-canvas"
+version = "0.1.0"
+dependencies = [
+ "freedom-graphics-core",
 ]
 
 [[package]]
