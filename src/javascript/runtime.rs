@@ -319,12 +319,7 @@ pub(super) struct Interpreter {
     reference_error_prototype: ObjectStorage,
     array_prototype: ArrayStorage,
     active_array_joins: Vec<ArrayStorage>,
-    canvas_contexts: HashMap<u64, ObjectStorage>,
-    canvas_surfaces: HashMap<u64, crate::graphics::canvas::Canvas2D>,
-    canvas_dashes: HashMap<u64, Vec<f64>>,
-    canvas_state_stacks: HashMap<u64, Vec<canvas::CanvasSavedState>>,
-    canvas_saved_states: usize,
-    canvas_saved_dash_values: usize,
+    canvas: canvas::CanvasHost,
     execution_limit: usize,
     steps_remaining: usize,
     execution_depth: usize,
@@ -564,12 +559,7 @@ impl Interpreter {
             reference_error_prototype,
             array_prototype,
             active_array_joins: Vec::new(),
-            canvas_contexts: HashMap::new(),
-            canvas_surfaces: HashMap::new(),
-            canvas_dashes: HashMap::new(),
-            canvas_state_stacks: HashMap::new(),
-            canvas_saved_states: 0,
-            canvas_saved_dash_values: 0,
+            canvas: canvas::CanvasHost::default(),
             execution_limit: DEFAULT_EXECUTION_STEPS,
             steps_remaining: DEFAULT_EXECUTION_STEPS,
             execution_depth: 0,
@@ -1187,15 +1177,7 @@ impl Interpreter {
             visit(RuntimeRoot::Array(array));
         }
 
-        for object in self.canvas_contexts.values() {
-            visit(RuntimeRoot::Object(object));
-        }
-
-        for stack in self.canvas_state_stacks.values() {
-            for state in stack {
-                state.visit_roots(visit);
-            }
-        }
+        self.canvas.visit_roots(visit);
 
         for job in &self.microtasks {
             job.visit_roots(visit);

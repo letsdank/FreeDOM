@@ -10,6 +10,7 @@ use crate::graphics::{
     raster::{Color, FillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle},
 };
 use freedom_css::parse_color;
+use std::collections::HashMap;
 
 const CANVAS_SAVED_PROPERTIES: [&str; 7] = [
     "fillStyle",
@@ -24,14 +25,39 @@ const CANVAS_SAVED_PROPERTIES: [&str; 7] = [
 const MAX_SAVED_CANVAS_STATES: usize = 4096;
 const MAX_SAVED_CANVAS_DASH_VALUES: usize = 1_048_576;
 
-pub(super) struct CanvasSavedState {
+/// Canvas state owned by the browser host for one interpreter session.
+#[derive(Default)]
+pub(super) struct CanvasHost {
+    contexts: HashMap<u64, ObjectStorage>,
+    surfaces: HashMap<u64, Canvas2D>,
+    dashes: HashMap<u64, Vec<f64>>,
+    state_stacks: HashMap<u64, Vec<CanvasSavedState>>,
+    saved_states: usize,
+    saved_dash_values: usize,
+}
+
+impl CanvasHost {
+    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        for object in self.contexts.values() {
+            visit(RuntimeRoot::Object(object));
+        }
+
+        for stack in self.state_stacks.values() {
+            for state in stack {
+                state.visit_roots(visit);
+            }
+        }
+    }
+}
+
+struct CanvasSavedState {
     properties: [Value; 7],
     dash: Vec<f64>,
     transform: Transform,
 }
 
 impl CanvasSavedState {
-    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+    fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
         for value in &self.properties {
             visit(RuntimeRoot::Value(value));
         }
@@ -54,13 +80,13 @@ impl Interpreter {
     pub(in crate::javascript) fn take_canvas_surfaces(
         &mut self,
     ) -> std::collections::HashMap<u64, Canvas2D> {
-        let ids: Vec<_> = self.canvas_surfaces.keys().copied().collect();
+        let ids: Vec<_> = self.canvas.surfaces.keys().copied().collect();
 
         for node_id in ids {
             self.ensure_canvas_surface(node_id);
         }
 
-        std::mem::take(&mut self.canvas_surfaces)
+        std::mem::take(&mut self.canvas.surfaces)
     }
 
     pub(super) fn set_canvas_property(
@@ -79,7 +105,8 @@ impl Interpreter {
                 | "miterLimit"
                 | "lineDashOffset"
         ) || !self
-            .canvas_contexts
+            .canvas
+            .contexts
             .values()
             .any(|context| self.host_roots.same_ordinary_object(context, object))
         {
@@ -181,7 +208,7 @@ impl Interpreter {
             return Ok(Value::Null);
         }
 
-        if let Some(context) = self.canvas_contexts.get(&node_id) {
+        if let Some(context) = self.canvas.contexts.get(&node_id) {
             return Ok(Value::Object(context.clone()));
         }
 
@@ -256,7 +283,7 @@ impl Interpreter {
             );
         }
 
-        self.canvas_contexts.insert(node_id, context.clone());
+        self.canvas.contexts.insert(node_id, context.clone());
 
         Ok(Value::Object(context))
     }
@@ -279,16 +306,17 @@ impl Interpreter {
             return false;
         };
 
-        if let Some(existing) = self.canvas_surfaces.get(&node_id) {
+        if let Some(existing) = self.canvas.surfaces.get(&node_id) {
             if existing.surface().width() == width && existing.surface().height() == height {
                 return true;
             }
         }
 
-        self.canvas_surfaces.remove(&node_id);
+        self.canvas.surfaces.remove(&node_id);
 
         let used: usize = self
-            .canvas_surfaces
+            .canvas
+            .surfaces
             .values()
             .map(|canvas| canvas.surface().width() * canvas.surface().height())
             .sum();
@@ -300,7 +328,7 @@ impl Interpreter {
             return false;
         };
 
-        if total > MAX_PAGE_CANVAS_PIXELS || self.canvas_surfaces.len() >= MAX_PAGE_CANVASES {
+        if total > MAX_PAGE_CANVAS_PIXELS || self.canvas.surfaces.len() >= MAX_PAGE_CANVASES {
             return false;
         }
 
@@ -308,7 +336,7 @@ impl Interpreter {
             return false;
         };
 
-        self.canvas_surfaces.insert(node_id, canvas);
+        self.canvas.surfaces.insert(node_id, canvas);
 
         true
     }
@@ -350,7 +378,8 @@ impl Interpreter {
 
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
-                .canvas_surfaces
+                .canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized");
 
@@ -377,7 +406,8 @@ impl Interpreter {
 
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
-                .canvas_surfaces
+                .canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized");
 
@@ -394,15 +424,15 @@ impl Interpreter {
 
     // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element
     pub(super) fn reset_canvas_attribute(&mut self, node_id: u64, name: &str) {
-        if !matches!(name, "width" | "height") || !self.canvas_contexts.contains_key(&node_id) {
+        if !matches!(name, "width" | "height") || !self.canvas.contexts.contains_key(&node_id) {
             return;
         }
 
-        self.canvas_surfaces.remove(&node_id);
-        self.canvas_dashes.remove(&node_id);
+        self.canvas.surfaces.remove(&node_id);
+        self.canvas.dashes.remove(&node_id);
         self.clear_canvas_state_stack(node_id);
 
-        if let Some(context) = self.canvas_contexts.get(&node_id) {
+        if let Some(context) = self.canvas.contexts.get(&node_id) {
             self.host_roots.write_ordinary_property(
                 context,
                 "fillStyle".to_owned(),
@@ -475,7 +505,8 @@ impl Interpreter {
         };
 
         if !self
-            .canvas_contexts
+            .canvas
+            .contexts
             .get(&node_id)
             .is_some_and(|expected| self.host_roots.same_ordinary_object(expected, &context))
         {
@@ -562,7 +593,8 @@ impl Interpreter {
             Some(canvas_stroke_style(
                 &self.host_roots,
                 &context,
-                self.canvas_dashes
+                self.canvas
+                    .dashes
                     .get(&node_id)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
@@ -573,7 +605,8 @@ impl Interpreter {
 
         if self.ensure_canvas_surface(node_id) {
             let canvas = self
-                .canvas_surfaces
+                .canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized");
 
@@ -661,7 +694,7 @@ impl Interpreter {
             dash.extend_from_within(..);
         }
 
-        self.canvas_dashes.insert(node_id, dash);
+        self.canvas.dashes.insert(node_id, dash);
 
         Ok(Value::Undefined)
     }
@@ -674,7 +707,8 @@ impl Interpreter {
         self.canvas_context_receiver(node_id, receiver, "getLineDash")?;
 
         let values = self
-            .canvas_dashes
+            .canvas
+            .dashes
             .get(&node_id)
             .map(|dash| dash.iter().copied().map(Value::Number).collect())
             .unwrap_or_default();
@@ -690,10 +724,10 @@ impl Interpreter {
     ) -> Result<Value, JsError> {
         let context = self.canvas_context_receiver(node_id, receiver, "save")?;
 
-        let dash_len = self.canvas_dashes.get(&node_id).map_or(0, Vec::len);
+        let dash_len = self.canvas.dashes.get(&node_id).map_or(0, Vec::len);
 
-        if self.canvas_saved_states >= MAX_SAVED_CANVAS_STATES
-            || dash_len > MAX_SAVED_CANVAS_DASH_VALUES - self.canvas_saved_dash_values
+        if self.canvas.saved_states >= MAX_SAVED_CANVAS_STATES
+            || dash_len > MAX_SAVED_CANVAS_DASH_VALUES - self.canvas.saved_dash_values
         {
             return Err(JsError::unsupported("canvas state stack limit exceeded"));
         }
@@ -705,18 +739,21 @@ impl Interpreter {
         });
 
         let dash = self
-            .canvas_dashes
+            .canvas
+            .dashes
             .get(&node_id)
             .cloned()
             .unwrap_or_default();
 
         let transform = self
-            .canvas_surfaces
+            .canvas
+            .surfaces
             .get(&node_id)
             .map(Canvas2D::current_transform)
             .unwrap_or(Transform::IDENTITY);
 
-        self.canvas_state_stacks
+        self.canvas
+            .state_stacks
             .entry(node_id)
             .or_default()
             .push(CanvasSavedState {
@@ -725,8 +762,8 @@ impl Interpreter {
                 transform,
             });
 
-        self.canvas_saved_states += 1;
-        self.canvas_saved_dash_values += dash_len;
+        self.canvas.saved_states += 1;
+        self.canvas.saved_dash_values += dash_len;
 
         Ok(Value::Undefined)
     }
@@ -740,7 +777,8 @@ impl Interpreter {
         let context = self.canvas_context_receiver(node_id, receiver, "restore")?;
 
         let Some(saved) = self
-            .canvas_state_stacks
+            .canvas
+            .state_stacks
             .get_mut(&node_id)
             .and_then(Vec::pop)
         else {
@@ -748,17 +786,18 @@ impl Interpreter {
         };
 
         if self
-            .canvas_state_stacks
+            .canvas
+            .state_stacks
             .get(&node_id)
             .is_some_and(Vec::is_empty)
         {
-            self.canvas_state_stacks.remove(&node_id);
+            self.canvas.state_stacks.remove(&node_id);
         }
 
-        self.canvas_saved_states -= 1;
-        self.canvas_saved_dash_values -= saved.dash.len();
+        self.canvas.saved_states -= 1;
+        self.canvas.saved_dash_values -= saved.dash.len();
 
-        if let Some(canvas) = self.canvas_surfaces.get_mut(&node_id) {
+        if let Some(canvas) = self.canvas.surfaces.get_mut(&node_id) {
             canvas.restore_transform(saved.transform);
         }
 
@@ -770,19 +809,19 @@ impl Interpreter {
         }
 
         if saved.dash.is_empty() {
-            self.canvas_dashes.remove(&node_id);
+            self.canvas.dashes.remove(&node_id);
         } else {
-            self.canvas_dashes.insert(node_id, saved.dash);
+            self.canvas.dashes.insert(node_id, saved.dash);
         }
 
         Ok(Value::Undefined)
     }
 
     fn clear_canvas_state_stack(&mut self, node_id: u64) {
-        if let Some(stack) = self.canvas_state_stacks.remove(&node_id) {
-            self.canvas_saved_states -= stack.len();
+        if let Some(stack) = self.canvas.state_stacks.remove(&node_id) {
+            self.canvas.saved_states -= stack.len();
 
-            self.canvas_saved_dash_values -=
+            self.canvas.saved_dash_values -=
                 stack.iter().map(|state| state.dash.len()).sum::<usize>();
         }
     }
@@ -803,7 +842,8 @@ impl Interpreter {
         let y = self.to_number(&arguments[1])?;
 
         if self.ensure_canvas_surface(node_id) {
-            self.canvas_surfaces
+            self.canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .translate(x, y);
@@ -827,7 +867,8 @@ impl Interpreter {
         let angle = self.to_number(value)?;
 
         if self.ensure_canvas_surface(node_id) {
-            self.canvas_surfaces
+            self.canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .rotate(angle);
@@ -852,7 +893,8 @@ impl Interpreter {
         let y = self.to_number(&arguments[1])?;
 
         if self.ensure_canvas_surface(node_id) {
-            self.canvas_surfaces
+            self.canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .scale(x, y);
@@ -886,7 +928,8 @@ impl Interpreter {
         let values = self.canvas_matrix_arguments(&arguments)?;
 
         if self.ensure_canvas_surface(node_id) {
-            self.canvas_surfaces
+            self.canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .transform(values);
@@ -903,7 +946,8 @@ impl Interpreter {
         self.canvas_context_receiver(node_id, receiver, "resetTransform")?;
 
         if self.ensure_canvas_surface(node_id) {
-            self.canvas_surfaces
+            self.canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .reset_transform();
@@ -939,7 +983,8 @@ impl Interpreter {
         };
 
         if self.ensure_canvas_surface(node_id) {
-            self.canvas_surfaces
+            self.canvas
+                .surfaces
                 .get_mut(&node_id)
                 .expect("surface was initialized")
                 .set_transform(values);
@@ -1032,5 +1077,60 @@ fn canvas_color(owner: &HostRoots, context: &ObjectStorage, property: &str) -> C
         }
 
         _ => Color::BLACK,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CanvasSavedState, Interpreter, RuntimeRoot, Transform, Value};
+
+    #[test]
+    fn canvas_host_keeps_contexts_and_saved_values_reachable() {
+        let mut interpreter = Interpreter::new();
+        let Value::Object(context) = Value::object([]) else {
+            unreachable!();
+        };
+        let Value::Object(saved_value) = Value::object([]) else {
+            unreachable!();
+        };
+
+        interpreter.canvas.contexts.insert(7, context.clone());
+        interpreter.canvas.state_stacks.insert(
+            7,
+            vec![CanvasSavedState {
+                properties: [
+                    Value::Object(saved_value.clone()),
+                    Value::Undefined,
+                    Value::Undefined,
+                    Value::Undefined,
+                    Value::Undefined,
+                    Value::Undefined,
+                    Value::Undefined,
+                ],
+                dash: Vec::new(),
+                transform: Transform::IDENTITY,
+            }],
+        );
+
+        let mut saw_context = false;
+        let mut saw_saved_value = false;
+        let _snapshot = interpreter
+            .visit_runtime_roots(&mut |root| match root {
+                RuntimeRoot::Object(object) => {
+                    saw_context |= interpreter
+                        .host_roots
+                        .same_ordinary_object(object, &context);
+                }
+                RuntimeRoot::Value(Value::Object(object)) => {
+                    saw_saved_value |= interpreter
+                        .host_roots
+                        .same_ordinary_object(object, &saved_value);
+                }
+                _ => {}
+            })
+            .unwrap();
+
+        assert!(saw_context);
+        assert!(saw_saved_value);
     }
 }
