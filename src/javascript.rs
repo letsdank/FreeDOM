@@ -700,3 +700,7 @@ pub fn evaluate_with_document(
 #[cfg(test)]
 #[path = "javascript/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "javascript/testharness_fixture_tests.rs"]
+mod testharness_fixture_tests;
