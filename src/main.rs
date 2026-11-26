@@ -1,4 +1,8 @@
 mod box_tree;
+#[cfg(test)]
+mod fixture_cursor;
+#[cfg(test)]
+mod fixture_json;
 mod inline_layout;
 mod layout_debug;
 mod layout_preview;

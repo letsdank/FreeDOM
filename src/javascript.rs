@@ -8,10 +8,6 @@ use std::{
 #[path = "javascript/lexer.rs"]
 mod lexer;
 
-#[cfg(test)]
-#[path = "javascript/token_cursor.rs"]
-mod token_cursor;
-
 #[path = "javascript/token_stream.rs"]
 mod token_stream;
 
@@ -28,13 +24,6 @@ pub(crate) mod regexp;
 
 #[path = "javascript/parser.rs"]
 mod parser;
-
-#[cfg(test)]
-#[path = "javascript/json.rs"]
-mod json;
-
-#[cfg(test)]
-pub(crate) use json::{JsonValue, parse_json};
 
 use parser::parse_program;
 

@@ -2,7 +2,8 @@
 //!
 //! This does not choose lexical goals or validate JSON syntax.
 
-use super::{JsError, Token, TokenKind};
+use crate::fixture_json::FixtureJsonError;
+use crate::javascript::{Token, TokenKind};
 
 pub(super) struct TokenCursor {
     tokens: Vec<Token>,
@@ -55,12 +56,16 @@ impl TokenCursor {
         }
     }
 
-    pub(super) fn consume(&mut self, expected: &TokenKind, message: &str) -> Result<(), JsError> {
+    pub(super) fn consume(
+        &mut self,
+        expected: &TokenKind,
+        message: &str,
+    ) -> Result<(), FixtureJsonError> {
         if self.check(expected) {
             self.advance();
             Ok(())
         } else {
-            Err(JsError::syntax(self.peek().offset, message))
+            Err(FixtureJsonError::syntax(self.peek().offset, message))
         }
     }
 }

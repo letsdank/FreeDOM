@@ -2,7 +2,7 @@
 //!
 //! These tests do not assert JavaScript exception semantics.
 
-use crate::javascript::{JsErrorKind, evaluate, parse_json};
+use crate::javascript::{JsErrorKind, evaluate};
 
 #[test]
 fn classifies_syntax_errors_and_preserves_offsets() {
@@ -31,14 +31,6 @@ fn classifies_unsupported_regexp_copy_as_engine_limitation() {
         error.message,
         "RegExp construction from another RegExp is not implemented yet"
     );
-}
-
-#[test]
-fn json_lexing_errors_are_classified_as_syntax() {
-    let error = parse_json("@").unwrap_err();
-
-    assert_eq!(error.kind, JsErrorKind::Syntax);
-    assert_eq!(error.offset, Some(0));
 }
 
 #[test]

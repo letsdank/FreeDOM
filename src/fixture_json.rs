@@ -5,10 +5,36 @@
 //! This reader currently reuses the JavaScript tokenizer. Its accepted syntax
 //! is not yet equivalent to JSON, so it must not be treated as a JSON validator.
 
-use super::token_cursor::TokenCursor;
-use std::collections::HashMap;
+use crate::fixture_cursor::TokenCursor;
+use crate::javascript::{Token, TokenKind, tokenize};
+use std::{collections::HashMap, error::Error, fmt};
 
-use super::{JsError, Token, TokenKind, tokenize};
+/// Syntax error from the partial fixture reader, with a byte offset.
+#[derive(Debug)]
+pub(crate) struct FixtureJsonError {
+    pub(crate) offset: Option<usize>,
+    pub(crate) message: String,
+}
+
+impl FixtureJsonError {
+    pub(crate) fn syntax(offset: usize, message: impl Into<String>) -> Self {
+        Self {
+            offset: Some(offset),
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for FixtureJsonError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.offset {
+            Some(offset) => write!(formatter, "{} at byte {}", self.message, offset),
+            None => formatter.write_str(&self.message),
+        }
+    }
+}
+
+impl Error for FixtureJsonError {}
 
 /// Data parsed from fixtures, independent of JavaScript object storage.
 #[derive(Clone, Debug, PartialEq)]
@@ -51,8 +77,9 @@ impl JsonValue {
     }
 }
 
-pub(crate) fn parse_json(source: &str) -> Result<JsonValue, JsError> {
-    let tokens = tokenize(source).map_err(|error| JsError::syntax(error.offset, error.message))?;
+pub(crate) fn parse_json(source: &str) -> Result<JsonValue, FixtureJsonError> {
+    let tokens =
+        tokenize(source).map_err(|error| FixtureJsonError::syntax(error.offset, error.message))?;
 
     JsonParser::new(tokens).parse()
 }
@@ -68,11 +95,11 @@ impl JsonParser {
         }
     }
 
-    fn parse(&mut self) -> Result<JsonValue, JsError> {
+    fn parse(&mut self) -> Result<JsonValue, FixtureJsonError> {
         let value = self.parse_value()?;
 
         if !self.cursor.check(&TokenKind::EndOfFile) {
-            return Err(JsError::syntax(
+            return Err(FixtureJsonError::syntax(
                 self.cursor.peek().offset,
                 "unexpected token after JSON value",
             ));
@@ -81,7 +108,7 @@ impl JsonParser {
         Ok(value)
     }
 
-    fn parse_value(&mut self) -> Result<JsonValue, JsError> {
+    fn parse_value(&mut self) -> Result<JsonValue, FixtureJsonError> {
         let token = self.cursor.advance();
 
         match token.kind {
@@ -94,16 +121,19 @@ impl JsonParser {
             TokenKind::LeftBracket => self.parse_array(),
             TokenKind::LeftBrace => self.parse_object(),
 
-            TokenKind::EndOfFile => Err(JsError::syntax(
+            TokenKind::EndOfFile => Err(FixtureJsonError::syntax(
                 token.offset,
                 "unexpected end of JSON input",
             )),
 
-            _ => Err(JsError::syntax(token.offset, "expected a JSON value")),
+            _ => Err(FixtureJsonError::syntax(
+                token.offset,
+                "expected a JSON value",
+            )),
         }
     }
 
-    fn parse_array(&mut self) -> Result<JsonValue, JsError> {
+    fn parse_array(&mut self) -> Result<JsonValue, FixtureJsonError> {
         let mut values = Vec::new();
 
         if self.cursor.consume_optional(&TokenKind::RightBracket) {
@@ -115,7 +145,7 @@ impl JsonParser {
 
             if self.cursor.consume_optional(&TokenKind::Comma) {
                 if self.cursor.check(&TokenKind::RightBracket) {
-                    return Err(JsError::syntax(
+                    return Err(FixtureJsonError::syntax(
                         self.cursor.peek().offset,
                         "trailing comma is not valid JSON",
                     ));
@@ -133,7 +163,7 @@ impl JsonParser {
         }
     }
 
-    fn parse_object(&mut self) -> Result<JsonValue, JsError> {
+    fn parse_object(&mut self) -> Result<JsonValue, FixtureJsonError> {
         let mut values = HashMap::new();
 
         if self.cursor.consume_optional(&TokenKind::RightBrace) {
@@ -144,7 +174,7 @@ impl JsonParser {
             let token = self.cursor.advance();
 
             let TokenKind::String(key) = token.kind else {
-                return Err(JsError::syntax(
+                return Err(FixtureJsonError::syntax(
                     token.offset,
                     "JSON object keys must be strings",
                 ));
@@ -158,7 +188,7 @@ impl JsonParser {
 
             if self.cursor.consume_optional(&TokenKind::Comma) {
                 if self.cursor.check(&TokenKind::RightBrace) {
-                    return Err(JsError::syntax(
+                    return Err(FixtureJsonError::syntax(
                         self.cursor.peek().offset,
                         "trailing comma is not valid JSON",
                     ));
@@ -180,6 +210,14 @@ impl JsonParser {
 #[cfg(test)]
 mod tests {
     use super::{JsonValue, parse_json};
+
+    #[test]
+    fn json_lexing_errors_preserve_offsets() {
+        let error = parse_json("@").unwrap_err();
+
+        assert_eq!(error.offset, Some(0));
+        assert_eq!(error.to_string(), "unexpected character '@' at byte 0");
+    }
 
     #[test]
     fn reads_supported_nested_fixture_values() {

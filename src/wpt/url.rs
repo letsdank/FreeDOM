@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::javascript::{JsonValue, parse_json};
+use crate::fixture_json::{JsonValue, parse_json};
 use freedom_url::Url;
 
 struct UrlCase {

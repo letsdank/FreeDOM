@@ -78,10 +78,10 @@ mod tests {
             // Convert the JavaScript escape used by this fixture to JSON syntax.
             let input_json = input.replace(r"\x00", r"\u0000");
 
-            let input = crate::javascript::parse_json(&input_json)
+            let input = crate::fixture_json::parse_json(&input_json)
                 .expect("WPT input must be a supported string");
 
-            let expected = crate::javascript::parse_json(expected)
+            let expected = crate::fixture_json::parse_json(expected)
                 .expect("WPT expectation must be a supported string");
 
             assert_eq!(
@@ -302,7 +302,7 @@ mod tests {
 
             let json = line.strip_suffix(',').unwrap_or(line);
 
-            let record = crate::javascript::parse_json(json).expect("WPT case must parse");
+            let record = crate::fixture_json::parse_json(json).expect("WPT case must parse");
 
             let fields = record.as_array().expect("WPT case must be an array");
 
@@ -345,7 +345,7 @@ mod tests {
             }
 
             let json = line.strip_suffix(',').unwrap_or(line);
-            let record = crate::javascript::parse_json(json).expect("WPT case must parse");
+            let record = crate::fixture_json::parse_json(json).expect("WPT case must parse");
             let fields = record.as_array().expect("WPT case must be an array");
 
             let input = fields[0]
