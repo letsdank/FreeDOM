@@ -1,13 +1,15 @@
-use crate::graphics::{
+use freedom_graphics_core::{
     flatten::{FlattenError, flatten_path},
     raster::{Color, FillRule, Surface, fill_path},
 };
 
 use super::layout::TextOutline;
 
-pub(crate) const GLYPH_SUBPIXEL_STEPS: i32 = 8;
+/// Number of quantized horizontal positions per pixel.
+pub const GLYPH_SUBPIXEL_STEPS: i32 = 8;
 
-pub(crate) fn split_subpixel_position(value: f32) -> Option<(i32, u8)> {
+/// Returns a whole-pixel position and its quantized subpixel phase.
+pub fn split_subpixel_position(value: f32) -> Option<(i32, u8)> {
     if !value.is_finite() {
         return None;
     }
@@ -45,7 +47,7 @@ pub fn rasterize_text_outline(
 
 #[cfg(test)]
 mod tests {
-    use crate::graphics::{
+    use freedom_graphics_core::{
         geometry::{Path, Point},
         raster::Color,
     };

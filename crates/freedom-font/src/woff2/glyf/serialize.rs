@@ -178,13 +178,11 @@ mod tests {
     use super::super::OutlinePoint;
     use super::*;
 
-    use crate::graphics::{
-        font::{
-            glyf::{Glyph, parse_glyph},
-            reader::{write_u16, write_u32},
-        },
-        geometry::{PathCommand, Point},
+    use crate::{
+        glyf::{Glyph, parse_glyph},
+        reader::{write_u16, write_u32},
     };
+    use freedom_graphics_core::geometry::{PathCommand, Point};
 
     #[test]
     fn reconstructed_glyph_is_read_by_truetype_parser() {

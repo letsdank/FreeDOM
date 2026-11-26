@@ -610,7 +610,7 @@ fn error(offset: usize, message: &str) -> FontError {
 mod tests {
     use super::super::super::reader::{write_u16, write_u32};
     use super::*;
-    use crate::graphics::font::glyf::Glyph;
+    use crate::glyf::Glyph;
 
     fn sample(overlap: bool) -> Vec<u8> {
         let mut data = vec![0_u8; 36];
@@ -866,7 +866,7 @@ mod tests {
 
     #[test]
     fn reconstructs_bounds_instructions_and_overlap() {
-        use crate::graphics::font::glyf::{Glyph, parse_glyph};
+        use crate::glyf::{Glyph, parse_glyph};
 
         let cases = [
             (
@@ -964,7 +964,7 @@ mod tests {
 
     #[test]
     fn reconstructs_empty_then_simple_glyph_with_shared_cursors() {
-        use crate::graphics::font::glyf::parse_glyph;
+        use crate::glyf::parse_glyph;
 
         let mut data = simple_fixture(false, false);
 
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn reconstructs_composite_with_instructions_on_first_component() {
-        use crate::graphics::font::glyf::parse_glyph;
+        use crate::glyf::parse_glyph;
 
         let streams = composite_fixture();
         let mut cursors = GlyphCursors::default();
@@ -1237,7 +1237,7 @@ mod tests {
 
     #[test]
     fn reconstructs_short_and_long_glyf_loca_tables() {
-        use crate::graphics::font::glyf::parse_glyph;
+        use crate::glyf::parse_glyph;
 
         let cases = [(0, 8, vec![0, 0, 20, 40]), (1, 16, vec![0, 0, 20, 40])];
 

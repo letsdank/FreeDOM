@@ -11,7 +11,7 @@ use super::command::{InsertCopyCommand, read_insert_copy_command};
 use super::context::{LiteralContextMode, distance_context_id, literal_context_id};
 use super::dictionary::expand_word;
 use super::{BitReader, FontError, HuffmanTree, error, read_block_type_count, read_prefix_code};
-use crate::graphics::font::brotli::distance::{DistanceHistory, read_distance};
+use crate::brotli::distance::{DistanceHistory, read_distance};
 
 const LITERAL_ALPHABET_SIZE: usize = 256;
 const COMMAND_ALPHABET_SIZE: usize = 704;

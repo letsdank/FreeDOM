@@ -764,7 +764,7 @@ mod tests {
 
     #[test]
     fn reconstructs_woff2_table_from_compressed_brotli() {
-        use crate::graphics::font::sfnt::SfntFont;
+        use crate::sfnt::SfntFont;
 
         // Brotli stream producing eleven 'a' bytes using an overlapping copy.
         // The stream was independently verified with libbrolidec.
@@ -783,7 +783,7 @@ mod tests {
 
     #[test]
     fn reconstructs_woff2_when_total_sfnt_size_differs() {
-        use crate::graphics::font::sfnt::SfntFont;
+        use crate::sfnt::SfntFont;
 
         let compressed = uncompressed_brotli(b"abcd");
 
@@ -809,7 +809,7 @@ mod tests {
     fn parses_real_wpt_woff2_directory() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/testdata/wpt/css/WOFF2/support/",
+            "/../../testdata/wpt/css/WOFF2/support/",
             "metadatadisplay-schema-metadata-004.woff2",
         );
 
@@ -840,11 +840,11 @@ mod tests {
 
     #[test]
     fn decodes_real_wpt_woff2_fixture() {
-        use crate::graphics::font::sfnt::SfntFont;
+        use crate::sfnt::SfntFont;
 
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/testdata/wpt/css/WOFF2/support/",
+            "/../../testdata/wpt/css/WOFF2/support/",
             "metadatadisplay-schema-metadata-004.woff2",
         );
 
@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn decodes_transformed_glyf_loca_in_a_woff2_container() {
-        use crate::graphics::font::{
+        use crate::{
             glyf::{Glyph, parse_glyph},
             sfnt::SfntFont,
         };
@@ -1200,14 +1200,12 @@ mod tests {
 
     #[test]
     fn decodes_real_wpt_noto_nko_transformed_glyf() {
-        use crate::graphics::{
-            font::{glyf::Glyph, truetype::TrueTypeFont},
-            geometry::{PathCommand, Point},
-        };
+        use crate::{glyf::Glyph, truetype::TrueTypeFont};
+        use freedom_graphics_core::geometry::{PathCommand, Point};
 
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/testdata/wpt/fonts/noto/",
+            "/../../testdata/wpt/fonts/noto/",
             "NotoSansNko-regular-webfont.woff2",
         );
 
@@ -1255,17 +1253,15 @@ mod tests {
 
     #[test]
     fn decodes_wpt_mongolian_composite_glyph() {
-        use crate::graphics::{
-            font::{
-                glyf::{Glyph, GlyphBounds},
-                truetype::TrueTypeFont,
-            },
-            geometry::{Point, Transform},
+        use crate::{
+            glyf::{Glyph, GlyphBounds},
+            truetype::TrueTypeFont,
         };
+        use freedom_graphics_core::geometry::{Point, Transform};
 
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/testdata/wpt/fonts/noto/",
+            "/../../testdata/wpt/fonts/noto/",
             "NotoSansMongolian-regular.woff2"
         );
 
@@ -1407,7 +1403,7 @@ mod tests {
 
     #[test]
     fn decodes_hmtx_with_transformed_and_untransformed_glyf() {
-        use crate::graphics::font::{hmtx::HorizontalMetrics, sfnt::SfntFont};
+        use crate::{hmtx::HorizontalMetrics, sfnt::SfntFont};
 
         for (transformed, expected_lsb) in [(true, 10), (false, 0)] {
             let data = transformed_hmtx_fixture(transformed);
@@ -1426,17 +1422,17 @@ mod tests {
 
     #[test]
     fn reconstructs_real_noto_font_with_transformed_hmtx() {
-        use crate::graphics::font::{sfnt::SfntFont, truetype::TrueTypeFont};
+        use crate::{sfnt::SfntFont, truetype::TrueTypeFont};
 
         let source_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/testdata/wpt/fonts/noto/",
+            "/../../testdata/wpt/fonts/noto/",
             "NotoSansNko-regular-webfont.woff2",
         );
 
         let transformed_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/testdata/fonts/noto/nko-hmtx.woff2",
+            "/../../testdata/fonts/noto/nko-hmtx.woff2",
         );
 
         let source =

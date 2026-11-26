@@ -23,7 +23,7 @@ pub mod truetype;
 mod woff;
 mod woff2;
 
-pub(crate) use self::{
+pub use self::{
     layout::TextOutline, render::rasterize_text_outline, truetype::TrueTypeFont,
     woff::normalize_font_container,
 };

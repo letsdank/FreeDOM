@@ -1,4 +1,4 @@
-use crate::graphics::geometry::{Path, Transform};
+use freedom_graphics_core::geometry::{Path, Transform};
 
 use super::{sfnt::FontError, truetype::TrueTypeFont};
 
@@ -73,7 +73,8 @@ fn text_scale(font: &TrueTypeFont<'_>, font_size: f32) -> Result<f32, FontError>
     Ok(font_size / f32::from(font.head().units_per_em))
 }
 
-pub(crate) trait PositionedFont {
+/// A font available to the per-character fallback and positioning routines.
+pub trait PositionedFont {
     fn font(&self) -> &TrueTypeFont<'_>;
 }
 
@@ -83,11 +84,9 @@ impl PositionedFont for &TrueTypeFont<'_> {
     }
 }
 
-// Prefer an actual NBSP in the font stack. If non exists, use a space glyph.
-pub(crate) fn select_positioned_glyph<T: PositionedFont>(
-    fonts: &[T],
-    character: char,
-) -> (usize, u16) {
+/// Chooses a font and glyph, preferring an actual NBSP over a space fallback.
+/// Returns `(0, 0)` if no glyph is found, including when `fonts` is empty.
+pub fn select_positioned_glyph<T: PositionedFont>(fonts: &[T], character: char) -> (usize, u16) {
     let find = |character| {
         fonts.iter().enumerate().find_map(|(index, font)| {
             let glyph = font.font().glyph_id(character);
@@ -100,9 +99,9 @@ pub(crate) fn select_positioned_glyph<T: PositionedFont>(
         .unwrap_or((0, 0))
 }
 
-// Partial per-character fallback; cluster shaping is not implemented.
-// https://www.w3.org/TR/css-fonts-4/#font-matching-algorithm
-pub(crate) fn visit_positioned_glyphs<F, T>(
+/// Visits glyphs selected by partial per-character fallback; cluster shaping is
+/// not implemented. <https://www.w3.org/TR/css-fonts-4/#font-matching-algorithm>
+pub fn visit_positioned_glyphs<F, T>(
     fonts: &[T],
     text: &str,
     font_size: f32,
@@ -117,9 +116,9 @@ where
     })
 }
 
-// UTF-8 offsets refer to the original text; this remains per-character layout,
-// not cluster shaping.
-pub(crate) fn visit_positioned_glyphs_with_offsets<F, T>(
+/// Visits positioned glyphs with UTF-8 byte offsets in the original text.
+/// This is per-character layout, not cluster shaping.
+pub fn visit_positioned_glyphs_with_offsets<F, T>(
     fonts: &[T],
     text: &str,
     font_size: f32,
@@ -167,12 +166,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::font::normalize_font_container;
+    use crate::normalize_font_container;
 
     #[test]
     fn chooses_font_per_character_and_positions_glyphs() {
         let read = |path: &str| {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(path);
 
             normalize_font_container(std::fs::read(path).expect("font fixture must exist")).unwrap()
         };
@@ -219,7 +220,9 @@ mod tests {
     #[test]
     fn selects_nbsp_or_space_using_the_font_stack() {
         let load = |path: &str| {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(path);
             normalize_font_container(std::fs::read(path).unwrap()).unwrap()
         };
 

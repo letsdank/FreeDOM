@@ -352,7 +352,7 @@ mod tests {
     use flate2::{Compression, write::ZlibEncoder};
 
     use super::*;
-    use crate::graphics::font::sfnt::SfntFont;
+    use crate::sfnt::SfntFont;
 
     #[test]
     fn decodes_uncompressed_woff_tables() {

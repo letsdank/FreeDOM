@@ -13,7 +13,7 @@ use super::{
     sfnt::{FontError, SfntFlavor, SfntFont, TableTag},
 };
 
-use crate::graphics::geometry::Path;
+use freedom_graphics_core::geometry::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexToLocFormat {
@@ -351,7 +351,7 @@ fn table_error(offset: usize, message: impl Into<String>) -> FontError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::geometry::{PathCommand, Point};
+    use freedom_graphics_core::geometry::{PathCommand, Point};
 
     #[test]
     fn reads_true_type_head_and_maxp_tables() {

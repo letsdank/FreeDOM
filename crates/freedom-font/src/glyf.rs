@@ -1,4 +1,4 @@
-use crate::graphics::geometry::{Path, Point, Transform};
+use freedom_graphics_core::geometry::{Path, Point, Transform};
 
 use super::{
     reader::{read_bytes, read_i16, read_u16},
@@ -389,7 +389,7 @@ fn error(offset: usize, message: impl Into<String>) -> FontError {
 
 #[cfg(test)]
 mod tests {
-    use crate::graphics::geometry::PathCommand;
+    use freedom_graphics_core::geometry::PathCommand;
 
     use super::*;
 
