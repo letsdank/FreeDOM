@@ -573,14 +573,13 @@ name = "freedom"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "flate2",
  "font8x8",
  "freedom-css",
  "freedom-font",
  "freedom-graphics-core",
  "freedom-html",
+ "freedom-image",
  "freedom-url",
- "png",
  "reqwest",
  "softbuffer",
  "winit",
@@ -605,6 +604,15 @@ version = "0.1.0"
 [[package]]
 name = "freedom-html"
 version = "0.1.0"
+
+[[package]]
+name = "freedom-image"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "freedom-graphics-core",
+ "png",
+]
 
 [[package]]
 name = "freedom-url"

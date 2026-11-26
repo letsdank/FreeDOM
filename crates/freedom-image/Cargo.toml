@@ -1,0 +1,11 @@
+[package]
+name = "freedom-image"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+freedom-graphics-core = { path = "../freedom-graphics-core" }
+
+[dev-dependencies]
+flate2 = "=1.1.10"
+png = "=0.17.16"

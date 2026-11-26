@@ -9,6 +9,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/freedom-font/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/freedom-graphics-core/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/freedom-html/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/freedom-image/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

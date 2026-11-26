@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font"]
-default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font"]
+members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image"]
+default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image"]
 resolver = "3"
 
 [dependencies]
@@ -14,13 +14,12 @@ freedom-css = { path = "crates/freedom-css" }
 freedom-font = { path = "crates/freedom-font" }
 freedom-graphics-core = { path = "crates/freedom-graphics-core" }
 freedom-html = { path = "crates/freedom-html" }
+freedom-image = { path = "crates/freedom-image" }
 freedom-url = { path = "crates/freedom-url" }
 font8x8 = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "charset", "http2"] }
 softbuffer = "0.4"
 winit = "0.30"
-flate2 = "=1.1.10"
 
 [dev-dependencies]
 freedom-css = { path = "crates/freedom-css", features = ["test-support"] }
-png = "=0.17.16"
