@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::graphics::geometry::{Path, PathCommand, Point};
+use crate::geometry::{Path, PathCommand, Point};
 
 const MAX_SUBDIVISION_DEPTH: u8 = 12;
 
@@ -248,7 +248,7 @@ fn point_line_distance(point: Point, from: Point, to: Point) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::geometry::Path;
+    use crate::geometry::Path;
 
     #[test]
     fn preserves_contours_and_closed_state() {

@@ -1,5 +1,5 @@
-use crate::graphics::flatten::FlattenedPath;
-use crate::graphics::geometry::{Point, Transform};
+use crate::flatten::FlattenedPath;
+use crate::geometry::{Point, Transform};
 
 const SAMPLE_OFFSETS: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
 
@@ -433,7 +433,9 @@ pub fn stroke_path_clipped(
     stroke_path_transformed_clipped(surface, path, style, color, clips, Transform::IDENTITY);
 }
 
-pub(crate) fn stroke_path_transformed(
+/// Strokes a device-space path using a local-to-device transform for the stroke.
+/// A non-invertible transform produces no pixels.
+pub fn stroke_path_transformed(
     surface: &mut Surface,
     path: &FlattenedPath,
     style: StrokeStyle,
@@ -1285,7 +1287,8 @@ fn ray_crosses_segment(sample: Point, from: Point, to: Point) -> bool {
     crossing_x > sample.x
 }
 
-pub(crate) fn blend_source_over(destination: Color, source: Color, coverage: f32) -> Color {
+/// Composites source over destination with coverage expected in the range 0..=1.
+pub fn blend_source_over(destination: Color, source: Color, coverage: f32) -> Color {
     let source_alpha = source.alpha as f32 / 255.0 * coverage;
     let destination_alpha = destination.alpha as f32 / 255.0;
     let output_alpha = source_alpha + destination_alpha * (1.0 - source_alpha);
@@ -1317,8 +1320,8 @@ pub(crate) fn blend_source_over(destination: Color, source: Color, coverage: f32
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::flatten::flatten_path;
-    use crate::graphics::geometry::Path;
+    use crate::flatten::flatten_path;
+    use crate::geometry::Path;
 
     #[test]
     fn fills_a_closed_rectangle() {

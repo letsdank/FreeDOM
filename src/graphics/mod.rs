@@ -1,7 +1,6 @@
 pub mod canvas;
-pub mod flatten;
 pub mod font;
-pub mod geometry;
 pub mod image;
-pub mod raster;
 pub mod svg;
+
+pub use freedom_graphics_core::{flatten, geometry, raster};
