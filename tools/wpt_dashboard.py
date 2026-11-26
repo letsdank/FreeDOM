@@ -130,7 +130,7 @@ def suite_rows(report):
     suites = report.get("suites", {})
 
     if not isinstance(suites, dict) or not suites:
-        return '<tr><td colspan="5">No suite data available.</td></tr>'
+        return '<tr><td colspan="6">No suite data available.</td></tr>'
 
     rows = []
 
@@ -143,6 +143,7 @@ def suite_rows(report):
         tests = count(suite, "tests")
         passed = count(suite, "passed")
         failed = count(suite, "failed")
+        ignored = count(suite, "ignored")
         rate = passed * 100.0 / tests if tests else 0.0
 
         rows.append(
@@ -151,6 +152,7 @@ def suite_rows(report):
             f"<td>{tests}</td>"
             f"<td class=\"pass\">{passed}</td>"
             f"<td class=\"fail\">{failed}</td>"
+            f"<td>{ignored}</td>"
             f"<td>{rate:.1f}%</td>"
             "</tr>"
         )
@@ -173,6 +175,7 @@ def render_dashboard(report, history):
     totals = report.get("totals", {})
     passed = count(totals, "passed")
     failed = count(totals, "failed")
+    ignored = count(totals, "ignored")
     tests = count(totals, "tests")
     rate = pass_rate(report)
     revision = escape(str(report.get("git_revision", "unknown")))
@@ -313,6 +316,7 @@ def render_dashboard(report, history):
       {measurement_cards(report)}
       <div class="card"><span>Passed</span><strong class="pass">{passed}</strong></div>
       <div class="card"><span>Failed</span><strong class="fail">{failed}</strong></div>
+      <div class="card"><span>Ignored</span><strong>{ignored}</strong></div>
       <div class="card"><span>Pass rate</span><strong>{rate:.1f}%</strong></div>
     </div>
 
@@ -325,6 +329,7 @@ def render_dashboard(report, history):
             <th>Tests</th>
             <th>Passed</th>
             <th>Failed</th>
+            <th>Ignored</th>
             <th>Pass rate</th>
           </tr>
         </thead>
