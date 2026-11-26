@@ -48,6 +48,76 @@ impl CanvasHost {
             }
         }
     }
+
+    fn save_state(
+        &mut self,
+        node_id: u64,
+        context: &ObjectStorage,
+        roots: &HostRoots,
+    ) -> Result<(), JsError> {
+        let dash_len = self.dashes.get(&node_id).map_or(0, Vec::len);
+
+        if self.saved_states >= MAX_SAVED_CANVAS_STATES
+            || dash_len > MAX_SAVED_CANVAS_DASH_VALUES - self.saved_dash_values
+        {
+            return Err(JsError::unsupported("canvas state stack limit exceeded"));
+        }
+
+        let properties = CANVAS_SAVED_PROPERTIES.map(|name| {
+            roots
+                .read_ordinary_own_property(context, name)
+                .unwrap_or(Value::Undefined)
+        });
+        let dash = self.dashes.get(&node_id).cloned().unwrap_or_default();
+        let transform = self
+            .surfaces
+            .get(&node_id)
+            .map(Canvas2D::current_transform)
+            .unwrap_or(Transform::IDENTITY);
+
+        self.state_stacks
+            .entry(node_id)
+            .or_default()
+            .push(CanvasSavedState {
+                properties,
+                dash,
+                transform,
+            });
+        self.saved_states += 1;
+        self.saved_dash_values += dash_len;
+        Ok(())
+    }
+
+    fn restore_state(&mut self, node_id: u64, context: &ObjectStorage, roots: &HostRoots) {
+        let Some(saved) = self.state_stacks.get_mut(&node_id).and_then(Vec::pop) else {
+            return;
+        };
+
+        if self.state_stacks.get(&node_id).is_some_and(Vec::is_empty) {
+            self.state_stacks.remove(&node_id);
+        }
+        self.saved_states -= 1;
+        self.saved_dash_values -= saved.dash.len();
+
+        if let Some(canvas) = self.surfaces.get_mut(&node_id) {
+            canvas.restore_transform(saved.transform);
+        }
+        for (name, value) in CANVAS_SAVED_PROPERTIES.into_iter().zip(saved.properties) {
+            roots.write_ordinary_property(context, name.to_owned(), value);
+        }
+        if saved.dash.is_empty() {
+            self.dashes.remove(&node_id);
+        } else {
+            self.dashes.insert(node_id, saved.dash);
+        }
+    }
+
+    fn clear_saved_states(&mut self, node_id: u64) {
+        if let Some(stack) = self.state_stacks.remove(&node_id) {
+            self.saved_states -= stack.len();
+            self.saved_dash_values -= stack.iter().map(|state| state.dash.len()).sum::<usize>();
+        }
+    }
 }
 
 struct CanvasSavedState {
@@ -430,7 +500,7 @@ impl Interpreter {
 
         self.canvas.surfaces.remove(&node_id);
         self.canvas.dashes.remove(&node_id);
-        self.clear_canvas_state_stack(node_id);
+        self.canvas.clear_saved_states(node_id);
 
         if let Some(context) = self.canvas.contexts.get(&node_id) {
             self.host_roots.write_ordinary_property(
@@ -724,46 +794,8 @@ impl Interpreter {
     ) -> Result<Value, JsError> {
         let context = self.canvas_context_receiver(node_id, receiver, "save")?;
 
-        let dash_len = self.canvas.dashes.get(&node_id).map_or(0, Vec::len);
-
-        if self.canvas.saved_states >= MAX_SAVED_CANVAS_STATES
-            || dash_len > MAX_SAVED_CANVAS_DASH_VALUES - self.canvas.saved_dash_values
-        {
-            return Err(JsError::unsupported("canvas state stack limit exceeded"));
-        }
-
-        let properties = CANVAS_SAVED_PROPERTIES.map(|name| {
-            self.host_roots
-                .read_ordinary_own_property(&context, name)
-                .unwrap_or(Value::Undefined)
-        });
-
-        let dash = self
-            .canvas
-            .dashes
-            .get(&node_id)
-            .cloned()
-            .unwrap_or_default();
-
-        let transform = self
-            .canvas
-            .surfaces
-            .get(&node_id)
-            .map(Canvas2D::current_transform)
-            .unwrap_or(Transform::IDENTITY);
-
         self.canvas
-            .state_stacks
-            .entry(node_id)
-            .or_default()
-            .push(CanvasSavedState {
-                properties,
-                dash,
-                transform,
-            });
-
-        self.canvas.saved_states += 1;
-        self.canvas.saved_dash_values += dash_len;
+            .save_state(node_id, &context, &self.host_roots)?;
 
         Ok(Value::Undefined)
     }
@@ -776,54 +808,10 @@ impl Interpreter {
     ) -> Result<Value, JsError> {
         let context = self.canvas_context_receiver(node_id, receiver, "restore")?;
 
-        let Some(saved) = self
-            .canvas
-            .state_stacks
-            .get_mut(&node_id)
-            .and_then(Vec::pop)
-        else {
-            return Ok(Value::Undefined);
-        };
-
-        if self
-            .canvas
-            .state_stacks
-            .get(&node_id)
-            .is_some_and(Vec::is_empty)
-        {
-            self.canvas.state_stacks.remove(&node_id);
-        }
-
-        self.canvas.saved_states -= 1;
-        self.canvas.saved_dash_values -= saved.dash.len();
-
-        if let Some(canvas) = self.canvas.surfaces.get_mut(&node_id) {
-            canvas.restore_transform(saved.transform);
-        }
-
-        {
-            for (name, value) in CANVAS_SAVED_PROPERTIES.into_iter().zip(saved.properties) {
-                self.host_roots
-                    .write_ordinary_property(&context, name.to_owned(), value);
-            }
-        }
-
-        if saved.dash.is_empty() {
-            self.canvas.dashes.remove(&node_id);
-        } else {
-            self.canvas.dashes.insert(node_id, saved.dash);
-        }
+        self.canvas
+            .restore_state(node_id, &context, &self.host_roots);
 
         Ok(Value::Undefined)
-    }
-
-    fn clear_canvas_state_stack(&mut self, node_id: u64) {
-        if let Some(stack) = self.canvas.state_stacks.remove(&node_id) {
-            self.canvas.saved_states -= stack.len();
-
-            self.canvas.saved_dash_values -=
-                stack.iter().map(|state| state.dash.len()).sum::<usize>();
-        }
     }
 
     pub(super) fn canvas_translate(
@@ -1082,7 +1070,44 @@ fn canvas_color(owner: &HostRoots, context: &ObjectStorage, property: &str) -> C
 
 #[cfg(test)]
 mod tests {
-    use super::{CanvasSavedState, Interpreter, RuntimeRoot, Transform, Value};
+    use super::{
+        CanvasHost, CanvasSavedState, HostRoots, Interpreter, MAX_SAVED_CANVAS_STATES, RuntimeRoot,
+        Transform, Value,
+    };
+
+    #[test]
+    fn saved_state_accounting_is_shared_and_cleared_per_canvas() {
+        let roots = HostRoots::default();
+        let Value::Object(context) = Value::object([]) else {
+            unreachable!();
+        };
+        let mut host = CanvasHost::default();
+        host.dashes.insert(1, vec![1.0, 2.0]);
+        host.save_state(1, &context, &roots).unwrap();
+        host.dashes.insert(1, vec![3.0, 4.0, 5.0]);
+        host.save_state(1, &context, &roots).unwrap();
+        host.dashes.insert(2, vec![7.0]);
+        host.save_state(2, &context, &roots).unwrap();
+
+        assert_eq!((host.saved_states, host.saved_dash_values), (3, 6));
+        host.restore_state(1, &context, &roots);
+        assert_eq!(host.dashes.get(&1).unwrap(), &[3.0, 4.0, 5.0]);
+        assert_eq!((host.saved_states, host.saved_dash_values), (2, 3));
+        host.clear_saved_states(1);
+        assert_eq!((host.saved_states, host.saved_dash_values), (1, 1));
+        host.restore_state(1, &context, &roots);
+        assert_eq!((host.saved_states, host.saved_dash_values), (1, 1));
+        host.restore_state(2, &context, &roots);
+        assert_eq!((host.saved_states, host.saved_dash_values), (0, 0));
+
+        for _ in 0..MAX_SAVED_CANVAS_STATES {
+            host.save_state(3, &context, &roots).unwrap();
+        }
+        assert!(host.save_state(2, &context, &roots).is_err());
+        assert_eq!(host.saved_states, MAX_SAVED_CANVAS_STATES);
+        host.clear_saved_states(3);
+        assert_eq!((host.saved_states, host.saved_dash_values), (0, 0));
+    }
 
     #[test]
     fn canvas_host_keeps_contexts_and_saved_values_reachable() {
