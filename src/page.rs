@@ -1032,23 +1032,13 @@ fn extract_blocks(
             return;
         };
 
-        let Some(canvas_node) = document.element(node_id) else {
-            return;
-        };
-
-        let attribute = |name: &str| {
-            canvas_node
-                .attributes
-                .iter()
-                .find(|attribute| attribute.name == name)
-                .map(|attribute| attribute.value.as_str())
-        };
-
-        let width = attribute("width")
+        let width = document
+            .element_attribute(node_id, "width")
             .and_then(parse_canvas_dimension)
             .unwrap_or(300);
 
-        let height = attribute("height")
+        let height = document
+            .element_attribute(node_id, "height")
             .and_then(parse_canvas_dimension)
             .unwrap_or(150);
 

@@ -33,12 +33,14 @@ pub struct DocumentState {
 }
 
 impl DocumentState {
-    // Paths refer to the original parsed HTML snapshot, not the live DOM order.
-    pub(crate) fn register_parsed_canvas(&mut self, path: &[usize], node_id: u64) {
+    /// Associates a parsed canvas with its path in the original HTML snapshot.
+    /// Paths do not follow subsequent changes to the live DOM order.
+    pub fn register_parsed_canvas(&mut self, path: &[usize], node_id: u64) {
         self.parsed_canvases_by_path.insert(path.to_vec(), node_id);
     }
 
-    pub(crate) fn connected_parsed_canvas(&self, path: &[usize]) -> Option<u64> {
+    /// Returns the original canvas node if it is still connected to the document.
+    pub fn connected_parsed_canvas(&self, path: &[usize]) -> Option<u64> {
         let node_id = *self.parsed_canvases_by_path.get(path)?;
 
         self.element(node_id).filter(|element| element.connected)?;
@@ -232,6 +234,16 @@ impl DocumentState {
 
     pub(crate) fn element(&self, node_id: u64) -> Option<&ElementState> {
         self.elements_by_node_id.get(&node_id)
+    }
+
+    /// Returns an element's attribute by its stored name, if both exist.
+    /// Attribute names are matched exactly; callers supply the normalized name.
+    pub fn element_attribute(&self, node_id: u64, name: &str) -> Option<&str> {
+        self.element(node_id)?
+            .attributes
+            .iter()
+            .find(|attribute| attribute.name == name)
+            .map(|attribute| attribute.value.as_str())
     }
 
     pub(crate) fn set_subtree_connected(&mut self, node_id: u64, connected: bool) {
