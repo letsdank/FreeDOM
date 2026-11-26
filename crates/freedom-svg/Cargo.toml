@@ -1,11 +1,17 @@
 [package]
 name = "freedom-svg"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
-freedom-css = { path = "../freedom-css" }
-freedom-graphics-core = { path = "../freedom-graphics-core" }
-freedom-html = { path = "../freedom-html" }
-freedom-url = { path = "../freedom-url" }
+freedom-css.workspace = true
+freedom-graphics-core.workspace = true
+freedom-html.workspace = true
+freedom-url.workspace = true

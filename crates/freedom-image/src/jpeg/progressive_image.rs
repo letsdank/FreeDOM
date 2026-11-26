@@ -7,9 +7,9 @@
 //! cannot be redefined after scan data begins in this implementation.
 
 use super::{
-    dequantize, idct_8bit, parse_dqt_segment, read_frame_header, ComponentPlane, DecodedPlanes,
-    DequantizeError, InitialAcError, InitialDcError, JpegError, JpegEvent, JpegEventReader,
-    PlaneLimits, ProgressiveError, ProgressiveLimits, ProgressiveState, QuantizationTable,
+    ComponentPlane, DecodedPlanes, DequantizeError, InitialAcError, InitialDcError, JpegError,
+    JpegEvent, JpegEventReader, PlaneLimits, ProgressiveError, ProgressiveLimits, ProgressiveState,
+    QuantizationTable, dequantize, idct_8bit, parse_dqt_segment, read_frame_header,
 };
 
 #[derive(Debug)]

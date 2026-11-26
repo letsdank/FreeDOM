@@ -122,7 +122,7 @@ mod tests {
     use super::*;
 
     use crate::png_format::{
-        copy_stored_block, read_block_header, DeflateBlockType, IdatReader, ZlibHeader, SIGNATURE,
+        DeflateBlockType, IdatReader, SIGNATURE, ZlibHeader, copy_stored_block, read_block_header,
     };
 
     #[test]

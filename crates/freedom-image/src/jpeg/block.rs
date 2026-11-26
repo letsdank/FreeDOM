@@ -133,7 +133,7 @@ pub(super) fn read_signed(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{read_first_scan_header, read_huffman_tables, HuffmanTable};
+    use super::super::{HuffmanTable, read_first_scan_header, read_huffman_tables};
     use super::*;
 
     fn table(symbols: &[u8]) -> HuffmanDecoder {

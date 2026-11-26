@@ -50,27 +50,27 @@ mod progressive_ac;
 #[path = "jpeg/progressive_image.rs"]
 mod progressive_image;
 
-pub use self::block::{decode_baseline_block, BlockDecodeError};
-pub use self::color::{decode_baseline_rgb8, decode_rgb8, ColorDecodeError, Rgb8Image};
+pub use self::block::{BlockDecodeError, decode_baseline_block};
+pub use self::color::{ColorDecodeError, Rgb8Image, decode_baseline_rgb8, decode_rgb8};
 pub use self::entropy::{EntropyError, EntropyErrorKind, EntropyReader};
 pub use self::huffman::{
-    parse_dht_segment, read_huffman_tables, HuffmanBuildError, HuffmanDecodeError, HuffmanDecoder,
-    HuffmanTable, HuffmanTables,
+    HuffmanBuildError, HuffmanDecodeError, HuffmanDecoder, HuffmanTable, HuffmanTables,
+    parse_dht_segment, read_huffman_tables,
 };
-pub use self::idct::{dequantize, idct_8bit, DequantizeError};
+pub use self::idct::{DequantizeError, dequantize, idct_8bit};
 pub use self::mcu::{BaselineMcuDecoder, Mcu, McuComponent, McuError};
 pub(crate) use self::orientation::read_orientation;
 pub use self::planes::{
-    decode_baseline_planes, ComponentPlane, DecodedPlanes, PlaneDecodeError, PlaneLimits,
+    ComponentPlane, DecodedPlanes, PlaneDecodeError, PlaneLimits, decode_baseline_planes,
 };
 pub use self::progressive::{
     CoefficientComponent, ProgressiveError, ProgressiveLimits, ProgressiveState,
 };
 pub use self::progressive_ac::InitialAcError;
 pub use self::progressive_dc::InitialDcError;
-pub use self::progressive_image::{decode_progressive_planes, ProgressiveImageError};
+pub use self::progressive_image::{ProgressiveImageError, decode_progressive_planes};
 pub use self::scan::{
-    read_first_scan_header, validate_baseline_scan, BaselineScanError, ScanComponent, ScanHeader,
+    BaselineScanError, ScanComponent, ScanHeader, read_first_scan_header, validate_baseline_scan,
 };
 pub use self::stream::{JpegEvent, JpegEventReader};
 
@@ -679,10 +679,12 @@ mod tests {
         assert_eq!(tables[0].as_ref().unwrap().values[0], 100);
         assert_eq!(tables[0].as_ref().unwrap().values[9], 106);
 
-        assert!(frame
-            .components
-            .iter()
-            .all(|component| { tables[component.quantization_table as usize].is_some() }));
+        assert!(
+            frame
+                .components
+                .iter()
+                .all(|component| { tables[component.quantization_table as usize].is_some() })
+        );
     }
 
     #[test]

@@ -13,9 +13,9 @@ mod player;
 
 pub use self::composite::{AnimationCanvas, CompositeError};
 pub use self::index::{
-    index_animation, AnimationIndex, FrameSource, IndexedFrame, OwnedAnimationIndex,
+    AnimationIndex, FrameSource, IndexedFrame, OwnedAnimationIndex, index_animation,
 };
-pub use self::inspect::{inspect_animation, AnimationError, AnimationLimits, AnimationSummary};
+pub use self::inspect::{AnimationError, AnimationLimits, AnimationSummary, inspect_animation};
 pub use self::player::{AnimationPlayer, PlaybackError, PlaybackUpdate};
 
 /// Declared animation control values, not proof that the frames are valid.
@@ -329,7 +329,7 @@ pub(super) fn parse_animation_control(chunk: &Chunk<'_>) -> Option<AnimationCont
 
 #[cfg(test)]
 mod tests {
-    use super::super::{update_crc, ChunkReader};
+    use super::super::{ChunkReader, update_crc};
     use super::*;
 
     fn chunk<'a>(kind: [u8; 4], data: &'a [u8]) -> Chunk<'a> {

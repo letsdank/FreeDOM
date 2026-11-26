@@ -10,8 +10,8 @@ use std::{
 };
 
 use super::{
-    encode_zlib_fixed_lz77, encode_zlib_stored, filter_row, update_crc, Cicp, PngFilterError,
-    MAX_CHUNK_LENGTH, SIGNATURE,
+    Cicp, MAX_CHUNK_LENGTH, PngFilterError, SIGNATURE, encode_zlib_fixed_lz77, encode_zlib_stored,
+    filter_row, update_crc,
 };
 
 #[derive(Debug)]

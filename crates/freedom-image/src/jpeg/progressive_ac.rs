@@ -6,8 +6,8 @@
 //! Refinement scans are not decoded here.
 
 use super::{
-    block::read_signed, BlockDecodeError, EntropyError, EntropyReader, HuffmanBuildError,
-    HuffmanDecodeError, HuffmanDecoder, ProgressiveState, ScanHeader, ZIGZAG_TO_NATURAL,
+    BlockDecodeError, EntropyError, EntropyReader, HuffmanBuildError, HuffmanDecodeError,
+    HuffmanDecoder, ProgressiveState, ScanHeader, ZIGZAG_TO_NATURAL, block::read_signed,
 };
 
 #[derive(Debug)]
@@ -222,8 +222,8 @@ impl ProgressiveState {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        read_frame_header, JpegComponent, JpegEvent, JpegEventReader, JpegFrameHeader,
-        JpegFrameKind, ProgressiveLimits, ScanComponent,
+        JpegComponent, JpegEvent, JpegEventReader, JpegFrameHeader, JpegFrameKind,
+        ProgressiveLimits, ScanComponent, read_frame_header,
     };
 
     use super::*;
@@ -333,9 +333,11 @@ mod tests {
             Err(InitialAcError::EobRunExceedsInterval)
         ));
 
-        assert!(crossing.component(1).unwrap().ac_bits[1..]
-            .iter()
-            .all(Option::is_none));
+        assert!(
+            crossing.component(1).unwrap().ac_bits[1..]
+                .iter()
+                .all(Option::is_none)
+        );
 
         assert_eq!(
             crossing.component(1).unwrap().block(0, 0).unwrap(),
@@ -403,12 +405,14 @@ mod tests {
             assert_eq!(*block, reference, "component {id}, block ({x},{y})");
         }
 
-        assert!(state
-            .component(2)
-            .unwrap()
-            .block(15, 7)
-            .unwrap()
-            .iter()
-            .all(|&value| value == 0));
+        assert!(
+            state
+                .component(2)
+                .unwrap()
+                .block(15, 7)
+                .unwrap()
+                .iter()
+                .all(|&value| value == 0)
+        );
     }
 }

@@ -5,7 +5,7 @@
 
 use std::io::{self, Read};
 
-use super::{inspect_structure, ChunkReader, PngError, PngStructure};
+use super::{ChunkReader, PngError, PngStructure, inspect_structure};
 
 /// Reads the compressed IDAT data as one continuous stream.
 ///

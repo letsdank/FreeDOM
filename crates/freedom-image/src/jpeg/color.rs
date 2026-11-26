@@ -7,8 +7,8 @@
 //! embedded color profiles are not applied.
 
 use super::{
-    decode_baseline_planes, decode_progressive_planes, read_frame_header, DecodedPlanes,
-    HeaderSegments, JpegError, JpegFrameKind, PlaneDecodeError, PlaneLimits, ProgressiveImageError,
+    DecodedPlanes, HeaderSegments, JpegError, JpegFrameKind, PlaneDecodeError, PlaneLimits,
+    ProgressiveImageError, decode_baseline_planes, decode_progressive_planes, read_frame_header,
 };
 
 #[derive(Debug)]

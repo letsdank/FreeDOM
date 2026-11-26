@@ -6,9 +6,8 @@
 use std::{error::Error, fmt, io, io::Read};
 
 use super::{
-    decode_zlib, unfilter_row, AnimationControl, ChunkReader, ColorType, FrameDataError,
-    FrameDataReader, FrameSource, IdatReader, IndexedFrame, InterlaceMethod, PngError,
-    PngFilterError,
+    AnimationControl, ChunkReader, ColorType, FrameDataError, FrameDataReader, FrameSource,
+    IdatReader, IndexedFrame, InterlaceMethod, PngError, PngFilterError, decode_zlib, unfilter_row,
 };
 
 mod adam7;

@@ -20,34 +20,34 @@ mod ihdr;
 mod structure;
 mod zlib;
 
-pub use self::adler32::{verify_zlib_adler32, Adler32, Adler32Writer};
+pub use self::adler32::{Adler32, Adler32Writer, verify_zlib_adler32};
 pub use self::apng::{
-    index_animation, inspect_animation, AnimationCanvas, AnimationControl, AnimationError,
-    AnimationIndex, AnimationLimits, AnimationPlayer, AnimationSummary, BlendOp, CompositeError,
-    DisposeOp, FrameControl, FrameControlError, FrameData, FrameDataError, FrameDataReader,
-    FrameSource, IndexedFrame, OwnedAnimationIndex, PlaybackError, PlaybackUpdate,
+    AnimationCanvas, AnimationControl, AnimationError, AnimationIndex, AnimationLimits,
+    AnimationPlayer, AnimationSummary, BlendOp, CompositeError, DisposeOp, FrameControl,
+    FrameControlError, FrameData, FrameDataError, FrameDataReader, FrameSource, IndexedFrame,
+    OwnedAnimationIndex, PlaybackError, PlaybackUpdate, index_animation, inspect_animation,
 };
 pub use self::decode::{
-    decode_rgba16_be, decode_rgba8, Cicp, PngDecodeError, PngDecodeLimits, Rgba16BeImage,
-    Rgba8Image,
+    Cicp, PngDecodeError, PngDecodeLimits, Rgba8Image, Rgba16BeImage, decode_rgba8,
+    decode_rgba16_be,
 };
 pub use self::deflate::{
-    copy_stored_block, decode_dynamic_huffman_block, decode_fixed_huffman_block,
-    encode_fixed_literals, encode_fixed_lz77, read_block_header, DeflateBitReader,
-    DeflateBitWriter, DeflateBlockHeader, DeflateBlockType, DeflateOutput, HuffmanError,
-    HuffmanTree, Lz77Finder, Lz77Token,
+    DeflateBitReader, DeflateBitWriter, DeflateBlockHeader, DeflateBlockType, DeflateOutput,
+    HuffmanError, HuffmanTree, Lz77Finder, Lz77Token, copy_stored_block,
+    decode_dynamic_huffman_block, decode_fixed_huffman_block, encode_fixed_literals,
+    encode_fixed_lz77, read_block_header,
 };
 pub use self::encode::{
-    encode_rgba16_be, encode_rgba16_be_with_cicp, encode_rgba8, encode_rgba8_with_cicp,
-    PngEncodeError,
+    PngEncodeError, encode_rgba8, encode_rgba8_with_cicp, encode_rgba16_be,
+    encode_rgba16_be_with_cicp,
 };
-pub use self::filter::{filter_row, unfilter_row, PngFilterError};
+pub use self::filter::{PngFilterError, filter_row, unfilter_row};
 pub use self::idat::IdatReader;
-pub use self::ihdr::{read_ihdr, ColorType, Ihdr, InterlaceMethod};
-pub use self::structure::{inspect_structure, PngStructure};
+pub use self::ihdr::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
+pub use self::structure::{PngStructure, inspect_structure};
 pub use self::zlib::{
-    decode_zlib, encode_zlib_fixed_literals, encode_zlib_fixed_lz77, encode_zlib_stored,
-    ZlibDecodeResult, ZlibHeader, ZlibHeaderError,
+    ZlibDecodeResult, ZlibHeader, ZlibHeaderError, decode_zlib, encode_zlib_fixed_literals,
+    encode_zlib_fixed_lz77, encode_zlib_stored,
 };
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
@@ -250,7 +250,7 @@ fn update_crc(mut crc: u32, bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{update_crc, ChunkReader, PngErrorKind, SIGNATURE};
+    use super::{ChunkReader, PngErrorKind, SIGNATURE, update_crc};
 
     use crate::encode_png;
     use freedom_graphics_core::raster::{Color, Surface};

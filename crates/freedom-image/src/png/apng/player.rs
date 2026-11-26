@@ -6,10 +6,10 @@
 
 use std::time::Duration;
 
-use super::super::{read_ihdr, PngDecodeError, PngDecodeLimits, PngError};
+use super::super::{PngDecodeError, PngDecodeLimits, PngError, read_ihdr};
 use super::{
-    index_animation, AnimationCanvas, AnimationError, AnimationIndex, AnimationLimits,
-    CompositeError, FrameControl,
+    AnimationCanvas, AnimationError, AnimationIndex, AnimationLimits, CompositeError, FrameControl,
+    index_animation,
 };
 
 // Viewer policy: avoid unbounded work for frames with very short delays.
@@ -200,11 +200,13 @@ mod tests {
 
         assert_eq!(player.current_frame(), Some(0));
 
-        assert!(player
-            .canvas()
-            .pixels()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 0, 255]));
+        assert!(
+            player
+                .canvas()
+                .pixels()
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 0, 255])
+        );
 
         let first_end = player.next_deadline().unwrap();
 
@@ -222,11 +224,13 @@ mod tests {
 
         assert_eq!(player.current_frame(), Some(1));
 
-        assert!(player
-            .canvas
-            .pixels()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 128, 255]));
+        assert!(
+            player
+                .canvas
+                .pixels()
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 128, 255])
+        );
 
         let end = player.next_deadline().unwrap();
 
@@ -234,11 +238,13 @@ mod tests {
 
         assert_eq!(player.next_deadline(), None);
 
-        assert!(player
-            .canvas
-            .pixels()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 128, 255]));
+        assert!(
+            player
+                .canvas
+                .pixels()
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 128, 255])
+        );
     }
 
     #[test]
@@ -277,11 +283,13 @@ mod tests {
 
             assert_eq!(player.current_frame(), Some(0));
 
-            assert!(player
-                .canvas
-                .pixels()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 0, 255]));
+            assert!(
+                player
+                    .canvas
+                    .pixels()
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == [0, 0, 0, 255])
+            );
 
             player.advance(player.next_deadline().unwrap()).unwrap();
 

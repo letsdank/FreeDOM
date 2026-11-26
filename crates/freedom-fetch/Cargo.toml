@@ -1,9 +1,15 @@
 [package]
 name = "freedom-fetch"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
-freedom-url = { path = "../freedom-url" }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "charset", "http2"] }
+freedom-url.workspace = true
+reqwest.workspace = true

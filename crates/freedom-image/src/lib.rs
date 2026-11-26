@@ -70,8 +70,8 @@ pub fn decode_png_for_display(encoded: &[u8]) -> Result<Surface, ImageError> {
 
 fn decode_png_impl(encoded: &[u8], animated_first_frame: bool) -> Result<Surface, ImageError> {
     use png_format::{
-        decode_rgba16_be, decode_rgba8, read_ihdr, AnimationLimits, AnimationPlayer, Cicp,
-        PlaybackUpdate, PngDecodeLimits,
+        AnimationLimits, AnimationPlayer, Cicp, PlaybackUpdate, PngDecodeLimits, decode_rgba8,
+        decode_rgba16_be, read_ihdr,
     };
 
     let limits = PngDecodeLimits {
@@ -236,10 +236,12 @@ mod tests {
 
         assert_eq!((image.width(), image.height()), (128, 64));
 
-        assert!(image
-            .pixels()
-            .iter()
-            .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255)));
+        assert!(
+            image
+                .pixels()
+                .iter()
+                .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255))
+        );
     }
 
     #[test]
@@ -477,17 +479,21 @@ mod tests {
 
         assert_eq!((displayed.width(), displayed.height()), (128, 64));
 
-        assert!(displayed
-            .pixels()
-            .iter()
-            .all(|pixel| *pixel == Color::rgba(0, 0, 0, 255)));
+        assert!(
+            displayed
+                .pixels()
+                .iter()
+                .all(|pixel| *pixel == Color::rgba(0, 0, 0, 255))
+        );
 
         let fallback = decode_png(png).unwrap();
 
-        assert!(fallback
-            .pixels()
-            .iter()
-            .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255)));
+        assert!(
+            fallback
+                .pixels()
+                .iter()
+                .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255))
+        );
     }
 
     #[test]
@@ -515,10 +521,12 @@ mod tests {
 
         let image = decode_png_for_display(&png).unwrap();
 
-        assert!(image
-            .pixels()
-            .iter()
-            .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255)));
+        assert!(
+            image
+                .pixels()
+                .iter()
+                .all(|pixel| *pixel == Color::rgba(255, 0, 0, 255))
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ mod output;
 mod tables;
 mod writer;
 
-pub use self::block::{copy_stored_block, read_block_header, DeflateBlockHeader, DeflateBlockType};
+pub use self::block::{DeflateBlockHeader, DeflateBlockType, copy_stored_block, read_block_header};
 pub use self::compressed::decode_fixed_huffman_block;
 pub use self::dynamic::decode_dynamic_huffman_block;
 pub use self::fixed_encode::{encode_fixed_literals, encode_fixed_lz77};

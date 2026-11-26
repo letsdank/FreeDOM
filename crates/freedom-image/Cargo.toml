@@ -1,11 +1,17 @@
 [package]
 name = "freedom-image"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
-freedom-graphics-core = { path = "../freedom-graphics-core" }
+freedom-graphics-core.workspace = true
 
 [dev-dependencies]
-flate2 = "=1.1.10"
-png = "=0.17.16"
+flate2.workspace = true
+png.workspace = true

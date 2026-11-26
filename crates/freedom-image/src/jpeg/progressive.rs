@@ -263,7 +263,7 @@ impl ProgressiveState {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{read_frame_header, JpegComponent, JpegEvent, JpegEventReader};
+    use super::super::{JpegComponent, JpegEvent, JpegEventReader, read_frame_header};
     use super::*;
 
     fn frame() -> JpegFrameHeader {

@@ -162,7 +162,7 @@ mod tests {
 
     use crate::{
         encode_png,
-        png_format::{decode_zlib, IdatReader},
+        png_format::{IdatReader, decode_zlib},
     };
     use freedom_graphics_core::raster::{Color, Surface};
 

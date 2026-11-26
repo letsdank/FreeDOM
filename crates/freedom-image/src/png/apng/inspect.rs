@@ -3,10 +3,10 @@
 //! PNG Third Edition, sections 4.9 and 11.3.6:
 //! <https://www.w3.org/TR/png-3/#apng-frame-based-animation>
 
-use super::super::{inspect_structure, ChunkReader, PngError};
+use super::super::{ChunkReader, PngError, inspect_structure};
 use super::{
-    parse_animation_control, AnimationControl, FrameControl, FrameControlError, FrameData,
-    FrameDataError, FrameSource, IndexedFrame,
+    AnimationControl, FrameControl, FrameControlError, FrameData, FrameDataError, FrameSource,
+    IndexedFrame, parse_animation_control,
 };
 
 #[derive(Clone, Copy, Debug)]

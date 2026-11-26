@@ -85,7 +85,7 @@ pub(super) fn decode_huffman_block<R: Read, W: Write>(
 mod tests {
     use super::*;
 
-    use crate::png_format::{read_block_header, DeflateBlockType};
+    use crate::png_format::{DeflateBlockType, read_block_header};
 
     fn decode(data: &[u8], limit: usize) -> io::Result<Vec<u8>> {
         let mut bits = DeflateBitReader::new(data);

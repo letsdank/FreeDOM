@@ -837,10 +837,12 @@ fn reads_actl_from_wpt_apng_default_image() {
     assert_eq!(image16.animation_control, control);
     assert_eq!((image8.width, image8.height), (128, 64));
 
-    assert!(image8
-        .pixels
-        .chunks_exact(4)
-        .all(|pixel| pixel == [255, 0, 0, 255]));
+    assert!(
+        image8
+            .pixels
+            .chunks_exact(4)
+            .all(|pixel| pixel == [255, 0, 0, 255])
+    );
 }
 
 #[test]

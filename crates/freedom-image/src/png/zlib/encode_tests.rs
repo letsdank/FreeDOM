@@ -13,7 +13,9 @@ fn encodes_known_streams() {
 
     assert_eq!(
         output,
-        [0x78, 0x01, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01]
+        [
+            0x78, 0x01, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01
+        ]
     );
 
     output.clear();
@@ -22,7 +24,9 @@ fn encodes_known_streams() {
 
     assert_eq!(
         output,
-        [0x78, 0x01, 0x01, 0x03, 0x00, 0xfc, 0xff, b'a', b'b', b'c', 0x02, 0x4d, 0x01, 0x27]
+        [
+            0x78, 0x01, 0x01, 0x03, 0x00, 0xfc, 0xff, b'a', b'b', b'c', 0x02, 0x4d, 0x01, 0x27
+        ]
     );
 }
 
@@ -110,7 +114,9 @@ fn fixed_literal_zlib_matches_known_streams() {
 
     assert_eq!(
         output,
-        [0x78, 0x01, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x0, 0x06, 0x2c, 0x02, 0x15,]
+        [
+            0x78, 0x01, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x0, 0x06, 0x2c, 0x02, 0x15,
+        ]
     );
 }
 
@@ -174,9 +180,11 @@ fn fixed_literal_zlib_checksum_detects_corruption() {
 
     let mut output = Vec::new();
 
-    assert!(flate2::read::ZlibDecoder::new(encoded.as_slice())
-        .read_to_end(&mut output)
-        .is_err())
+    assert!(
+        flate2::read::ZlibDecoder::new(encoded.as_slice())
+            .read_to_end(&mut output)
+            .is_err()
+    )
 }
 
 #[test]
@@ -269,7 +277,9 @@ fn lz77_zlib_propagates_write_errors_and_checks_checksum() {
 
     let mut output = Vec::new();
 
-    assert!(flate2::read::ZlibDecoder::new(short.bytes.as_slice())
-        .read_to_end(&mut output)
-        .is_err());
+    assert!(
+        flate2::read::ZlibDecoder::new(short.bytes.as_slice())
+            .read_to_end(&mut output)
+            .is_err()
+    );
 }

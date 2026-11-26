@@ -5,7 +5,7 @@
 
 use std::io::{self, Read, Write};
 
-use super::{compressed::decode_huffman_block, DeflateBitReader, DeflateOutput, HuffmanTree};
+use super::{DeflateBitReader, DeflateOutput, HuffmanTree, compressed::decode_huffman_block};
 
 const CODE_LENGTH_ORDER: [usize; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
@@ -135,7 +135,7 @@ fn read_dynamic_trees<R: Read>(
 mod tests {
     use super::*;
 
-    use crate::png_format::{read_block_header, DeflateBlockType};
+    use crate::png_format::{DeflateBlockType, read_block_header};
 
     fn decode(data: &[u8], limit: usize) -> io::Result<Vec<u8>> {
         let mut bits = DeflateBitReader::new(data);

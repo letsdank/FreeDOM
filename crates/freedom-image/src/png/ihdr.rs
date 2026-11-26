@@ -176,7 +176,7 @@ pub fn read_ihdr(input: &[u8]) -> Result<Ihdr, PngError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_ihdr, ColorType, Ihdr, InterlaceMethod};
+    use super::{ColorType, Ihdr, InterlaceMethod, read_ihdr};
 
     use crate::{
         encode_png,

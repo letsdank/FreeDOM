@@ -144,9 +144,11 @@ mod tests {
 
         assert_eq!(plan.passes[0].filtered_len, 5);
 
-        assert!(plan.passes[1..]
-            .iter()
-            .all(|pass| { pass.filtered_len == 0 && pass.row_bytes == 0 }));
+        assert!(
+            plan.passes[1..]
+                .iter()
+                .all(|pass| { pass.filtered_len == 0 && pass.row_bytes == 0 })
+        );
 
         assert_eq!(plan.filtered_len, 5);
     }

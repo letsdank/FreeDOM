@@ -7,9 +7,9 @@
 //! chroma upsampling, or convert component samples to RGB.
 
 use super::{
-    decode_baseline_block, dequantize, idct_8bit, validate_baseline_scan, BaselineScanError,
-    BlockDecodeError, DequantizeError, EntropyReader, HuffmanBuildError, HuffmanDecoder,
-    HuffmanTables, JpegFrameHeader, QuantizationTable, ScanHeader,
+    BaselineScanError, BlockDecodeError, DequantizeError, EntropyReader, HuffmanBuildError,
+    HuffmanDecoder, HuffmanTables, JpegFrameHeader, QuantizationTable, ScanHeader,
+    decode_baseline_block, dequantize, idct_8bit, validate_baseline_scan,
 };
 
 #[derive(Debug)]
@@ -205,9 +205,9 @@ impl BaselineMcuDecoder {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        read_first_scan_header, read_frame_header, read_huffman_tables, read_quantization_tables,
         EntropyErrorKind, HuffmanDecodeError, HuffmanTable, JpegComponent, JpegFrameKind,
-        ScanComponent,
+        ScanComponent, read_first_scan_header, read_frame_header, read_huffman_tables,
+        read_quantization_tables,
     };
     use super::*;
 

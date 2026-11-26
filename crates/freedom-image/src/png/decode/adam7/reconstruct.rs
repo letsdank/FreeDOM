@@ -3,7 +3,7 @@
 //! PNG Third Edition, section 8 and 9:
 //! <https://www.w3.org/TR/png-3/>
 
-use super::super::{unfilter_row, PngDecodeError};
+use super::super::{PngDecodeError, unfilter_row};
 
 /// `bits_per_pixel` must be a valid PNG pixel depth.
 ///

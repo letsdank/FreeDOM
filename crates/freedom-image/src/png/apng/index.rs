@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use super::super::{PngDecodeError, PngDecodeLimits, Rgba16BeImage, Rgba8Image};
+use super::super::{PngDecodeError, PngDecodeLimits, Rgba8Image, Rgba16BeImage};
 use super::inspect::scan_animation;
 use super::{AnimationError, AnimationLimits, AnimationSummary, FrameControl, FrameData};
 
@@ -261,7 +261,7 @@ impl OwnedAnimationIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::png_format::{decode_zlib, encode_rgba8, inspect_animation, FrameDataReader};
+    use crate::png_format::{FrameDataReader, decode_zlib, encode_rgba8, inspect_animation};
     use std::io::Read;
 
     #[test]
@@ -363,9 +363,11 @@ mod tests {
     fn indexes_default_image_or_multiple_fdat_chunks() {
         let static_png = encode_rgba8(1, 1, &[1, 2, 3, 4]).unwrap();
 
-        assert!(index_animation(&static_png, AnimationLimits::default())
-            .unwrap()
-            .is_none());
+        assert!(
+            index_animation(&static_png, AnimationLimits::default())
+                .unwrap()
+                .is_none()
+        );
 
         let default = sample(true, false);
 
@@ -450,22 +452,27 @@ mod tests {
 
         assert_eq!((black.width, black.height), (128, 64));
 
-        assert!(black
-            .pixels
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 0, 255]));
+        assert!(
+            black
+                .pixels
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 0, 255])
+        );
 
-        assert!(blue
-            .pixels
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 255, 128]));
+        assert!(
+            blue.pixels
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 255, 128])
+        );
 
         let blue16 = index.decode_frame_rgba16_be(1, limits).unwrap();
 
-        assert!(blue16
-            .pixels
-            .chunks_exact(8)
-            .all(|pixel| pixel == [0, 0, 0, 0, 255, 255, 128, 0]));
+        assert!(
+            blue16
+                .pixels
+                .chunks_exact(8)
+                .all(|pixel| pixel == [0, 0, 0, 0, 255, 255, 128, 0])
+        );
 
         // Compare both uncomposited frames with an independent decoder.
         let mut reference = png::Decoder::new(&png[..]).read_info().unwrap();
@@ -652,8 +659,10 @@ mod tests {
 
         let png = encode_rgba8(1, 1, &[1, 2, 3, 4]).unwrap();
 
-        assert!(OwnedAnimationIndex::new(png, AnimationLimits::default())
-            .unwrap()
-            .is_none());
+        assert!(
+            OwnedAnimationIndex::new(png, AnimationLimits::default())
+                .unwrap()
+                .is_none()
+        );
     }
 }

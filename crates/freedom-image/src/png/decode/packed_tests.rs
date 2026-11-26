@@ -1,5 +1,5 @@
 use super::tests::insert_chunk;
-use super::{decode_rgba8, PngDecodeError, PngDecodeLimits};
+use super::{PngDecodeError, PngDecodeLimits, decode_rgba8};
 
 fn encode(
     depth: u8,
@@ -125,7 +125,9 @@ fn masks_high_bits_of_packed_grayscale_transparency() {
 
     assert_eq!(
         image.pixels,
-        [0, 0, 0, 255, 85, 85, 85, 255, 170, 170, 170, 0, 255, 255, 255, 255, 0, 0, 0, 255]
+        [
+            0, 0, 0, 255, 85, 85, 85, 255, 170, 170, 170, 0, 255, 255, 255, 255, 0, 0, 0, 255
+        ]
     );
 }
 

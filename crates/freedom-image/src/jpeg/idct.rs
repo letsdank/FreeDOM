@@ -89,8 +89,8 @@ pub fn idct_8bit(block: &[i64; 64]) -> [u8; 64] {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        decode_baseline_block, read_first_scan_header, read_frame_header, read_huffman_tables,
-        read_quantization_tables, EntropyReader, HuffmanDecoder,
+        EntropyReader, HuffmanDecoder, decode_baseline_block, read_first_scan_header,
+        read_frame_header, read_huffman_tables, read_quantization_tables,
     };
     use super::*;
 

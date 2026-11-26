@@ -112,7 +112,7 @@ impl<W: Write> Write for DeflateOutput<W> {
 mod tests {
     use super::*;
 
-    use crate::png_format::{copy_stored_block, read_block_header, DeflateBitReader};
+    use crate::png_format::{DeflateBitReader, copy_stored_block, read_block_header};
 
     #[test]
     fn copies_overlapping_matches_and_updates_checksum() {

@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::png_format::{
-    decode_rgba8, ChunkReader, ColorType, Ihdr, InterlaceMethod, PngDecodeLimits,
+    ChunkReader, ColorType, Ihdr, InterlaceMethod, PngDecodeLimits, decode_rgba8,
 };
 
 #[test]
@@ -175,7 +175,7 @@ fn scores_signed_residual_bytes() {
 
 #[test]
 fn adaptive_filtering_roundtrips_and_improves_a_gradient() {
-    use crate::png_format::{decode_zlib, encode_zlib_fixed_lz77, IdatReader};
+    use crate::png_format::{IdatReader, decode_zlib, encode_zlib_fixed_lz77};
 
     let (width, height) = (128usize, 64usize);
 

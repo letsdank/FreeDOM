@@ -1,15 +1,25 @@
 [package]
 name = "freedom"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
 
 [workspace]
 members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg", "crates/freedom-canvas", "crates/freedom-fetch"]
 default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg", "crates/freedom-canvas", "crates/freedom-fetch"]
 resolver = "3"
 
-[dependencies]
-anyhow = "1"
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/letsdank/FreeDOM"
+
+[workspace.dependencies]
 freedom-canvas = { path = "crates/freedom-canvas" }
 freedom-css = { path = "crates/freedom-css" }
 freedom-fetch = { path = "crates/freedom-fetch" }
@@ -19,9 +29,36 @@ freedom-html = { path = "crates/freedom-html" }
 freedom-image = { path = "crates/freedom-image" }
 freedom-svg = { path = "crates/freedom-svg" }
 freedom-url = { path = "crates/freedom-url" }
+freedom-wasm = { path = "crates/freedom-wasm" }
+
+anyhow = "1"
+flate2 = "=1.1.10"
 font8x8 = "0.3"
+png = "=0.17.16"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "charset", "http2"] }
 softbuffer = "0.4"
 winit = "0.30"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+freedom-canvas.workspace = true
+freedom-css.workspace = true
+freedom-fetch.workspace = true
+freedom-font.workspace = true
+freedom-graphics-core.workspace = true
+freedom-html.workspace = true
+freedom-image.workspace = true
+freedom-svg.workspace = true
+freedom-url.workspace = true
+font8x8.workspace = true
+softbuffer.workspace = true
+winit.workspace = true
+
 [dev-dependencies]
-freedom-css = { path = "crates/freedom-css", features = ["test-support"] }
+freedom-css = { workspace = true, features = ["test-support"] }

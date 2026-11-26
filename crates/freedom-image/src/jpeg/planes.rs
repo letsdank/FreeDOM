@@ -7,8 +7,8 @@
 //! Samples are not upsampled, color-converted, or EXIF-oriented.
 
 use super::{
-    read_first_scan_header, read_frame_header, read_huffman_tables, read_quantization_tables,
     BaselineMcuDecoder, EntropyError, EntropyReader, HeaderSegments, JpegError, McuError,
+    read_first_scan_header, read_frame_header, read_huffman_tables, read_quantization_tables,
 };
 
 #[derive(Clone, Copy, Debug)]

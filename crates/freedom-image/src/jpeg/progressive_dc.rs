@@ -6,8 +6,8 @@
 //! Refinement scans and AC scans are not decoded here.
 
 use super::{
-    block::decode_dc, BlockDecodeError, EntropyError, EntropyReader, HuffmanBuildError,
-    HuffmanDecoder, ProgressiveState, ScanHeader,
+    BlockDecodeError, EntropyError, EntropyReader, HuffmanBuildError, HuffmanDecoder,
+    ProgressiveState, ScanHeader, block::decode_dc,
 };
 
 #[derive(Debug)]
@@ -252,8 +252,8 @@ impl ProgressiveState {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        read_frame_header, JpegComponent, JpegEvent, JpegEventReader, JpegFrameHeader,
-        JpegFrameKind, ProgressiveLimits, ScanComponent,
+        JpegComponent, JpegEvent, JpegEventReader, JpegFrameHeader, JpegFrameKind,
+        ProgressiveLimits, ScanComponent, read_frame_header,
     };
 
     use super::*;

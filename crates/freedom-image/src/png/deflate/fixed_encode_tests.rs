@@ -1,6 +1,6 @@
 use super::super::{
-    decode_fixed_huffman_block, read_block_header, DeflateBitReader, DeflateBlockType,
-    DeflateOutput,
+    DeflateBitReader, DeflateBlockType, DeflateOutput, decode_fixed_huffman_block,
+    read_block_header,
 };
 use super::{encode_fixed_literals, encode_fixed_lz77, write_match, write_symbol};
 use crate::png_format::DeflateBitWriter;

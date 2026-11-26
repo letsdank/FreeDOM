@@ -11,8 +11,9 @@ use std::io::{self, Read, Write};
 use super::ZlibHeader;
 
 use super::super::{
-    copy_stored_block, decode_dynamic_huffman_block, decode_fixed_huffman_block, read_block_header,
-    verify_zlib_adler32, DeflateBitReader, DeflateBlockType, DeflateOutput,
+    DeflateBitReader, DeflateBlockType, DeflateOutput, copy_stored_block,
+    decode_dynamic_huffman_block, decode_fixed_huffman_block, read_block_header,
+    verify_zlib_adler32,
 };
 
 #[derive(Debug)]

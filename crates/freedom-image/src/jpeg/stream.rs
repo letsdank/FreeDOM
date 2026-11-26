@@ -5,7 +5,7 @@
 //!
 //! This locates scans but does not decode or validate their entropy data.
 
-use super::{scan::parse_scan_header_at, HeaderSegments, JpegError, JpegErrorKind, ScanHeader};
+use super::{HeaderSegments, JpegError, JpegErrorKind, ScanHeader, scan::parse_scan_header_at};
 
 #[derive(Debug)]
 pub enum JpegEvent<'a> {

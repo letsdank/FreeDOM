@@ -1,6 +1,6 @@
 use super::super::super::ChunkReader;
 use super::super::tests::{corrupt_crc, insert_chunk};
-use super::super::{decode_rgba8, PngDecodeError, PngDecodeLimits};
+use super::super::{PngDecodeError, PngDecodeLimits, decode_rgba8};
 
 fn encode_indexed(
     width: u32,

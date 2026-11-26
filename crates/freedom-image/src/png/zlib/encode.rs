@@ -8,7 +8,7 @@
 
 use std::io::{self, Write};
 
-use super::super::{encode_fixed_literals, encode_fixed_lz77, Adler32};
+use super::super::{Adler32, encode_fixed_literals, encode_fixed_lz77};
 
 const MAX_STORED_BLOCK: usize = u16::MAX as usize;
 

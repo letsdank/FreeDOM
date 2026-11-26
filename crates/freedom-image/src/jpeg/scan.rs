@@ -216,7 +216,7 @@ pub fn validate_baseline_scan(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{read_frame_header, read_huffman_tables, EntropyReader, HuffmanDecoder};
+    use super::super::{EntropyReader, HuffmanDecoder, read_frame_header, read_huffman_tables};
     use super::*;
 
     const BASELINE: &[u8] = include_bytes!(concat!(

@@ -2,3 +2,4 @@
 /artifacts/wpt/*.json
 /artifacts/wpt/index.html
 /tools/__pycache__/
+/.idea/

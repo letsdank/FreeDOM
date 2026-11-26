@@ -1,5 +1,5 @@
 use super::tests::insert_chunk;
-use super::{decode_rgba16_be, decode_rgba8, PngDecodeLimits};
+use super::{PngDecodeLimits, decode_rgba8, decode_rgba16_be};
 
 fn encode(
     color: png::ColorType,
@@ -116,7 +116,9 @@ fn compares_full_sixteen_bit_transparency_key() {
 
     assert_eq!(
         image.pixels,
-        [0x12, 0x12, 0x12, 0, 0x12, 0x12, 0x12, 255, 0x12, 0x12, 0x12, 0]
+        [
+            0x12, 0x12, 0x12, 0, 0x12, 0x12, 0x12, 255, 0x12, 0x12, 0x12, 0
+        ]
     );
 
     let mut rgb = encode(
@@ -227,7 +229,9 @@ fn expands_8bit_to_16bit_and_keeps_full_transparency_keys() {
 
     assert_eq!(
         image.pixels,
-        [0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0, 0, 0x12, 0x35, 0x12, 0x35, 0x12, 0x35, 255, 255]
+        [
+            0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0, 0, 0x12, 0x35, 0x12, 0x35, 0x12, 0x35, 255, 255
+        ]
     );
 }
 

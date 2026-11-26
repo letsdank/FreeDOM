@@ -15,7 +15,7 @@ use std::{
 mod decode;
 mod encode;
 
-pub use self::decode::{decode_zlib, ZlibDecodeResult};
+pub use self::decode::{ZlibDecodeResult, decode_zlib};
 pub use self::encode::{encode_zlib_fixed_literals, encode_zlib_fixed_lz77, encode_zlib_stored};
 
 /// Metadata from a zlib header under PNG compression method 0.

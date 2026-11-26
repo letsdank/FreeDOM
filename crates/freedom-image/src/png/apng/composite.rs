@@ -8,7 +8,7 @@
 
 use super::super::PngDecodeLimits;
 use super::{BlendOp, DisposeOp, FrameControl};
-use freedom_graphics_core::raster::{blend_source_over, Color};
+use freedom_graphics_core::raster::{Color, blend_source_over};
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum CompositeError {
@@ -245,7 +245,7 @@ impl AnimationCanvas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::png_format::{index_animation, read_ihdr, AnimationLimits};
+    use crate::png_format::{AnimationLimits, index_animation, read_ihdr};
 
     fn frame(
         x: u32,
@@ -298,10 +298,12 @@ mod tests {
                 [0, 0, 128, 255]
             };
 
-            assert!(canvas
-                .pixels()
-                .chunks_exact(4)
-                .all(|pixel| pixel == expected));
+            assert!(
+                canvas
+                    .pixels()
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == expected)
+            );
         }
 
         canvas.reset();

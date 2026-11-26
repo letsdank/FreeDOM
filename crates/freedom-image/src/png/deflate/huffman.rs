@@ -166,7 +166,7 @@ impl HuffmanTree {
 mod tests {
     use super::*;
 
-    use crate::png_format::{read_block_header, DeflateBlockType};
+    use crate::png_format::{DeflateBlockType, read_block_header};
 
     #[test]
     fn decodes_the_rfc_canonical_example() {
