@@ -13,9 +13,6 @@ mod styled_tree;
 mod xml;
 
 #[allow(dead_code)]
-mod html;
-
-#[allow(dead_code)]
 mod javascript;
 
 pub mod graphics;

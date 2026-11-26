@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css"]
-default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css"]
+members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html"]
+default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html"]
 resolver = "3"
 
 [dependencies]
 anyhow = "1"
 freedom-css = { path = "crates/freedom-css" }
+freedom-html = { path = "crates/freedom-html" }
 freedom-url = { path = "crates/freedom-url" }
 font8x8 = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "charset", "http2"] }

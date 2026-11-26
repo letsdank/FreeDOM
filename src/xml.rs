@@ -251,7 +251,7 @@ const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
 ///
 /// XML names and attributes keep their original case. This adapter is
 /// intentionally limited and is currently used only by tests.
-pub(crate) fn parse_xhtml(source: &str) -> Result<crate::html::Document, XhtmlError> {
+pub(crate) fn parse_xhtml(source: &str) -> Result<freedom_html::Document, XhtmlError> {
     let document = parse(source).map_err(XhtmlError::Xml)?;
 
     if document.root.name != "html" {
@@ -262,18 +262,18 @@ pub(crate) fn parse_xhtml(source: &str) -> Result<crate::html::Document, XhtmlEr
     let mut children = Vec::new();
 
     if let Some(doctype) = document.doctype {
-        children.push(crate::html::Node::Doctype(doctype));
+        children.push(freedom_html::Node::Doctype(doctype));
     }
 
-    children.push(crate::html::Node::Element(root));
+    children.push(freedom_html::Node::Element(root));
 
-    Ok(crate::html::Document { children })
+    Ok(freedom_html::Document { children })
 }
 
 fn convert_element(
     element: Element,
     inherited: Option<&str>,
-) -> Result<crate::html::Element, XhtmlError> {
+) -> Result<freedom_html::Element, XhtmlError> {
     let explicit = element
         .attributes
         .iter()
@@ -292,11 +292,11 @@ fn convert_element(
 
     for child in element.children {
         let child = match child {
-            Node::Element(child) => crate::html::Node::Element(convert_element(child, namespace)?),
+            Node::Element(child) => freedom_html::Node::Element(convert_element(child, namespace)?),
 
-            Node::Text(text) => crate::html::Node::Text(text),
+            Node::Text(text) => freedom_html::Node::Text(text),
 
-            Node::Comment(text) => crate::html::Node::Comment(text),
+            Node::Comment(text) => freedom_html::Node::Comment(text),
         };
 
         children.push(child);
@@ -305,10 +305,10 @@ fn convert_element(
     let attributes = element
         .attributes
         .into_iter()
-        .map(|(name, value)| crate::html::Attribute { name, value })
+        .map(|(name, value)| freedom_html::Attribute { name, value })
         .collect();
 
-    Ok(crate::html::Element {
+    Ok(freedom_html::Element {
         name: element.name,
         attributes,
         children,
@@ -859,7 +859,7 @@ mod tests {
 
         assert!(matches!(
             &document.children[0],
-            crate::html::Node::Doctype(_)
+            freedom_html::Node::Doctype(_)
         ));
 
         let html = document.first_element("html").unwrap();
@@ -867,7 +867,7 @@ mod tests {
 
         let body = document.first_element("body").unwrap();
 
-        let crate::html::Node::Element(p) = &body.children[0] else {
+        let freedom_html::Node::Element(p) = &body.children[0] else {
             panic!("expected element");
         };
 
@@ -877,12 +877,12 @@ mod tests {
         assert_eq!(
             p.children,
             vec![
-                crate::html::Node::Text("x&y".to_owned()),
-                crate::html::Node::Text("<z>".to_owned())
+                freedom_html::Node::Text("x&y".to_owned()),
+                freedom_html::Node::Text("<z>".to_owned())
             ]
         );
 
-        assert!(matches!(&body.children[1], crate::html::Node::Comment(_)));
+        assert!(matches!(&body.children[1], freedom_html::Node::Comment(_)));
     }
 
     #[test]

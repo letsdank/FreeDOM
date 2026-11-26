@@ -576,6 +576,7 @@ dependencies = [
  "flate2",
  "font8x8",
  "freedom-css",
+ "freedom-html",
  "freedom-url",
  "png",
  "reqwest",
@@ -585,6 +586,10 @@ dependencies = [
 
 [[package]]
 name = "freedom-css"
+version = "0.1.0"
+
+[[package]]
+name = "freedom-html"
 version = "0.1.0"
 
 [[package]]

@@ -419,8 +419,9 @@ fn format_inline(
 mod tests {
     use super::*;
 
-    use crate::{html::Document, javascript::DocumentState};
+    use crate::javascript::DocumentState;
     use freedom_css::build_author_rules;
+    use freedom_html::Document;
 
     fn make_styled(input: &str) -> StyledTree {
         let html = Document::parse(input);
@@ -483,7 +484,7 @@ mod tests {
 
         assert!(matches!(
             styled.source_node(child.source),
-            Some(crate::html::Node::Element(element))
+            Some(freedom_html::Node::Element(element))
                 if element.name == "div"
         ));
     }

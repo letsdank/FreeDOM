@@ -7,7 +7,6 @@ use crate::{
         raster::Surface as RasterSurface,
         svg::{SvgDocument, parse_svg_at, parse_svg_element, parse_svg_element_at},
     },
-    html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
     javascript::{DocumentScriptSession, DocumentState},
     styled_tree::{SourcePath, StyledTree},
 };
@@ -16,6 +15,7 @@ use freedom_css::{
     CssRule, Display, Element as CssElement, FontFaceRule, FontStyle, FontWeight, TextStyle,
     build_author_rules, compute_style_with_ancestors, parse_font_faces,
 };
+use freedom_html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode};
 use freedom_url::Url;
 
 pub(crate) enum BlockContent {

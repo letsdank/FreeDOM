@@ -573,7 +573,7 @@ fn applies_local_clip_paths() {
 
 #[test]
 fn resolves_double_encoded_use_identifiers_through_document_url() {
-    let html = crate::html::Document::parse(
+    let html = freedom_html::Document::parse(
         r##"
                 <svg>
                     <defs>

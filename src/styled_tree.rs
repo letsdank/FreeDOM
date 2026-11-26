@@ -8,11 +8,11 @@
 use std::fmt::Write;
 
 use crate::{
-    html::{Document, Node},
     javascript::DocumentState,
     page::{ElementInfo, element_info},
 };
 use freedom_css::{CssRule, Display, TextStyle, compute_style_with_ancestors};
+use freedom_html::{Document, Node};
 
 /// Child indexes from the document root, valid only for this source snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]

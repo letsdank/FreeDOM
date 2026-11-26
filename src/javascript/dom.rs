@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::html::{Document as HtmlDocument, Node as HtmlNode};
+use freedom_html::{Document as HtmlDocument, Node as HtmlNode};
 
 use super::JsError;
 

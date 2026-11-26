@@ -1,0 +1,5 @@
+[package]
+name = "freedom-html"
+version = "0.1.0"
+edition = "2024"
+publish = false

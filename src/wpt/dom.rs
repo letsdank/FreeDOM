@@ -1,7 +1,5 @@
-use crate::{
-    html::{Document, Element, Node},
-    javascript::{DocumentScriptSession, DocumentState, HostError},
-};
+use crate::javascript::{DocumentScriptSession, DocumentState, HostError};
+use freedom_html::{Document, Element, Node};
 
 pub fn run_document_test(source: &str) -> Result<DocumentState, HostError> {
     let document = Document::parse(source);

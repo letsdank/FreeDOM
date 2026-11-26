@@ -31,15 +31,13 @@ use self::viewport::{
     view_box_transform, viewport_path,
 };
 
-use crate::{
-    graphics::{
-        flatten::FlattenedPath,
-        geometry::{Path, Point, Transform},
-        raster::{Color, FillRule, Paint, StrokeLineCap, StrokeLineJoin},
-    },
-    html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode},
+use crate::graphics::{
+    flatten::FlattenedPath,
+    geometry::{Path, Point, Transform},
+    raster::{Color, FillRule, Paint, StrokeLineCap, StrokeLineJoin},
 };
 use freedom_css::{CascadeRule, build_cascade_rules, parse_declaration_list};
+use freedom_html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode};
 use freedom_url::Url;
 use std::{error::Error, fmt};
 

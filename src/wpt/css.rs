@@ -4,8 +4,8 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::html::{Document, Node};
     use freedom_css::{Element, TextStyle, build_author_rules, compute_style};
+    use freedom_html::{Document, Node};
 
     #[test]
     fn wpt_trailing_braces_style_subset() {

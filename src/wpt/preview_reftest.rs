@@ -95,7 +95,7 @@ fn reference_name(source: &str) -> Result<Option<String>, String> {
     let mut reference = None;
 
     for child in &head.children {
-        let crate::html::Node::Element(element) = child else {
+        let freedom_html::Node::Element(element) = child else {
             continue;
         };
 
@@ -347,9 +347,9 @@ fn resolve_reference(root: &Path, test: &Path, href: &str) -> Result<PathBuf, Pr
 fn audit_document(source: &str) -> Result<(), String> {
     let document = crate::xml::parse_xhtml(source).map_err(|error| error.to_string())?;
 
-    fn visit(nodes: &[crate::html::Node]) -> Result<(), String> {
+    fn visit(nodes: &[freedom_html::Node]) -> Result<(), String> {
         for node in nodes {
-            let crate::html::Node::Element(element) = node else {
+            let freedom_html::Node::Element(element) = node else {
                 continue;
             };
 
@@ -393,11 +393,11 @@ fn audit_document(source: &str) -> Result<(), String> {
 
                 for child in &element.children {
                     match child {
-                        crate::html::Node::Text(text) => {
+                        freedom_html::Node::Text(text) => {
                             source.push_str(text);
                         }
 
-                        crate::html::Node::Comment(_) => {}
+                        freedom_html::Node::Comment(_) => {}
 
                         _ => {
                             return Err("unsupported content in style element".into());

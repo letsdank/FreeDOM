@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode};
+use freedom_html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode};
 
 use crate::graphics::{
     raster::{Color, Surface},
