@@ -1,5 +1,4 @@
 mod box_tree;
-mod fetch;
 mod inline_layout;
 mod layout_debug;
 mod layout_preview;
@@ -29,6 +28,7 @@ use crate::{
     },
 };
 use anyhow::{Context as _, Result};
+use freedom_fetch as fetch;
 use softbuffer::{Context as SoftbufferContext, Surface};
 use std::sync::{
     Arc,
