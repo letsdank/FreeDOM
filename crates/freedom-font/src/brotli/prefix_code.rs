@@ -25,7 +25,8 @@ pub fn read_prefix_code(
     read_complex_prefix_code(reader, alphabet_size, header)
 }
 
-pub fn read_simple_prefix_code(
+#[cfg(test)]
+pub(super) fn read_simple_prefix_code(
     reader: &mut BitReader<'_>,
     alphabet_size: usize,
 ) -> Result<HuffmanTree, FontError> {
@@ -385,6 +386,10 @@ fn repetition_completes_prefix_code(
         || (non_zero_after_repeat >= 2 && weight_after_repeat == PREFIX_CODE_WEIGHT))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "updates the code-length decoder state in place"
+)]
 fn append_code_lengths(
     code_lengths: &mut Vec<u8>,
     length: u8,

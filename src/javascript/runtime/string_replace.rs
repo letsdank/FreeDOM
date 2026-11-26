@@ -83,11 +83,7 @@ impl Interpreter {
                     regexp.inner.borrow_mut().last_index = Value::Number(0.0);
                 }
 
-                loop {
-                    let Some(found) = Self::run_regexp(&regexp, &input_units)? else {
-                        break;
-                    };
-
+                while let Some(found) = Self::run_regexp(&regexp, &input_units)? {
                     let span = found.captures.span;
 
                     matches.push(ReplacementMatch {
@@ -171,15 +167,14 @@ impl Interpreter {
                         ));
                     }
 
-                    if let Value::Function(function) = function {
-                        if !function.is_bound()
-                            && super::identifier_analysis::referenced_names(function.definition())
-                                .contains("this")
-                        {
-                            return Err(JsError::unsupported(
-                                "String.replace callback this binding is not implemented",
-                            ));
-                        }
+                    if let Value::Function(function) = function
+                        && !function.is_bound()
+                        && super::identifier_analysis::referenced_names(function.definition())
+                            .contains("this")
+                    {
+                        return Err(JsError::unsupported(
+                            "String.replace callback this binding is not implemented",
+                        ));
                     }
 
                     let mut values = Vec::with_capacity(matched.groups.len() + 2);

@@ -5,7 +5,7 @@
 //! Object, string, and function semantics are not yet fully implemented.
 
 use freedom_url::Url;
-use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
+use std::{cell::RefCell, fmt, rc::Rc};
 
 use super::arguments::ArgumentsValue;
 use super::object_properties::{ObjectPrototype as Prototype, OrdinaryObject};
@@ -185,7 +185,8 @@ impl ObjectState {
         self.ordinary.properties.ordered_keys()
     }
 
-    fn as_hash_map(&self) -> HashMap<String, Value> {
+    #[cfg(test)]
+    fn as_hash_map(&self) -> std::collections::HashMap<String, Value> {
         self.ordinary
             .properties
             .iter()
@@ -409,7 +410,8 @@ pub struct FunctionValue {
     definition: Rc<UserFunction>,
     properties: ObjectStorage,
     binding: Option<Rc<BoundFunction>>,
-    captures: CapturedBindings,
+    // Shared because captured binding sets are immutable after creation.
+    captures: Rc<CapturedBindings>,
 }
 
 pub(super) struct BoundFunction {
@@ -536,7 +538,8 @@ pub enum Value {
     },
     Object(ObjectStorage),
     NativeError(NativeErrorValue),
-    Url(Url),
+    // Boxed because `Url` is several times larger than the other variants.
+    Url(Box<Url>),
     NativeFunction(NativeFunction),
     Document(DocumentStorage),
     Element(u64),
@@ -706,7 +709,7 @@ impl Value {
             definition: Rc::new(definition),
             properties,
             binding: None,
-            captures,
+            captures: Rc::new(captures),
         })
     }
 
@@ -724,30 +727,10 @@ impl Value {
         ))
     }
 
+    #[cfg(test)]
     pub fn as_array(&self) -> Option<Vec<Value>> {
         match self {
             Self::Array(values) => Some(values.borrow().values.clone()),
-            _ => None,
-        }
-    }
-
-    pub fn as_object(&self) -> Option<HashMap<String, Value>> {
-        match self {
-            Self::Object(values) => Some(values.borrow().as_hash_map()),
-            _ => None,
-        }
-    }
-
-    pub fn as_string(&self) -> Option<&str> {
-        match self {
-            Self::String(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Self::Boolean(value) => Some(*value),
             _ => None,
         }
     }

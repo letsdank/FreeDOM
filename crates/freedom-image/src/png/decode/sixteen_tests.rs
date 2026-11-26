@@ -154,8 +154,12 @@ fn decodes_wpt_apng_16bit_default_image() {
     assert_eq!((image.width, image.height), (128, 64));
     assert_eq!(image.pixels.len(), 128 * 64 * 4);
 
-    for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
-        assert_eq!(pixel, [255, 0, 0, 255], "unexpected pixel at index {index}");
+    for (index, pixel) in image.pixels.as_chunks::<4>().0.iter().enumerate() {
+        assert_eq!(
+            *pixel,
+            [255, 0, 0, 255],
+            "unexpected pixel at index {index}"
+        );
     }
 }
 

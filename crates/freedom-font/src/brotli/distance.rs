@@ -103,7 +103,8 @@ pub(super) fn read_distance(
     let postfix_factor = 1_usize << postfix;
 
     // NDIRECT is a four-bit value shifted left by NPOSTFIX.
-    if direct_code_count > 15 * postfix_factor || direct_code_count % postfix_factor != 0 {
+    if direct_code_count > 15 * postfix_factor || !direct_code_count.is_multiple_of(postfix_factor)
+    {
         return Err(error(
             reader.bit_position(),
             "invalid Brotli direct distance code count",

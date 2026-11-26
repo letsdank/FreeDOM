@@ -199,6 +199,10 @@ impl Interpreter {
     }
 
     // https://tc39.es/ecma262/#sec-tonumber
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "named after the ToNumber abstract operation; `sels` is the interpreter"
+    )]
     pub(super) fn to_number(&mut self, value: &Value) -> Result<f64, JsError> {
         let primitive = self.ordinary_to_primitive(value, PrimitiveHint::Number)?;
         self.primitive_to_number(&primitive).ok_or_else(|| {

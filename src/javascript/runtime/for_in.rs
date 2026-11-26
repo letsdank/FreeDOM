@@ -171,7 +171,8 @@ mod tests {
 
     #[test]
     fn unknown_prototypes_and_other_targets_are_explicitly_unsupported() {
-        for source in ["for (let k in []) {}"] {
+        {
+            let source = "for (let k in []) {}";
             assert_eq!(
                 evaluate(source).unwrap_err().kind,
                 JsErrorKind::UnsupportedFeature

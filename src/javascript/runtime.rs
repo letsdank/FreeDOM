@@ -175,6 +175,10 @@ pub(super) enum RuntimeRoot<'a> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "each variant names the storage that was already borrowed"
+)]
 pub(super) enum RootVisitError {
     BindingBorrowed,
     PromiseBorrowed,
@@ -665,11 +669,9 @@ impl Interpreter {
             .with_pending_completion(result, |interpreter| {
                 // The completion frame owns the result during the checkpoint.
                 interpreter.clear_exception();
-                if run_checkpoint {
-                    if let Err(error) = interpreter.perform_microtask_checkpoint() {
-                        interpreter.microtasks.clear();
-                        interpreter.replace_pending_completion(index, Err(error));
-                    }
+                if run_checkpoint && let Err(error) = interpreter.perform_microtask_checkpoint() {
+                    interpreter.microtasks.clear();
+                    interpreter.replace_pending_completion(index, Err(error));
                 }
 
                 Ok(consume(interpreter, index))

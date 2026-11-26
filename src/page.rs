@@ -56,6 +56,7 @@ pub(crate) struct Block {
     pub(crate) sources: Vec<SourcePath>,
 }
 
+#[cfg(test)]
 impl Block {
     fn text(&self) -> Option<&str> {
         match &self.content {
@@ -428,6 +429,7 @@ pub(crate) fn parse_xhtml_for_test(
     Ok(parse_dom(url, &document, &stylesheets))
 }
 
+#[cfg(test)]
 fn parse_dom(url: &str, document: &HtmlDocument, stylesheet_sources: &[String]) -> Page {
     let stylesheets: Vec<Stylesheet> = Url::parse(url)
         .map(|base_url| {
@@ -611,10 +613,10 @@ fn run_inline_scripts_in_node(
         if is_inline && is_classic_javascript(element) {
             let source = text_content(node);
 
-            if !source.trim().is_empty() {
-                if let Err(error) = session.evaluate(&source, document) {
-                    eprintln!("FreeDOM: inline script error: {error}");
-                }
+            if !source.trim().is_empty()
+                && let Err(error) = session.evaluate(&source, document)
+            {
+                eprintln!("FreeDOM: inline script error: {error}");
             }
         }
 
@@ -851,14 +853,12 @@ fn collect_stylesheet_sources_from_node(
             })
             .unwrap_or(false);
 
-        if is_stylesheet {
-            if let Some(href) = href {
-                if let Ok(url) = page_url.join(href.trim()) {
-                    if matches!(url.scheme(), "http" | "https") {
-                        sources.push(StylesheetSource::External(url));
-                    }
-                }
-            }
+        if is_stylesheet
+            && let Some(href) = href
+            && let Ok(url) = page_url.join(href.trim())
+            && matches!(url.scheme(), "http" | "https")
+        {
+            sources.push(StylesheetSource::External(url));
         }
     }
 
@@ -973,6 +973,10 @@ impl ExtractionTrace {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "recursive extraction state is passed explicitly"
+)]
 fn extract_blocks(
     node: &HtmlNode,
     rules: &[CssRule],
@@ -1059,18 +1063,17 @@ fn extract_blocks(
 
         if let Some(total) = total.filter(|total| {
             *total <= MAX_PAGE_CANVAS_PIXELS && trace.canvas_count < MAX_PAGE_CANVASES
-        }) {
-            if let Some(canvas) = Canvas2D::new(width, height) {
-                trace.canvas_pixels = total;
-                trace.canvas_count += 1;
+        }) && let Some(canvas) = Canvas2D::new(width, height)
+        {
+            trace.canvas_pixels = total;
+            trace.canvas_count += 1;
 
-                blocks.push(Block {
-                    content: BlockContent::Canvas(CanvasBlock { node_id, canvas }),
-                    style,
-                    link: None,
-                    sources: vec![trace.current_source()],
-                });
-            }
+            blocks.push(Block {
+                content: BlockContent::Canvas(CanvasBlock { node_id, canvas }),
+                style,
+                link: None,
+                sources: vec![trace.current_source()],
+            });
         }
 
         return;
@@ -1379,6 +1382,28 @@ mod tests {
         net::TcpListener,
         thread,
     };
+
+    /// Reads an HTTP request through the end of its header block.
+    fn read_request_head(stream: &mut std::net::TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let count = stream.read(&mut chunk).unwrap();
+
+            assert!(count > 0, "unexpected end of request");
+
+            request.extend_from_slice(&chunk[..count]);
+
+            assert!(request.len() < 16_384, "request headers are too long");
+        }
+
+        String::from_utf8(request).unwrap()
+    }
 
     #[test]
     fn line_height_reaches_the_main_page_layout() {
@@ -1720,8 +1745,7 @@ mod tests {
 
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            stream.read(&mut request).unwrap();
+            read_request_head(&mut stream);
 
             let body = r##"
                 <svg>
@@ -1786,8 +1810,7 @@ mod tests {
 
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            stream.read(&mut request).unwrap();
+            read_request_head(&mut stream);
 
             let mut response = format!(
                 "HTTP/1.1 200 OK\r\n\
@@ -1930,11 +1953,9 @@ mod tests {
 
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 1024];
+            let request = read_request_head(&mut stream);
 
-            stream.read(&mut request).unwrap();
-
-            assert!(String::from_utf8_lossy(&request).contains("GET /fonts/test.woff "));
+            assert!(request.contains("GET /fonts/test.woff "));
 
             let response = format!(
                 "HTTP/1.1 200 OK\r\n\
@@ -2039,24 +2060,7 @@ mod tests {
                     Err(error) => panic!("failed to accpt connection: {error}"),
                 };
 
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-
-                let mut request = Vec::new();
-                let mut chunk = [0_u8; 1024];
-
-                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    let count = stream.read(&mut chunk).unwrap();
-
-                    assert!(count > 0, "unexpected end of request");
-
-                    request.extend_from_slice(&chunk[..count]);
-
-                    assert!(request.len() < 16_384, "request headers are too long");
-                }
-
-                let request = String::from_utf8(request).unwrap();
+                let request = read_request_head(&mut stream);
 
                 let request_path = request
                     .lines()
@@ -3343,7 +3347,9 @@ mod tests {
 
     #[test]
     fn preview_fixed_height_and_margin_cases() {
-        let cases: &[(&str, &str, &[(i32, i32)])] = &[
+        // Case name, HTML source, and expected block positions.
+        type Case<'a> = (&'a str, &'a str, &'a [(i32, i32)]);
+        let cases: &[Case<'_>] = &[
             (
                 "collapsed sibling margins",
                 concat!(
@@ -3879,9 +3885,7 @@ mod tests {
         );
 
         assert!(
-            actual[crate::page_layout::CONTENT_TOP as usize * width..]
-                .iter()
-                .any(|&pixel| pixel == 0x00_00_00_00),
+            actual[crate::page_layout::CONTENT_TOP as usize * width..].contains(&0x00_00_00_00),
             "expected test pixels"
         );
 
@@ -5493,7 +5497,7 @@ mod tests {
         assert_eq!(text.runs.last().unwrap().range.end, text.text.len());
         assert!(text.runs.iter().all(|run| run.link.is_none()));
         assert_eq!(text.runs[1].style.font_weight, FontWeight::Bold);
-        assert_eq!(text.runs[2].style.color, 0x00_ff_0000);
+        assert_eq!(text.runs[2].style.color, 0x00_ff_00_00);
 
         let description = page.describe_block_sources(0).unwrap();
 

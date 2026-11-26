@@ -193,10 +193,10 @@ fn split_important(value: &str) -> (&str, bool) {
         }
     }
 
-    if let Some(index) = bang {
-        if value[index + 1..].trim().eq_ignore_ascii_case("important") {
-            return (value[..index].trim_end(), true);
-        }
+    if let Some(index) = bang
+        && value[index + 1..].trim().eq_ignore_ascii_case("important")
+    {
+        return (value[..index].trim_end(), true);
     }
 
     (value, false)

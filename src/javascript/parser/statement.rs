@@ -15,22 +15,21 @@ impl Parser<'_> {
     fn parse_statement_inner(&mut self) -> Result<Statement, JsError> {
         let first = self.cursor.peek()?;
 
-        if matches!(&first.kind,TokenKind::Identifier(name)if name == "async") {
-            if let Some(next) = self.cursor.peek_n(1)? {
-                if matches!(next.kind, TokenKind::Function) {
-                    let trivia = &self.source[first.offset + "async".len()..next.offset];
+        if matches!(&first.kind,TokenKind::Identifier(name)if name == "async")
+            && let Some(next) = self.cursor.peek_n(1)?
+            && matches!(next.kind, TokenKind::Function)
+        {
+            let trivia = &self.source[first.offset + "async".len()..next.offset];
 
-                    let has_line_break = trivia
-                        .chars()
-                        .any(|ch| matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}'));
+            let has_line_break = trivia
+                .chars()
+                .any(|ch| matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}'));
 
-                    if !has_line_break {
-                        self.cursor.advance()?;
-                        self.cursor.advance()?;
+            if !has_line_break {
+                self.cursor.advance()?;
+                self.cursor.advance()?;
 
-                        return self.parse_async_function_declaration();
-                    }
-                }
+                return self.parse_async_function_declaration();
             }
         }
 
@@ -420,7 +419,7 @@ impl Parser<'_> {
     }
 
     fn parse_required_block(&mut self, message: &str) -> Result<Vec<Statement>, JsError> {
-        if !self.cursor.check(&&TokenKind::LeftBrace)? {
+        if !self.cursor.check(&TokenKind::LeftBrace)? {
             return Err(JsError::syntax(self.cursor.peek()?.offset, message));
         }
 

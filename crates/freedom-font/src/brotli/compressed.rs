@@ -4,6 +4,7 @@
 //! - Context maps: RFC 7932, section 7.3.
 //! - Meta-block headers: RFC 7932, section 9.2.
 //! - Meta-block data: RFC 7932, section 9.3.
+//!
 //! <https://www.rfc-editor.org/rfc/rfc7932.html>
 
 use super::block::{BlockPartition, read_block_partition};
@@ -26,9 +27,7 @@ pub(super) struct CompressedMetaBlockHeader {
     distance_postfix_bits: u8,
     direct_distance_code_count: usize,
     literal_context_modes: Vec<LiteralContextMode>,
-    literal_tree_count: usize,
     literal_context_map: Vec<usize>,
-    distance_tree_count: usize,
     distance_context_map: Vec<usize>,
     literal_trees: Vec<HuffmanTree>,
     command_trees: Vec<HuffmanTree>,
@@ -229,9 +228,7 @@ pub(super) fn read_compressed_meta_block_header_prefix(
         distance_postfix_bits,
         direct_distance_code_count,
         literal_context_modes,
-        literal_tree_count,
         literal_context_map,
-        distance_tree_count,
         distance_context_map,
         literal_trees,
         command_trees,
@@ -503,8 +500,8 @@ mod tests {
             vec![LiteralContextMode::Signed]
         );
 
-        assert_eq!(header.literal_tree_count, 1);
-        assert_eq!(header.distance_tree_count, 1);
+        assert_eq!(header.literal_trees.len(), 1);
+        assert_eq!(header.distance_trees.len(), 1);
         assert_eq!(header.literal_context_map.len(), 64);
         assert_eq!(header.distance_context_map.len(), 4);
         assert!(header.literal_context_map.iter().all(|index| *index == 0));
@@ -591,9 +588,7 @@ mod tests {
             distance_postfix_bits: 0,
             direct_distance_code_count: 0,
             literal_context_modes: vec![LiteralContextMode::Lsb6, LiteralContextMode::Msb6],
-            literal_tree_count: 2,
             literal_context_map,
-            distance_tree_count: 2,
             distance_context_map,
             literal_trees: vec![HuffmanTree::single(65), HuffmanTree::single(66)],
             command_trees: vec![HuffmanTree::single(17), HuffmanTree::single(37)],

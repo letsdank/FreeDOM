@@ -41,14 +41,16 @@ pub(super) fn parse_poly_points(
         return Ok(None);
     }
 
-    let mut pairs = values.chunks_exact(2);
-    let first = pairs.next().unwrap();
+    let (pairs, _) = values.as_chunks::<2>();
+    let Some((&[first_x, first_y], rest)) = pairs.split_first() else {
+        return Ok(None);
+    };
 
     let mut path = Path::new();
-    path.move_to(Point::new(first[0], first[1]));
+    path.move_to(Point::new(first_x, first_y));
 
-    for pair in pairs {
-        path.line_to(Point::new(pair[0], pair[1]));
+    for &[x, y] in rest {
+        path.line_to(Point::new(x, y));
     }
 
     if close_path {

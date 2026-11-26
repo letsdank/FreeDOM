@@ -75,7 +75,8 @@ impl Interpreter {
                         Value::Null => "null".to_owned(),
                         Value::Boolean(value) => value.to_string(),
 
-                        Value::Number(number) if number == 0.0 => "0".to_owned(),
+                        // Float patterns compare with `==`, so this also matches -0.
+                        Value::Number(0.0) => "0".to_owned(),
 
                         Value::Number(number) if number.is_nan() => "NaN".to_owned(),
 
@@ -264,10 +265,10 @@ impl Interpreter {
             Expression::TypeOf(expression) => {
                 // An unresolvable identifier is handled specially by typeof.
                 // https://tc39.es/ecma262/#sec-typeof-operator
-                if let Expression::Identifier(name) = expression.as_ref() {
-                    if !self.variables.contains_key(name) {
-                        return Ok(Value::String("undefined".to_owned()));
-                    }
+                if let Expression::Identifier(name) = expression.as_ref()
+                    && !self.variables.contains_key(name)
+                {
+                    return Ok(Value::String("undefined".to_owned()));
                 }
 
                 let value = self.evaluate_expression(expression)?;
@@ -332,7 +333,7 @@ impl Interpreter {
         }
         .map_err(|error| JsError::runtime(format!("TypeError: invalid URL: {error}")))?;
 
-        Ok(Value::Url(url))
+        Ok(Value::Url(Box::new(url)))
     }
 }
 

@@ -16,7 +16,7 @@ pub(super) struct Palette<'a> {
 
 impl<'a> Palette<'a> {
     pub(super) fn new(colors: &'a [u8]) -> Result<Self, PngDecodeError> {
-        if colors.is_empty() || colors.len() > 768 || colors.len() % 3 != 0 {
+        if colors.is_empty() || colors.len() > 768 || !colors.len().is_multiple_of(3) {
             return Err(PngDecodeError::InvalidPalette);
         }
 

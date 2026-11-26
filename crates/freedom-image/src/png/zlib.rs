@@ -59,7 +59,7 @@ impl ZlibHeader {
             return Err(ZlibHeaderError::InvalidWindowSize(window));
         }
 
-        if u16::from_be_bytes(bytes) % 31 != 0 {
+        if !u16::from_be_bytes(bytes).is_multiple_of(31) {
             return Err(ZlibHeaderError::InvalidHeaderCheck);
         }
 

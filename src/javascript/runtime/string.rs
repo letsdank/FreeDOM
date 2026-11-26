@@ -108,7 +108,8 @@ impl Interpreter {
 
             Value::Number(value) if value == f64::NEG_INFINITY => "-Infinity".to_owned(),
 
-            Value::Number(value) if value == 0.0 => "0".to_owned(),
+            // Float patterns compare with `==`, so this also matches -0.
+            Value::Number(0.0) => "0".to_owned(),
 
             Value::Number(value)
                 if value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0 =>

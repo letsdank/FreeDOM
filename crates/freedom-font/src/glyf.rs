@@ -93,13 +93,13 @@ pub fn parse_glyph(data: &[u8], file_offset: usize) -> Result<Glyph, FontError> 
         let end_point = usize::from(read_u16(data, cursor, file_offset)?);
         cursor += 2;
 
-        if let Some(previous) = contour_end_points.last() {
-            if end_point <= *previous {
-                return Err(error(
-                    file_offset + cursor - 2,
-                    "glyph contour end points are not strictly increasing",
-                ));
-            }
+        if let Some(previous) = contour_end_points.last()
+            && end_point <= *previous
+        {
+            return Err(error(
+                file_offset + cursor - 2,
+                "glyph contour end points are not strictly increasing",
+            ));
         }
 
         contour_end_points.push(end_point);

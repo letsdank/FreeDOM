@@ -100,6 +100,13 @@ impl fmt::Display for LexError {
 
 impl Error for LexError {}
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "public host API that the browser does not call yet"
+    )
+)]
 pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
     let mut stream = TokenStream::new(source);
     let mut tokens = Vec::new();

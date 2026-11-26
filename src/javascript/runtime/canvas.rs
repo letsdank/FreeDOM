@@ -50,10 +50,11 @@ impl CanvasHost {
     }
 
     fn ensure_surface(&mut self, node_id: u64, width: usize, height: usize) -> bool {
-        if let Some(existing) = self.surfaces.get(&node_id) {
-            if existing.surface().width() == width && existing.surface().height() == height {
-                return true;
-            }
+        if let Some(existing) = self.surfaces.get(&node_id)
+            && existing.surface().width() == width
+            && existing.surface().height() == height
+        {
+            return true;
         }
 
         self.surfaces.remove(&node_id);
@@ -241,24 +242,24 @@ impl Interpreter {
             return Ok(false);
         }
 
-        if name == "lineCap" || name == "lineJoin" {
-            if let Value::String(value) = value {
-                let valid = match name {
-                    "lineCap" => matches!(value.as_str(), "butt" | "round" | "square"),
-                    "lineJoin" => matches!(value.as_str(), "miter" | "round" | "bevel"),
-                    _ => false,
-                };
+        if (name == "lineCap" || name == "lineJoin")
+            && let Value::String(value) = value
+        {
+            let valid = match name {
+                "lineCap" => matches!(value.as_str(), "butt" | "round" | "square"),
+                "lineJoin" => matches!(value.as_str(), "miter" | "round" | "bevel"),
+                _ => false,
+            };
 
-                if valid {
-                    self.host_roots.write_ordinary_property(
-                        object,
-                        name.to_owned(),
-                        Value::String(value.clone()),
-                    );
-                }
-
-                return Ok(true);
+            if valid {
+                self.host_roots.write_ordinary_property(
+                    object,
+                    name.to_owned(),
+                    Value::String(value.clone()),
+                );
             }
+
+            return Ok(true);
         }
 
         if name == "lineDashOffset" {
@@ -1031,7 +1032,6 @@ fn canvas_stroke_style(
         miter_limit,
         dash_array,
         dash_offset,
-        ..StrokeStyle::default()
     })
 }
 

@@ -7,7 +7,7 @@
 
 use super::{RootVisitError, RuntimeRoot};
 use std::{
-    cell::{Ref, RefCell, RefMut},
+    cell::{Ref, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
 };
@@ -75,10 +75,11 @@ impl Bindings {
             .map(|binding| Ref::map(binding.borrow(), |binding| &binding.value))
     }
 
-    pub(super) fn get_mut(&mut self, name: &str) -> Option<RefMut<'_, Value>> {
-        self.values
-            .get_mut(name)
-            .map(|binding| RefMut::map(binding.borrow_mut(), |binding| &mut binding.value))
+    #[cfg(test)]
+    pub(super) fn get_mut(&mut self, name: &str) -> Option<std::cell::RefMut<'_, Value>> {
+        self.values.get_mut(name).map(|binding| {
+            std::cell::RefMut::map(binding.borrow_mut(), |binding| &mut binding.value)
+        })
     }
 
     pub(super) fn insert(&mut self, name: String, value: Value) -> Option<Value> {

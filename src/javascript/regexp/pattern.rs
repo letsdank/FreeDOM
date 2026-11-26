@@ -337,13 +337,13 @@ impl Parser<'_> {
             });
         }
 
-        if let Term::Literal(character) = &term {
-            if character.len_utf16() == 2 {
-                return Err(PatternError {
-                    offset: self.offset,
-                    kind: PatternErrorKind::Unsupported(*character),
-                });
-            }
+        if let Term::Literal(character) = &term
+            && character.len_utf16() == 2
+        {
+            return Err(PatternError {
+                offset: self.offset,
+                kind: PatternErrorKind::Unsupported(*character),
+            });
         }
 
         self.offset = end;

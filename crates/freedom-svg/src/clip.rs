@@ -35,10 +35,10 @@ pub(super) fn resolve_clip_paths(
             ));
         }
 
-        if let Some(units) = attribute(clip_path, "clippathunits") {
-            if !units.eq_ignore_ascii_case("userspaceonuse") {
-                return Err(SvgError::new("unsupported clipPathUnits value"));
-            }
+        if let Some(units) = attribute(clip_path, "clippathunits")
+            && !units.eq_ignore_ascii_case("userspaceonuse")
+        {
+            return Err(SvgError::new("unsupported clipPathUnits value"));
         }
 
         let clip_transform = element_transform(clip_path)?.then(transform);
@@ -112,6 +112,10 @@ fn clip_path_reference_id(
     Ok(Some(reference_id))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "recursive traversal state is passed explicitly"
+)]
 fn collect_clip_path_geometry(
     root: &HtmlElement,
     element: &HtmlElement,

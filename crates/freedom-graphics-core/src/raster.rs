@@ -32,17 +32,12 @@ pub struct GradientStop {
     pub color: Color,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum GradientSpread {
+    #[default]
     Pad,
     Repeat,
     Reflect,
-}
-
-impl Default for GradientSpread {
-    fn default() -> Self {
-        Self::Pad
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -277,6 +272,10 @@ impl Surface {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the destination buffer, its size, and the target rectangle are separate values"
+    )]
     pub fn blit_scaled_xrgb8888(
         &self,
         destination: &mut [u32],
@@ -712,7 +711,7 @@ impl<'a> DashState<'a> {
     }
 
     fn is_visible(&self) -> bool {
-        self.index % 2 == 0
+        self.index.is_multiple_of(2)
     }
 
     fn advance(&mut self, amount: f32) {
@@ -726,6 +725,10 @@ impl<'a> DashState<'a> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "updates several pieces of dashing state in place"
+)]
 fn append_dashed_segment(
     from: Point,
     to: Point,
@@ -909,10 +912,11 @@ fn sample_is_on_stroke(
             }
         }
 
-        if contour.is_closed() && points.len() > 1 {
-            if point_is_inside_butt_segment(sample, points[points.len() - 1], points[0], radius) {
-                return true;
-            }
+        if contour.is_closed()
+            && points.len() > 1
+            && point_is_inside_butt_segment(sample, points[points.len() - 1], points[0], radius)
+        {
+            return true;
         }
 
         if points.len() >= 3 {

@@ -301,7 +301,7 @@ fn encodes_cicp_and_roundtrips_rgba8_and_rgba16() {
     let encoded16 = encode_rgba16_be_with_cicp(2, 1, &bytes16, cicp).unwrap();
 
     for png in [&encoded8, &encoded16] {
-        let mut reader = ChunkReader::new(&png).unwrap();
+        let mut reader = ChunkReader::new(png).unwrap();
 
         assert_eq!(reader.next_chunk().unwrap().unwrap().kind, *b"IHDR");
 

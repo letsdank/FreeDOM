@@ -28,7 +28,7 @@ pub(super) fn array_index(name: &str) -> Option<usize> {
 pub(super) fn integer_property_key(number: f64) -> Option<String> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
-    if number.is_finite() && number >= 0.0 && number <= MAX_SAFE_INTEGER && number.fract() == 0.0 {
+    if number.is_finite() && (0.0..=MAX_SAFE_INTEGER).contains(&number) && number.fract() == 0.0 {
         if number == 0.0 {
             Some("0".to_owned())
         } else {

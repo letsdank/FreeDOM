@@ -170,7 +170,7 @@ fn visit_expression(expression: &Expression, names: &mut HashSet<String>) {
             names.insert(constructor.clone());
 
             for argument in arguments {
-                visit_expression(&argument, names);
+                visit_expression(argument, names);
             }
         }
 

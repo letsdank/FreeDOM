@@ -148,10 +148,10 @@ where
             message: "cmap refers to a glyph outside the font".to_owned(),
         })?;
 
-        if let Some((previous_font, previous_glyph)) = previous_glyph {
-            if previous_font == index {
-                pen_x += f32::from(font.kerning(previous_glyph, glyph_id)) * scale;
-            }
+        if let Some((previous_font, previous_glyph)) = previous_glyph
+            && previous_font == index
+        {
+            pen_x += f32::from(font.kerning(previous_glyph, glyph_id)) * scale;
         }
 
         visit(offset, index, glyph_id, pen_x)?;

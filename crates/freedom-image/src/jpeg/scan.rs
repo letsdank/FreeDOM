@@ -84,7 +84,7 @@ pub(super) fn parse_scan_header_at(
 
     let mut components = Vec::with_capacity(count);
 
-    for item in data[1..1 + 2 * count].chunks_exact(2) {
+    for item in data[1..1 + 2 * count].as_chunks::<2>().0 {
         let component = ScanComponent {
             id: item[0],
             dc_table: item[1] >> 4,

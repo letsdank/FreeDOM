@@ -62,6 +62,7 @@ Environment variables:
 ```bash
 cargo test --workspace
 cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Some tests start a local HTTP server on `127.0.0.1`.

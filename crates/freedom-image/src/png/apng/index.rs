@@ -455,14 +455,18 @@ mod tests {
         assert!(
             black
                 .pixels
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 0, 255])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 255])
         );
 
         assert!(
             blue.pixels
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 255, 128])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 255, 128])
         );
 
         let blue16 = index.decode_frame_rgba16_be(1, limits).unwrap();
@@ -470,8 +474,10 @@ mod tests {
         assert!(
             blue16
                 .pixels
-                .chunks_exact(8)
-                .all(|pixel| pixel == [0, 0, 0, 0, 255, 255, 128, 0])
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 0, 255, 255, 128, 0])
         );
 
         // Compare both uncomposited frames with an independent decoder.

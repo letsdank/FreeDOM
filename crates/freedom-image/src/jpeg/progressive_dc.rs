@@ -185,7 +185,7 @@ impl ProgressiveState {
             for mcu_x in 0..columns {
                 if restart_interval != 0
                     && completed != 0
-                    && completed % usize::from(restart_interval) == 0
+                    && completed.is_multiple_of(usize::from(restart_interval))
                 {
                     reader
                         .consume_restart_marker(0xd0 + next_restart)

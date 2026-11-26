@@ -141,10 +141,10 @@ fn encode_rgba(
     bit_depth: u8,
     cicp: Option<Cicp>,
 ) -> Result<Vec<u8>, PngEncodeError> {
-    if let Some(value) = cicp {
-        if value.matrix_coefficients != 0 || value.video_full_range_flag > 1 {
-            return Err(PngEncodeError::InvalidCicp);
-        }
+    if let Some(value) = cicp
+        && (value.matrix_coefficients != 0 || value.video_full_range_flag > 1)
+    {
+        return Err(PngEncodeError::InvalidCicp);
     }
 
     if width == 0 || height == 0 || width > 0x7fff_ffff || height > 0x7fff_ffff {

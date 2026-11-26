@@ -212,15 +212,19 @@ impl PreviewLayout {
             FlowStart::Document,
         )?;
 
-        if let Some(group) = flow.trailing_margin {
-            if group.value() < 0 {
-                return Err(PreviewError::Margin(group.path));
-            }
+        if let Some(group) = flow.trailing_margin
+            && group.value() < 0
+        {
+            return Err(PreviewError::Margin(group.path));
         }
 
         Ok(output)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the flow position and inherited context are passed explicitly"
+    )]
     fn flow(
         &mut self,
         children: &[FlowChild<'_>],
@@ -374,17 +378,16 @@ impl PreviewLayout {
                         || block.style.border_bottom.width > 0
                         || block.style.padding_bottom > 0)
                         && block.style.height == CssSize::Auto
+                        && let Some(group) = child_flow.trailing_margin.take()
                     {
-                        if let Some(group) = child_flow.trailing_margin.take() {
-                            if group.value() < 0 {
-                                return Err(PreviewError::Margin(group.path));
-                            }
-
-                            child_flow.end = child_flow
-                                .end
-                                .checked_add(group.value())
-                                .ok_or(PreviewError::SizeOverflow)?;
+                        if group.value() < 0 {
+                            return Err(PreviewError::Margin(group.path));
                         }
+
+                        child_flow.end = child_flow
+                            .end
+                            .checked_add(group.value())
+                            .ok_or(PreviewError::SizeOverflow)?;
                     }
 
                     let end = match block.style.height {
@@ -614,27 +617,21 @@ impl PreviewLayout {
                                 width: span_width,
                                 height,
                             };
-                            if let Some((
-                                previous_source,
-                                previous_line,
-                                previous,
-                                previous_color,
-                            )) = backgrounds.last_mut()
+                            if let Some((previous_source, previous_line, previous, previous_color)) =
+                                backgrounds.last_mut()
+                                && previous_source == source
+                                && *previous_line == run.line_index
+                                && previous.y == rect.y
+                                && *previous_color == color
                             {
-                                if previous_source == source
-                                    && *previous_line == run.line_index
-                                    && previous.y == rect.y
-                                    && *previous_color == color
-                                {
-                                    let right = rect
-                                        .x
-                                        .checked_add(rect.width)
-                                        .ok_or(PreviewError::SizeOverflow)?;
-                                    previous.width = right
-                                        .checked_sub(previous.x)
-                                        .ok_or(PreviewError::SizeOverflow)?;
-                                    continue;
-                                }
+                                let right = rect
+                                    .x
+                                    .checked_add(rect.width)
+                                    .ok_or(PreviewError::SizeOverflow)?;
+                                previous.width = right
+                                    .checked_sub(previous.x)
+                                    .ok_or(PreviewError::SizeOverflow)?;
+                                continue;
                             }
                             backgrounds.push((source.clone(), run.line_index, rect, color));
                         }
@@ -677,10 +674,10 @@ impl PreviewLayout {
             }
         }
 
-        if let Some(group) = &pending_margin {
-            if group.has_empty {
-                return Err(PreviewError::Margin(group.path.clone()));
-            }
+        if let Some(group) = &pending_margin
+            && group.has_empty
+        {
+            return Err(PreviewError::Margin(group.path.clone()));
         }
 
         Ok(FlowResult {
@@ -779,15 +776,15 @@ fn append_ordered_bitmap_inline(
     let mut painted = vec![false; backgrounds.len()];
     let mut emit_background =
         |source: &SourcePath, line: usize, output: &mut Vec<PreviewCommand>| {
-            if let Some(&index) = indices.get(&(source.indices(), line)) {
-                if !painted[index] {
-                    let (_, _, rect, color) = &backgrounds[index];
-                    output.push(PreviewCommand::InlineBackground {
-                        rect: *rect,
-                        color: *color,
-                    });
-                    painted[index] = true;
-                }
+            if let Some(&index) = indices.get(&(source.indices(), line))
+                && !painted[index]
+            {
+                let (_, _, rect, color) = &backgrounds[index];
+                output.push(PreviewCommand::InlineBackground {
+                    rect: *rect,
+                    color: *color,
+                });
+                painted[index] = true;
             }
         };
 

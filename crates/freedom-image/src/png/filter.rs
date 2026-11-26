@@ -35,13 +35,13 @@ fn validate_filter(
         return Err(PngFilterError::InvalidBytesPerPixel);
     }
 
-    if let Some(previous) = previous {
-        if previous.len() != row_len {
-            return Err(PngFilterError::PreviousRowLength {
-                expected: row_len,
-                actual: previous.len(),
-            });
-        }
+    if let Some(previous) = previous
+        && previous.len() != row_len
+    {
+        return Err(PngFilterError::PreviousRowLength {
+            expected: row_len,
+            actual: previous.len(),
+        });
     }
 
     Ok(())
@@ -283,11 +283,11 @@ mod tests {
 
             unfilter_row(filter, row, prev, 4).unwrap();
 
-            for (x, rgba) in row.chunks_exact(4).enumerate() {
+            for (x, rgba) in row.as_chunks::<4>().0.iter().enumerate() {
                 let color = surface.pixels()[y * width + x];
 
                 assert_eq!(
-                    rgba,
+                    *rgba,
                     [color.red, color.green, color.blue, color.alpha],
                     "pixel ({x}, {y})"
                 );

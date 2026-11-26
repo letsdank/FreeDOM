@@ -208,7 +208,7 @@ impl<'a> HeaderSegments<'a> {
                 // TEM is a standalone marker.
                 0x01 => continue,
 
-                0xd8 | 0xd0..=0xd7 => {
+                0xd0..=0xd8 => {
                     return Err(error(
                         marker_offset,
                         JpegErrorKind::UnexpectedMarker(marker),
@@ -327,7 +327,7 @@ pub fn read_frame_header(input: &[u8]) -> Result<JpegFrameHeader, JpegError> {
 
         let mut components = Vec::with_capacity(count);
 
-        for bytes in data[6..].chunks_exact(3) {
+        for bytes in data[6..].as_chunks::<3>().0 {
             let horizontal_sampling = bytes[1] >> 4;
             let vertical_sampling = bytes[1] & 15;
 

@@ -367,10 +367,11 @@ mod tests {
             Err(ProgressiveError::InvalidFrame)
         ));
 
-        let mut limits = ProgressiveLimits::default();
-
         // (8 + 2 + 2) blocks * 256 bytes = 3072 bytes.
-        limits.max_coefficient_bytes = 2559;
+        let mut limits = ProgressiveLimits {
+            max_coefficient_bytes: 2559,
+            ..ProgressiveLimits::default()
+        };
 
         assert!(matches!(
             ProgressiveState::new(&frame(), limits),

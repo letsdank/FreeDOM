@@ -229,7 +229,7 @@ impl Url {
         }
 
         let (without_fragment, fragment) = split_component(&reference, '#');
-        let (without_query, query) = split_component(&without_fragment, '?');
+        let (without_query, query) = split_component(without_fragment, '?');
 
         if has_scheme(without_query) && !is_windows_drive_letter(without_query) {
             let (scheme, after_scheme) = without_query
@@ -330,11 +330,7 @@ impl fmt::Display for Url {
                     write!(f, ":{port}")?;
                 }
 
-                if self.form == UrlForm::Special {
-                    write!(f, "{}", serialize_path_component(&self.path))?;
-                } else {
-                    write!(f, "{}", serialize_path_component(&self.path))?;
-                }
+                write!(f, "{}", serialize_path_component(&self.path))?;
             }
 
             UrlForm::Path => {

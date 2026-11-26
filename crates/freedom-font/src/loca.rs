@@ -74,13 +74,13 @@ impl GlyphLocations {
                 table_error(table_offset + position, "loca glyph offset overflows")
             })?;
 
-            if let Some(previous) = offsets.last() {
-                if offset < *previous {
-                    return Err(table_error(
-                        table_offset + position,
-                        "loca offsets are not monotonically increasing",
-                    ));
-                }
+            if let Some(previous) = offsets.last()
+                && offset < *previous
+            {
+                return Err(table_error(
+                    table_offset + position,
+                    "loca offsets are not monotonically increasing",
+                ));
             }
 
             offsets.push(offset);

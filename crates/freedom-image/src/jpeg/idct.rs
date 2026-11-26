@@ -223,7 +223,7 @@ mod tests {
             .as_ref()
             .unwrap();
 
-        let samples = idct_8bit(&dequantize(&block, &table).unwrap());
+        let samples = idct_8bit(&dequantize(&block, table).unwrap());
 
         assert_eq!(samples, [0; 64]);
     }

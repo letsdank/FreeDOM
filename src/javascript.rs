@@ -198,6 +198,13 @@ impl Error for JsError {}
 pub struct HostError {
     pub offset: Option<usize>,
     pub message: String,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "public host API that the browser does not call yet"
+        )
+    )]
     pub kind: JsErrorKind<HostValue>,
 }
 
@@ -432,7 +439,7 @@ impl HostRoots {
 
         let mut roots = self.roots.borrow_mut();
 
-        if roots.len() >= 64 && roots.len() % 64 == 0 {
+        if roots.len() >= 64 && roots.len().is_multiple_of(64) {
             roots.retain(|root| root.strong_count() > 0);
         }
 
@@ -521,10 +528,10 @@ impl HostRoots {
             return Err(heap::HeapAccessError::NotOrdinaryObject(id));
         };
         let value = object.properties.get(name).cloned();
-        if let Some(heap::HeapValue::Reference(reference)) = &value {
-            if heap.get(*reference).is_none() {
-                return Err(heap::HeapAccessError::InvalidReference(*reference));
-            }
+        if let Some(heap::HeapValue::Reference(reference)) = &value
+            && heap.get(*reference).is_none()
+        {
+            return Err(heap::HeapAccessError::InvalidReference(*reference));
         }
         Ok(value)
     }
@@ -548,10 +555,10 @@ impl HostRoots {
             }
             Some(heap::HeapObject::Object(_)) => {}
         }
-        if let heap::HeapValue::Reference(reference) = &value {
-            if heap.get(*reference).is_none() {
-                return Err(heap::HeapAccessError::InvalidReference(*reference));
-            }
+        if let heap::HeapValue::Reference(reference) = &value
+            && heap.get(*reference).is_none()
+        {
+            return Err(heap::HeapAccessError::InvalidReference(*reference));
         }
         let Some(heap::HeapObject::Object(object)) = heap.get_mut(id) else {
             unreachable!("validated ordinary object must still exist");
@@ -586,6 +593,13 @@ impl HostRoots {
 pub struct HostValue(Rc<HostRoot>);
 
 impl HostValue {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "public host API that the browser does not call yet"
+        )
+    )]
     pub fn as_boolean(&self) -> Option<bool> {
         match &self.0.value {
             Value::Boolean(value) => Some(*value),
@@ -607,10 +621,24 @@ impl HostValue {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "public host API that the browser does not call yet"
+        )
+    )]
     pub fn is_null(&self) -> bool {
         matches!(self.0.value, Value::Null)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "public host API that the browser does not call yet"
+        )
+    )]
     pub fn is_undefined(&self) -> bool {
         matches!(self.0.value, Value::Undefined)
     }
@@ -671,6 +699,13 @@ fn format_error(f: &mut fmt::Formatter<'_>, message: &str, offset: Option<usize>
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "public host API that the browser does not call yet"
+    )
+)]
 pub fn evaluate(source: &str) -> Result<HostValue, HostError> {
     let mut interpreter = Interpreter::new();
 
@@ -679,6 +714,13 @@ pub fn evaluate(source: &str) -> Result<HostValue, HostError> {
     interpreter.execute_host_script(&program)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "public host API that the browser does not call yet"
+    )
+)]
 pub fn evaluate_with_document(
     source: &str,
     document: &mut DocumentState,

@@ -931,12 +931,11 @@ fn parse_solid_border(value: &str) -> Option<BorderEdge> {
             if width.replace(value).is_some() {
                 return None;
             }
-        } else if let Some(value) = parse_color(component) {
+        } else {
+            let value = parse_color(component)?;
             if color.replace(value).is_some() {
                 return None;
             }
-        } else {
-            return None;
         }
     }
 
@@ -1166,7 +1165,7 @@ pub fn compute_style_with_ancestors(
     let parent_line_height = inherited_style.line_height;
     let parent_color = inherited_style.color;
     let parent_white_space = inherited_style.white_space;
-    let mut style = default_style(&element.tag, inherited_style);
+    let mut style = default_style(element.tag, inherited_style);
 
     let mut matching_rules: Vec<&CssRule> = rules
         .iter()
@@ -1319,10 +1318,7 @@ fn selector_matches_with_ancestors(
 }
 
 fn compound_matches(selector: &Selector, element: &Element<'_>) -> bool {
-    let tag_matches = selector
-        .tag
-        .as_ref()
-        .map_or(true, |tag| element.tag == *tag);
+    let tag_matches = selector.tag.as_ref().is_none_or(|tag| element.tag == *tag);
 
     let id_matches = selector
         .id

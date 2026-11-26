@@ -204,8 +204,10 @@ mod tests {
             player
                 .canvas()
                 .pixels()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 0, 255])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 255])
         );
 
         let first_end = player.next_deadline().unwrap();
@@ -228,8 +230,10 @@ mod tests {
             player
                 .canvas
                 .pixels()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 128, 255])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 128, 255])
         );
 
         let end = player.next_deadline().unwrap();
@@ -242,8 +246,10 @@ mod tests {
             player
                 .canvas
                 .pixels()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 128, 255])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 128, 255])
         );
     }
 
@@ -287,8 +293,10 @@ mod tests {
                 player
                     .canvas
                     .pixels()
-                    .chunks_exact(4)
-                    .all(|pixel| pixel == [0, 0, 0, 255])
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| *pixel == [0, 0, 0, 255])
             );
 
             player.advance(player.next_deadline().unwrap()).unwrap();

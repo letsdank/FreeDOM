@@ -585,7 +585,7 @@ fn decode_references(input: &str, attribute: bool) -> Result<String, &'static st
                         return Err("unsupported XML entity");
                     };
 
-                    if digits.is_empty() || !digits.chars().all(|ch| ch.to_digit(radix).is_some()) {
+                    if digits.is_empty() || !digits.chars().all(|ch| ch.is_digit(radix)) {
                         return Err("invalid XML character reference");
                     }
 

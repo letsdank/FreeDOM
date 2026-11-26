@@ -117,31 +117,30 @@ impl Interpreter {
                 let cleanup = interpreter.cleanups.pop().unwrap();
 
                 let result = interpreter.with_shadowed_bindings(cleanup.captured, |interpreter| {
-                    interpreter.call_function_value_with_receiver(
-                        &cleanup.callback,
-                        Vec::new(),
-                        None,
-                    ).map(Completion::Normal)
+                    interpreter
+                        .call_function_value_with_receiver(&cleanup.callback, Vec::new(), None)
+                        .map(Completion::Normal)
                 });
 
-                if let Err(error) = result {
-                    if first_error.is_none() {
-                        match &error.kind {
-                            JsErrorKind::Thrown(value) | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
-                                interpreter
-                                    .frame_values_mut(frame_index)
-                                    .push(value.clone());
-                            }
-
-                            JsErrorKind::NativeException(NativeException::Pending { .. })
-                            | JsErrorKind::Syntax
-                            | JsErrorKind::UnclassifiedRuntime
-                            | JsErrorKind::UnsupportedFeature
-                            | JsErrorKind::ResourceLimit => {}
+                if let Err(error) = result
+                    && first_error.is_none()
+                {
+                    match &error.kind {
+                        JsErrorKind::Thrown(value)
+                        | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
+                            interpreter
+                                .frame_values_mut(frame_index)
+                                .push(value.clone());
                         }
 
-                        first_error = Some(error);
+                        JsErrorKind::NativeException(NativeException::Pending { .. })
+                        | JsErrorKind::Syntax
+                        | JsErrorKind::UnclassifiedRuntime
+                        | JsErrorKind::UnsupportedFeature
+                        | JsErrorKind::ResourceLimit => {}
                     }
+
+                    first_error = Some(error);
                 }
             }
 

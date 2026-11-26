@@ -914,7 +914,8 @@ mod tests {
 
         assert_eq!(result, Value::Boolean(true));
 
-        for source in ["document.getElementById(1.5);"] {
+        {
+            let source = "document.getElementById(1.5);";
             let error = evaluate_with_document(source, &mut document).unwrap_err();
 
             assert_eq!(

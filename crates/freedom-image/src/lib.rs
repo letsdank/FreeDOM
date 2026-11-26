@@ -111,16 +111,16 @@ fn decode_png_impl(encoded: &[u8], animated_first_frame: bool) -> Result<Surface
         )
     };
 
-    if animated_first_frame && animation_control.is_some() {
-        if let Ok(mut player) = AnimationPlayer::new(encoded, AnimationLimits::default(), limits) {
-            if matches!(
-                player.advance(std::time::Duration::ZERO),
-                Ok(PlaybackUpdate::FrameChanged)
-            ) {
-                pixels = player.canvas().pixels().to_vec();
-                sixteen_bit = false;
-            }
-        }
+    if animated_first_frame
+        && animation_control.is_some()
+        && let Ok(mut player) = AnimationPlayer::new(encoded, AnimationLimits::default(), limits)
+        && matches!(
+            player.advance(std::time::Duration::ZERO),
+            Ok(PlaybackUpdate::FrameChanged)
+        )
+    {
+        pixels = player.canvas().pixels().to_vec();
+        sixteen_bit = false;
     }
 
     let display_p3 = matches!(

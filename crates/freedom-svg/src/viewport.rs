@@ -74,10 +74,11 @@ pub(super) fn parse_preserve_aspect_ratio(value: &str) -> Result<PreserveAspectR
     let alignment = alignment.to_ascii_lowercase();
 
     if alignment == "none" {
-        if let Some(mode) = tokens.next() {
-            if !mode.eq_ignore_ascii_case("meet") && !mode.eq_ignore_ascii_case("slice") {
-                return Err(SvgError::new("invalid preserveAspectRatio mode"));
-            }
+        if let Some(mode) = tokens.next()
+            && !mode.eq_ignore_ascii_case("meet")
+            && !mode.eq_ignore_ascii_case("slice")
+        {
+            return Err(SvgError::new("invalid preserveAspectRatio mode"));
         }
 
         if tokens.next().is_some() {
@@ -128,8 +129,8 @@ pub(super) fn view_box_transform(
         return Transform::scale(0.0, 0.0);
     }
 
-    let scale_x = width as f32 / view_box.width;
-    let scale_y = height as f32 / view_box.height;
+    let scale_x = width / view_box.width;
+    let scale_y = height / view_box.height;
 
     let (scale_x, scale_y, offset_x, offset_y) = match preserve_aspect_ratio {
         PreserveAspectRatio::None => (scale_x, scale_y, 0.0, 0.0),
@@ -144,8 +145,8 @@ pub(super) fn view_box_transform(
                 MeetOrSlice::Slice => scale_x.max(scale_y),
             };
 
-            let offset_x = alignment_offset(horizontal, width as f32 - view_box.width * scale);
-            let offset_y = alignment_offset(vertical, height as f32 - view_box.height * scale);
+            let offset_x = alignment_offset(horizontal, width - view_box.width * scale);
+            let offset_y = alignment_offset(vertical, height - view_box.height * scale);
 
             (scale, scale, offset_x, offset_y)
         }

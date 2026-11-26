@@ -319,56 +319,54 @@ fn tokenize(input: &str) -> Vec<Token> {
             }
         }
 
-        if remaining.starts_with("</") {
-            if let Some((name, next_cursor)) = parse_end_tag(input, cursor) {
-                tokens.push(Token::EndTag(name));
-                cursor = next_cursor;
-                continue;
-            }
+        if remaining.starts_with("</")
+            && let Some((name, next_cursor)) = parse_end_tag(input, cursor)
+        {
+            tokens.push(Token::EndTag(name));
+            cursor = next_cursor;
+            continue;
         }
 
-        if input.as_bytes()[cursor] == b'<' {
-            if let Some((token, next_cursor)) = parse_start_tag(input, cursor) {
-                let raw_text_mode = match &token {
-                    Token::StartTag {
-                        name,
-                        self_closing: false,
-                        ..
-                    } if matches!(name.as_str(), "script" | "style") => Some((name.clone(), false)),
+        if input.as_bytes()[cursor] == b'<'
+            && let Some((token, next_cursor)) = parse_start_tag(input, cursor)
+        {
+            let raw_text_node = match &token {
+                Token::StartTag {
+                    name,
+                    self_closing: false,
+                    ..
+                } if matches!(name.as_str(), "script" | "style") => Some((name.clone(), false)),
 
-                    Token::StartTag {
-                        name,
-                        self_closing: false,
-                        ..
-                    } if matches!(name.as_str(), "title" | "textarea") => {
-                        Some((name.clone(), true))
-                    }
+                Token::StartTag {
+                    name,
+                    self_closing: false,
+                    ..
+                } if matches!(name.as_str(), "title" | "textarea") => Some((name.clone(), true)),
 
-                    _ => None,
+                _ => None,
+            };
+
+            tokens.push(token);
+            cursor = next_cursor;
+
+            if let Some((tag_name, decode_references)) = raw_text_node {
+                let end = find_raw_text_end(input, cursor, &tag_name).unwrap_or(input.len());
+                let source = &input[cursor..end];
+
+                let text = if decode_references {
+                    decode_character_references(source)
+                } else {
+                    source.to_owned()
                 };
 
-                tokens.push(token);
-                cursor = next_cursor;
-
-                if let Some((tag_name, decode_references)) = raw_text_mode {
-                    let end = find_raw_text_end(input, cursor, &tag_name).unwrap_or(input.len());
-                    let source = &input[cursor..end];
-
-                    let text = if decode_references {
-                        decode_character_references(source)
-                    } else {
-                        source.to_owned()
-                    };
-
-                    if !text.is_empty() {
-                        tokens.push(Token::Text(text));
-                    }
-
-                    cursor = end;
+                if !text.is_empty() {
+                    tokens.push(Token::Text(text));
                 }
 
-                continue;
+                cursor = end;
             }
+
+            continue;
         }
 
         let next = input.as_bytes()[cursor + 1..]

@@ -1,5 +1,5 @@
 use super::block::IMPLICIT_BLOCK_LENGTH;
-use super::prefix_code::alphabet_bit_width;
+use super::prefix_code::{alphabet_bit_width, read_simple_prefix_code};
 use super::*;
 
 #[test]

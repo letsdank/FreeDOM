@@ -93,10 +93,10 @@ impl DocumentState {
             },
         );
 
-        if let Some(parent_node_id) = parent {
-            if let Some(parent) = self.elements_by_node_id.get_mut(&parent_node_id) {
-                parent.children.push(node_id);
-            }
+        if let Some(parent_node_id) = parent
+            && let Some(parent) = self.elements_by_node_id.get_mut(&parent_node_id)
+        {
+            parent.children.push(node_id);
         }
 
         if is_document_node && parent.is_none() {
@@ -122,12 +122,14 @@ impl DocumentState {
         node_id
     }
 
+    #[cfg(test)]
     pub fn register_element(&mut self, id: &str, tag_name: &str, text_content: String) {
         if !id.is_empty() {
             self.register_parsed_element(tag_name, id, text_content, None);
         }
     }
 
+    #[cfg(test)]
     pub fn register_body(&mut self, id: &str, text_content: String) {
         if self.body.is_none() {
             self.register_parsed_element("body", id, text_content, None);
@@ -731,14 +733,6 @@ impl DocumentState {
         true
     }
 
-    pub fn set_element_text_content(&mut self, id: &str, text_content: String) -> bool {
-        let Some(node_id) = self.get_element_by_id(id) else {
-            return false;
-        };
-
-        self.set_node_text_content(node_id, text_content)
-    }
-
     pub fn text_content_override(&self, id: &str) -> Option<&str> {
         let node_id = self.get_element_by_id(id)?;
         let element = self.element(node_id)?;
@@ -831,16 +825,16 @@ fn take_selector_identifier<'a>(input: &'a str, cursor: &mut usize) -> Result<&'
 }
 
 fn element_matches_selector(element: &ElementState, selector: &SimpleSelector) -> bool {
-    if let Some(tag_name) = &selector.tag_name {
-        if element.tag_name != *tag_name {
-            return false;
-        }
+    if let Some(tag_name) = &selector.tag_name
+        && element.tag_name != *tag_name
+    {
+        return false;
     }
 
-    if let Some(id) = &selector.id {
-        if element.id != *id {
-            return false;
-        }
+    if let Some(id) = &selector.id
+        && element.id != *id
+    {
+        return false;
     }
 
     let class_attribute = element

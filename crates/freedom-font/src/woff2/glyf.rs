@@ -445,7 +445,7 @@ fn write_loca_offset(
 ) -> Result<(), FontError> {
     match index_format {
         0 => {
-            if offset % 2 != 0 {
+            if !offset.is_multiple_of(2) {
                 return Err(error(offset, "short loca offset is not aligned"));
             }
 
@@ -540,7 +540,7 @@ pub(super) fn parse(data: &[u8]) -> Result<GlyfStreams<'_>, FontError> {
     }
 
     // The bbox bitmap is padded to a multiple of four bytes.
-    let bbox_bitmap_size = (usize::from(num_glyphs) + 31) / 32 * 4;
+    let bbox_bitmap_size = usize::from(num_glyphs).div_ceil(32) * 4;
 
     if sizes[5] < bbox_bitmap_size {
         return Err(error(28, "transformed glyf bbox stream is too short"));
@@ -560,7 +560,7 @@ pub(super) fn parse(data: &[u8]) -> Result<GlyfStreams<'_>, FontError> {
     let instructions = take(&reader, &mut cursor, sizes[6])?;
 
     let overlap_bitmap = if option_flags & 1 != 0 {
-        let size = (usize::from(num_glyphs) + 7) / 8;
+        let size = usize::from(num_glyphs).div_ceil(8);
 
         Some(take(&reader, &mut cursor, size)?)
     } else {
@@ -823,7 +823,10 @@ mod tests {
     fn errors_do_not_advance_outline_cursors() {
         let starting = OutlineCursors::default();
 
-        let cases: &[(&[u8], &[u8], &[u8], usize)] = &[
+        // Point, flag, and glyph streams, followed by the contour start.
+        type Case<'a> = (&'a [u8], &'a [u8], &'a [u8], usize);
+
+        let cases: &[Case<'_>] = &[
             // The second point requires three bytes but only one remains.
             (&[2], &[23, 123], &[0x12, 0], 1),
             // A contour cannot have zero points.
@@ -1245,14 +1248,16 @@ mod tests {
             let (glyf, loca) = table_fixture(format).reconstruct_tables(loca_size).unwrap();
 
             let offsets: Vec<usize> = if format == 0 {
-                loca.chunks_exact(2)
-                    .map(|bytes| usize::from(u16::from_be_bytes([bytes[0], bytes[1]])) * 2)
+                loca.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&bytes| usize::from(u16::from_be_bytes(bytes)) * 2)
                     .collect()
             } else {
-                loca.chunks_exact(4)
-                    .map(|bytes| {
-                        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
-                    })
+                loca.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&bytes| u32::from_be_bytes(bytes) as usize)
                     .collect()
             };
 

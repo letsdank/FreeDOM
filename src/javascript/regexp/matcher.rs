@@ -167,10 +167,10 @@ fn match_pattern(
                     }
 
                     Term::CharacterClass { class, negated } => {
-                        if let Some(&unit) = input.get(position) {
-                            if class_matches(*class, unit) != *negated {
-                                push_position(position + 1);
-                            }
+                        if let Some(&unit) = input.get(position)
+                            && class_matches(*class, unit) != *negated
+                        {
+                            push_position(position + 1);
                         }
                     }
 
@@ -317,6 +317,10 @@ fn match_pattern(
     Ok(matches)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "backtracking matcher state is passed explicitly"
+)]
 fn match_repeat(
     term: &Term,
     min: usize,
@@ -978,7 +982,10 @@ mod tests {
 
     #[test]
     fn records_captures_and_restores_them_during_backtracking() {
-        let cases: &[(&str, &str, &[Option<(usize, usize)>])] = &[
+        // Pattern, input, and expected capture spans.
+        type Case<'a> = (&'a str, &'a str, &'a [Option<(usize, usize)>]);
+
+        let cases: &[Case<'_>] = &[
             (
                 "(a|(ab))c",
                 "abc",
@@ -993,7 +1000,7 @@ mod tests {
         ];
 
         for &(pattern, input, expected) in cases {
-            let parsed = pattern::parse(&pattern).unwrap();
+            let parsed = pattern::parse(pattern).unwrap();
             let units: Vec<u16> = input.encode_utf16().collect();
             let flags = RegExpFlags::parse("").unwrap();
 

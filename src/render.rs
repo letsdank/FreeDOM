@@ -288,6 +288,10 @@ impl LinkRegion {
 }
 
 /// Paints an experimental preview, not a conforming CSS rendering.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 pub(crate) fn paint_preview_scene(
     pixels: &mut [u32],
     width: usize,
@@ -638,7 +642,10 @@ fn cache_visual_block<'cache>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 pub(crate) fn paint(
     pixels: &mut [u32],
     width: usize,
@@ -876,7 +883,10 @@ pub(crate) fn paint(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn draw_uncached_text_block(
     pixels: &mut [u32],
     width: usize,
@@ -1013,6 +1023,10 @@ fn blit_canvas(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn draw_positioned_text(
     pixels: &mut [u32],
     width: usize,
@@ -1059,6 +1073,10 @@ fn draw_positioned_text(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn draw_wrapped_text(
     pixels: &mut [u32],
     width: usize,
@@ -1171,7 +1189,10 @@ fn draw_wrapped_text(
     y.saturating_add(metrics.line_height)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn rasterize_vector_glyph(
     font: &TrueTypeFont<'_>,
     glyph_id: u16,
@@ -1262,7 +1283,10 @@ fn rasterize_vector_glyph(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn draw_vector_text_line(
     pixels: &mut [u32],
     width: usize,
@@ -1364,6 +1388,10 @@ fn raster_color(color: u32) -> RasterColor {
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn draw_text_line(
     pixels: &mut [u32],
     width: usize,
@@ -1380,6 +1408,10 @@ fn draw_text_line(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn draw_glyph(
     pixels: &mut [u32],
     width: usize,
@@ -1418,6 +1450,10 @@ fn draw_glyph(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn blit_opaque(
     source: &[u32],
     source_width: usize,
@@ -1466,6 +1502,10 @@ fn blit_opaque(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
+)]
 fn fill_rect(
     pixels: &mut [u32],
     width: usize,

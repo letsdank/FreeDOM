@@ -410,6 +410,10 @@ impl<'a> PathDataParser<'a> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "parameters mirror the SVG elliptical arc command"
+)]
 fn append_elliptical_arc(
     path: &mut Path,
     from: Point,
@@ -614,6 +618,10 @@ fn point_is_finite(point: Point) -> bool {
     point.x.is_finite() && point.y.is_finite()
 }
 
+fn reflect_control(control: Point, center: Point) -> Point {
+    Point::new(2.0 * center.x - control.x, 2.0 * center.y - control.y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,8 +789,4 @@ mod tests {
 
         assert_eq!(error.message, "expected arc flag 0 or 1");
     }
-}
-
-fn reflect_control(control: Point, center: Point) -> Point {
-    Point::new(2.0 * center.x - control.x, 2.0 * center.y - control.y)
 }

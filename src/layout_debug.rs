@@ -94,6 +94,7 @@ fn draw_outline_color(
 }
 
 /// Paints backgrounds only; this is not the page renderer.
+#[cfg(test)]
 pub(crate) fn paint_preview_backgrounds(
     pixels: &mut [u32],
     width: usize,

@@ -19,7 +19,7 @@ pub use self::bit_reader::BitReader;
 use self::compressed::decode_compressed_meta_block;
 use self::distance::DistanceHistory;
 pub use self::huffman::HuffmanTree;
-pub use self::prefix_code::{read_prefix_code, read_simple_prefix_code};
+pub use self::prefix_code::read_prefix_code;
 
 #[cfg(test)]
 use self::block::{BlockPartition, read_block_partition};

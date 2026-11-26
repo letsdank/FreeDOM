@@ -293,6 +293,10 @@ fn normalized_diagonal(width: f32, height: f32) -> f32 {
     ((width * width + height * height) * 0.5).sqrt()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "recursive traversal state is passed explicitly"
+)]
 fn collect_shapes(
     root: &HtmlElement,
     element: &HtmlElement,

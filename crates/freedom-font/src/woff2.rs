@@ -1081,7 +1081,7 @@ mod tests {
         );
         append_bits(&mut data, &mut bit_position, 1, 1);
 
-        while bit_position % 8 != 0 {
+        while !bit_position.is_multiple_of(8) {
             append_bits(&mut data, &mut bit_position, 0, 1);
         }
 
@@ -1091,7 +1091,7 @@ mod tests {
         append_bits(&mut data, &mut bit_position, 1, 1);
         append_bits(&mut data, &mut bit_position, 1, 1);
 
-        while bit_position % 8 != 0 {
+        while !bit_position.is_multiple_of(8) {
             append_bits(&mut data, &mut bit_position, 0, 1);
         }
 
@@ -1348,9 +1348,7 @@ mod tests {
         raw.extend_from_slice(&maxp);
         raw.extend_from_slice(&hhea);
 
-        let directory: Vec<u8>;
-
-        if transformed_glyf {
+        let directory: Vec<u8> = if transformed_glyf {
             let mut glyf = vec![0_u8; 36];
 
             write_u16(&mut glyf, 4, 2).unwrap();
@@ -1375,28 +1373,28 @@ mod tests {
             // Both bearing arrays are omitted.
             raw.extend_from_slice(&[3, 1, 244, 2, 88]);
 
-            directory = vec![
+            vec![
                 1, 54, // head
                 4, 6, // maxp
                 2, 36, // hhea
                 10, 20, 53, // transformed glyf
                 0x43, 8, 5, // transformed hmtx
                 11, 6, 0, // transformed loca
-            ];
+            ]
         } else {
             // Both glyphs are empty.
             raw.extend_from_slice(&[3, 1, 244, 2, 88]);
             raw.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
 
-            directory = vec![
+            vec![
                 1, 54, // head
                 4, 6, // maxp
                 2, 36, // hhea
                 0xca, 0, // untransformed empty glyf
                 0x43, 8, 5, // transformed hmtx
                 0xcb, 6, // untransformed loca
-            ];
-        }
+            ]
+        };
 
         minimal_woff2(6, &directory, &uncompressed_brotli(&raw))
     }

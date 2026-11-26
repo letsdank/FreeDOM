@@ -47,10 +47,11 @@ pub(crate) fn read_orientation(input: &[u8]) -> Orientation {
     };
 
     while let Ok(Some(segment)) = segments.next_segment() {
-        if segment.marker == 0xe1 && segment.data.starts_with(b"Exif\0\0") {
-            if let Some(orientation) = parse_tiff(&segment.data[6..]) {
-                return orientation;
-            }
+        if segment.marker == 0xe1
+            && segment.data.starts_with(b"Exif\0\0")
+            && let Some(orientation) = parse_tiff(&segment.data[6..])
+        {
+            return orientation;
         }
     }
 

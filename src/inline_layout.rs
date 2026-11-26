@@ -629,10 +629,9 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
                     || part.style.color != first.style.color
                     || part.link != first.link
             })
-        }) {
-            if let Some(measured) = self.measure_vector_word(word, fallback) {
-                return measured;
-            }
+        }) && let Some(measured) = self.measure_vector_word(word, fallback)
+        {
+            return measured;
         }
 
         measure_styled_word(word, |text, style| {
@@ -704,12 +703,13 @@ impl<'style, 'font> InlineFonts<'style, 'font> {
             let first_font = stack.get(first_index).map_or(font, |entry| &entry.font);
             let identity = first_font.glyph_cache_key();
 
-            if let Some((previous_font, left, previous_size)) = previous {
-                if previous_font == identity && previous_size == run.style.font_size.to_bits() {
-                    let scale = run.style.font_size / f32::from(first_font.head().units_per_em);
+            if let Some((previous_font, left, previous_size)) = previous
+                && previous_font == identity
+                && previous_size == run.style.font_size.to_bits()
+            {
+                let scale = run.style.font_size / f32::from(first_font.head().units_per_em);
 
-                    pen += f32::from(first_font.kerning(left, first_glyph)) * scale;
-                }
+                pen += f32::from(first_font.kerning(left, first_glyph)) * scale;
             }
 
             let (x, phase) = split_subpixel_position(pen)?;
@@ -919,6 +919,10 @@ pub(crate) fn split_styled_words<'a>(fragments: &[InlineTextFragment<'a>]) -> Ve
     words
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "updates the word builder state in place"
+)]
 fn push_word_part<'a>(
     words: &mut Vec<InlineWord<'a>>,
     in_word: &mut bool,

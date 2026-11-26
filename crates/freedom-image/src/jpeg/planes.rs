@@ -203,7 +203,10 @@ pub fn decode_baseline_planes(
     for mcu_y in 0..rows {
         for mcu_x in 0..columns {
             // Restart markers are between intervals, never after the final MCU.
-            if interval != 0 && completed_mcus != 0 && completed_mcus % usize::from(interval) == 0 {
+            if interval != 0
+                && completed_mcus != 0
+                && completed_mcus.is_multiple_of(usize::from(interval))
+            {
                 reader
                     .consume_restart_marker(0xd0 + next_restart)
                     .map_err(PlaneDecodeError::Entropy)?;
@@ -533,16 +536,20 @@ mod tests {
     fn rejects_limits_multiscan_and_bad_end() {
         let data = synthetic(true, None);
 
-        let mut limits = PlaneLimits::default();
-        limits.max_width = 16;
+        let limits = PlaneLimits {
+            max_width: 16,
+            ..PlaneLimits::default()
+        };
 
         assert!(matches!(
             decode_baseline_planes(&data, limits),
             Err(PlaneDecodeError::LimitExceeded)
         ));
 
-        let mut limits = PlaneLimits::default();
-        limits.max_samples = 1;
+        let limits = PlaneLimits {
+            max_samples: 1,
+            ..PlaneLimits::default()
+        };
 
         assert!(matches!(
             decode_baseline_planes(&data, limits),

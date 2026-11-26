@@ -218,13 +218,13 @@ fn independent_rgba(png: &[u8]) -> Vec<u8> {
         }
 
         png::ColorType::GrayscaleAlpha => {
-            for pixel in bytes.chunks_exact(2) {
+            for pixel in bytes.as_chunks::<2>().0.iter() {
                 output.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
             }
         }
 
         png::ColorType::Rgb => {
-            for pixel in bytes.chunks_exact(3) {
+            for pixel in bytes.as_chunks::<3>().0.iter() {
                 output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
             }
         }

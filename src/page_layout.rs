@@ -201,7 +201,7 @@ impl PageLayout {
                             weight,
                             font_style,
                             font,
-                            &font_stack,
+                            font_stack,
                         );
 
                         (text_width, height, None)
@@ -516,24 +516,24 @@ pub(crate) fn stack_word_width(
     weight: FontWeight,
     style: FontStyle,
 ) -> i32 {
-    if !stack.is_empty() && size > 0.0 {
-        if let Ok(advance) =
+    if !stack.is_empty()
+        && size > 0.0
+        && let Ok(advance) =
             crate::graphics::font::layout::visit_positioned_glyphs(stack, text, size, |_, _, _| {
                 Ok(())
             })
-        {
-            let extra = stack
-                .iter()
-                .map(|entry| {
-                    let (weight, style) = entry.synthesis;
+    {
+        let extra = stack
+            .iter()
+            .map(|entry| {
+                let (weight, style) = entry.synthesis;
 
-                    synthetic_bold_offset(size, weight)
-                        + synthetic_italic_overhang(&entry.font, size, style)
-                })
-                .fold(0.0_f32, f32::max);
+                synthetic_bold_offset(size, weight)
+                    + synthetic_italic_overhang(&entry.font, size, style)
+            })
+            .fold(0.0_f32, f32::max);
 
-            return (advance + extra).ceil().max(1.0) as i32;
-        }
+        return (advance + extra).ceil().max(1.0) as i32;
     }
 
     text_word_width(font, text, size, weight, style)

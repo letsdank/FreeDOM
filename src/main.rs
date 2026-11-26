@@ -15,7 +15,6 @@ mod styled_tree;
 #[cfg(test)]
 mod xml;
 
-#[allow(dead_code)]
 mod javascript;
 
 pub mod graphics;
@@ -482,19 +481,19 @@ impl App {
             profiling,
         );
 
-        if self.show_preview_backgrounds {
-            if let Some(preview) = &self.preview_layout {
-                render::paint_preview_scene(
-                    &mut buffer,
-                    width as usize,
-                    height as usize,
-                    &self.page,
-                    preview,
-                    self.vector_font_data.as_deref(),
-                    self.scroll_y,
-                    &mut self.glyph_raster_cache,
-                );
-            }
+        if self.show_preview_backgrounds
+            && let Some(preview) = &self.preview_layout
+        {
+            render::paint_preview_scene(
+                &mut buffer,
+                width as usize,
+                height as usize,
+                &self.page,
+                preview,
+                self.vector_font_data.as_deref(),
+                self.scroll_y,
+                &mut self.glyph_raster_cache,
+            );
         }
 
         if self.show_layout_boxes {
@@ -507,16 +506,16 @@ impl App {
             );
         }
 
-        if self.show_layout_preview {
-            if let Some(preview) = &self.preview_layout {
-                layout_debug::paint_preview_overlay(
-                    &mut buffer,
-                    width as usize,
-                    height as usize,
-                    preview,
-                    self.scroll_y,
-                );
-            }
+        if self.show_layout_preview
+            && let Some(preview) = &self.preview_layout
+        {
+            layout_debug::paint_preview_overlay(
+                &mut buffer,
+                width as usize,
+                height as usize,
+                preview,
+                self.scroll_y,
+            );
         }
 
         let paint_duration = paint_started.map(|started| started.elapsed());

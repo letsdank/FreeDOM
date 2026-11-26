@@ -52,13 +52,13 @@ pub(super) fn reconstruct(
     let reader = FontReader::new(data, 0);
     let mut output = Vec::with_capacity(expected_original);
 
-    for index in 0..metrics {
+    for (index, &x_min) in x_mins[..metrics].iter().enumerate() {
         let advance = reader.u16(advance_start + index * 2)?;
 
         let lsb = if flags & 1 == 0 {
             reader.i16(proportional_start + index * 2)?
         } else {
-            x_mins[index]
+            x_min
         };
 
         output.extend_from_slice(&advance.to_be_bytes());

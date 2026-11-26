@@ -299,8 +299,10 @@ mod tests {
             decode_progressive_planes(&input[..input.len() - 2], PlaneLimits::default()).is_err()
         );
 
-        let mut limits = PlaneLimits::default();
-        limits.max_samples = 1;
+        let limits = PlaneLimits {
+            max_samples: 1,
+            ..PlaneLimits::default()
+        };
 
         assert!(matches!(
             decode_progressive_planes(input, limits),

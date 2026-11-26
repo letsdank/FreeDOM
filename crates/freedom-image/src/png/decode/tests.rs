@@ -325,7 +325,9 @@ fn decodes_rgb8_for_all_filters_and_single_pixel_rows() {
             .collect();
 
         let expected: Vec<u8> = pixels
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
             .collect();
 
@@ -662,7 +664,12 @@ fn ignores_unknown_ancillary_chunks_in_wpt_images() {
         .expect("failed to decode WPT reference PNG");
 
     assert!(
-        expected.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0),
+        expected
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] != 0),
         "WPT reference PNG must contain visible pixels"
     );
 
@@ -840,8 +847,10 @@ fn reads_actl_from_wpt_apng_default_image() {
     assert!(
         image8
             .pixels
-            .chunks_exact(4)
-            .all(|pixel| pixel == [255, 0, 0, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [255, 0, 0, 255])
     );
 }
 

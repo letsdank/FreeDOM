@@ -68,12 +68,12 @@ impl Interpreter {
             ));
         }
 
-        if let Value::Array(array) = &receiver {
-            if array.borrow().properties.get("constructor").is_some() {
-                return Err(JsError::unsupported(
-                    "Array.prototype.slice species constructors are not implemented",
-                ));
-            }
+        if let Value::Array(array) = &receiver
+            && array.borrow().properties.get("constructor").is_some()
+        {
+            return Err(JsError::unsupported(
+                "Array.prototype.slice species constructors are not implemented",
+            ));
         }
 
         let mut slots = Vec::with_capacity(count);

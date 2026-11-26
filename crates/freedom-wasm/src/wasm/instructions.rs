@@ -160,7 +160,7 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
         let kind = match reader.read_byte()? {
             0x00 => InstructionKind::Unreachable,
             0x01 => InstructionKind::Nop,
-            opcode @ (0x02 | 0x03 | 0x04) => {
+            opcode @ (0x02..=0x04) => {
                 let type_offset = reader.offset();
                 let returns_i32 = match reader.read_byte()? {
                     0x40 => false,
@@ -230,10 +230,10 @@ pub(crate) fn decode_expression(body: &FunctionBody<'_>) -> Result<Expression, B
                     }
                     _ => unreachable!("control stack contains only opening instructions"),
                 }
-                if let Some(index) = else_index {
-                    if let InstructionKind::Else { end_target } = &mut instructions[index].kind {
-                        *end_target = target;
-                    }
+                if let Some(index) = else_index
+                    && let InstructionKind::Else { end_target } = &mut instructions[index].kind
+                {
+                    *end_target = target;
                 }
                 InstructionKind::End
             }

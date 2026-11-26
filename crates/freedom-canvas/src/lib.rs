@@ -498,7 +498,7 @@ fn valid_size(width: usize, height: usize) -> bool {
 ///
 /// <https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-non-negative-integers>
 pub fn parse_canvas_dimension(input: &str) -> Option<usize> {
-    let input = input.trim_start_matches(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'));
+    let input = input.trim_start_matches([' ', '\t', '\n', '\r', '\x0c']);
 
     let (negative, digits) = if let Some(rest) = input.strip_prefix('-') {
         (true, rest)

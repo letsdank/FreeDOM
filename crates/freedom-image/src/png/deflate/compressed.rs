@@ -191,7 +191,7 @@ mod tests {
 
         fn write_bits(output: &mut Vec<u8>, position: &mut usize, value: usize, count: usize) {
             for i in 0..count {
-                if *position % 8 == 0 {
+                if position.is_multiple_of(8) {
                     output.push(0);
                 }
 
