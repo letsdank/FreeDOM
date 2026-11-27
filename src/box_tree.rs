@@ -420,8 +420,8 @@ mod tests {
     use super::*;
 
     use freedom_css::build_author_rules;
+    use freedom_dom::DocumentState;
     use freedom_html::Document;
-    use freedom_js::DocumentState;
 
     fn make_styled(input: &str) -> StyledTree {
         let html = Document::parse(input);

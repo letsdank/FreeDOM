@@ -22,13 +22,14 @@ partial, and the browser is not intended for everyday use.
 | `crates/freedom-svg`           | SVG parsing and rendering                                                                                             |
 | `crates/freedom-canvas`        | Canvas 2D drawing core                                                                                                |
 | `crates/freedom-fetch`         | HTTP resource fetching                                                                                                |
+| `crates/freedom-dom`           | Document model that scripts read and mutate: elements, attributes, tree edits, and simple selectors                   |
 | `crates/freedom-js`            | JavaScript lexer, parser, interpreter, and RegExp engine, together with the DOM and Canvas bindings scripts use today |
 | `crates/freedom-wasm`          | WebAssembly decoding and execution (not yet integrated into the browser)                                              |
 | `testdata/`                    | Test fixtures (see [Test fixtures](#test-fixtures))                                                                   |
 | `tools/`                       | Scripts that run the local WPT tests and summarize the results                                                        |
 
-The JavaScript engine has its own crate but still contains its DOM and Canvas host bindings; separating them behind a
-host interface is the next step.
+The document model in `freedom-dom` does not depend on the JavaScript engine. The engine still contains the DOM and
+Canvas bindings that expose it to scripts; moving them behind a host interface is the next step.
 
 ## Building and running
 

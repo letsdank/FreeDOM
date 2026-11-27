@@ -162,7 +162,7 @@ impl Interpreter {
                         && self
                             .current_document_element(node_id)
                             .is_some_and(|element| {
-                                element.tag_name.eq_ignore_ascii_case("canvas")
+                                element.tag_name().eq_ignore_ascii_case("canvas")
                             }) =>
                 {
                     self.set_canvas_dimension(node_id, &property, value)

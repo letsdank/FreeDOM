@@ -14,8 +14,9 @@ use freedom_css::{
     CssRule, Display, Element as CssElement, FontFaceRule, FontStyle, FontWeight, TextStyle,
     build_author_rules, compute_style_with_ancestors, parse_font_faces,
 };
+use freedom_dom::DocumentState;
 use freedom_html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode};
-use freedom_js::{DocumentScriptSession, DocumentState, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES};
+use freedom_js::{DocumentScriptSession, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES};
 use freedom_url::Url;
 
 pub(crate) enum BlockContent {

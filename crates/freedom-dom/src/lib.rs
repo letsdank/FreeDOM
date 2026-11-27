@@ -1,17 +1,27 @@
-use std::collections::HashMap;
+//! FreeDOM's document model: the element tree that scripts read and mutate.
+//!
+//! This is a deliberately small subset of the [DOM Standard]
+//! (<https://dom.spec.whatwg.org/>): elements, attributes, text content,
+//! child insertion and removal, `innerHTML`/`outerHTML` replacement through
+//! the HTML parser, and simple selectors (type, `#id`, `.class` and the
+//! descendant combinator). Text nodes, comments, events, namespaces and most
+//! node types are not modelled yet.
+//!
+//! The crate does not depend on the JavaScript engine; `freedom-js` exposes
+//! this model to scripts.
+
+use std::{collections::HashMap, error::Error, fmt};
 
 use freedom_html::{Document as HtmlDocument, Node as HtmlNode};
 
-use super::JsError;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AttributeState {
+pub struct AttributeState {
     pub(crate) name: String,
     pub(crate) value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementState {
+pub struct ElementState {
     pub(crate) node_id: u64,
     pub(crate) id: String,
     pub(crate) tag_name: String,
@@ -22,6 +32,58 @@ pub(crate) struct ElementState {
     pub(crate) children: Vec<u64>,
     pub(crate) connected: bool,
 }
+
+impl AttributeState {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+impl ElementState {
+    pub fn node_id(&self) -> u64 {
+        self.node_id
+    }
+
+    /// The `id` attribute value, or an empty string.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The lowercase local name used for matching and for `tagName`.
+    pub fn tag_name(&self) -> &str {
+        &self.tag_name
+    }
+
+    pub fn text_content(&self) -> &str {
+        &self.text_content
+    }
+
+    /// Whether a script replaced the parsed text content.
+    pub fn text_content_was_set(&self) -> bool {
+        self.text_content_was_set
+    }
+
+    pub fn attributes(&self) -> &[AttributeState] {
+        &self.attributes
+    }
+
+    pub fn parent(&self) -> Option<u64> {
+        self.parent
+    }
+
+    pub fn children(&self) -> &[u64] {
+        &self.children
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DocumentState {
     pub title: String,
@@ -122,14 +184,14 @@ impl DocumentState {
         node_id
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn register_element(&mut self, id: &str, tag_name: &str, text_content: String) {
         if !id.is_empty() {
             self.register_parsed_element(tag_name, id, text_content, None);
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn register_body(&mut self, id: &str, text_content: String) {
         if self.body.is_none() {
             self.register_parsed_element("body", id, text_content, None);
@@ -140,11 +202,14 @@ impl DocumentState {
         self.set_node_attribute(node_id, name, value);
     }
 
-    pub(crate) fn create_element(&mut self, tag_name: &str) -> u64 {
+    /// Creates a disconnected element with no parent.
+    /// <https://dom.spec.whatwg.org/#dom-document-createelement>
+    pub fn create_element(&mut self, tag_name: &str) -> u64 {
         self.insert_element("", tag_name, String::new(), None, false, false)
     }
 
-    pub(crate) fn body_node(&self) -> Option<u64> {
+    /// Returns the parsed `body` element, if any.
+    pub fn body_node(&self) -> Option<u64> {
         self.body
     }
 
@@ -183,7 +248,10 @@ impl DocumentState {
         None
     }
 
-    pub(crate) fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<u64> {
+    /// Returns connected elements in tree order whose lowercase name matches,
+    /// or all connected elements for `*`.
+    /// <https://dom.spec.whatwg.org/#concept-getelementsbytagname>
+    pub fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<u64> {
         let tag_name = tag_name.to_ascii_lowercase();
         let mut result = Vec::new();
 
@@ -194,9 +262,11 @@ impl DocumentState {
         result
     }
 
-    // The DOM does not currently track namespaces; `name` matching assumes HTML elements.
-    // https://dom.spec.whatwg.org/#dom-htmlcollectioon-nameditem
-    pub(crate) fn collection_named_element(&self, nodes: &[u64], name: &str) -> Option<u64> {
+    /// Returns the first of `nodes` whose ID or `name` attribute equals `name`.
+    ///
+    /// Namespaces are not tracked, so `name` matching assumes HTML elements.
+    /// <https://dom.spec.whatwg.org/#dom-htmlcollection-nameditem>
+    pub fn collection_named_element(&self, nodes: &[u64], name: &str) -> Option<u64> {
         if name.is_empty() {
             return None;
         }
@@ -235,7 +305,8 @@ impl DocumentState {
         }
     }
 
-    pub(crate) fn element(&self, node_id: u64) -> Option<&ElementState> {
+    /// Returns the element with this node ID, connected or not.
+    pub fn element(&self, node_id: u64) -> Option<&ElementState> {
         self.elements_by_node_id.get(&node_id)
     }
 
@@ -268,7 +339,10 @@ impl DocumentState {
         }
     }
 
-    pub(crate) fn set_node_text_content(&mut self, node_id: u64, text_content: String) -> bool {
+    /// Replaces an element's text and records that a script set it.
+    /// Returns `false` for an unknown node. Unlike the DOM `textContent` setter,
+    /// child elements are kept.
+    pub fn set_node_text_content(&mut self, node_id: u64, text_content: String) -> bool {
         let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
             return false;
         };
@@ -278,7 +352,10 @@ impl DocumentState {
         true
     }
 
-    pub(crate) fn set_node_attribute(&mut self, node_id: u64, name: &str, value: String) -> bool {
+    /// Sets an attribute, lowercasing its name; `id` also updates the element ID.
+    /// Returns `false` for an unknown node.
+    /// <https://dom.spec.whatwg.org/#dom-element-setattribute>
+    pub fn set_node_attribute(&mut self, node_id: u64, name: &str, value: String) -> bool {
         let name = name.to_ascii_lowercase();
         let is_id = name == "id";
 
@@ -306,7 +383,9 @@ impl DocumentState {
         true
     }
 
-    pub(crate) fn remove_node_attribute(&mut self, node_id: u64, name: &str) -> bool {
+    /// Removes an attribute by lowercased name. Returns `false` for an unknown node.
+    /// <https://dom.spec.whatwg.org/#dom-element-removeattribute>
+    pub fn remove_node_attribute(&mut self, node_id: u64, name: &str) -> bool {
         let name = name.to_ascii_lowercase();
 
         let Some(element) = self.elements_by_node_id.get_mut(&node_id) else {
@@ -324,11 +403,18 @@ impl DocumentState {
         true
     }
 
-    pub(crate) fn append_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
+    /// Moves `child_node_id` to the end of the parent's children.
+    /// Returns `false` when either node is unknown or both are the same node.
+    /// Ancestor cycles are not rejected yet.
+    /// <https://dom.spec.whatwg.org/#dom-node-appendchild>
+    pub fn append_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
         self.insert_child(parent_node_id, child_node_id, None)
     }
 
-    pub(crate) fn insert_before(
+    /// Moves `child_node_id` before `reference_node_id` among the parent's children.
+    /// Returns `false` when a node is unknown or the reference is not a child.
+    /// <https://dom.spec.whatwg.org/#dom-node-insertbefore>
+    pub fn insert_before(
         &mut self,
         parent_node_id: u64,
         child_node_id: u64,
@@ -401,7 +487,10 @@ impl DocumentState {
         true
     }
 
-    pub(crate) fn remove_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
+    /// Detaches `child_node_id` from its parent and disconnects its subtree.
+    /// Returns `false` when the child does not belong to that parent.
+    /// <https://dom.spec.whatwg.org/#dom-node-removechild>
+    pub fn remove_child(&mut self, parent_node_id: u64, child_node_id: u64) -> bool {
         let Some(child) = self.elements_by_node_id.get(&child_node_id) else {
             return false;
         };
@@ -427,7 +516,10 @@ impl DocumentState {
         true
     }
 
-    pub(crate) fn set_node_inner_html(&mut self, node_id: u64, html: &str) -> bool {
+    /// Replaces an element's children with elements parsed from `html`.
+    /// Returns `false` for an unknown node.
+    /// <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml>
+    pub fn set_node_inner_html(&mut self, node_id: u64, html: &str) -> bool {
         let fragment = HtmlDocument::parse(html);
         let fragment_text = fragment.text_content();
 
@@ -457,7 +549,10 @@ impl DocumentState {
         true
     }
 
-    pub(crate) fn set_node_outer_html(&mut self, node_id: u64, html: &str) -> bool {
+    /// Replaces an element with elements parsed from `html` at the same position.
+    /// Returns `false` for an unknown node or an inconsistent parent.
+    /// <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-outerhtml>
+    pub fn set_node_outer_html(&mut self, node_id: u64, html: &str) -> bool {
         let fragment = HtmlDocument::parse(html);
 
         let Some(element) = self.elements_by_node_id.get(&node_id) else {
@@ -575,7 +670,8 @@ impl DocumentState {
         Some(node_id)
     }
 
-    pub(crate) fn previous_element_sibling(&self, node_id: u64) -> Option<u64> {
+    /// <https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-previouselementsibling>
+    pub fn previous_element_sibling(&self, node_id: u64) -> Option<u64> {
         let parent_node_id = self.element(node_id)?.parent?;
         let siblings = &self.element(parent_node_id)?.children;
         let index = siblings.iter().position(|child| *child == node_id)?;
@@ -586,7 +682,8 @@ impl DocumentState {
             .copied()
     }
 
-    pub(crate) fn next_element_sibling(&self, node_id: u64) -> Option<u64> {
+    /// <https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-nextelementsibling>
+    pub fn next_element_sibling(&self, node_id: u64) -> Option<u64> {
         let parent_node_id = self.element(node_id)?.parent?;
         let siblings = &self.element(parent_node_id)?.children;
         let index = siblings.iter().position(|child| *child == node_id)?;
@@ -594,7 +691,9 @@ impl DocumentState {
         siblings.get(index + 1).copied()
     }
 
-    pub(crate) fn query_selector(&self, selector: &[SimpleSelector]) -> Option<u64> {
+    /// Returns the first element in the document matching `selector`.
+    /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselector>
+    pub fn query_selector(&self, selector: &[SimpleSelector]) -> Option<u64> {
         for node_id in &self.root_nodes {
             if let Some(found) = self.find_matching_element(*node_id, selector) {
                 return Some(found);
@@ -604,11 +703,8 @@ impl DocumentState {
         None
     }
 
-    pub(crate) fn query_selector_within(
-        &self,
-        node_id: u64,
-        selector: &[SimpleSelector],
-    ) -> Option<u64> {
+    /// Returns the first descendant of a connected element matching `selector`.
+    pub fn query_selector_within(&self, node_id: u64, selector: &[SimpleSelector]) -> Option<u64> {
         let element = self.element(node_id)?;
 
         if !element.connected {
@@ -624,7 +720,9 @@ impl DocumentState {
         None
     }
 
-    pub(crate) fn query_selector_all(&self, selector: &[SimpleSelector]) -> Vec<u64> {
+    /// Returns all elements in the document matching `selector`, in tree order.
+    /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselectorall>
+    pub fn query_selector_all(&self, selector: &[SimpleSelector]) -> Vec<u64> {
         let mut result = Vec::new();
 
         for node_id in &self.root_nodes {
@@ -634,11 +732,8 @@ impl DocumentState {
         result
     }
 
-    pub(crate) fn query_selector_all_within(
-        &self,
-        node_id: u64,
-        selector: &[SimpleSelector],
-    ) -> Vec<u64> {
+    /// Returns all descendants of an element matching `selector`, in tree order.
+    pub fn query_selector_all_within(&self, node_id: u64, selector: &[SimpleSelector]) -> Vec<u64> {
         let Some(element) = self.element(node_id) else {
             return Vec::new();
         };
@@ -752,24 +847,40 @@ impl DocumentState {
     }
 }
 
-pub(crate) fn parse_simple_selector(input: &str) -> Result<Vec<SimpleSelector>, JsError> {
+/// A selector string outside the supported subset.
+///
+/// Script bindings report it as a `SyntaxError`, as required for
+/// <https://dom.spec.whatwg.org/#scope-match-a-selectors-string>.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectorError(&'static str);
+
+impl fmt::Display for SelectorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl Error for SelectorError {}
+
+/// Parses compound selectors separated by descendant combinators.
+pub fn parse_simple_selector(input: &str) -> Result<Vec<SimpleSelector>, SelectorError> {
     let selectors = input
         .split_ascii_whitespace()
         .map(parse_compound_selector)
         .collect::<Result<Vec<_>, _>>()?;
 
     if selectors.is_empty() {
-        return Err(JsError::runtime("SyntaxError: selector must not be empty"));
+        return Err(SelectorError("selector must not be empty"));
     }
 
     Ok(selectors)
 }
 
-fn parse_compound_selector(input: &str) -> Result<SimpleSelector, JsError> {
+fn parse_compound_selector(input: &str) -> Result<SimpleSelector, SelectorError> {
     let bytes = input.as_bytes();
 
     if bytes.is_empty() {
-        return Err(JsError::runtime("SyntaxError: unsupported selector"));
+        return Err(SelectorError("unsupported selector"));
     }
 
     let mut cursor = 0;
@@ -790,7 +901,7 @@ fn parse_compound_selector(input: &str) -> Result<SimpleSelector, JsError> {
         let marker = bytes[cursor];
 
         if marker != b'#' && marker != b'.' {
-            return Err(JsError::runtime("SyntaxError: unsupported selector"));
+            return Err(SelectorError("unsupported selector"));
         }
 
         cursor += 1;
@@ -799,18 +910,21 @@ fn parse_compound_selector(input: &str) -> Result<SimpleSelector, JsError> {
         match marker {
             b'#' if selector.id.is_none() => selector.id = Some(name.to_owned()),
             b'.' => selector.classes.push(name.to_owned()),
-            _ => return Err(JsError::runtime("SyntaxError: unsupported selector")),
+            _ => return Err(SelectorError("unsupported selector")),
         }
     }
 
     if selector.tag_name.is_none() && selector.id.is_none() && selector.classes.is_empty() {
-        return Err(JsError::runtime("SyntaxError: unsupported selector"));
+        return Err(SelectorError("unsupported selector"));
     }
 
     Ok(selector)
 }
 
-fn take_selector_identifier<'a>(input: &'a str, cursor: &mut usize) -> Result<&'a str, JsError> {
+fn take_selector_identifier<'a>(
+    input: &'a str,
+    cursor: &mut usize,
+) -> Result<&'a str, SelectorError> {
     let start = *cursor;
     let bytes = input.as_bytes();
 
@@ -825,7 +939,7 @@ fn take_selector_identifier<'a>(input: &'a str, cursor: &mut usize) -> Result<&'
     }
 
     if start == *cursor {
-        return Err(JsError::runtime("SyntaxError: unsupported selector"));
+        return Err(SelectorError("unsupported selector"));
     }
 
     Ok(&input[start..*cursor])
@@ -873,9 +987,13 @@ fn html_node_text_content(node: &HtmlNode) -> String {
     }
 }
 
+/// One compound selector: an optional type, an optional ID and classes.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SimpleSelector {
+pub struct SimpleSelector {
     tag_name: Option<String>,
     id: Option<String>,
     classes: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests;

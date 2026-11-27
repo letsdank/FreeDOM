@@ -1,11 +1,13 @@
-use crate::{
-    DocumentState, JsError, Value,
-    dom::{ElementState, parse_simple_selector},
-    value::DocumentStorage,
-};
+use crate::{DocumentState, JsError, Value, value::DocumentStorage};
+use freedom_dom::{ElementState, SimpleSelector, parse_simple_selector};
 use std::cell::{Ref, RefMut};
 
 use super::Interpreter;
+
+/// Parses a selectors string, reporting unsupported syntax as a `SyntaxError`.
+fn parse_selector(source: &str) -> Result<Vec<SimpleSelector>, JsError> {
+    parse_simple_selector(source).map_err(|error| JsError::runtime(format!("SyntaxError: {error}")))
+}
 
 impl Interpreter {
     pub(super) fn current_document(&self) -> Option<Ref<'_, DocumentState>> {
@@ -138,7 +140,7 @@ impl Interpreter {
             ));
         }
 
-        let selector = parse_simple_selector(&arguments[0].to_js_string(&self.host_roots))?;
+        let selector = parse_selector(&arguments[0].to_js_string(&self.host_roots))?;
 
         Ok(self
             .current_document()
@@ -158,7 +160,7 @@ impl Interpreter {
             ));
         }
 
-        let selector = parse_simple_selector(&arguments[0].to_js_string(&self.host_roots))?;
+        let selector = parse_selector(&arguments[0].to_js_string(&self.host_roots))?;
 
         Ok(self
             .current_document()
@@ -174,7 +176,7 @@ impl Interpreter {
             ));
         }
 
-        let selector = parse_simple_selector(&arguments[0].to_js_string(&self.host_roots))?;
+        let selector = parse_selector(&arguments[0].to_js_string(&self.host_roots))?;
 
         let nodes = self
             .current_document()
@@ -195,7 +197,7 @@ impl Interpreter {
             ));
         }
 
-        let selector = parse_simple_selector(&arguments[0].to_js_string(&self.host_roots))?;
+        let selector = parse_selector(&arguments[0].to_js_string(&self.host_roots))?;
 
         let nodes = self
             .current_document()
@@ -213,12 +215,12 @@ impl Interpreter {
         };
 
         Ok(element
-            .attributes
+            .attributes()
             .iter()
-            .find(|attribute| attribute.name == "class")
+            .find(|attribute| attribute.name() == "class")
             .map(|attribute| {
                 attribute
-                    .value
+                    .value()
                     .split_ascii_whitespace()
                     .map(str::to_owned)
                     .collect()
@@ -388,10 +390,10 @@ impl Interpreter {
         };
 
         Ok(element
-            .attributes
+            .attributes()
             .iter()
-            .find(|attribute| attribute.name == name)
-            .map(|attribute| Value::String(attribute.value.clone()))
+            .find(|attribute| attribute.name() == name)
+            .map(|attribute| Value::String(attribute.value().to_owned()))
             .unwrap_or(Value::Null))
     }
 
@@ -443,9 +445,9 @@ impl Interpreter {
             .current_document_element(node_id)
             .is_some_and(|element| {
                 element
-                    .attributes
+                    .attributes()
                     .iter()
-                    .any(|attribute| attribute.name == name)
+                    .any(|attribute| attribute.name() == name)
             });
 
         if self
@@ -580,7 +582,7 @@ impl Interpreter {
 
             Value::ElementChildren(node_id) => document
                 .element(*node_id)
-                .map(|element| element.children.clone())
+                .map(|element| element.children().to_vec())
                 .unwrap_or_default(),
 
             _ => unreachable!(),

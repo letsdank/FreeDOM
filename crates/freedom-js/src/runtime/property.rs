@@ -201,44 +201,44 @@ impl Interpreter {
                 };
 
                 match property {
-                    "getContext" if element.tag_name.eq_ignore_ascii_case("canvas") => {
+                    "getContext" if element.tag_name().eq_ignore_ascii_case("canvas") => {
                         Ok(Value::ElementMethod(ElementMethod::GetContext(node_id)))
                     }
 
-                    "width" | "height" if element.tag_name.eq_ignore_ascii_case("canvas") => {
+                    "width" | "height" if element.tag_name().eq_ignore_ascii_case("canvas") => {
                         let default = if property == "width" { 300 } else { 150 };
 
                         let dimension = element
-                            .attributes
+                            .attributes()
                             .iter()
-                            .find(|attribute| attribute.name == property)
+                            .find(|attribute| attribute.name() == property)
                             .and_then(|attribute| {
-                                freedom_canvas::parse_canvas_dimension(&attribute.value)
+                                freedom_canvas::parse_canvas_dimension(attribute.value())
                             })
                             .unwrap_or(default);
 
                         Ok(Value::Number(dimension as f64))
                     }
 
-                    "id" => Ok(Value::String(element.id.clone())),
+                    "id" => Ok(Value::String(element.id().to_owned())),
 
-                    "tagName" => Ok(Value::String(element.tag_name.to_ascii_uppercase())),
+                    "tagName" => Ok(Value::String(element.tag_name().to_ascii_uppercase())),
 
-                    "textContent" => Ok(Value::String(element.text_content.clone())),
+                    "textContent" => Ok(Value::String(element.text_content().to_owned())),
 
                     "parentElement" | "parentNode" => {
-                        Ok(element.parent.map(Value::Element).unwrap_or(Value::Null))
+                        Ok(element.parent().map(Value::Element).unwrap_or(Value::Null))
                     }
 
                     "firstElementChild" => Ok(element
-                        .children
+                        .children()
                         .first()
                         .copied()
                         .map(Value::Element)
                         .unwrap_or(Value::Null)),
 
                     "lastElementChild" => Ok(element
-                        .children
+                        .children()
                         .last()
                         .copied()
                         .map(Value::Element)
@@ -246,9 +246,9 @@ impl Interpreter {
 
                     "children" => Ok(Value::ElementChildren(node_id)),
 
-                    "childElementCount" => Ok(Value::Number(element.children.len() as f64)),
+                    "childElementCount" => Ok(Value::Number(element.children().len() as f64)),
 
-                    "isConnected" => Ok(Value::Boolean(element.connected)),
+                    "isConnected" => Ok(Value::Boolean(element.is_connected())),
 
                     "previousElementSibling" => Ok(self
                         .current_document()
@@ -294,10 +294,10 @@ impl Interpreter {
 
                     "className" => Ok(Value::String(
                         element
-                            .attributes
+                            .attributes()
                             .iter()
-                            .find(|attribute| attribute.name == "class")
-                            .map(|attribute| attribute.value.clone())
+                            .find(|attribute| attribute.name() == "class")
+                            .map(|attribute| attribute.value().to_owned())
                             .unwrap_or_default(),
                     )),
 
@@ -317,16 +317,16 @@ impl Interpreter {
                 };
 
                 let Some(attribute) = element
-                    .attributes
+                    .attributes()
                     .iter()
-                    .find(|attribute| attribute.name == name)
+                    .find(|attribute| attribute.name() == name)
                 else {
                     return Err(JsError::runtime(
                         "TypeError: attribute is no longer available",
                     ));
                 };
 
-                Ok(Value::String(attribute.value.clone()))
+                Ok(Value::String(attribute.value().to_owned()))
             }
 
             (Value::ObjectConstructor, "keys") => {
@@ -511,11 +511,11 @@ impl Interpreter {
                 .current_document_element(node_id)
                 .and_then(|element| {
                     element
-                        .attributes
+                        .attributes()
                         .get(index)
                         .map(|attribute| Value::Attribute {
                             node_id,
-                            name: attribute.name.clone(),
+                            name: attribute.name().to_owned(),
                         })
                 })
                 .unwrap_or(Value::Undefined)),
@@ -533,7 +533,7 @@ impl Interpreter {
 
             Value::ElementChildren(node_id) => Ok(self
                 .current_document_element(node_id)
-                .and_then(|element| element.children.get(index).copied())
+                .and_then(|element| element.children().get(index).copied())
                 .map(Value::Element)
                 .unwrap_or(Value::Undefined)),
 

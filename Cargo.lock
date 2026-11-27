@@ -577,6 +577,7 @@ dependencies = [
  "font8x8",
  "freedom-canvas",
  "freedom-css",
+    "freedom-dom",
  "freedom-fetch",
  "freedom-font",
  "freedom-graphics-core",
@@ -599,6 +600,13 @@ dependencies = [
 [[package]]
 name = "freedom-css"
 version = "0.1.0"
+
+[[package]]
+name = "freedom-dom"
+version = "0.1.0"
+dependencies = [
+    "freedom-html",
+]
 
 [[package]]
 name = "freedom-fetch"
@@ -639,8 +647,8 @@ version = "0.1.0"
 dependencies = [
     "freedom-canvas",
     "freedom-css",
+    "freedom-dom",
     "freedom-graphics-core",
-    "freedom-html",
     "freedom-url",
 ]
 

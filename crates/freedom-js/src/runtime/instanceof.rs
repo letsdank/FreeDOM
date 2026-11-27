@@ -13,7 +13,7 @@ impl Interpreter {
             Value::ElementConstructor(tag) => match left {
                 Value::Element(node_id) => self
                     .current_document_element(node_id)
-                    .map(|element| element.tag_name == tag)
+                    .map(|element| element.tag_name() == tag)
                     .unwrap_or(false),
 
                 _ => false,

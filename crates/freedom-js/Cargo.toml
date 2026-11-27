@@ -13,6 +13,9 @@ workspace = true
 [dependencies]
 freedom-canvas.workspace = true
 freedom-css.workspace = true
+freedom-dom.workspace = true
 freedom-graphics-core.workspace = true
-freedom-html.workspace = true
 freedom-url.workspace = true
+
+[dev-dependencies]
+freedom-dom = { workspace = true, features = ["test-support"] }

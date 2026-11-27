@@ -1,10 +1,10 @@
 //! FreeDOM's JavaScript engine: lexer, parser, tree-walking interpreter and
 //! RegExp implementation.
 //!
-//! The crate still hosts the browser bindings that scripts need today: the
-//! script-visible document state ([`DocumentState`]), DOM and Canvas 2D
-//! objects, and a synthetic `testharness.js` probe. Separating those bindings
-//! from the engine behind a host interface is planned but not done yet.
+//! The crate still hosts the browser bindings that scripts need today: DOM
+//! objects over the `freedom-dom` document model, Canvas 2D objects, and a
+//! synthetic `testharness.js` probe. Separating those bindings from the engine
+//! behind a host interface is planned but not done yet.
 
 use std::{
     cell::{OnceCell, RefCell},
@@ -27,9 +27,7 @@ mod parser;
 
 use parser::parse_program;
 
-mod dom;
-
-pub use dom::DocumentState;
+use freedom_dom::DocumentState;
 
 mod runtime;
 

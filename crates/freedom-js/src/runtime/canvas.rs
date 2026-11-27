@@ -419,10 +419,10 @@ impl Interpreter {
         let Some((width, height)) = self.current_document_element(node_id).map(|element| {
             let attribute = |name: &str| {
                 element
-                    .attributes
+                    .attributes()
                     .iter()
-                    .find(|attribute| attribute.name == name)
-                    .and_then(|attribute| parse_canvas_dimension(&attribute.value))
+                    .find(|attribute| attribute.name() == name)
+                    .and_then(|attribute| parse_canvas_dimension(attribute.value()))
             };
 
             (

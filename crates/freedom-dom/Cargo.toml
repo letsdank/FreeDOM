@@ -1,0 +1,18 @@
+[package]
+name = "freedom-dom"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# Enables document builders used by script and browser tests.
+test-support = []
+
+[dependencies]
+freedom-html.workspace = true
