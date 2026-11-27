@@ -1375,7 +1375,8 @@ fn flush(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::raster::Color;
+    use crate::graphics::{frame::XrgbFrame, raster::Color};
+    use crate::render::PaintOptions;
     use freedom_css::{FontStyle, FontWeight};
     use std::{
         io::{Read, Write},
@@ -1426,18 +1427,12 @@ mod tests {
         let (width, height) = (80, 160);
         let mut pixels = vec![0; width * height];
         paint(
-            &mut pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut pixels, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
         let first_y = CONTENT_TOP as usize + 6;
         let mut ink = false;
@@ -1510,18 +1505,12 @@ mod tests {
             let render = |page: &Page, layout: &PageLayout| {
                 let mut pixels = vec![0; width * height];
                 paint(
-                    &mut pixels,
-                    width,
-                    height,
+                    &mut XrgbFrame::new(&mut pixels, width, height).unwrap(),
                     page,
                     layout,
-                    "",
-                    "",
-                    None,
+                    PaintOptions::default(),
                     &mut BlockRasterCache::new(),
                     &mut GlyphRasterCache::new(),
-                    0,
-                    false,
                 );
                 pixels
             };
@@ -1555,18 +1544,12 @@ mod tests {
 
         let (width, height) = (300, CONTENT_TOP as usize + 10);
         let result = paint(
-            &mut vec![0; width * height],
-            width,
-            height,
+            &mut XrgbFrame::new(&mut vec![0; width * height], width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
         assert_eq!(result.max_scroll_y, 10);
     }
@@ -2177,36 +2160,24 @@ mod tests {
         let mut glyph_cache = GlyphRasterCache::new();
 
         paint(
-            &mut pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut pixels, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut block_cache,
             &mut glyph_cache,
-            0,
-            false,
         );
 
         // A cached repaint must produce the same image.
         let mut cached_pixels = vec![0; width * height];
 
         paint(
-            &mut cached_pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut cached_pixels, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut block_cache,
             &mut glyph_cache,
-            0,
-            false,
         );
 
         assert_eq!(pixels, cached_pixels);
@@ -2229,18 +2200,12 @@ mod tests {
         let mut fallback_pixels = vec![0; width * height];
 
         paint(
-            &mut fallback_pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut fallback_pixels, width, height).unwrap(),
             &page,
             &fallback_layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
 
         assert_ne!(
@@ -2356,18 +2321,12 @@ mod tests {
         let mut pixels = vec![0; width * height];
 
         paint(
-            &mut pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut pixels, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
 
         let content_start = CONTENT_TOP as usize * width;
@@ -2542,41 +2501,33 @@ mod tests {
         let mut first = vec![0; width * height];
 
         paint(
-            &mut first,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut first, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut cache,
             &mut glyphs,
-            0,
-            false,
         );
 
         let mut overlay = first.clone();
 
-        paint_layout_overlay(&mut overlay, width, height, &layout, 0);
+        paint_layout_overlay(
+            &mut XrgbFrame::new(&mut overlay, width, height).unwrap(),
+            &layout,
+            0,
+        );
 
         assert_ne!(overlay, first);
 
         let mut again = vec![0; width * height];
 
         paint(
-            &mut again,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut again, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut cache,
             &mut glyphs,
-            0,
-            false,
         );
 
         assert_eq!(first, again);
@@ -2779,9 +2730,7 @@ mod tests {
         );
         let mut pixels = vec![0; 100 * 120];
         paint_preview_scene(
-            &mut pixels,
-            100,
-            120,
+            &mut XrgbFrame::new(&mut pixels, 100, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -2793,9 +2742,7 @@ mod tests {
         let reference_layout = PreviewLayout::build(&reference, 100, None).unwrap();
         let mut reference_pixels = vec![0; 100 * 120];
         paint_preview_scene(
-            &mut reference_pixels,
-            100,
-            120,
+            &mut XrgbFrame::new(&mut reference_pixels, 100, 120).unwrap(),
             &reference,
             &reference_layout,
             None,
@@ -2832,9 +2779,7 @@ mod tests {
             assert_eq!(rectangles, expected);
             let mut image = vec![0; width * 120];
             paint_preview_scene(
-                &mut image,
-                width,
-                120,
+                &mut XrgbFrame::new(&mut image, width, 120).unwrap(),
                 &words,
                 &layout,
                 None,
@@ -2936,9 +2881,7 @@ mod tests {
 
         let mut pixels = vec![0; 100 * 130];
         paint_preview_scene(
-            &mut pixels,
-            100,
-            130,
+            &mut XrgbFrame::new(&mut pixels, 100, 130).unwrap(),
             &page,
             &preview,
             None,
@@ -2964,9 +2907,7 @@ mod tests {
         let mut actual = vec![0; 48 * 120];
         let mut original = vec![0; 48 * 120];
         paint_preview_scene(
-            &mut actual,
-            48,
-            120,
+            &mut XrgbFrame::new(&mut actual, 48, 120).unwrap(),
             &overlapping,
             &overlapping_layout,
             None,
@@ -2974,9 +2915,7 @@ mod tests {
             &mut GlyphRasterCache::new(),
         );
         paint_preview_scene(
-            &mut original,
-            48,
-            120,
+            &mut XrgbFrame::new(&mut original, 48, 120).unwrap(),
             &reference,
             &reference_layout,
             None,
@@ -3030,9 +2969,7 @@ mod tests {
         let mut pixels = vec![0; 48 * 120];
         let mut reference_pixels = vec![0; 48 * 120];
         paint_preview_scene(
-            &mut pixels,
-            48,
-            120,
+            &mut XrgbFrame::new(&mut pixels, 48, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -3040,9 +2977,7 @@ mod tests {
             &mut GlyphRasterCache::new(),
         );
         paint_preview_scene(
-            &mut reference_pixels,
-            48,
-            120,
+            &mut XrgbFrame::new(&mut reference_pixels, 48, 120).unwrap(),
             &reference,
             &reference_layout,
             None,
@@ -3059,9 +2994,7 @@ mod tests {
         let plain_layout = PreviewLayout::build(&plain, 48, None).unwrap();
         let mut plain_pixels = vec![0; 48 * 120];
         paint_preview_scene(
-            &mut plain_pixels,
-            48,
-            120,
+            &mut XrgbFrame::new(&mut plain_pixels, 48, 120).unwrap(),
             &plain,
             &plain_layout,
             None,
@@ -3505,7 +3438,11 @@ mod tests {
         let preview = crate::layout_preview::PreviewLayout::build(&page, 100, None).unwrap();
         let mut pixels = vec![0; 100 * 140];
 
-        crate::layout_debug::paint_preview_backgrounds(&mut pixels, 100, 140, &preview, 0);
+        crate::layout_debug::paint_preview_backgrounds(
+            &mut XrgbFrame::new(&mut pixels, 100, 140).unwrap(),
+            &preview,
+            0,
+        );
 
         assert_eq!(pixels[90 * 100 + 16], 0x00_00_00_FF);
         assert_eq!(pixels[109 * 100 + 65], 0x00_00_00_FF);
@@ -3557,7 +3494,11 @@ mod tests {
 
         let mut pixels = vec![0; 100 * 140];
 
-        crate::layout_debug::paint_preview_backgrounds(&mut pixels, 100, 140, &preview, 0);
+        crate::layout_debug::paint_preview_backgrounds(
+            &mut XrgbFrame::new(&mut pixels, 100, 140).unwrap(),
+            &preview,
+            0,
+        );
 
         assert_eq!(pixels[90 * 100 + 16], 0x00_00_00_FF);
         assert_eq!(pixels[110 * 100 + 16], crate::render::BACKGROUND);
@@ -3601,12 +3542,14 @@ mod tests {
         let mut actual = vec![0; 100 * 140];
         let mut expected = vec![0; 100 * 140];
 
-        crate::layout_debug::paint_preview_backgrounds(&mut actual, 100, 140, &target_layout, 0);
+        crate::layout_debug::paint_preview_backgrounds(
+            &mut XrgbFrame::new(&mut actual, 100, 140).unwrap(),
+            &target_layout,
+            0,
+        );
 
         crate::layout_debug::paint_preview_backgrounds(
-            &mut expected,
-            100,
-            140,
+            &mut XrgbFrame::new(&mut expected, 100, 140).unwrap(),
             &reference_layout,
             0,
         );
@@ -3658,7 +3601,11 @@ mod tests {
         assert_eq!((rects[2].y, rects[2].height), (44, 10));
 
         let mut pixels = vec![0; 100 * 150];
-        crate::layout_debug::paint_preview_backgrounds(&mut pixels, 100, 150, &preview, 0);
+        crate::layout_debug::paint_preview_backgrounds(
+            &mut XrgbFrame::new(&mut pixels, 100, 150).unwrap(),
+            &preview,
+            0,
+        );
         assert_eq!(pixels[90 * 100 + 16], 0x00_00_00_FF);
         assert_eq!(pixels[108 * 100 + 16], 0x00_FF_A5_00);
         assert_eq!(pixels[133 * 100 + 16], 0x00_00_00_FF);
@@ -3719,17 +3666,13 @@ mod tests {
         let mut expected = vec![0; width * height];
 
         crate::layout_debug::paint_preview_backgrounds(
-            &mut actual,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut actual, width, height).unwrap(),
             &target_layout,
             0,
         );
 
         crate::layout_debug::paint_preview_backgrounds(
-            &mut expected,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut expected, width, height).unwrap(),
             &reference_layout,
             0,
         );
@@ -3766,9 +3709,7 @@ mod tests {
         let mut cache = crate::render::GlyphRasterCache::new();
 
         crate::render::paint_preview_scene(
-            &mut pixels,
-            100,
-            120,
+            &mut XrgbFrame::new(&mut pixels, 100, 120).unwrap(),
             &page,
             &preview,
             None,
@@ -3804,9 +3745,7 @@ mod tests {
         let mut cache = crate::render::GlyphRasterCache::new();
 
         crate::render::paint_preview_scene(
-            &mut pixels,
-            100,
-            110,
+            &mut XrgbFrame::new(&mut pixels, 100, 110).unwrap(),
             &page,
             &preview,
             None,
@@ -3863,9 +3802,7 @@ mod tests {
         let mut cache = crate::render::GlyphRasterCache::new();
 
         crate::render::paint_preview_scene(
-            &mut actual,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut actual, width, height).unwrap(),
             &target,
             &target_layout,
             None,
@@ -3874,9 +3811,7 @@ mod tests {
         );
 
         crate::render::paint_preview_scene(
-            &mut expected,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut expected, width, height).unwrap(),
             &reference,
             &reference_layout,
             None,
@@ -3963,9 +3898,7 @@ mod tests {
         let mut cache = crate::render::GlyphRasterCache::new();
 
         crate::render::paint_preview_scene(
-            &mut pixels,
-            132,
-            110,
+            &mut XrgbFrame::new(&mut pixels, 132, 110).unwrap(),
             &page,
             &preview,
             None,
@@ -4042,9 +3975,7 @@ mod tests {
         let mut cache = crate::render::GlyphRasterCache::new();
 
         crate::render::paint_preview_scene(
-            &mut pixels,
-            100,
-            200,
+            &mut XrgbFrame::new(&mut pixels, 100, 200).unwrap(),
             &page,
             &preview,
             None,
@@ -4119,9 +4050,7 @@ mod tests {
         let mut cache = crate::render::GlyphRasterCache::new();
 
         crate::render::paint_preview_scene(
-            &mut pixels,
-            100,
-            110,
+            &mut XrgbFrame::new(&mut pixels, 100, 110).unwrap(),
             &page,
             &preview,
             None,
@@ -4222,9 +4151,7 @@ mod tests {
             let mut expected = vec![0; width * height];
 
             paint_preview_scene(
-                &mut actual,
-                width,
-                height,
+                &mut XrgbFrame::new(&mut actual, width, height).unwrap(),
                 &split,
                 &split_layout,
                 None,
@@ -4233,9 +4160,7 @@ mod tests {
             );
 
             paint_preview_scene(
-                &mut expected,
-                width,
-                height,
+                &mut XrgbFrame::new(&mut expected, width, height).unwrap(),
                 &plain,
                 &plain_layout,
                 None,
@@ -4290,9 +4215,7 @@ mod tests {
         let mut actual = vec![0; 120 * 120];
 
         paint_preview_scene(
-            &mut actual,
-            120,
-            120,
+            &mut XrgbFrame::new(&mut actual, 120, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -4314,9 +4237,7 @@ mod tests {
         let mut expected = vec![0; 120 * 120];
 
         paint_preview_scene(
-            &mut expected,
-            120,
-            120,
+            &mut XrgbFrame::new(&mut expected, 120, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -4434,9 +4355,7 @@ mod tests {
         let mut pixels = vec![0; width * height];
 
         paint_preview_scene(
-            &mut pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut pixels, width, height).unwrap(),
             &page,
             &layout,
             None,
@@ -4473,9 +4392,7 @@ mod tests {
         let mut shifted = vec![0; width * height];
 
         paint_preview_scene(
-            &mut shifted,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut shifted, width, height).unwrap(),
             &page,
             &layout,
             None,
@@ -4498,9 +4415,7 @@ mod tests {
         let mut shifted_x = vec![0; width * height];
 
         paint_preview_scene(
-            &mut shifted_x,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut shifted_x, width, height).unwrap(),
             &page,
             &layout,
             None,
@@ -4549,9 +4464,7 @@ mod tests {
         let mut pixels = vec![0; 120 * 120];
 
         paint_preview_scene(
-            &mut pixels,
-            120,
-            120,
+            &mut XrgbFrame::new(&mut pixels, 120, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -4587,9 +4500,7 @@ mod tests {
         let mut pixels = vec![0; 120 * 120];
 
         paint_preview_scene(
-            &mut pixels,
-            120,
-            120,
+            &mut XrgbFrame::new(&mut pixels, 120, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -4614,9 +4525,7 @@ mod tests {
         let mut pixels = vec![0; 48 * 120];
 
         paint_preview_scene(
-            &mut pixels,
-            48,
-            120,
+            &mut XrgbFrame::new(&mut pixels, 48, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -4653,9 +4562,7 @@ mod tests {
             let mut pixels = vec![TOOLBAR; WIDTH * HEIGHT];
 
             paint_preview_scene(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
+                &mut XrgbFrame::new(&mut pixels, WIDTH, HEIGHT).unwrap(),
                 &page,
                 &layout,
                 None,
@@ -4721,9 +4628,7 @@ mod tests {
         let mut pixels = vec![0; 64 * 120];
 
         paint_preview_scene(
-            &mut pixels,
-            64,
-            120,
+            &mut XrgbFrame::new(&mut pixels, 64, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -4739,9 +4644,7 @@ mod tests {
         let mut plain_pixels = vec![0; 64 * 120];
 
         paint_preview_scene(
-            &mut plain_pixels,
-            64,
-            120,
+            &mut XrgbFrame::new(&mut plain_pixels, 64, 120).unwrap(),
             &plain,
             &plain_layout,
             None,
@@ -4855,9 +4758,7 @@ mod tests {
         let mut pixels = vec![0; 57 * 120];
 
         paint_preview_scene(
-            &mut pixels,
-            57,
-            120,
+            &mut XrgbFrame::new(&mut pixels, 57, 120).unwrap(),
             &page,
             &layout,
             None,
@@ -4931,9 +4832,7 @@ mod tests {
         let mut pixels = vec![0; 120 * 160];
 
         paint_preview_scene(
-            &mut pixels,
-            120,
-            160,
+            &mut XrgbFrame::new(&mut pixels, 120, 160).unwrap(),
             &page,
             &layout,
             None,
@@ -4947,9 +4846,7 @@ mod tests {
         let mut fallback_pixels = vec![0; 120 * 160];
 
         paint_preview_scene(
-            &mut fallback_pixels,
-            120,
-            160,
+            &mut XrgbFrame::new(&mut fallback_pixels, 120, 160).unwrap(),
             &page,
             &fallback_layout,
             None,
@@ -4993,9 +4890,7 @@ mod tests {
             let mut pixels = vec![0; 120 * 160];
 
             paint_preview_scene(
-                &mut pixels,
-                120,
-                160,
+                &mut XrgbFrame::new(&mut pixels, 120, 160).unwrap(),
                 page,
                 &layout,
                 None,
@@ -5074,9 +4969,7 @@ mod tests {
             let mut pixels = vec![0; 120 * 160];
 
             paint_preview_scene(
-                &mut pixels,
-                120,
-                160,
+                &mut XrgbFrame::new(&mut pixels, 120, 160).unwrap(),
                 page,
                 &layout,
                 None,
@@ -5163,18 +5056,12 @@ mod tests {
             let mut pixels = vec![0; 120 * 200];
 
             paint(
-                &mut pixels,
-                120,
-                200,
+                &mut XrgbFrame::new(&mut pixels, 120, 200).unwrap(),
                 page,
                 &layout,
-                "",
-                "",
-                None,
+                PaintOptions::default(),
                 &mut BlockRasterCache::new(),
                 &mut GlyphRasterCache::new(),
-                0,
-                false,
             );
 
             pixels
@@ -5187,9 +5074,7 @@ mod tests {
         let mut preview_pixels = vec![0; 120 * 200];
 
         crate::render::paint_preview_scene(
-            &mut preview_pixels,
-            120,
-            200,
+            &mut XrgbFrame::new(&mut preview_pixels, 120, 200).unwrap(),
             &page,
             &preview,
             None,
@@ -5218,9 +5103,7 @@ mod tests {
         let mut split_pixels = vec![0; 120 * 200];
 
         crate::render::paint_preview_scene(
-            &mut split_pixels,
-            120,
-            200,
+            &mut XrgbFrame::new(&mut split_pixels, 120, 200).unwrap(),
             &split,
             &split_layout,
             None,
@@ -5292,9 +5175,7 @@ mod tests {
         let mut mixed_pixels = vec![0; 120 * 200];
 
         crate::render::paint_preview_scene(
-            &mut mixed_pixels,
-            120,
-            200,
+            &mut XrgbFrame::new(&mut mixed_pixels, 120, 200).unwrap(),
             &mixed_weight,
             &layout,
             None,
@@ -5321,9 +5202,7 @@ mod tests {
         let mut plain_pixels = vec![0; 120 * 200];
 
         crate::render::paint_preview_scene(
-            &mut plain_pixels,
-            120,
-            200,
+            &mut XrgbFrame::new(&mut plain_pixels, 120, 200).unwrap(),
             &plain,
             &plain_layout,
             None,
@@ -5361,9 +5240,7 @@ mod tests {
         let mut styled_preview = vec![0; 120 * 200];
 
         crate::render::paint_preview_scene(
-            &mut styled_preview,
-            120,
-            200,
+            &mut XrgbFrame::new(&mut styled_preview, 120, 200).unwrap(),
             &styled,
             &preview,
             None,
@@ -5408,9 +5285,7 @@ mod tests {
         let mut pixels = vec![0; 120 * 200];
 
         crate::render::paint_preview_scene(
-            &mut pixels,
-            120,
-            200,
+            &mut XrgbFrame::new(&mut pixels, 120, 200).unwrap(),
             &styled,
             &preview,
             None,
@@ -5598,18 +5473,15 @@ mod tests {
         let mut pixels = vec![0; 120 * 150];
 
         paint(
-            &mut pixels,
-            120,
-            150,
+            &mut XrgbFrame::new(&mut pixels, 120, 150).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            Some(&data),
+            PaintOptions {
+                fallback_font_data: Some(&data),
+                ..PaintOptions::default()
+            },
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
 
         assert!(
@@ -5637,18 +5509,12 @@ mod tests {
         let mut pixels = vec![0; 48 * 130];
 
         paint(
-            &mut pixels,
-            48,
-            130,
+            &mut XrgbFrame::new(&mut pixels, 48, 130).unwrap(),
             &bitmap,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
 
         assert!(pixels[90 * 48..].contains(&0x00ff0000));

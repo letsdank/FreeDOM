@@ -959,6 +959,7 @@ fn push_word_part<'a>(
 
 #[cfg(test)]
 mod tests {
+    use crate::graphics::frame::XrgbFrame;
     use freedom_css::{FontWeight, TextStyle};
 
     #[test]
@@ -1511,9 +1512,7 @@ mod tests {
         let mut aligned = vec![0; width * height];
 
         paint_preview_scene(
-            &mut aligned,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut aligned, width, height).unwrap(),
             &page,
             &layout,
             Some(&data),
@@ -1548,9 +1547,7 @@ mod tests {
         let mut unaligned = vec![0; width * height];
 
         paint_preview_scene(
-            &mut unaligned,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut unaligned, width, height).unwrap(),
             &page,
             &layout,
             Some(&data),

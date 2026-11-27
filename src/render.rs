@@ -4,6 +4,7 @@ use crate::{
             TextOutline, TrueTypeFont, normalize_font_container, rasterize_text_outline,
             render::{GLYPH_SUBPIXEL_STEPS, split_subpixel_position},
         },
+        frame::XrgbFrame,
         geometry::Transform,
         raster::{Color as RasterColor, Surface as RasterSurface},
     },
@@ -18,7 +19,7 @@ use crate::{
     },
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
-use freedom_css::{FontStyle, FontWeight, LineHeight};
+use freedom_css::{FontStyle, FontWeight, LineHeight, TextStyle};
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -42,11 +43,26 @@ pub(crate) struct PaintResult {
     pub(crate) max_scroll_y: i32,
 }
 
+/// Per-frame inputs to [`paint`] other than the page and its layout.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PaintOptions<'a> {
+    /// Text shown in the address bar.
+    pub(crate) address: &'a str,
+    /// Text shown in the status line under the address bar.
+    pub(crate) status: &'a str,
+    /// TrueType data for text that has no usable page font.
+    pub(crate) fallback_font_data: Option<&'a [u8]>,
+    pub(crate) scroll_y: i32,
+    /// Reports slow blocks on standard error.
+    pub(crate) profiling: bool,
+}
+
 const MAX_BLOCK_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RASTER_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GLYPH_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RASTER_GLYPH_BYTES: usize = 4 * 1024 * 1024;
 
+/// Everything that affects a rasterized glyph, so equal keys mean equal pixels.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct GlyphRasterKey {
     font_identity: usize,
@@ -116,18 +132,9 @@ impl CachedGlyph {
             .saturating_mul(std::mem::size_of::<RasterColor>())
     }
 
-    fn blit_to(
-        &self,
-        pixels: &mut [u32],
-        width: usize,
-        height: usize,
-        origin_x: i32,
-        origin_y: i32,
-    ) {
+    fn blit_to(&self, frame: &mut XrgbFrame<'_>, origin_x: i32, origin_y: i32) {
         self.surface.blit_xrgb8888(
-            pixels,
-            width,
-            height,
+            frame,
             origin_x.saturating_add(self.offset_x),
             origin_y.saturating_add(self.offset_y),
         );
@@ -180,7 +187,7 @@ impl BlockRasterCache {
         render: F,
     ) -> Option<&CachedBlock>
     where
-        F: FnOnce(&mut [u32], usize, usize, &mut Vec<LinkRegion>),
+        F: FnOnce(XrgbFrame<'_>, &mut Vec<LinkRegion>),
     {
         let is_cached = matches!(
             self.entries.get(index),
@@ -223,7 +230,13 @@ impl BlockRasterCache {
         let mut pixels = vec![BACKGROUND; pixel_count];
         let mut link_regions = Vec::new();
 
-        render(&mut pixels, width, height, &mut link_regions);
+        // The byte limit above keeps both dimensions far inside `i32`.
+        let Some(frame) = XrgbFrame::new(&mut pixels, width, height) else {
+            self.entries[index] = BlockRasterCacheEntry::Uncacheable;
+            return None;
+        };
+
+        render(frame, &mut link_regions);
 
         self.cached_bytes = self.cached_bytes.saturating_add(byte_count);
         self.entries[index] = BlockRasterCacheEntry::Cached(CachedBlock {
@@ -238,21 +251,12 @@ impl BlockRasterCache {
 }
 
 impl CachedBlock {
-    fn blit_to(
-        &self,
-        destination: &mut [u32],
-        destination_width: usize,
-        destination_height: usize,
-        origin_x: i32,
-        origin_y: i32,
-    ) {
+    fn blit_to(&self, frame: &mut XrgbFrame<'_>, origin_x: i32, origin_y: i32) {
         blit_opaque(
             &self.pixels,
             self.width,
             self.height,
-            destination,
-            destination_width,
-            destination_height,
+            frame,
             origin_x,
             origin_y,
         );
@@ -287,30 +291,291 @@ impl LinkRegion {
     }
 }
 
+/// A text pen position: whole pixels plus the sub-pixel remainder that vector
+/// glyph rasterization keeps.
+#[derive(Clone, Copy)]
+struct TextOrigin {
+    x: i32,
+    y: i32,
+    offset_x: f32,
+    offset_y: f32,
+}
+
+impl TextOrigin {
+    fn at(x: i32, y: i32) -> Self {
+        Self {
+            x,
+            y,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }
+    }
+}
+
+/// The resolved font and style of one run of text.
+struct TextRunStyle<'a> {
+    font_size: f32,
+    /// Weight that the vector font still has to synthesize.
+    font_weight: FontWeight,
+    /// Style that the vector font still has to synthesize.
+    font_style: FontStyle,
+    /// Computed weight; the bitmap fallback font emboldens bold text.
+    fallback_weight: FontWeight,
+    color: u32,
+    font: Option<&'a TrueTypeFont<'a>>,
+    /// Faces for per-character fallback; empty when `font` is the only face.
+    font_stack: &'a [ResolvedFont<'a>],
+}
+
+impl<'a> TextRunStyle<'a> {
+    /// Resolves the font of a run produced by inline layout.
+    fn inline(
+        fonts: &'a InlineFonts<'_, '_>,
+        style: &TextStyle,
+        fallback: Option<&'a TrueTypeFont<'a>>,
+    ) -> Self {
+        Self {
+            font_size: style.font_size,
+            font_weight: fonts.synthetic_weight(style),
+            font_style: fonts.synthetic_style(style),
+            fallback_weight: style.font_weight,
+            color: style.color,
+            font: fonts.get(style).or(fallback),
+            font_stack: fonts.stack(style),
+        }
+    }
+
+    /// Resolves the font of a whole text block from the page faces that
+    /// match its style.
+    fn block(
+        fonts: &'a [ResolvedFont<'a>],
+        style: &TextStyle,
+        fallback: Option<&'a TrueTypeFont<'a>>,
+    ) -> Self {
+        let (font_weight, font_style) = fonts
+            .first()
+            .map(|entry| entry.synthesis)
+            .unwrap_or((style.font_weight, style.font_style));
+
+        Self {
+            font_size: style.font_size,
+            font_weight,
+            font_style,
+            fallback_weight: style.font_weight,
+            color: style.color,
+            font: fonts.first().map(|entry| &entry.font).or(fallback),
+            font_stack: if fonts.len() > 1 { fonts } else { &[] },
+        }
+    }
+}
+
+/// The destination and per-frame state shared while painting text.
+struct TextPainter<'a> {
+    frame: XrgbFrame<'a>,
+    /// Words whose ink ends at or above this row are skipped.
+    visible_top: i32,
+    /// Font for text without a usable page font.
+    fallback_font: Option<&'a TrueTypeFont<'a>>,
+    links: &'a mut Vec<LinkRegion>,
+    glyph_cache: &'a mut GlyphRasterCache,
+}
+
+impl<'a> TextPainter<'a> {
+    fn new(
+        frame: XrgbFrame<'a>,
+        visible_top: i32,
+        fallback_font: Option<&'a TrueTypeFont<'a>>,
+        links: &'a mut Vec<LinkRegion>,
+        glyph_cache: &'a mut GlyphRasterCache,
+    ) -> Self {
+        Self {
+            frame,
+            visible_top,
+            fallback_font,
+            links,
+            glyph_cache,
+        }
+    }
+
+    /// Paints text block `index` with its box at `left` and `top`, wrapping
+    /// lines at `right`.
+    fn draw_text_block(
+        &mut self,
+        page: &Page,
+        layout: &PageLayout,
+        index: usize,
+        left: i32,
+        top: i32,
+        right: i32,
+    ) {
+        let Some(block) = page.blocks.get(index) else {
+            return;
+        };
+        let BlockContent::Text(text) = &block.content else {
+            return;
+        };
+        let link_target = block.link.as_deref();
+
+        if let Some(runs) = layout.block_text_runs(index) {
+            self.draw_positioned_runs(page, runs, left, top, right, link_target);
+            return;
+        }
+
+        let fonts = page.vector_fonts_for_style(&block.style);
+        let style = TextRunStyle::block(&fonts, &block.style, self.fallback_font);
+        let origin = TextOrigin::at(left, top.saturating_add(block.style.padding_top));
+
+        self.draw_wrapped_text(origin, right, &text.text, &style, link_target);
+    }
+
+    /// Paints runs placed by inline layout relative to `left` and `top`.
+    fn draw_positioned_runs(
+        &mut self,
+        page: &Page,
+        runs: &[PositionedTextRun],
+        left: i32,
+        top: i32,
+        right: i32,
+        link_target: Option<&str>,
+    ) {
+        let fonts = InlineFonts::from_styles(page, runs.iter().map(|run| &run.style));
+
+        for run in runs {
+            let style = TextRunStyle::inline(&fonts, &run.style, self.fallback_font);
+            let origin = TextOrigin {
+                x: left.saturating_add(run.x),
+                y: top.saturating_add(run.y),
+                offset_x: run.offset_x,
+                offset_y: run.offset_y,
+            };
+
+            self.draw_wrapped_text(
+                origin,
+                right,
+                &run.text,
+                &style,
+                run.link.as_deref().or(link_target),
+            );
+        }
+    }
+
+    /// Paints words from `origin`, wrapping lines at `right`, and returns the
+    /// top of the line after the last one.
+    fn draw_wrapped_text(
+        &mut self,
+        origin: TextOrigin,
+        right: i32,
+        text: &str,
+        style: &TextRunStyle<'_>,
+        link_target: Option<&str>,
+    ) -> i32 {
+        let TextOrigin {
+            x: left,
+            mut y,
+            offset_x,
+            offset_y,
+        } = origin;
+
+        if style.font_size == 0.0 {
+            return y;
+        }
+
+        let metrics = stack_text_metrics(style.font, style.font_stack, style.font_size);
+        let (ink_top, ink_bottom) =
+            text_ink_bounds(style.font, style.font_stack, style.font_size, offset_y);
+        let mut wrap = TextWrap::new(left, right);
+        let height = self.frame.height() as i32;
+
+        for word in split_layout_words(text) {
+            let word_width = stack_word_width(
+                style.font,
+                style.font_stack,
+                word,
+                style.font_size,
+                style.font_weight,
+                style.font_style,
+            );
+
+            let placement = wrap.place_word(metrics.character_width, word_width);
+
+            if placement.wrapped {
+                y = y.saturating_add(metrics.line_height);
+            }
+
+            let word_x = placement.x;
+            let is_visible = y.saturating_add(ink_bottom) > self.visible_top
+                && y.saturating_add(ink_top) < height;
+
+            if is_visible {
+                let word_origin = TextOrigin {
+                    x: word_x,
+                    y,
+                    offset_x,
+                    offset_y,
+                };
+
+                let rendered_with_vector_font = style.font.is_some_and(|font| {
+                    draw_vector_text_line(
+                        &mut self.frame,
+                        self.glyph_cache,
+                        word_origin,
+                        word,
+                        style,
+                        font,
+                    )
+                });
+
+                if !rendered_with_vector_font {
+                    draw_text_line(
+                        &mut self.frame,
+                        word_x,
+                        y,
+                        word,
+                        metrics.bitmap_scale,
+                        style.color,
+                    );
+
+                    if style.fallback_weight == FontWeight::Bold {
+                        draw_text_line(
+                            &mut self.frame,
+                            word_x.saturating_add(1),
+                            y,
+                            word,
+                            metrics.bitmap_scale,
+                            style.color,
+                        );
+                    }
+                }
+
+                if let Some(target) = link_target {
+                    self.links.push(LinkRegion {
+                        x: word_x,
+                        y,
+                        width: word_width,
+                        height: metrics.glyph_height,
+                        target: target.to_owned(),
+                    });
+                }
+            }
+        }
+
+        y.saturating_add(metrics.line_height)
+    }
+}
+
 /// Paints an experimental preview, not a conforming CSS rendering.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
 pub(crate) fn paint_preview_scene(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
+    frame: &mut XrgbFrame<'_>,
     page: &Page,
     layout: &PreviewLayout,
     fallback_data: Option<&[u8]>,
     scroll_y: i32,
     glyph_cache: &mut GlyphRasterCache,
 ) {
-    if i32::try_from(width).is_err()
-        || i32::try_from(height).is_err()
-        || !clear_preview_content(pixels, width, height)
-    {
-        return;
-    }
+    clear_preview_content(frame);
 
-    let content_top = (CONTENT_TOP as usize).min(height);
-    let content_height = height - content_top;
+    let content_top = (CONTENT_TOP as usize).min(frame.height());
+    let content_height = frame.height() - content_top;
     let fallback = fallback_data.and_then(|data| TrueTypeFont::parse(data).ok());
     let mut links = Vec::new();
 
@@ -318,12 +583,12 @@ pub(crate) fn paint_preview_scene(
         match command {
             PreviewCommand::Block(index) => {
                 if let Some(item) = layout.boxes.get(*index) {
-                    paint_preview_box(pixels, width, height, item, scroll_y);
+                    paint_preview_box(frame, item, scroll_y);
                 }
             }
 
             PreviewCommand::InlineBackground { rect, color } => {
-                fill_preview_rect(pixels, width, height, *rect, scroll_y, *color);
+                fill_preview_rect(frame, *rect, scroll_y, *color);
             }
 
             PreviewCommand::InlineText {
@@ -340,23 +605,12 @@ pub(crate) fn paint_preview_scene(
                 if y.saturating_add(metrics.glyph_height) <= 0 || y >= content_height as i32 {
                     continue;
                 }
-                let content_pixels = &mut pixels[content_top * width..width * height];
+                let mut content = frame.rows_from(content_top);
                 let scale = metrics.bitmap_scale;
-                draw_text_line(
-                    content_pixels,
-                    width,
-                    content_height,
-                    *x,
-                    y,
-                    text,
-                    scale,
-                    style.color,
-                );
+                draw_text_line(&mut content, *x, y, text, scale, style.color);
                 if style.font_weight == FontWeight::Bold {
                     draw_text_line(
-                        content_pixels,
-                        width,
-                        content_height,
+                        &mut content,
                         x.saturating_add(1),
                         y,
                         text,
@@ -397,57 +651,40 @@ pub(crate) fn paint_preview_scene(
                 };
 
                 // Restrict text painting to the page content below the toolbar.
-                let content_pixels = &mut pixels[content_top * width..width * height];
-
-                let mut paint_text =
-                    |x: i32,
-                     offset_x: f32,
-                     y: i32,
-                     offset_y: f32,
-                     text: &str,
-                     run_style: &freedom_css::TextStyle| {
-                        let font = fonts.get(run_style).or(fallback.as_ref());
-                        let font_stack = fonts.stack(run_style);
-
-                        draw_wrapped_text(
-                            content_pixels,
-                            width,
-                            content_height,
-                            x,
-                            offset_x,
-                            y,
-                            offset_y,
-                            rect.x.saturating_add(rect.width),
-                            text,
-                            run_style.font_size,
-                            fonts.synthetic_weight(run_style),
-                            run_style.font_weight,
-                            fonts.synthetic_style(run_style),
-                            run_style.color,
-                            None,
-                            font,
-                            font_stack,
-                            0,
-                            &mut links,
-                            glyph_cache,
-                        );
-                    };
+                let mut painter = TextPainter::new(
+                    frame.rows_from(content_top),
+                    0,
+                    fallback.as_ref(),
+                    &mut links,
+                    glyph_cache,
+                );
+                let right = rect.x.saturating_add(rect.width);
 
                 if runs.is_empty() {
-                    paint_text(rect.x, 0.0, y, 0.0, text, style);
+                    let run_style = TextRunStyle::inline(&fonts, style, fallback.as_ref());
+
+                    painter.draw_wrapped_text(
+                        TextOrigin::at(rect.x, y),
+                        right,
+                        text,
+                        &run_style,
+                        None,
+                    );
                 } else {
                     for run in runs {
                         let run_y = relative_y + i64::from(run.y);
 
                         if let Ok(run_y) = i32::try_from(run_y) {
-                            paint_text(
-                                rect.x.saturating_add(run.x),
-                                run.offset_x,
-                                run_y,
-                                run.offset_y,
-                                &run.text,
-                                &run.style,
-                            );
+                            let run_style =
+                                TextRunStyle::inline(&fonts, &run.style, fallback.as_ref());
+                            let origin = TextOrigin {
+                                x: rect.x.saturating_add(run.x),
+                                y: run_y,
+                                offset_x: run.offset_x,
+                                offset_y: run.offset_y,
+                            };
+
+                            painter.draw_wrapped_text(origin, right, &run.text, &run_style, None);
                         }
                     }
                 }
@@ -500,7 +737,7 @@ fn cache_text_block<'cache>(
     }
 
     let block = page.blocks.get(index)?;
-    let BlockContent::Text(text) = &block.content else {
+    let BlockContent::Text(_) = &block.content else {
         return None;
     };
 
@@ -513,75 +750,12 @@ fn cache_text_block<'cache>(
 
     let block_height = usize::try_from(layout.block_height(index).max(0)).unwrap_or(0);
 
-    if let Some(runs) = layout.block_text_runs(index) {
-        return text_cache.get_or_render(
-            index,
-            content_width,
-            block_height,
-            |pixels, width, height, links| {
-                draw_positioned_text(
-                    pixels,
-                    width,
-                    height,
-                    0,
-                    0,
-                    width as i32,
-                    runs,
-                    page,
-                    fallback_font,
-                    block.link.as_deref(),
-                    0,
-                    links,
-                    glyph_raster_cache,
-                );
-            },
-        );
-    }
+    text_cache.get_or_render(index, content_width, block_height, |frame, links| {
+        let right = frame.width() as i32;
 
-    let page_fonts = page.vector_fonts_for_style(&block.style);
-    let page_font = page_fonts.first().map(|entry| &entry.font);
-    let vector_font = page_font.or(fallback_font);
-
-    let font_stack = if page_fonts.len() > 1 {
-        page_fonts.as_slice()
-    } else {
-        &[]
-    };
-
-    let (weight, style) = page_fonts
-        .first()
-        .map(|entry| entry.synthesis)
-        .unwrap_or((block.style.font_weight, block.style.font_style));
-
-    text_cache.get_or_render(
-        index,
-        content_width,
-        block_height,
-        |cache_pixels, cache_width, cache_height, cache_links| {
-            draw_wrapped_text(
-                cache_pixels,
-                cache_width,
-                cache_height,
-                0,
-                0.0,
-                block.style.padding_top,
-                0.0,
-                cache_width as i32,
-                &text.text,
-                block.style.font_size,
-                weight,
-                block.style.font_weight,
-                style,
-                block.style.color,
-                block.link.as_deref(),
-                vector_font,
-                font_stack,
-                0,
-                cache_links,
-                glyph_raster_cache,
-            );
-        },
-    )
+        TextPainter::new(frame, 0, fallback_font, links, glyph_raster_cache)
+            .draw_text_block(page, layout, index, 0, 0, right);
+    })
 }
 
 fn cache_visual_block<'cache>(
@@ -607,11 +781,11 @@ fn cache_visual_block<'cache>(
                 index,
                 svg_width,
                 svg_height,
-                |cache_pixels, cache_width, cache_height, _cache_links| {
+                |mut frame, _cache_links| {
                     if let Ok(surface) =
-                        svg.render(cache_width, cache_height, RasterColor::TRANSPARENT)
+                        svg.render(frame.width(), frame.height(), RasterColor::TRANSPARENT)
                     {
-                        surface.blit_xrgb8888(cache_pixels, cache_width, cache_height, 0, 0);
+                        surface.blit_xrgb8888(&mut frame, 0, 0);
                     }
                 },
             )
@@ -624,16 +798,10 @@ fn cache_visual_block<'cache>(
                 index,
                 image_width,
                 image_height,
-                |cache_pixels, cache_width, cache_height, _cache_links| {
-                    bitmap.blit_scaled_xrgb8888(
-                        cache_pixels,
-                        cache_width,
-                        cache_height,
-                        0,
-                        0,
-                        cache_width,
-                        cache_height,
-                    );
+                |mut frame, _cache_links| {
+                    let (width, height) = (frame.width(), frame.height());
+
+                    bitmap.blit_scaled_xrgb8888(&mut frame, 0, 0, width, height);
                 },
             )
         }
@@ -642,42 +810,32 @@ fn cache_visual_block<'cache>(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
 pub(crate) fn paint(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
+    frame: &mut XrgbFrame<'_>,
     page: &Page,
     layout: &PageLayout,
-    address: &str,
-    status: &str,
-    vector_font_data: Option<&[u8]>,
+    options: PaintOptions<'_>,
     block_raster_cache: &mut BlockRasterCache,
     glyph_raster_cache: &mut GlyphRasterCache,
-    scroll_y: i32,
-    profiling: bool,
 ) -> PaintResult {
-    pixels.fill(BACKGROUND);
+    let PaintOptions {
+        address,
+        status,
+        fallback_font_data,
+        scroll_y,
+        profiling,
+    } = options;
+    let (width, height) = (frame.width(), frame.height());
 
-    let fallback_font = vector_font_data.and_then(|data| TrueTypeFont::parse(data).ok());
+    frame.pixels_mut().fill(BACKGROUND);
 
-    fill_rect(pixels, width, height, 0, 0, width as i32, 70, TOOLBAR);
-    fill_rect(
-        pixels,
-        width,
-        height,
-        12,
-        9,
-        width.saturating_sub(24) as i32,
-        30,
-        ADDRESS_BAR,
-    );
+    let fallback_font = fallback_font_data.and_then(|data| TrueTypeFont::parse(data).ok());
 
-    draw_text_line(pixels, width, height, 20, 18, address, 1, LIGHT_TEXT);
-    draw_text_line(pixels, width, height, 16, 51, status, 1, LIGHT_TEXT);
+    frame.fill_rect(0, 0, width as i32, 70, TOOLBAR);
+    frame.fill_rect(12, 9, width.saturating_sub(24) as i32, 30, ADDRESS_BAR);
+
+    draw_text_line(frame, 20, 18, address, 1, LIGHT_TEXT);
+    draw_text_line(frame, 16, 51, status, 1, LIGHT_TEXT);
 
     let mut link_regions = Vec::new();
     let slow_block_threshold = Duration::from_millis(16);
@@ -686,9 +844,7 @@ pub(crate) fn paint(
     let direct_blocks = layout.has_text_overflow();
     let mut painted_ink: Option<(i64, i64)> = None;
     let content_top = (CONTENT_TOP as usize).min(height);
-    let content_start = content_top.saturating_mul(width);
-    let content_end = height.saturating_mul(width);
-    let content_height = height - content_top;
+    let text_right = i32::try_from(width.saturating_sub(16)).unwrap_or(i32::MAX);
 
     for (index, block) in page.blocks.iter().enumerate() {
         let y = CONTENT_TOP
@@ -716,7 +872,7 @@ pub(crate) fn paint(
                     cache_visual_block(block_raster_cache, page, index, width)
                 };
                 if let Some(cached) = cached {
-                    cached.blit_to(pixels, width, height, 16, y);
+                    cached.blit_to(frame, 16, y);
                 } else {
                     let available_width = width.saturating_sub(32);
                     let (svg_width, svg_height) = svg_block_size(svg, available_width);
@@ -724,17 +880,13 @@ pub(crate) fn paint(
                     if let Ok(surface) = svg.render(svg_width, svg_height, RasterColor::TRANSPARENT)
                     {
                         if direct_blocks {
-                            if let Some(content) = pixels.get_mut(content_start..content_end) {
-                                surface.blit_xrgb8888(
-                                    content,
-                                    width,
-                                    content_height,
-                                    16,
-                                    y.saturating_sub(content_top as i32),
-                                );
-                            }
+                            surface.blit_xrgb8888(
+                                &mut frame.rows_from(content_top),
+                                16,
+                                y.saturating_sub(content_top as i32),
+                            );
                         } else {
-                            surface.blit_xrgb8888(pixels, width, height, 16, y);
+                            surface.blit_xrgb8888(frame, 16, y);
                         }
                     }
                 }
@@ -747,33 +899,21 @@ pub(crate) fn paint(
                     cache_visual_block(block_raster_cache, page, index, width)
                 };
                 if let Some(cached) = cached {
-                    cached.blit_to(pixels, width, height, 16, y);
+                    cached.blit_to(frame, 16, y);
                 } else {
                     let available_width = width.saturating_sub(32);
                     let (image_width, image_height) = bitmap_block_size(bitmap, available_width);
 
                     if direct_blocks {
-                        if let Some(content) = pixels.get_mut(content_start..content_end) {
-                            bitmap.blit_scaled_xrgb8888(
-                                content,
-                                width,
-                                content_height,
-                                16,
-                                y.saturating_sub(content_top as i32),
-                                image_width,
-                                image_height,
-                            );
-                        }
-                    } else {
                         bitmap.blit_scaled_xrgb8888(
-                            pixels,
-                            width,
-                            height,
+                            &mut frame.rows_from(content_top),
                             16,
-                            y,
+                            y.saturating_sub(content_top as i32),
                             image_width,
                             image_height,
                         );
+                    } else {
+                        bitmap.blit_scaled_xrgb8888(frame, 16, y, image_width, image_height);
                     }
                 }
             }
@@ -794,31 +934,26 @@ pub(crate) fn paint(
                     )
                 };
                 if let Some(cached) = cached {
-                    cached.blit_to(pixels, width, height, 16, y);
+                    cached.blit_to(frame, 16, y);
                     cached.append_link_regions(&mut link_regions, 16, y);
                 } else if direct_blocks {
-                    if let Some(content) = pixels.get_mut(content_start..content_end) {
-                        let first_link = link_regions.len();
-                        let relative_y = y.saturating_sub(content_top as i32);
-                        draw_uncached_text_block(
-                            content,
-                            width,
-                            content_height,
-                            relative_y,
-                            page,
-                            layout,
-                            index,
-                            fallback_font.as_ref(),
-                            0,
-                            &mut link_regions,
-                            glyph_raster_cache,
-                        );
-                        for region in &mut link_regions[first_link..] {
-                            let top = region.y.saturating_add(content_top as i32);
-                            let bottom = top.saturating_add(region.height).min(height as i32);
-                            region.y = top.max(content_top as i32);
-                            region.height = bottom.saturating_sub(region.y).max(0);
-                        }
+                    let first_link = link_regions.len();
+                    let relative_y = y.saturating_sub(content_top as i32);
+
+                    TextPainter::new(
+                        frame.rows_from(content_top),
+                        0,
+                        fallback_font.as_ref(),
+                        &mut link_regions,
+                        glyph_raster_cache,
+                    )
+                    .draw_text_block(page, layout, index, 16, relative_y, text_right);
+
+                    for region in &mut link_regions[first_link..] {
+                        let top = region.y.saturating_add(content_top as i32);
+                        let bottom = top.saturating_add(region.height).min(height as i32);
+                        region.y = top.max(content_top as i32);
+                        region.height = bottom.saturating_sub(region.y).max(0);
                     }
                     let top = i64::from(y) + i64::from(paint_top);
                     let bottom = i64::from(y) + i64::from(paint_bottom);
@@ -827,25 +962,20 @@ pub(crate) fn paint(
                         None => (top, bottom),
                     });
                 } else {
-                    draw_uncached_text_block(
-                        pixels,
-                        width,
-                        height,
-                        y,
-                        page,
-                        layout,
-                        index,
-                        fallback_font.as_ref(),
+                    TextPainter::new(
+                        frame.reborrow(),
                         CONTENT_TOP,
+                        fallback_font.as_ref(),
                         &mut link_regions,
                         glyph_raster_cache,
-                    );
+                    )
+                    .draw_text_block(page, layout, index, 16, y, text_right);
                 }
             }
 
             BlockContent::Canvas(canvas) => {
                 // blit_canvas uses window coordinates and clips to CONTENT_TOP.
-                blit_canvas(canvas.canvas.surface(), pixels, width, height, 16, y);
+                blit_canvas(canvas.canvas.surface(), frame, 16, y);
             }
 
             BlockContent::PendingImage(_) => {}
@@ -883,99 +1013,11 @@ pub(crate) fn paint(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
-fn draw_uncached_text_block(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    y: i32,
-    page: &Page,
-    layout: &PageLayout,
-    index: usize,
-    fallback: Option<&TrueTypeFont<'_>>,
-    visible_top: i32,
-    links: &mut Vec<LinkRegion>,
-    glyph_cache: &mut GlyphRasterCache,
-) {
-    let block = &page.blocks[index];
-    let BlockContent::Text(text) = &block.content else {
-        return;
-    };
-    let right = i32::try_from(width.saturating_sub(16)).unwrap_or(i32::MAX);
-    if let Some(runs) = layout.block_text_runs(index) {
-        draw_positioned_text(
-            pixels,
-            width,
-            height,
-            16,
-            y,
-            right,
-            runs,
-            page,
-            fallback,
-            block.link.as_deref(),
-            visible_top,
-            links,
-            glyph_cache,
-        );
-        return;
-    }
-    let fonts = page.vector_fonts_for_style(&block.style);
-    let font = fonts.first().map(|entry| &entry.font).or(fallback);
-    let stack = if fonts.len() > 1 {
-        fonts.as_slice()
-    } else {
-        &[]
-    };
-    let (weight, style) = fonts
-        .first()
-        .map(|entry| entry.synthesis)
-        .unwrap_or((block.style.font_weight, block.style.font_style));
-    draw_wrapped_text(
-        pixels,
-        width,
-        height,
-        16,
-        0.0,
-        y.saturating_add(block.style.padding_top),
-        0.0,
-        right,
-        &text.text,
-        block.style.font_size,
-        weight,
-        block.style.font_weight,
-        style,
-        block.style.color,
-        block.link.as_deref(),
-        font,
-        stack,
-        visible_top,
-        links,
-        glyph_cache,
-    );
-}
-
 // A canvas is mutable: render it directly and only visit visible pixels.
-fn blit_canvas(
-    source: &RasterSurface,
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x: i32,
-    y: i32,
-) {
-    if width == 0 {
-        return;
-    }
-
-    let height = height.min(pixels.len() / width);
-
-    let (Ok(width_i64), Ok(height_i64)) = (i64::try_from(width), i64::try_from(height)) else {
-        return;
-    };
+fn blit_canvas(source: &RasterSurface, frame: &mut XrgbFrame<'_>, x: i32, y: i32) {
+    let width = frame.width();
+    let (width_i64, height_i64) = (width as i64, frame.height() as i64);
+    let pixels = frame.pixels_mut();
 
     let (Ok(source_width), Ok(source_height)) = (
         i64::try_from(source.width()),
@@ -1023,191 +1065,28 @@ fn blit_canvas(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
-fn draw_positioned_text(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    left: i32,
-    top: i32,
-    right: i32,
-    runs: &[PositionedTextRun],
-    page: &Page,
-    fallback: Option<&TrueTypeFont<'_>>,
-    link_target: Option<&str>,
-    visible_top: i32,
-    links: &mut Vec<LinkRegion>,
-    glyph_cache: &mut GlyphRasterCache,
-) {
-    let fonts = InlineFonts::from_styles(page, runs.iter().map(|run| &run.style));
-
-    for run in runs {
-        let style = &run.style;
-        let font = fonts.get(style).or(fallback);
-
-        draw_wrapped_text(
-            pixels,
-            width,
-            height,
-            left.saturating_add(run.x),
-            run.offset_x,
-            top.saturating_add(run.y),
-            run.offset_y,
-            right,
-            &run.text,
-            style.font_size,
-            fonts.synthetic_weight(style),
-            style.font_weight,
-            fonts.synthetic_style(style),
-            style.color,
-            run.link.as_deref().or(link_target),
-            font,
-            fonts.stack(style),
-            visible_top,
-            links,
-            glyph_cache,
-        );
-    }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
-fn draw_wrapped_text(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    left: i32,
-    offset_x: f32,
-    mut y: i32,
-    offset_y: f32,
-    right: i32,
-    text: &str,
-    font_size: f32,
-    font_weight: FontWeight,
-    fallback_weight: FontWeight,
-    font_style: FontStyle,
-    color: u32,
-    link_target: Option<&str>,
-    vector_font: Option<&TrueTypeFont<'_>>,
-    font_stack: &[ResolvedFont<'_>],
-    visible_top: i32,
-    link_regions: &mut Vec<LinkRegion>,
-    glyph_raster_cache: &mut GlyphRasterCache,
-) -> i32 {
-    if font_size == 0.0 {
-        return y;
-    }
-
-    let metrics = stack_text_metrics(vector_font, font_stack, font_size);
-    let (ink_top, ink_bottom) = text_ink_bounds(vector_font, font_stack, font_size, offset_y);
-    let mut wrap = TextWrap::new(left, right);
-
-    for word in split_layout_words(text) {
-        let word_width = stack_word_width(
-            vector_font,
-            font_stack,
-            word,
-            font_size,
-            font_weight,
-            font_style,
-        );
-
-        let placement = wrap.place_word(metrics.character_width, word_width);
-
-        if placement.wrapped {
-            y = y.saturating_add(metrics.line_height);
-        }
-
-        let word_x = placement.x;
-        let is_visible =
-            y.saturating_add(ink_bottom) > visible_top && y.saturating_add(ink_top) < height as i32;
-
-        if is_visible {
-            let rendered_with_vector_font = vector_font.is_some_and(|font| {
-                draw_vector_text_line(
-                    pixels,
-                    width,
-                    height,
-                    word_x,
-                    offset_x,
-                    y,
-                    offset_y,
-                    word,
-                    font_size,
-                    font_weight,
-                    font_style,
-                    color,
-                    font,
-                    font_stack,
-                    glyph_raster_cache,
-                )
-            });
-
-            if !rendered_with_vector_font {
-                draw_text_line(
-                    pixels,
-                    width,
-                    height,
-                    word_x,
-                    y,
-                    word,
-                    metrics.bitmap_scale,
-                    color,
-                );
-
-                if fallback_weight == FontWeight::Bold {
-                    draw_text_line(
-                        pixels,
-                        width,
-                        height,
-                        word_x.saturating_add(1),
-                        y,
-                        word,
-                        metrics.bitmap_scale,
-                        color,
-                    );
-                }
-            }
-
-            if let Some(target) = link_target {
-                link_regions.push(LinkRegion {
-                    x: word_x,
-                    y,
-                    width: word_width,
-                    height: metrics.glyph_height,
-                    target: target.to_owned(),
-                });
-            }
-        }
-    }
-
-    y.saturating_add(metrics.line_height)
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
-fn rasterize_vector_glyph(
-    font: &TrueTypeFont<'_>,
-    glyph_id: u16,
-    font_size: f32,
-    font_weight: FontWeight,
-    font_style: FontStyle,
-    phase_x: f32,
-    phase_y: f32,
-    color: u32,
-) -> Option<CachedGlyph> {
+/// Rasterizes one glyph exactly as its cache key describes. `font` must be
+/// the font that `key.font_identity` was taken from.
+fn rasterize_vector_glyph(font: &TrueTypeFont<'_>, key: GlyphRasterKey) -> Option<CachedGlyph> {
     let units_per_em = f32::from(font.head().units_per_em);
+    let font_size = f32::from_bits(key.font_size_bits);
 
     if !font_size.is_finite() || font_size <= 0.0 || units_per_em <= 0.0 {
         return None;
     }
+
+    let font_weight = if key.bold {
+        FontWeight::Bold
+    } else {
+        FontWeight::Normal
+    };
+    let font_style = if key.italic {
+        FontStyle::Italic
+    } else {
+        FontStyle::Normal
+    };
+    let phase_x = f32::from(key.phase_x) / GLYPH_SUBPIXEL_STEPS as f32;
+    let phase_y = f32::from(key.phase_y) / GLYPH_SUBPIXEL_STEPS as f32;
 
     let scale = font_size / units_per_em;
     let italic_shear = synthetic_italic_shear(font_style);
@@ -1217,7 +1096,7 @@ fn rasterize_vector_glyph(
         .then(Transform::skew_x(italic_shear))
         .then(Transform::translate(phase_x, phase_y));
 
-    let path = font.glyph_path(glyph_id).ok()?.transformed(transform);
+    let path = font.glyph_path(key.glyph_id).ok()?.transformed(transform);
 
     let Some(bounds) = path.control_bounds() else {
         return Some(CachedGlyph {
@@ -1263,7 +1142,7 @@ fn rasterize_vector_glyph(
 
     let mut surface = RasterSurface::new(glyph_width, glyph_height, RasterColor::TRANSPARENT);
 
-    rasterize_text_outline(&mut surface, &outline, raster_color(color)).ok()?;
+    rasterize_text_outline(&mut surface, &outline, raster_color(key.color)).ok()?;
 
     if font_weight == FontWeight::Bold && bold_offset > 0.0 {
         let bold_outline = TextOutline {
@@ -1273,7 +1152,7 @@ fn rasterize_vector_glyph(
             advance_width: 0.0,
         };
 
-        rasterize_text_outline(&mut surface, &bold_outline, raster_color(color)).ok()?;
+        rasterize_text_outline(&mut surface, &bold_outline, raster_color(key.color)).ok()?;
     }
 
     Some(CachedGlyph {
@@ -1283,38 +1162,34 @@ fn rasterize_vector_glyph(
     })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
+/// Paints one word with `font` and the faces of `style.font_stack`.
+/// Returns `false` when a glyph cannot be rasterized.
 fn draw_vector_text_line(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x: i32,
-    offset_x: f32,
-    y: i32,
-    offset_y: f32,
-    text: &str,
-    font_size: f32,
-    font_weight: FontWeight,
-    font_style: FontStyle,
-    color: u32,
-    font: &TrueTypeFont<'_>,
-    font_stack: &[ResolvedFont<'_>],
+    frame: &mut XrgbFrame<'_>,
     glyph_raster_cache: &mut GlyphRasterCache,
+    origin: TextOrigin,
+    text: &str,
+    style: &TextRunStyle<'_>,
+    font: &TrueTypeFont<'_>,
 ) -> bool {
+    let TextRunStyle {
+        font_size,
+        font_weight,
+        font_style,
+        color,
+        font_stack,
+        ..
+    } = *style;
+
     let Some(line_metrics) = font.line_metrics(font_size) else {
         return false;
     };
 
     let ascent = stack_ascent(font_stack, font_size).unwrap_or(line_metrics.ascent);
 
-    let Some((baseline_y, phase_y)) = split_subpixel_position(ascent + offset_y) else {
+    let Some((baseline_y, phase_y)) = split_subpixel_position(ascent + origin.offset_y) else {
         return false;
     };
-
-    let baseline_phase = f32::from(phase_y) / GLYPH_SUBPIXEL_STEPS as f32;
 
     let mut visit = |index: usize, glyph_id: u16, pen_x: f32| {
         let (font, (font_weight, font_style)) = font_stack
@@ -1327,7 +1202,8 @@ fn draw_vector_text_line(
             message: "cannot rasterize vector glyph".to_owned(),
         };
 
-        let (glyph_x, phase_x) = split_subpixel_position(offset_x + pen_x).ok_or_else(invalid)?;
+        let (glyph_x, phase_x) =
+            split_subpixel_position(origin.offset_x + pen_x).ok_or_else(invalid)?;
 
         let key = GlyphRasterKey {
             font_identity: font.glyph_cache_key(),
@@ -1340,29 +1216,14 @@ fn draw_vector_text_line(
             phase_y,
         };
 
-        let phase_x = f32::from(phase_x) / GLYPH_SUBPIXEL_STEPS as f32;
-
         let glyph = glyph_raster_cache
-            .get_or_rasterize(key, || {
-                rasterize_vector_glyph(
-                    font,
-                    glyph_id,
-                    font_size,
-                    font_weight,
-                    font_style,
-                    phase_x,
-                    baseline_phase,
-                    color,
-                )
-            })
+            .get_or_rasterize(key, || rasterize_vector_glyph(font, key))
             .ok_or_else(invalid)?;
 
         glyph.blit_to(
-            pixels,
-            width,
-            height,
-            x.saturating_add(glyph_x),
-            y.saturating_add(baseline_y),
+            frame,
+            origin.x.saturating_add(glyph_x),
+            origin.y.saturating_add(baseline_y),
         );
 
         Ok(())
@@ -1388,14 +1249,9 @@ fn raster_color(color: u32) -> RasterColor {
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
+/// Paints text with the 8x8 bitmap font, `scale` pixels per font pixel.
 fn draw_text_line(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
+    frame: &mut XrgbFrame<'_>,
     mut x: i32,
     y: i32,
     text: &str,
@@ -1403,19 +1259,13 @@ fn draw_text_line(
     color: u32,
 ) {
     for character in text.chars() {
-        draw_glyph(pixels, width, height, x, y, character, scale, color);
+        draw_glyph(frame, x, y, character, scale, color);
         x = x.saturating_add((8 * scale) as i32);
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
 fn draw_glyph(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
+    frame: &mut XrgbFrame<'_>,
     x: i32,
     y: i32,
     character: char,
@@ -1435,10 +1285,7 @@ fn draw_glyph(
     for (row, bits) in rows.iter().enumerate() {
         for column in 0..8 {
             if (*bits & (1 << column)) != 0 {
-                fill_rect(
-                    pixels,
-                    width,
-                    height,
+                frame.fill_rect(
                     x.saturating_add((column * scale) as i32),
                     y.saturating_add((row * scale) as i32),
                     scale as i32,
@@ -1450,20 +1297,18 @@ fn draw_glyph(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
+/// Copies `source` into `destination` without blending, clipped to the frame.
 fn blit_opaque(
     source: &[u32],
     source_width: usize,
     source_height: usize,
-    destination: &mut [u32],
-    destination_width: usize,
-    destination_height: usize,
+    destination: &mut XrgbFrame<'_>,
     origin_x: i32,
     origin_y: i32,
 ) {
+    let destination_width = destination.width();
+    let destination_height = destination.height();
+
     if source_width == 0 || source_height == 0 || destination_width == 0 || destination_height == 0
     {
         return;
@@ -1471,17 +1316,15 @@ fn blit_opaque(
 
     let source_width_i32 = i32::try_from(source_width).unwrap_or(i32::MAX);
     let source_height_i32 = i32::try_from(source_height).unwrap_or(i32::MAX);
-    let destination_width_i32 = i32::try_from(destination_width).unwrap_or(i32::MAX);
-    let destination_height_i32 = i32::try_from(destination_height).unwrap_or(i32::MAX);
 
     let left = origin_x.max(0);
     let top = origin_y.max(0);
     let right = origin_x
         .saturating_add(source_width_i32)
-        .min(destination_width_i32);
+        .min(destination_width as i32);
     let bottom = origin_y
         .saturating_add(source_height_i32)
-        .min(destination_height_i32);
+        .min(destination_height as i32);
 
     if left >= right || top >= bottom {
         return;
@@ -1491,6 +1334,7 @@ fn blit_opaque(
     let source_top = usize::try_from(top - origin_y).unwrap_or(0);
     let copy_width = usize::try_from(right - left).unwrap_or(0);
     let copy_height = usize::try_from(bottom - top).unwrap_or(0);
+    let destination = destination.pixels_mut();
 
     for row in 0..copy_height {
         let source_start = (source_top + row) * source_width + source_left;
@@ -1502,40 +1346,27 @@ fn blit_opaque(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the pixel buffer and its size are passed separately until rendering has a paint target type"
-)]
-fn fill_rect(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x: i32,
-    y: i32,
-    rect_width: i32,
-    rect_height: i32,
-    color: u32,
-) {
-    let start_x = x.max(0) as usize;
-    let start_y = y.max(0) as usize;
-    let end_x = x.saturating_add(rect_width).min(width as i32).max(0) as usize;
-    let end_y = y.saturating_add(rect_height).min(height as i32).max(0) as usize;
-
-    for pixel_y in start_y..end_y {
-        for pixel_x in start_x..end_x {
-            pixels[pixel_y * width + pixel_x] = color;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::page_layout::measure_wrapped_text;
 
+    /// Black regular text without vector fonts, drawn with the bitmap font.
+    fn bitmap_style(font_size: f32) -> TextRunStyle<'static> {
+        TextRunStyle {
+            font_size,
+            font_weight: FontWeight::Normal,
+            font_style: FontStyle::Normal,
+            fallback_weight: FontWeight::Normal,
+            color: 0,
+            font: None,
+            font_stack: &[],
+        }
+    }
+
     #[test]
     fn line_height_zero_paints_outside_block_and_clips_to_content() {
-        let page=crate::page::parse_xhtml_for_test(
+        let page = crate::page::parse_xhtml_for_test(
             "https://example.test/",
             "<html xmlns='http://www.w3.org/1999/xhtml'><body><div style='line-height:20px'>header</div><div style='line-height:0'><a href='/x' style='color:red'>XXXX</a></div><div style='color:blue'>i</div></body></html>"
         ).unwrap();
@@ -1548,18 +1379,12 @@ mod tests {
         let mut pixels = vec![0; width * height];
         let mut cache = BlockRasterCache::new();
         let result = paint(
-            &mut pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut pixels, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut cache,
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
         let boundary = (CONTENT_TOP + layout.block_top(1)) as usize;
         assert!(
@@ -1584,18 +1409,15 @@ mod tests {
 
         let mut scrolled = vec![0; width * height];
         let result = paint(
-            &mut scrolled,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut scrolled, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions {
+                scroll_y: 20,
+                ..PaintOptions::default()
+            },
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            20,
-            false,
         );
         let empty = crate::page::parse_xhtml_for_test(
             "https://example.test/",
@@ -1605,18 +1427,12 @@ mod tests {
         let empty_layout = PageLayout::build(&empty, width, None);
         let mut empty_pixels = vec![0; width * height];
         paint(
-            &mut empty_pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut empty_pixels, width, height).unwrap(),
             &empty,
             &empty_layout,
-            "",
-            "",
-            None,
+            PaintOptions::default(),
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
         assert_eq!(
             &scrolled[..CONTENT_TOP as usize * width],
@@ -1641,7 +1457,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("testdata/fonts/noto/nko-hmtx.woff2");
         let font = normalize_font_container(std::fs::read(path).unwrap()).unwrap();
-        let page=crate::page::parse_xhtml_for_test(
+        let page = crate::page::parse_xhtml_for_test(
             "https://example.test/",
             "<html xmlns='http://www.w3.org/1999/xhtml'><body><div style='line-height:40px'>ߊ</div><div style='line-height:0;font-size:32px;color:red'>ߊ</div></body></html>"
         ).unwrap();
@@ -1651,18 +1467,15 @@ mod tests {
         assert_eq!(layout.block_height(1), 0);
         let mut pixels = vec![0; width * height];
         paint(
-            &mut pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut pixels, width, height).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            Some(&font),
+            PaintOptions {
+                fallback_font_data: Some(&font),
+                ..PaintOptions::default()
+            },
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            0,
-            false,
         );
         assert!(pixels[CONTENT_TOP as usize * width..].iter().any(|pixel| {
             let red = (pixel >> 16) & 0xff;
@@ -1678,27 +1491,19 @@ mod tests {
         let mut regions = Vec::new();
         let mut cache = GlyphRasterCache::new();
 
-        let end_y = draw_wrapped_text(
-            &mut pixels,
-            64,
-            30,
+        let end_y = TextPainter::new(
+            XrgbFrame::new(&mut pixels, 64, 30).unwrap(),
             0,
-            0.0,
-            0,
-            0.0,
-            64,
-            text,
-            16.0,
-            FontWeight::Normal,
-            FontWeight::Normal,
-            FontStyle::Normal,
-            0,
-            Some("/link"),
             None,
-            &[],
-            0,
             &mut regions,
             &mut cache,
+        )
+        .draw_wrapped_text(
+            TextOrigin::at(0, 0),
+            64,
+            text,
+            &bitmap_style(16.0),
+            Some("/link"),
         );
 
         let positions: Vec<_> = regions.iter().map(|region| (region.x, region.y)).collect();
@@ -1731,28 +1536,14 @@ mod tests {
         let mut regions = Vec::new();
         let mut cache = GlyphRasterCache::new();
 
-        let end_y = draw_wrapped_text(
-            &mut pixels,
-            8,
-            10,
-            0,
-            0.0,
-            0,
-            0.0,
-            8,
-            &text,
-            16.0,
-            FontWeight::Normal,
-            FontWeight::Normal,
-            FontStyle::Normal,
+        let end_y = TextPainter::new(
+            XrgbFrame::new(&mut pixels, 8, 10).unwrap(),
             0,
             None,
-            None,
-            &[],
-            0,
             &mut regions,
             &mut cache,
-        );
+        )
+        .draw_wrapped_text(TextOrigin::at(0, 0), 8, &text, &bitmap_style(16.0), None);
 
         assert_eq!(end_y, 40_960);
 
@@ -1788,22 +1579,24 @@ mod tests {
         let render = |offset_x: f32, offset_y: f32, cache: &mut GlyphRasterCache| {
             let mut pixels = vec![0x00_FF_FF_FF; 80 * 80];
 
-            assert!(draw_vector_text_line(
-                &mut pixels,
-                80,
-                80,
-                10,
+            let style = TextRunStyle {
+                font: Some(&font),
+                ..bitmap_style(32.0)
+            };
+            let origin = TextOrigin {
+                x: 10,
+                y: 10,
                 offset_x,
-                10,
                 offset_y,
-                "ߊ",
-                32.0,
-                FontWeight::Normal,
-                FontStyle::Normal,
-                0x00_00_00_00,
-                &font,
-                &[],
+            };
+
+            assert!(draw_vector_text_line(
+                &mut XrgbFrame::new(&mut pixels, 80, 80).unwrap(),
                 cache,
+                origin,
+                "ߊ",
+                &style,
+                &font,
             ));
 
             pixels
@@ -1868,18 +1661,12 @@ mod tests {
             let mut pixels = vec![0; 64 * 130];
 
             paint(
-                &mut pixels,
-                64,
-                130,
+                &mut XrgbFrame::new(&mut pixels, 64, 130).unwrap(),
                 &page,
                 &layout,
-                "",
-                "",
-                None,
+                PaintOptions::default(),
                 cache,
                 &mut GlyphRasterCache::new(),
-                0,
-                false,
             );
 
             pixels
@@ -1915,18 +1702,12 @@ mod tests {
             let mut pixels = vec![0; 64 * 130];
 
             let result = paint(
-                &mut pixels,
-                64,
-                130,
+                &mut XrgbFrame::new(&mut pixels, 64, 130).unwrap(),
                 &page,
                 &layout,
-                "",
-                "",
-                None,
+                PaintOptions::default(),
                 cache,
                 &mut GlyphRasterCache::new(),
-                0,
-                false,
             );
 
             (pixels, result.link_regions)
@@ -2006,18 +1787,12 @@ mod tests {
             let mut pixels = vec![0; 120 * 120];
 
             let result = paint(
-                &mut pixels,
-                120,
-                120,
+                &mut XrgbFrame::new(&mut pixels, 120, 120).unwrap(),
                 &page,
                 &layout,
-                "",
-                "",
-                None,
+                PaintOptions::default(),
                 cache,
                 &mut GlyphRasterCache::new(),
-                0,
-                false,
             );
 
             (pixels, result.link_regions)
@@ -2085,18 +1860,12 @@ mod tests {
                 let mut pixels = vec![0; 80 * 160];
 
                 let result = paint(
-                    &mut pixels,
-                    80,
-                    160,
+                    &mut XrgbFrame::new(&mut pixels, 80, 160).unwrap(),
                     &page,
                     &layout,
-                    "",
-                    "",
-                    None,
+                    PaintOptions::default(),
                     cache,
                     &mut GlyphRasterCache::new(),
-                    0,
-                    false,
                 );
 
                 (pixels, result.link_regions)
@@ -2168,18 +1937,12 @@ mod tests {
             let mut pixels = vec![0; 120 * 150];
 
             let result = paint(
-                &mut pixels,
-                120,
-                150,
+                &mut XrgbFrame::new(&mut pixels, 120, 150).unwrap(),
                 &page,
                 &layout,
-                "",
-                "",
-                None,
+                PaintOptions::default(),
                 cache,
                 &mut GlyphRasterCache::new(),
-                0,
-                false,
             );
 
             (pixels, result.link_regions)
@@ -2244,18 +2007,12 @@ mod tests {
                 let mut pixels = vec![0; 64 * 130];
 
                 let result = paint(
-                    &mut pixels,
-                    64,
-                    130,
+                    &mut XrgbFrame::new(&mut pixels, 64, 130).unwrap(),
                     &page,
                     &layout,
-                    "",
-                    "",
-                    None,
+                    PaintOptions::default(),
                     cache,
                     &mut GlyphRasterCache::new(),
-                    0,
-                    false,
                 );
 
                 (pixels, result.link_regions)
@@ -2344,18 +2101,12 @@ mod tests {
             let mut pixels = vec![0; 64 * 130];
 
             let result = paint(
-                &mut pixels,
-                64,
-                130,
+                &mut XrgbFrame::new(&mut pixels, 64, 130).unwrap(),
                 &page,
                 &layout,
-                "",
-                "",
-                None,
+                PaintOptions::default(),
                 cache,
                 &mut GlyphRasterCache::new(),
-                0,
-                false,
             );
 
             (pixels, result.link_regions)
@@ -2441,18 +2192,15 @@ mod tests {
             let mut pixels = vec![0; 64 * 100];
 
             paint(
-                &mut pixels,
-                64,
-                100,
+                &mut XrgbFrame::new(&mut pixels, 64, 100).unwrap(),
                 &page,
                 &layout,
-                "",
-                "",
-                None,
+                PaintOptions {
+                    scroll_y: 2,
+                    ..PaintOptions::default()
+                },
                 &mut cache,
                 &mut GlyphRasterCache::new(),
-                2,
-                false,
             );
 
             assert_eq!(pixels[90 * 64 + 16], expected);
@@ -2462,7 +2210,7 @@ mod tests {
 
     #[test]
     fn canvas_renders_and_clips_when_text_overflows() {
-        let mut page=crate::page::parse_xhtml_for_test(
+        let mut page = crate::page::parse_xhtml_for_test(
             "https://example.test/",
             "<html xmlns='http://www.w3.org/1999/xhtml'><body><div style='line-height:0'>X</div><canvas width='4' height='4'></canvas></body></html>",
         ).unwrap();
@@ -2483,18 +2231,15 @@ mod tests {
 
         let mut pixels = vec![0; 64 * 100];
         paint(
-            &mut pixels,
-            64,
-            100,
+            &mut XrgbFrame::new(&mut pixels, 64, 100).unwrap(),
             &page,
             &layout,
-            "",
-            "",
-            None,
+            PaintOptions {
+                scroll_y: 2,
+                ..PaintOptions::default()
+            },
             &mut BlockRasterCache::new(),
             &mut GlyphRasterCache::new(),
-            2,
-            false,
         );
         assert_eq!(pixels[90 * 64 + 16], 0xff0000);
         assert_eq!(pixels[89 * 64 + 16], BACKGROUND);

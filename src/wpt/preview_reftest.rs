@@ -4,6 +4,7 @@
 //! unsupported CSS or provide a standards-conforming browser viewport.
 
 use crate::{
+    graphics::frame::XrgbFrame,
     layout_preview::PreviewLayout,
     page::parse_xhtml_for_test,
     page_layout::CONTENT_TOP,
@@ -480,9 +481,7 @@ fn compare_xhtml_preview(
         let mut cache = GlyphRasterCache::new();
 
         paint_preview_scene(
-            &mut pixels,
-            width,
-            height,
+            &mut XrgbFrame::new(&mut pixels, width, height).unwrap(),
             &page,
             &layout,
             None,

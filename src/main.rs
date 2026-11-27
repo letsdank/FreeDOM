@@ -24,10 +24,12 @@ mod wpt;
 
 use crate::performance::FrameProfiler;
 use crate::{
+    graphics::frame::XrgbFrame,
     page::{BlockContent, Page, load_image, load_page},
     page_layout::PageLayout,
     render::{
-        BlockRasterCache, GlyphRasterCache, LinkRegion, load_vector_font_from_environment, paint,
+        BlockRasterCache, GlyphRasterCache, LinkRegion, PaintOptions,
+        load_vector_font_from_environment, paint,
     },
 };
 use anyhow::{Context as _, Result};
@@ -463,31 +465,32 @@ impl App {
             .buffer_mut()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
+        let mut frame = XrgbFrame::new(&mut buffer, width as usize, height as usize)
+            .context("surface buffer does not match the window size")?;
+
         let profiling = self.frame_profiler.enabled();
         let paint_started = profiling.then(Instant::now);
 
         let paint_result = paint(
-            &mut buffer,
-            width as usize,
-            height as usize,
+            &mut frame,
             &self.page,
             layout,
-            &self.address,
-            &self.status,
-            self.vector_font_data.as_deref(),
+            PaintOptions {
+                address: &self.address,
+                status: &self.status,
+                fallback_font_data: self.vector_font_data.as_deref(),
+                scroll_y: self.scroll_y,
+                profiling,
+            },
             &mut self.block_raster_cache,
             &mut self.glyph_raster_cache,
-            self.scroll_y,
-            profiling,
         );
 
         if self.show_preview_backgrounds
             && let Some(preview) = &self.preview_layout
         {
             render::paint_preview_scene(
-                &mut buffer,
-                width as usize,
-                height as usize,
+                &mut frame,
                 &self.page,
                 preview,
                 self.vector_font_data.as_deref(),
@@ -497,25 +500,13 @@ impl App {
         }
 
         if self.show_layout_boxes {
-            layout_debug::paint_layout_overlay(
-                &mut buffer,
-                width as usize,
-                height as usize,
-                layout,
-                self.scroll_y,
-            );
+            layout_debug::paint_layout_overlay(&mut frame, layout, self.scroll_y);
         }
 
         if self.show_layout_preview
             && let Some(preview) = &self.preview_layout
         {
-            layout_debug::paint_preview_overlay(
-                &mut buffer,
-                width as usize,
-                height as usize,
-                preview,
-                self.scroll_y,
-            );
+            layout_debug::paint_preview_overlay(&mut frame, preview, self.scroll_y);
         }
 
         let paint_duration = paint_started.map(|started| started.elapsed());

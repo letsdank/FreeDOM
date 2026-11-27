@@ -1,4 +1,5 @@
 use crate::flatten::FlattenedPath;
+use crate::frame::XrgbFrame;
 use crate::geometry::{Point, Transform};
 
 const SAMPLE_OFFSETS: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
@@ -253,39 +254,25 @@ impl Surface {
         true
     }
 
-    pub fn blit_xrgb8888(
-        &self,
-        destination: &mut [u32],
-        destination_width: usize,
-        destination_height: usize,
-        origin_x: i32,
-        origin_y: i32,
-    ) {
-        self.blit_scaled_xrgb8888(
-            destination,
-            destination_width,
-            destination_height,
-            origin_x,
-            origin_y,
-            self.width,
-            self.height,
-        );
+    /// Composites this surface onto `destination` with source-over blending.
+    pub fn blit_xrgb8888(&self, destination: &mut XrgbFrame<'_>, origin_x: i32, origin_y: i32) {
+        self.blit_scaled_xrgb8888(destination, origin_x, origin_y, self.width, self.height);
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the destination buffer, its size, and the target rectangle are separate values"
-    )]
+    /// Composites this surface onto `destination`, scaled to the target size
+    /// with nearest-neighbour sampling and source-over blending.
     pub fn blit_scaled_xrgb8888(
         &self,
-        destination: &mut [u32],
-        destination_width: usize,
-        destination_height: usize,
+        destination: &mut XrgbFrame<'_>,
         origin_x: i32,
         origin_y: i32,
         target_width: usize,
         target_height: usize,
     ) {
+        let destination_width = destination.width();
+        let destination_height = destination.height();
+        let destination = destination.pixels_mut();
+
         if self.width == 0 || self.height == 0 || target_width == 0 || target_height == 0 {
             return;
         }
@@ -1386,7 +1373,7 @@ mod tests {
 
         let mut destination = vec![0x00_00_00_ff, 0x00_ff_ff_ff];
 
-        surface.blit_xrgb8888(&mut destination, 2, 1, 0, 0);
+        surface.blit_xrgb8888(&mut XrgbFrame::new(&mut destination, 2, 1).unwrap(), 0, 0);
 
         assert_eq!(destination, vec![0x00_80_00_7f, 0x00_ff_ff_ff]);
     }
@@ -1526,7 +1513,13 @@ mod tests {
 
         let mut destination = vec![0; 8];
 
-        source.blit_scaled_xrgb8888(&mut destination, 4, 2, 0, 0, 4, 2);
+        source.blit_scaled_xrgb8888(
+            &mut XrgbFrame::new(&mut destination, 4, 2).unwrap(),
+            0,
+            0,
+            4,
+            2,
+        );
 
         assert_eq!(destination[0], 0x00_ff_00_00);
         assert_eq!(destination[1], 0x00_ff_00_00);

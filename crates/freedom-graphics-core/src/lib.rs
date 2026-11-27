@@ -3,5 +3,6 @@
 //! Browser-specific SVG, font and canvas integration remains outside this crate.
 
 pub mod flatten;
+pub mod frame;
 pub mod geometry;
 pub mod raster;
