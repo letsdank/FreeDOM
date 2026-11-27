@@ -419,9 +419,9 @@ fn format_inline(
 mod tests {
     use super::*;
 
-    use crate::javascript::DocumentState;
     use freedom_css::build_author_rules;
     use freedom_html::Document;
+    use freedom_js::DocumentState;
 
     fn make_styled(input: &str) -> StyledTree {
         let html = Document::parse(input);

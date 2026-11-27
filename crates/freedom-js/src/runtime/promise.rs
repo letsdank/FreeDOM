@@ -1,0 +1,721 @@
+//! Partial Promise implementation.
+//!
+//! <https://tc39.es/ecma262/#sec-promise.resolve>
+//! <https://tc39.es/ecma262/#sec-performpromisethen>
+//!
+//! Construction, thenable assimilation, species, and unhandled rejection
+//! reporting are not implemented. Resolution currently accepts primitives.
+
+use std::{cell::RefCell, fmt, rc::Rc};
+
+use super::{
+    Interpreter, JsError, NativeFunction, ObjectStorage, RootVisitError, RuntimeRoot, Value,
+    microtasks::Microtask,
+};
+use crate::{JsErrorKind, NativeException};
+
+#[derive(Clone)]
+pub(crate) struct PromiseHandle(Rc<RefCell<PromiseState>>);
+
+impl fmt::Debug for PromiseHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("PromiseHandle")
+            .field(&Rc::as_ptr(&self.0))
+            .finish()
+    }
+}
+
+impl PartialEq for PromiseHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[derive(Clone)]
+enum Outcome {
+    Fulfilled(Value),
+    Rejected(Value),
+}
+
+#[derive(Default)]
+struct PromiseState {
+    outcome: Option<Outcome>,
+    reactions: Vec<Reaction>,
+}
+
+#[derive(Clone)]
+struct Reaction {
+    on_fulfilled: Option<Value>,
+    on_rejected: Option<Value>,
+    // The derived Promise is retained by the reaction and by its queued job.
+    // https://tc39.es/ecma262/#sec-promisereaction-records
+    // https://tc39.es/ecma262/#sec-promisecapability-records
+    target: ObjectStorage,
+}
+
+#[derive(Clone)]
+pub(super) struct PromiseReactionJob {
+    outcome: Outcome,
+    reaction: Reaction,
+}
+
+impl PromiseReactionJob {
+    pub(super) fn visit_roots(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        self.outcome.visit_references(visit);
+        self.reaction.visit_references(visit);
+    }
+}
+
+impl Outcome {
+    fn visit_references(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        match self {
+            Outcome::Fulfilled(value) | Outcome::Rejected(value) => {
+                visit(RuntimeRoot::Value(value));
+            }
+        }
+    }
+}
+
+impl Reaction {
+    fn visit_references(&self, visit: &mut impl FnMut(RuntimeRoot<'_>)) {
+        if let Some(handler) = &self.on_fulfilled {
+            visit(RuntimeRoot::Value(handler));
+        }
+
+        if let Some(handler) = &self.on_rejected {
+            visit(RuntimeRoot::Value(handler));
+        }
+
+        visit(RuntimeRoot::Object(&self.target));
+    }
+}
+
+impl PromiseHandle {
+    /// Visits immediate references without traversing their children.
+    /// The callback must not mutate the visited graph or re-enter JavaScript.
+    #[allow(dead_code)]
+    pub(crate) fn visit_references(
+        &self,
+        visit: &mut impl FnMut(RuntimeRoot<'_>),
+    ) -> Result<(), RootVisitError> {
+        let state = self
+            .0
+            .try_borrow()
+            .map_err(|_| RootVisitError::PromiseBorrowed)?;
+
+        if let Some(outcome) = &state.outcome {
+            outcome.visit_references(visit);
+        }
+
+        for reaction in &state.reactions {
+            reaction.visit_references(visit);
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn trace_identity(&self) -> *const () {
+        Rc::as_ptr(&self.0).cast()
+    }
+}
+
+impl Interpreter {
+    fn new_pending_promise(&self) -> (Value, PromiseHandle) {
+        let handle = PromiseHandle(Rc::new(RefCell::new(PromiseState::default())));
+        let promise = self.host_roots.create_ordinary_object(
+            [],
+            super::ObjectPrototype::Object(self.promise_prototype.clone()),
+        );
+
+        let Value::Object(object) = &promise else {
+            unreachable!("promise must be an object");
+        };
+
+        self.host_roots.set_ordinary_promise(object, handle.clone());
+
+        (promise, handle)
+    }
+
+    // Keep the new object visible while its state or reactions are initialized.
+    fn with_new_pending_promise(
+        &mut self,
+        operation: impl FnOnce(&mut Self, usize, &PromiseHandle) -> Result<Value, JsError>,
+    ) -> Result<Value, JsError> {
+        let (promise, handle) = self.new_pending_promise();
+        self.with_frame_value_for_call_result(promise, |interpreter, index| {
+            operation(interpreter, index, &handle)
+        })
+    }
+
+    fn promise_handle(&self, value: &Value) -> Option<PromiseHandle> {
+        match value {
+            Value::Object(object) => self.host_roots.ordinary_promise(object),
+            _ => None,
+        }
+    }
+
+    fn require_promise_constructor(receiver: Option<Value>) -> Result<(), JsError> {
+        if matches!(
+            receiver,
+            Some(Value::NativeFunction(NativeFunction::PromiseConstructor))
+        ) {
+            Ok(())
+        } else {
+            Err(JsError::type_error(
+                "Promise method receiver is not the Promise constructor",
+            ))
+        }
+    }
+
+    pub(super) fn promise_resolve(
+        &mut self,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        Self::require_promise_constructor(receiver)?;
+
+        let value = arguments.into_iter().next().unwrap_or(Value::Undefined);
+
+        if self.promise_handle(&value).is_some() {
+            return Ok(value);
+        }
+
+        Self::require_primitive(&value)?;
+
+        self.with_new_pending_promise(|interpreter, index, handle| {
+            interpreter.settle_promise(handle, Outcome::Fulfilled(value));
+            Ok(interpreter.frame_value(index).clone())
+        })
+    }
+
+    pub(super) fn promise_reject(
+        &mut self,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        Self::require_promise_constructor(receiver)?;
+
+        let reason = arguments.into_iter().next().unwrap_or(Value::Undefined);
+
+        self.with_frame_value(reason, |interpreter, reason_index| {
+            interpreter.with_new_pending_promise(|interpreter, promise_index, handle| {
+                let reason = interpreter.frame_value(reason_index).clone();
+                interpreter.settle_promise(handle, Outcome::Rejected(reason));
+                Ok(interpreter.frame_value(promise_index).clone())
+            })
+        })
+    }
+
+    fn require_primitive(value: &Value) -> Result<(), JsError> {
+        match value {
+            Value::Undefined
+            | Value::Null
+            | Value::Boolean(_)
+            | Value::Number(_)
+            | Value::String(_) => Ok(()),
+
+            _ => Err(JsError::unsupported(
+                "Promise resolution of objects and thenables is not implemented",
+            )),
+        }
+    }
+
+    fn handler(value: Value) -> Result<Option<Value>, JsError> {
+        match value {
+            Value::Function(_)
+            | Value::NativeFunction(_)
+            | Value::ArrayMethod { .. }
+            | Value::DocumentMethod(_)
+            | Value::ElementMethod(_)
+            | Value::TestContextMethod(_)
+            | Value::RegExpTest(_)
+            | Value::RegExpExec(_) => Ok(Some(value)),
+
+            Value::ObjectConstructor | Value::ElementConstructor(_) => Err(JsError::unsupported(
+                "Promise handler of this callable type is not implemented",
+            )),
+
+            _ => Ok(None),
+        }
+    }
+
+    pub(super) fn promise_then(
+        &mut self,
+        receiver: Option<Value>,
+        arguments: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        let source = receiver
+            .as_ref()
+            .and_then(|value| self.promise_handle(value))
+            .ok_or_else(|| {
+                JsError::type_error("Promise.prototype.then receiver is not a Promise")
+            })?;
+
+        let mut arguments = arguments.into_iter();
+
+        let on_fulfilled = Self::handler(arguments.next().unwrap_or(Value::Undefined))?;
+        let on_rejected = Self::handler(arguments.next().unwrap_or(Value::Undefined))?;
+
+        self.with_new_pending_promise(|interpreter, index, _| {
+            let Value::Object(target) = interpreter.frame_value(index) else {
+                unreachable!("promise must be an object");
+            };
+
+            let reaction = Reaction {
+                on_fulfilled,
+                on_rejected,
+                target: target.clone(),
+            };
+
+            let mut state = source.0.borrow_mut();
+
+            if let Some(outcome) = state.outcome.clone() {
+                interpreter
+                    .microtasks
+                    .push_back(Microtask::PromiseReaction(PromiseReactionJob {
+                        outcome,
+                        reaction,
+                    }));
+            } else {
+                state.reactions.push(reaction);
+            }
+
+            Ok(interpreter.frame_value(index).clone())
+        })
+    }
+
+    fn settle_promise(&mut self, promise: &PromiseHandle, outcome: Outcome) {
+        let reactions = {
+            let mut state = promise.0.borrow_mut();
+
+            if state.outcome.is_some() {
+                return;
+            }
+
+            state.outcome = Some(outcome.clone());
+
+            std::mem::take(&mut state.reactions)
+        };
+
+        for reaction in reactions {
+            self.microtasks
+                .push_back(Microtask::PromiseReaction(PromiseReactionJob {
+                    outcome: outcome.clone(),
+                    reaction,
+                }));
+        }
+    }
+
+    pub(super) fn run_promise_reaction(&mut self, job: PromiseReactionJob) -> Result<(), JsError> {
+        let PromiseReactionJob { outcome, reaction } = job;
+
+        let target = self
+            .host_roots
+            .ordinary_promise(&reaction.target)
+            .ok_or_else(|| JsError::runtime("Promise reaction target has no internal state"))?;
+
+        let handler = match &outcome {
+            Outcome::Fulfilled(_) => reaction.on_fulfilled,
+            Outcome::Rejected(_) => reaction.on_rejected,
+        };
+
+        let Some(handler) = handler else {
+            self.settle_promise(&target, outcome);
+            return Ok(());
+        };
+
+        let argument = match outcome {
+            Outcome::Fulfilled(value) | Outcome::Rejected(value) => value,
+        };
+
+        self.dispatch_call_with_handoff(handler, None, vec![argument], |interpreter, result| {
+            match result {
+                Ok(value) => {
+                    if interpreter.promise_handle(&value).as_ref() == Some(&target) {
+                        let error = Value::error_with_prototype(
+                            &interpreter.host_roots,
+                            "TypeError",
+                            Some("promise cannot resolve to itself".to_owned()),
+                            interpreter.type_error_prototype.clone(),
+                        );
+
+                        interpreter.with_frame_value(error, |interpreter, index| {
+                            let reason = interpreter.frame_value(index).clone();
+                            interpreter.settle_promise(&target, Outcome::Rejected(reason));
+                            Ok(())
+                        })?;
+                    } else {
+                        Self::require_primitive(&value)?;
+
+                        interpreter.settle_promise(&target, Outcome::Fulfilled(value));
+                    }
+                }
+
+                Err(mut error) => {
+                    interpreter.materialize_native_exception(&mut error);
+                    interpreter.record_exception(&error);
+
+                    match error.kind {
+                        JsErrorKind::Thrown(value)
+                        | JsErrorKind::NativeException(NativeException::Materialized(value)) => {
+                            interpreter.settle_promise(&target, Outcome::Rejected(value));
+                            // The target promise now owns the rejection reason.
+                            interpreter.clear_exception();
+                        }
+
+                        _ => return Err(error),
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Interpreter, Outcome, PromiseHandle, PromiseState, Reaction, RootVisitError, RuntimeRoot,
+    };
+    use crate::{DocumentScriptSession, DocumentState, JsErrorKind, Value, evaluate};
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn schedules_then_as_microtasks_and_chains_values() {
+        let mut doc = DocumentState::with_title("");
+        let mut session = DocumentScriptSession::new(&doc);
+
+        let result = session
+            .evaluate(
+                r#"
+                    let log = '';
+
+                    let p = Promise.resolve(1);
+
+                    let next = p.then(function(x) {
+                        log += x;
+                        return 2;
+                    });
+
+                    next.then(function(x) {
+                        log += x;
+                    });
+
+                    queueMicrotask(function() {
+                        log += 'q';
+                    });
+
+                    log += 's';
+                    log;
+                "#,
+                &mut doc,
+            )
+            .unwrap();
+
+        assert_eq!(result, Value::String("s".into()));
+
+        assert_eq!(
+            session.evaluate("log;", &mut doc).unwrap(),
+            Value::String("s1q2".into())
+        );
+    }
+
+    #[test]
+    fn thrown_handler_rejects_and_rejection_handler_recovers() {
+        let mut doc = DocumentState::with_title("");
+        let mut session = DocumentScriptSession::new(&doc);
+
+        session
+            .evaluate(
+                r#"
+            let log = '';
+
+            Promise.resolve(1)
+                .then(function(x) {
+                    throw x + 1;
+                })
+                .then(undefined, function(error) {
+                    log += error;
+                    return 3;
+                })
+                .then(function(value) {
+                    log += value;
+                });
+        "#,
+                &mut doc,
+            )
+            .unwrap();
+
+        assert_eq!(
+            session.evaluate("log;", &mut doc).unwrap(),
+            Value::String("23".into())
+        );
+    }
+
+    #[test]
+    fn missing_handlers_forward_fulfillment_and_rejection() {
+        let mut doc = DocumentState::with_title("");
+        let mut session = DocumentScriptSession::new(&doc);
+
+        session
+            .evaluate(
+                r#"
+                let log = '';
+                let marker = {};
+                let identical = false;
+
+                Promise.resolve('a')
+                    .then(null)
+                    .then(function(x) {
+                        log += x;
+                    });
+
+                Promise.reject('b')
+                    .then()
+                    .then(undefined, function(e) {
+                        log += e;
+                    });
+
+                Promise.reject(marker)
+                    .then()
+                    .then(undefined, function(e) {
+                        identical = e === marker;
+                    });
+            "#,
+                &mut doc,
+            )
+            .unwrap();
+
+        assert_eq!(
+            session
+                .evaluate("log === 'ab' && identical;", &mut doc)
+                .unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn resolve_preserves_promise_identity_and_then_creates_a_new_promise() {
+        let result = evaluate(
+            r#"
+                let p = Promise.resolve(1);
+
+                Promise.resolve(p) === p &&
+                    p.then() !== p &&
+                    typeof Promise === 'function';
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn self_resolution_rejects_with_type_error() {
+        let mut doc = DocumentState::with_title("");
+        let mut session = DocumentScriptSession::new(&doc);
+
+        session
+            .evaluate(
+                r#"
+                let firstError;
+                let secondError;
+                let p;
+
+                p = Promise.resolve().then(function() {
+                    return p;
+                });
+
+                p.then(undefined, function(error) {
+                    firstError = error;
+                });
+
+                p.then(undefined, function(error) {
+                    secondError = error;
+                });
+            "#,
+                &mut doc,
+            )
+            .unwrap();
+
+        assert_eq!(
+            session
+                .evaluate(
+                    "firstError === secondError && firstError.name === 'TypeError';",
+                    &mut doc
+                )
+                .unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn reports_unsupported_resolution_and_construction() {
+        for source in [
+            "Promise.resolve({});",
+            "new Promise(function() {});",
+            "Promise.resolve(1).then(function() { return {}; });",
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap_err().kind,
+                JsErrorKind::UnsupportedFeature,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_receivers() {
+        for source in [
+            "let resolve = Promise.resolve; resolve(1);",
+            "Promise.prototype.then.call({}, function() {});",
+        ] {
+            assert!(
+                matches!(
+                    evaluate(source).unwrap_err().kind,
+                    JsErrorKind::NativeException(_)
+                ),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn visits_promise_references_without_following_cycles() {
+        let promise = PromiseHandle(Rc::new(RefCell::new(PromiseState::default())));
+        let Value::Object(object) = Value::object([]) else {
+            unreachable!();
+        };
+        let owner = crate::HostRoots::default();
+        owner.set_ordinary_promise(&object, promise.clone());
+
+        {
+            let mut state = promise.0.borrow_mut();
+
+            state.outcome = Some(Outcome::Rejected(Value::Number(1.0)));
+            state.reactions.push(Reaction {
+                on_fulfilled: Some(Value::Number(2.0)),
+                on_rejected: Some(Value::Number(3.0)),
+                target: object.clone(),
+            });
+        }
+
+        let mut values = Vec::new();
+        let mut self_references = 0;
+
+        promise
+            .visit_references(&mut |root| match root {
+                RuntimeRoot::Value(value) => values.push(value.clone()),
+                RuntimeRoot::Object(target) if Rc::ptr_eq(target, &object) => self_references += 1,
+                _ => {}
+            })
+            .unwrap();
+
+        assert_eq!(
+            values,
+            vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)]
+        );
+        assert_eq!(self_references, 1);
+
+        {
+            let _guard = promise.0.borrow_mut();
+
+            assert_eq!(
+                promise.visit_references(&mut |_| {}),
+                Err(RootVisitError::PromiseBorrowed)
+            );
+        }
+
+        let mut found_promise = false;
+
+        owner
+            .visit_ordinary_references(&object, &mut |root| {
+                if let RuntimeRoot::Promise(found) = root {
+                    found_promise = found == &promise;
+                }
+            })
+            .unwrap();
+
+        assert!(found_promise);
+
+        promise.0.borrow_mut().reactions.clear();
+    }
+
+    #[test]
+    fn reaction_and_queued_job_retain_the_derived_promise_object() {
+        let mut interpreter = Interpreter::new();
+        let (source, source_handle) = interpreter.new_pending_promise();
+        let derived = interpreter.promise_then(Some(source), vec![]).unwrap();
+        let Value::Object(object) = &derived else {
+            panic!("expected a promise object");
+        };
+        let weak = Rc::downgrade(object);
+        drop(derived);
+
+        assert!(
+            weak.upgrade().is_some(),
+            "pending reaction must retain the target"
+        );
+        interpreter.settle_promise(&source_handle, Outcome::Fulfilled(Value::Number(1.0)));
+        assert!(
+            weak.upgrade().is_some(),
+            "queued job must retain the target"
+        );
+
+        interpreter.perform_microtask_checkpoint().unwrap();
+        assert!(
+            weak.upgrade().is_none(),
+            "completed job must release the target"
+        );
+    }
+
+    #[test]
+    fn initializing_promise_keeps_object_and_rejection_reason_rooted() {
+        let mut interpreter = Interpreter::new();
+        let Value::Object(reason) = Value::object([]) else {
+            unreachable!();
+        };
+
+        let promise = interpreter
+            .with_frame_value(
+                Value::Object(reason.clone()),
+                |interpreter, reason_index| {
+                    interpreter.with_new_pending_promise(|interpreter, promise_index, handle| {
+                        let Value::Object(promise) = interpreter.frame_value(promise_index).clone()
+                        else {
+                            unreachable!();
+                        };
+                        let (mut saw_promise, mut saw_reason) = (false, false);
+                        interpreter
+                            .visit_runtime_roots(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(object)) = root {
+                                    saw_promise |= Rc::ptr_eq(object, &promise);
+                                    saw_reason |= Rc::ptr_eq(object, &reason);
+                                }
+                            })
+                            .unwrap();
+                        assert!(saw_promise && saw_reason);
+
+                        let reason_value = interpreter.frame_value(reason_index).clone();
+                        interpreter.settle_promise(handle, Outcome::Rejected(reason_value));
+                        let mut retained_reason = false;
+                        handle
+                            .visit_references(&mut |root| {
+                                if let RuntimeRoot::Value(Value::Object(object)) = root {
+                                    retained_reason |= Rc::ptr_eq(object, &reason);
+                                }
+                            })
+                            .unwrap();
+                        assert!(retained_reason);
+                        Ok(Value::Object(promise))
+                    })
+                },
+            )
+            .unwrap();
+
+        assert!(interpreter.execution_frames.is_empty());
+        assert!(interpreter.promise_handle(&promise).is_some());
+    }
+}

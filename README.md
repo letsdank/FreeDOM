@@ -10,23 +10,25 @@ partial, and the browser is not intended for everyday use.
 
 ## Repository layout
 
-| Path | Contents |
-| --- | --- |
-| `src/` | Browser application: window and navigation, page loading, layout, painting, the JavaScript engine and its DOM host bindings, and local WPT tests |
-| `crates/freedom-url` | URL parsing ([URL Standard](https://url.spec.whatwg.org/)) |
-| `crates/freedom-html` | HTML document model and parsing |
-| `crates/freedom-css` | CSS syntax, rules, cascade, and computed styles |
-| `crates/freedom-graphics-core` | Shared raster surfaces and drawing primitives |
-| `crates/freedom-font` | SFNT, WOFF, and WOFF2 decoding, text layout, and glyph rendering |
-| `crates/freedom-image` | PNG, APNG, and JPEG decoders |
-| `crates/freedom-svg` | SVG parsing and rendering |
-| `crates/freedom-canvas` | Canvas 2D drawing core |
-| `crates/freedom-fetch` | HTTP resource fetching |
-| `crates/freedom-wasm` | WebAssembly decoding and execution (not yet integrated into the browser) |
-| `testdata/` | Test fixtures (see [Test fixtures](#test-fixtures)) |
-| `tools/` | Scripts that run the local WPT tests and summarize the results |
+| Path                           | Contents                                                                                                              |
+|--------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| `src/`                         | Browser application: window and navigation, page loading, layout, painting, and local WPT tests                       |
+| `crates/freedom-url`           | URL parsing ([URL Standard](https://url.spec.whatwg.org/))                                                            |
+| `crates/freedom-html`          | HTML document model and parsing                                                                                       |
+| `crates/freedom-css`           | CSS syntax, rules, cascade, and computed styles                                                                       |
+| `crates/freedom-graphics-core` | Shared raster surfaces and drawing primitives                                                                         |
+| `crates/freedom-font`          | SFNT, WOFF, and WOFF2 decoding, text layout, and glyph rendering                                                      |
+| `crates/freedom-image`         | PNG, APNG, and JPEG decoders                                                                                          |
+| `crates/freedom-svg`           | SVG parsing and rendering                                                                                             |
+| `crates/freedom-canvas`        | Canvas 2D drawing core                                                                                                |
+| `crates/freedom-fetch`         | HTTP resource fetching                                                                                                |
+| `crates/freedom-js`            | JavaScript lexer, parser, interpreter, and RegExp engine, together with the DOM and Canvas bindings scripts use today |
+| `crates/freedom-wasm`          | WebAssembly decoding and execution (not yet integrated into the browser)                                              |
+| `testdata/`                    | Test fixtures (see [Test fixtures](#test-fixtures))                                                                   |
+| `tools/`                       | Scripts that run the local WPT tests and summarize the results                                                        |
 
-The JavaScript engine still lives in the application crate together with its browser host code; it is being separated gradually.
+The JavaScript engine has its own crate but still contains its DOM and Canvas host bindings; separating them behind a
+host interface is the next step.
 
 ## Building and running
 

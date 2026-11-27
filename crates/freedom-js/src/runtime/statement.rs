@@ -1,0 +1,472 @@
+//! Execution of the interpreter's supported statement subset.
+//!
+//! ECMAScript statement evaluation:
+//! <https://tc39.es/ecma262/#sec-ecmascript-language-statements-and-declarations>
+
+use super::for_in::ForInBindingMode;
+use super::{Completion, Expression, Interpreter, JsError, Statement, Value};
+
+impl Interpreter {
+    pub(super) fn execute_statements(
+        &mut self,
+        program: &[Statement],
+    ) -> Result<Completion, JsError> {
+        // This is limited hoisting for the current flat environment model.
+        for statement in program {
+            if let Statement::FunctionDeclaration { name, function } = statement {
+                let value = self.create_function(function);
+
+                self.variables.assign_or_insert(name.clone(), value);
+            }
+        }
+
+        let mut result = Value::Undefined;
+
+        for statement in program {
+            result = match statement {
+                Statement::FunctionDeclaration { .. } => Value::Undefined,
+
+                Statement::Declaration { name, value } => {
+                    self.initialize_declaration(name, value)?;
+                    Value::Undefined
+                }
+
+                Statement::Declarations(declarations) => {
+                    for (name, value) in declarations {
+                        self.initialize_declaration(name, value)?;
+                    }
+
+                    Value::Undefined
+                }
+
+                Statement::Expression(expression) => self.evaluate_expression(expression)?,
+
+                Statement::Return(expression) => {
+                    return self.evaluate_expression_with_handoff(
+                        expression,
+                        |interpreter, result| {
+                            let value = result?;
+                            interpreter.retain_function_return(&value);
+                            Ok(Completion::Return(value))
+                        },
+                    );
+                }
+
+                Statement::Throw(expression) => {
+                    return self.evaluate_expression_with_handoff(
+                        expression,
+                        |interpreter, result| {
+                            let error = JsError::thrown(result?);
+                            interpreter.record_exception(&error);
+                            Err(error)
+                        },
+                    );
+                }
+
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    let condition = self.evaluate_expression(condition)?;
+
+                    let branch = if self.is_truthy(&condition) {
+                        then_body
+                    } else {
+                        else_body
+                    };
+
+                    match self.execute(branch)? {
+                        Completion::Normal(value) => value,
+                        Completion::Return(value) => {
+                            return Ok(Completion::Return(value));
+                        }
+                        Completion::Break => {
+                            return Ok(Completion::Break);
+                        }
+                        Completion::Continue => return Ok(Completion::Continue),
+                    }
+                }
+
+                Statement::While { condition, body } => {
+                    let completion =
+                        self.with_frame_value(Value::Undefined, |interpreter, index| {
+                            loop {
+                                let condition = interpreter.evaluate_expression(condition)?;
+
+                                if !interpreter.is_truthy(&condition) {
+                                    break;
+                                }
+
+                                match interpreter.execute(body)? {
+                                    Completion::Normal(value) => {
+                                        interpreter.set_frame_value(index, value)
+                                    }
+                                    Completion::Return(value) => {
+                                        return Ok(Completion::Return(value));
+                                    }
+                                    Completion::Break => break,
+                                    Completion::Continue => continue,
+                                }
+                            }
+
+                            Ok(Completion::Normal(interpreter.frame_value(index).clone()))
+                        })?;
+
+                    match completion {
+                        Completion::Normal(value) => value,
+                        Completion::Return(value) => return Ok(Completion::Return(value)),
+
+                        Completion::Break | Completion::Continue => {
+                            unreachable!("while completion was handled")
+                        }
+                    }
+                }
+
+                Statement::Break => {
+                    return Ok(Completion::Break);
+                }
+
+                Statement::Continue => {
+                    return Ok(Completion::Continue);
+                }
+
+                Statement::For {
+                    initializer,
+                    condition,
+                    update,
+                    body,
+                } => {
+                    if let Some(initializer) = initializer {
+                        match self.execute(std::slice::from_ref(initializer.as_ref()))? {
+                            Completion::Normal(_) => {}
+
+                            Completion::Return(value) => {
+                                return Ok(Completion::Return(value));
+                            }
+
+                            Completion::Break => {
+                                return Ok(Completion::Break);
+                            }
+
+                            Completion::Continue => {
+                                return Ok(Completion::Continue);
+                            }
+                        }
+                    }
+
+                    loop {
+                        if let Some(condition) = condition {
+                            let value = self.evaluate_expression(condition)?;
+
+                            if !self.is_truthy(&value) {
+                                break;
+                            }
+                        }
+
+                        match self.execute(body)? {
+                            Completion::Normal(_) => {}
+                            Completion::Return(value) => return Ok(Completion::Return(value)),
+                            Completion::Break => break,
+                            Completion::Continue => {}
+                        }
+
+                        if let Some(update) = update {
+                            self.evaluate_expression(update)?;
+                        }
+                    }
+
+                    Value::Undefined
+                }
+
+                Statement::ForOf {
+                    binding,
+                    iterable,
+                    body,
+                } => {
+                    let iterable = self.evaluate_expression(iterable)?;
+
+                    let Value::Array(values) = iterable else {
+                        return Err(JsError::runtime(
+                            "TypeError: for-of currently requires an Array",
+                        ));
+                    };
+
+                    let values = values.borrow().values.clone();
+
+                    let completion =
+                        self.with_for_of_items(values, |interpreter, items_index| {
+                            interpreter.with_shadowed_bindings(
+                                [(binding.clone(), Value::Undefined)],
+                                |interpreter| {
+                                    while let Some(value) =
+                                        interpreter.next_for_of_item(items_index)
+                                    {
+                                        interpreter
+                                            .variables
+                                            .assign_or_insert(binding.clone(), value);
+
+                                        match interpreter.execute(body)? {
+                                            Completion::Normal(_) | Completion::Continue => {}
+
+                                            Completion::Break => {
+                                                return Ok(Completion::Normal(Value::Undefined));
+                                            }
+
+                                            Completion::Return(value) => {
+                                                return Ok(Completion::Return(value));
+                                            }
+                                        }
+                                    }
+
+                                    Ok(Completion::Normal(Value::Undefined))
+                                },
+                            )
+                        })?;
+
+                    match completion {
+                        Completion::Normal(value) => value,
+                        Completion::Return(value) => return Ok(Completion::Return(value)),
+                        Completion::Break => return Ok(Completion::Break),
+                        Completion::Continue => return Ok(Completion::Continue),
+                    }
+                }
+
+                Statement::ForOfArray {
+                    bindings,
+                    iterable,
+                    body,
+                } => match self.execute_for_of_array(bindings, iterable, body)? {
+                    Completion::Normal(value) => value,
+                    abrupt => return Ok(abrupt),
+                },
+
+                Statement::ForIn {
+                    binding,
+                    object,
+                    body,
+                    is_var,
+                } => {
+                    let mode = if *is_var {
+                        ForInBindingMode::Var
+                    } else {
+                        ForInBindingMode::Lexical
+                    };
+
+                    match self.execute_for_in(binding, object, body, mode)? {
+                        Completion::Normal(value) => value,
+                        abrupt => return Ok(abrupt),
+                    }
+                }
+
+                Statement::ForInExisting {
+                    binding,
+                    object,
+                    body,
+                } => {
+                    match self.execute_for_in(binding, object, body, ForInBindingMode::Existing)? {
+                        Completion::Normal(value) => value,
+                        abrupt => return Ok(abrupt),
+                    }
+                }
+
+                Statement::Try {
+                    body,
+                    catch,
+                    finally,
+                } => match self.execute_try(body, catch.as_ref(), finally.as_deref())? {
+                    Completion::Normal(value) => value,
+                    abrupt => return Ok(abrupt),
+                },
+
+                Statement::Switch {
+                    discriminant,
+                    cases,
+                } => match self.execute_switch(discriminant, cases)? {
+                    Completion::Normal(value) => value,
+                    abrupt => return Ok(abrupt),
+                },
+            };
+        }
+
+        Ok(Completion::Normal(result))
+    }
+
+    fn initialize_declaration(
+        &mut self,
+        name: &str,
+        expression: &Expression,
+    ) -> Result<(), JsError> {
+        self.evaluate_expression_with_handoff(expression, |interpreter, result| {
+            interpreter
+                .variables
+                .assign_or_insert(name.to_owned(), result?);
+            Ok(())
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Value, evaluate};
+
+    #[test]
+    fn returns_from_nested_loop_and_conditional() {
+        let result =
+            evaluate("const f = function() { while (true) { if (true) { return 42; } } }; f();")
+                .unwrap();
+
+        assert_eq!(result, Value::Number(42.0));
+    }
+
+    #[test]
+    fn continue_in_for_loop_still_runs_update() {
+        let result = evaluate(
+            "let sum = 0; for (let i = 0; i < 4; i++) { \
+            if (i === 1) continue; sum = sum + i; } sum;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(5.0));
+    }
+
+    #[test]
+    fn restores_previous_for_of_binding_after_break() {
+        let result = evaluate("let x = 7; for (let x of [1, 2]) { break; } x;").unwrap();
+
+        assert_eq!(result, Value::Number(7.0));
+    }
+
+    #[test]
+    fn function_declaration_is_available_before_its_position() {
+        let result = evaluate(
+            "let result = add(2, 3); \
+            function add(a, b) { return a + b; } \
+            result;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(5.0));
+    }
+
+    #[test]
+    fn function_declaration_does_not_overwrite_outer_binding_after_call() {
+        let result = evaluate(
+            "let x = 7; \
+            const f = function() { \
+                function x() { return 3; } \
+                return x(); \
+            }; \
+            f(); \
+            x;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(7.0));
+    }
+
+    #[test]
+    fn function_body_hoists_nested_function_declarations() {
+        let result = evaluate(
+            "function outer() { \
+                return inner(); \
+                function inner() { return 4; } \
+            } \
+            outer();",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(4.0));
+    }
+
+    #[test]
+    fn executes_try_and_finally_in_order() {
+        let mut document = crate::DocumentState::default();
+        document.title = "before".to_owned();
+
+        crate::evaluate_with_document(
+            "try { \
+                document.title = 'changed'; \
+            } finally { \
+                document.title = document.title + '!'; \
+            }",
+            &mut document,
+        )
+        .unwrap();
+
+        assert_eq!(document.title, "changed!");
+    }
+
+    #[test]
+    fn keeps_contextual_keyword_property_names_working() {
+        let value = evaluate("let object = { catch: 3 }; object.catch;").unwrap();
+
+        assert_eq!(value, Value::Number(3.0));
+    }
+
+    #[test]
+    fn evaluates_multiple_declarators_in_order() {
+        let result = evaluate(
+            "let a = 2, b = a + 1, c; \
+            a === 2 && b === 3 && c === undefined;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+
+        let result = evaluate(
+            "let order = ''; \
+            let a = (order += 'a'), b = (order += 'b'); \
+            order;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("ab".to_owned()));
+    }
+
+    #[test]
+    fn handles_multiple_declarations_in_for_initializer() {
+        let result = evaluate(
+            "let total = 0; \
+            for (let i = 0, limit = 3; i < limit; i++) { \
+                total += 1; \
+            } \
+            total;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(3.0));
+    }
+
+    #[test]
+    fn multiple_function_locals_do_not_overwrite_outer_bindings() {
+        let result = evaluate(
+            "let a = 8, b = 9; \
+            function f() { \
+                let a = 2, b = a + 1; \
+                return b; \
+            } \
+            let result = f(); \
+            result === 3 && a === 8 && b === 9;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn initializer_error_stops_following_declarators() {
+        let result = evaluate(
+            "let order = ''; \
+            try { \
+                let a = (order += 'a'), \
+                    b = missing, \
+                    c = (order += 'c'); \
+            } catch (e) {} \
+            order;",
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::String("a".to_owned()));
+    }
+}

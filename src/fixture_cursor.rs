@@ -3,7 +3,7 @@
 //! This does not choose lexical goals or validate JSON syntax.
 
 use crate::fixture_json::FixtureJsonError;
-use crate::javascript::{Token, TokenKind};
+use freedom_js::{Token, TokenKind};
 
 pub(super) struct TokenCursor {
     tokens: Vec<Token>,
@@ -73,7 +73,7 @@ impl TokenCursor {
 #[cfg(test)]
 mod tests {
     use super::{TokenCursor, TokenKind};
-    use crate::javascript::tokenize;
+    use freedom_js::tokenize;
 
     #[test]
     fn lookahead_and_eof_do_not_advance_the_cursor() {

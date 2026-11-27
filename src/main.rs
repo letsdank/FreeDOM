@@ -15,8 +15,6 @@ mod styled_tree;
 #[cfg(test)]
 mod xml;
 
-mod javascript;
-
 pub mod graphics;
 
 #[cfg(test)]
@@ -133,7 +131,7 @@ fn main() -> Result<()> {
             std::fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
 
         if requested_url == "--probe-testharness-test" {
-            javascript::probe_testharness_test(&source).map_err(|error| {
+            freedom_js::probe_testharness_test(&source).map_err(|error| {
                 anyhow::anyhow!("testharness synchronous probe failed: {error}")
             })?;
 
@@ -141,7 +139,7 @@ fn main() -> Result<()> {
                 "testharness reported one passing synchronous test; WPT documents were not run"
             );
         } else {
-            javascript::probe_testharness(&source)
+            freedom_js::probe_testharness(&source)
                 .map_err(|error| anyhow::anyhow!("testharness bootstrap failed: {error}"))?;
 
             println!("testharness bootstraped in a synthetic host; WPT tests were not run");

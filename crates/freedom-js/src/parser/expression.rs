@@ -1,0 +1,669 @@
+//! Partial parser for JavaScript expressions and operator precedence.
+//!
+//! <https://tc39.es/ecma262/#sec-ecmascript-language-expressions>
+//!
+//! This module preserves the interpreter's existing grammar subset.
+
+use super::{
+    BinaryOperator, Expression, FunctionKind, FunctionParameter, JsError, Parser, PostfixStep,
+    Statement, TokenKind, UserFunction,
+};
+
+impl Parser<'_> {
+    // A concise arrow body evaluates an assignment expression and returns it.
+    // https://tc39.es/ecma262/#sec-arrow-function-definitions
+    pub(super) fn parse_arrow_body(&mut self) -> Result<Vec<Statement>, JsError> {
+        let previous = std::mem::replace(&mut self.await_allowed, false);
+
+        let result = (|| {
+            if self.cursor.check(&TokenKind::LeftBrace)? {
+                self.parse_function_body()
+            } else {
+                self.parse_assignment_expression()
+                    .map(|expression| vec![Statement::Return(expression)])
+            }
+        })();
+
+        self.await_allowed = previous;
+
+        result
+    }
+
+    pub(super) fn parse_expression(&mut self) -> Result<Expression, JsError> {
+        self.parse_assignment_expression()
+    }
+
+    fn parse_conditional_expression(&mut self) -> Result<Expression, JsError> {
+        let condition = self.parse_short_circuit_expression()?;
+
+        if !self.cursor.consume_optional(&TokenKind::Question)? {
+            return Ok(condition);
+        }
+
+        let consequent = self.parse_assignment_expression()?;
+
+        self.cursor.consume(
+            &TokenKind::Colon,
+            "expected ':' after conditional expression",
+        )?;
+
+        let alternate = self.parse_assignment_expression()?;
+
+        Ok(Expression::Conditional {
+            condition: Box::new(condition),
+            consequent: Box::new(consequent),
+            alternate: Box::new(alternate),
+        })
+    }
+
+    fn parse_assignment_expression(&mut self) -> Result<Expression, JsError> {
+        self.with_parse_frame(|parser| parser.parse_assignment_expression_inner())
+    }
+
+    fn parse_assignment_expression_inner(&mut self) -> Result<Expression, JsError> {
+        if let TokenKind::Identifier(parameter) = self.cursor.peek()?.kind.clone() {
+            let is_arrow = self
+                .cursor
+                .peek_n(1)?
+                .is_some_and(|token| matches!(token.kind, TokenKind::Arrow));
+
+            if is_arrow {
+                self.cursor.advance()?;
+                self.cursor.advance()?;
+
+                return Ok(Expression::Function(UserFunction {
+                    kind: FunctionKind::Arrow,
+                    parameters: vec![FunctionParameter::simple(parameter)],
+                    body: self.parse_arrow_body()?,
+                }));
+            }
+        }
+
+        let expression = self.parse_conditional_expression()?;
+
+        if self.cursor.consume_optional(&TokenKind::Assign)? {
+            let value = self.parse_assignment_expression()?;
+
+            return Ok(Expression::Assignment {
+                target: Box::new(expression),
+                value: Box::new(value),
+            });
+        }
+
+        let compound_operator = if self.cursor.consume_optional(&TokenKind::PlusAssign)? {
+            Some(BinaryOperator::Add)
+        } else if self.cursor.consume_optional(&TokenKind::MinusAssign)? {
+            Some(BinaryOperator::Subtract)
+        } else if self.cursor.consume_optional(&TokenKind::StarAssign)? {
+            Some(BinaryOperator::Multiply)
+        } else if self.cursor.consume_optional(&TokenKind::SlashAssign)? {
+            Some(BinaryOperator::Divide)
+        } else if self.cursor.consume_optional(&TokenKind::PercentAssign)? {
+            Some(BinaryOperator::Remainder)
+        } else {
+            None
+        };
+
+        if let Some(operator) = compound_operator {
+            let value = self.parse_assignment_expression()?;
+
+            return Ok(Expression::CompoundAssignment {
+                target: Box::new(expression),
+                operator,
+                value: Box::new(value),
+            });
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_short_circuit_expression(&mut self) -> Result<Expression, JsError> {
+        let first = self.parse_equality_expression()?;
+
+        if self.cursor.consume_optional(&TokenKind::Nullish)? {
+            let mut rest = vec![(BinaryOperator::Nullish, self.parse_equality_expression()?)];
+
+            while self.cursor.consume_optional(&TokenKind::Nullish)? {
+                rest.push((BinaryOperator::Nullish, self.parse_equality_expression()?));
+            }
+
+            if matches!(self.cursor.peek()?.kind, TokenKind::And | TokenKind::Or) {
+                return Err(JsError::syntax(
+                    self.cursor.peek()?.offset,
+                    "cannot mix '??' with '&&' or '||' without parentheses",
+                ));
+            }
+
+            Ok(Self::binary_chain(first, rest))
+        } else {
+            let expression = self.parse_logical_or_tail(first)?;
+
+            if self.cursor.check(&TokenKind::Nullish)? {
+                return Err(JsError::syntax(
+                    self.cursor.peek()?.offset,
+                    "cannot mix '??' with '&&' or '||' without parentheses",
+                ));
+            }
+
+            Ok(expression)
+        }
+    }
+
+    fn parse_logical_or_tail(&mut self, first: Expression) -> Result<Expression, JsError> {
+        let first = self.parse_logical_and_tail(first)?;
+        let mut rest = Vec::new();
+
+        while self.cursor.consume_optional(&TokenKind::Or)? {
+            let right = self.parse_logical_and_expression()?;
+            rest.push((BinaryOperator::Or, right));
+        }
+
+        Ok(Self::binary_chain(first, rest))
+    }
+
+    fn parse_logical_and_expression(&mut self) -> Result<Expression, JsError> {
+        let first = self.parse_equality_expression()?;
+        self.parse_logical_and_tail(first)
+    }
+
+    fn parse_logical_and_tail(&mut self, first: Expression) -> Result<Expression, JsError> {
+        let mut rest = Vec::new();
+
+        while self.cursor.consume_optional(&TokenKind::And)? {
+            let right = self.parse_equality_expression()?;
+            rest.push((BinaryOperator::And, right));
+        }
+
+        Ok(Self::binary_chain(first, rest))
+    }
+
+    fn parse_equality_expression(&mut self) -> Result<Expression, JsError> {
+        let first = self.parse_comparison_expression()?;
+        let mut rest = Vec::new();
+
+        loop {
+            let operator = if self.cursor.consume_optional(&TokenKind::StrictEqual)? {
+                BinaryOperator::StrictEqual
+            } else if self.cursor.consume_optional(&TokenKind::StrictNotEqual)? {
+                BinaryOperator::StrictNotEqual
+            } else if self.cursor.consume_optional(&TokenKind::Equal)? {
+                BinaryOperator::Equal
+            } else if self.cursor.consume_optional(&TokenKind::NotEqual)? {
+                BinaryOperator::NotEqual
+            } else {
+                break;
+            };
+
+            let right = self.parse_comparison_expression()?;
+            rest.push((operator, right));
+        }
+
+        Ok(Self::binary_chain(first, rest))
+    }
+
+    fn parse_comparison_expression(&mut self) -> Result<Expression, JsError> {
+        let first = self.parse_term_expression()?;
+        let mut rest = Vec::new();
+
+        loop {
+            let operator = if self.cursor.consume_optional(&TokenKind::LessEqual)? {
+                BinaryOperator::LessEqual
+            } else if self.cursor.consume_optional(&TokenKind::GreaterEqual)? {
+                BinaryOperator::GreaterEqual
+            } else if self.cursor.consume_optional(&TokenKind::Instanceof)? {
+                BinaryOperator::Instanceof
+            } else if self.consume_contextual_keyword("in")? {
+                BinaryOperator::In
+            } else if self.cursor.consume_optional(&TokenKind::Less)? {
+                BinaryOperator::Less
+            } else if self.cursor.consume_optional(&TokenKind::Greater)? {
+                BinaryOperator::Greater
+            } else {
+                break;
+            };
+
+            let right = self.parse_term_expression()?;
+            rest.push((operator, right));
+        }
+
+        Ok(Self::binary_chain(first, rest))
+    }
+
+    fn parse_term_expression(&mut self) -> Result<Expression, JsError> {
+        let first = self.parse_factor_expression()?;
+        let mut rest = Vec::new();
+
+        loop {
+            let operator = if self.cursor.consume_optional(&TokenKind::Plus)? {
+                BinaryOperator::Add
+            } else if self.cursor.consume_optional(&TokenKind::Minus)? {
+                BinaryOperator::Subtract
+            } else {
+                break;
+            };
+
+            let right = self.parse_factor_expression()?;
+            rest.push((operator, right));
+        }
+
+        Ok(Self::binary_chain(first, rest))
+    }
+
+    fn parse_factor_expression(&mut self) -> Result<Expression, JsError> {
+        let first = self.parse_unary_expression()?;
+        let mut rest = Vec::new();
+
+        loop {
+            let operator = if self.cursor.consume_optional(&TokenKind::Star)? {
+                BinaryOperator::Multiply
+            } else if self.cursor.consume_optional(&TokenKind::Slash)? {
+                BinaryOperator::Divide
+            } else if self.cursor.consume_optional(&TokenKind::Percent)? {
+                BinaryOperator::Remainder
+            } else {
+                break;
+            };
+
+            let right = self.parse_unary_expression()?;
+            rest.push((operator, right));
+        }
+
+        Ok(Self::binary_chain(first, rest))
+    }
+
+    fn parse_unary_expression(&mut self) -> Result<Expression, JsError> {
+        self.with_parse_frame(|parser| parser.parse_unary_expression_inner())
+    }
+
+    fn parse_unary_expression_inner(&mut self) -> Result<Expression, JsError> {
+        if self.await_allowed && self.consume_contextual_keyword("await")? {
+            return Ok(Expression::Await(Box::new(self.parse_unary_expression()?)));
+        }
+
+        if self.cursor.consume_optional(&TokenKind::PlusPlus)? {
+            return Ok(Expression::Update {
+                target: Box::new(self.parse_unary_expression()?),
+                delta: 1.0,
+                prefix: true,
+            });
+        }
+
+        if self.cursor.consume_optional(&TokenKind::MinusMinus)? {
+            return Ok(Expression::Update {
+                target: Box::new(self.parse_unary_expression()?),
+                delta: -1.0,
+                prefix: true,
+            });
+        }
+
+        if self.cursor.consume_optional(&TokenKind::Plus)? {
+            return Ok(Expression::UnaryPlus(Box::new(
+                self.parse_unary_expression()?,
+            )));
+        }
+
+        if self.cursor.consume_optional(&TokenKind::Minus)? {
+            return Ok(Expression::UnaryMinus(Box::new(
+                self.parse_unary_expression()?,
+            )));
+        }
+
+        if self.cursor.consume_optional(&TokenKind::Typeof)? {
+            return Ok(Expression::TypeOf(Box::new(self.parse_unary_expression()?)));
+        }
+
+        if self.cursor.consume_optional(&TokenKind::Not)? {
+            return Ok(Expression::Not(Box::new(self.parse_unary_expression()?)));
+        }
+
+        self.parse_postfix_expression()
+    }
+
+    fn parse_postfix_expression(&mut self) -> Result<Expression, JsError> {
+        let primary = self.parse_primary()?;
+
+        let (base, mut steps) = match primary {
+            Expression::PostfixChain { base, steps } => (base, steps),
+            other => (Box::new(other), Vec::new()),
+        };
+
+        loop {
+            if self.cursor.consume_optional(&TokenKind::Dot)? {
+                let (property, _) =
+                    self.consume_identifier("expected a property name after '.'")?;
+
+                steps.push(PostfixStep::Member(property));
+                continue;
+            }
+
+            if self.cursor.consume_optional(&TokenKind::LeftBracket)? {
+                let index = self.parse_expression()?;
+
+                self.cursor.consume(
+                    &TokenKind::RightBracket,
+                    "expected ']' after index expression",
+                )?;
+
+                steps.push(PostfixStep::Index(index));
+                continue;
+            }
+
+            if self.cursor.consume_optional(&TokenKind::LeftParen)? {
+                let arguments = self.parse_arguments()?;
+
+                steps.push(PostfixStep::Call(arguments));
+                continue;
+            }
+
+            break;
+        }
+
+        let expression = if steps.is_empty() {
+            *base
+        } else {
+            Expression::PostfixChain { base, steps }
+        };
+
+        if self.cursor.consume_optional(&TokenKind::PlusPlus)? {
+            return Ok(Expression::Update {
+                target: Box::new(expression),
+                delta: 1.0,
+                prefix: false,
+            });
+        }
+
+        if self.cursor.consume_optional(&TokenKind::MinusMinus)? {
+            return Ok(Expression::Update {
+                target: Box::new(expression),
+                delta: -1.0,
+                prefix: false,
+            });
+        }
+
+        Ok(expression)
+    }
+
+    pub(super) fn parse_new_expression(&mut self, offset: usize) -> Result<Expression, JsError> {
+        let (constructor, _) = self.consume_identifier("expected a constructor after 'new'")?;
+
+        self.cursor
+            .consume(&TokenKind::LeftParen, "expected '(' after constructor name")?;
+
+        let arguments = self.parse_arguments()?;
+
+        if constructor.is_empty() {
+            return Err(JsError::syntax(offset, "constructor name cannot be empty"));
+        }
+
+        Ok(Expression::New {
+            constructor,
+            arguments,
+        })
+    }
+
+    fn binary_chain(first: Expression, rest: Vec<(BinaryOperator, Expression)>) -> Expression {
+        if rest.is_empty() {
+            first
+        } else {
+            Expression::BinaryChain {
+                first: Box::new(first),
+                rest,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::parse_program;
+    use crate::{BinaryOperator, Expression, PostfixStep, Statement};
+
+    #[test]
+    fn multiplication_has_higher_precedence_than_addition() {
+        let program = parse_program("1 + 2 * 3;").unwrap();
+
+        let [Statement::Expression(Expression::BinaryChain { rest, .. })] = program.as_slice()
+        else {
+            panic!("expected an addition expression");
+        };
+
+        let [(BinaryOperator::Add, Expression::BinaryChain { rest, .. })] = rest.as_slice() else {
+            panic!("expected multiplication as right operand");
+        };
+
+        assert!(matches!(rest.as_slice(), [(BinaryOperator::Multiply, _)]));
+    }
+
+    #[test]
+    fn assignment_is_right_associative() {
+        let program = parse_program("a = b = 1;").unwrap();
+
+        let [Statement::Expression(Expression::Assignment { target, value })] = program.as_slice()
+        else {
+            panic!("expected an assignment expression");
+        };
+
+        assert!(matches!(
+            target.as_ref(),
+            Expression::Identifier(name) if name == "a"
+        ));
+
+        assert!(matches!(
+            value.as_ref(),
+            Expression::Assignment { target, .. }
+                if matches!(
+                    target.as_ref(),
+                    Expression::Identifier(name) if name == "b"
+                )
+        ));
+    }
+
+    #[test]
+    fn parses_chained_member_index_and_call() {
+        let program = parse_program("object.method(1)[0];").unwrap();
+
+        let [Statement::Expression(Expression::PostfixChain { base, steps })] = program.as_slice()
+        else {
+            panic!("expected a postfix chain");
+        };
+
+        assert!(matches!(
+            base.as_ref(),
+            Expression::Identifier(name) if name == "object"
+        ));
+
+        assert!(matches!(
+            steps.as_slice(),
+            [
+                PostfixStep::Member(name),
+                PostfixStep::Call(arguments),
+                PostfixStep::Index(_)
+            ] if name == "method" && arguments.len() == 1
+        ));
+    }
+
+    #[test]
+    fn parses_concise_arrow_body_from_wpt_harness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "assert => assert.structured_clone()";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(&format!("{fragment};")).unwrap();
+
+        assert!(matches!(
+            &program[0],
+            Statement::Expression(Expression::Function(function))
+                if matches!(
+                    function.body.as_slice(),
+                    [Statement::Return(Expression::PostfixChain { steps, .. })]
+                        if matches!(steps.last(), Some(PostfixStep::Call(_)))
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_arrow_without_body() {
+        let error = parse_program("x =>").unwrap_err();
+
+        assert_eq!(error.message, "unexpected end of JavaScript source");
+    }
+
+    #[test]
+    fn parses_negative_number_in_real_testharness_statement() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "var current_dispatch = this_obj.message_events.indexOf(x) !== -1;";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(fragment).unwrap();
+
+        let [
+            Statement::Declaration {
+                value: Expression::BinaryChain { rest, .. },
+                ..
+            },
+        ] = program.as_slice()
+        else {
+            panic!("expected strict inequality in declaration");
+        };
+
+        assert!(matches!(
+            rest.as_slice(),
+            [(BinaryOperator::StrictNotEqual, Expression::UnaryMinus(operand))]
+                if matches!(
+                    operand.as_ref(),
+                    Expression::Literal(crate::Value::Number(number))
+                        if *number == 1.0
+                )
+        ));
+    }
+
+    #[test]
+    fn parses_plus_assignment_in_real_testharness_statement() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "name += \" \" + seen_func_name[trimmed];";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(fragment).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::CompoundAssignment {
+                target,
+                operator:BinaryOperator::Add,
+                value,
+            })]
+                if matches!(
+                    target.as_ref(),
+                    Expression::Identifier(name) if name == "name"
+                )
+                && matches!(
+                    value.as_ref(),
+                    Expression::BinaryChain { rest, .. }
+                        if matches!(rest.as_slice(), [(BinaryOperator::Add, _)])
+                )
+        ));
+    }
+
+    #[test]
+    fn parses_multiply_assignment_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "this.timeout_length *= tests.timeout_multiplier;";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(fragment).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::CompoundAssignment {
+                operator: BinaryOperator::Multiply,
+                ..
+            })]
+        ));
+    }
+
+    #[test]
+    fn parses_remainder_expression_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "done_count % 100 === 0";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(&format!("{fragment};")).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::BinaryChain { first, rest })]
+                if matches!(rest.as_slice(), [(BinaryOperator::StrictEqual, _)])
+                && matches!(
+                    first.as_ref(),
+                    Expression::BinaryChain { rest, .. }
+                        if matches!(rest.as_slice(), [(BinaryOperator::Remainder, _)])
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_unparenthesized_nullish_logical_mixing() {
+        for source in [
+            "a ?? b || c;",
+            "a || b ?? c;",
+            "a ?? b && c;",
+            "a && b ?? c;",
+        ] {
+            assert!(parse_program(source).is_err(), "{source}");
+        }
+
+        for source in [
+            "a ?? (b || c);",
+            "(a || b) ?? c;",
+            "(a ?? b) && c;",
+            "a ?? (b && c);",
+        ] {
+            assert!(parse_program(source).is_ok(), "{source}");
+        }
+    }
+
+    #[test]
+    fn parses_nullish_expression_from_testharness() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/wpt/resources/testharness.js"
+        ));
+
+        let fragment = "test.message ?? \"\"";
+
+        assert!(source.contains(fragment));
+
+        let program = parse_program(&format!("{fragment};")).unwrap();
+
+        assert!(matches!(
+            program.as_slice(),
+            [Statement::Expression(Expression::BinaryChain { rest, .. })]
+                if matches!(rest.as_slice(), [(BinaryOperator::Nullish, _)])
+        ));
+    }
+}

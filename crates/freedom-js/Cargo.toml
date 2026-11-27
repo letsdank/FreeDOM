@@ -1,0 +1,18 @@
+[package]
+name = "freedom-js"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+freedom-canvas.workspace = true
+freedom-css.workspace = true
+freedom-graphics-core.workspace = true
+freedom-html.workspace = true
+freedom-url.workspace = true

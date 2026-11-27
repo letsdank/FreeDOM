@@ -1,0 +1,583 @@
+//! Call dispatch for the interpreter's currently supported callable values.
+//!
+//! ECMAScript call evaluation:
+//! <https://tc39.es/ecma262/#sec-evaluatecall>
+//!
+//! Host bindings and supported call semantics are incomplete.
+
+use super::canvas;
+use super::{
+    ArrayMethodKind, DocumentMethod, ElementMethod, Interpreter, JsError, NativeFunction,
+    TestContextMethod, Value,
+};
+
+impl Interpreter {
+    fn object_keys(&self, arguments: Vec<Value>) -> Result<Value, JsError> {
+        if arguments.len() != 1 {
+            return Err(JsError::runtime(
+                "TypeError: Object.keys expects one argument",
+            ));
+        }
+
+        let Value::Object(object) = &arguments[0] else {
+            return Err(JsError::runtime(
+                "TypeError: Object.keys currently requires an object",
+            ));
+        };
+
+        let keys = self.host_roots.ordinary_own_keys(object);
+
+        Ok(Value::array(keys.into_iter().map(Value::String).collect()))
+    }
+
+    pub(super) fn dispatch_call(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        values: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        self.dispatch_call_with_handoff(callee, receiver, values, |interpreter, result| {
+            interpreter.handoff_call_result(result)
+        })
+    }
+
+    pub(super) fn dispatch_call_with_handoff<T>(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        values: Vec<Value>,
+        handoff: impl FnOnce(&mut Self, Result<Value, JsError>) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        self.with_call_frame_handoff(
+            super::PendingCall {
+                callee,
+                receiver,
+                arguments: values,
+                handoff_value: None,
+            },
+            |interpreter, index| interpreter.dispatch_call_in_frame(index),
+            handoff,
+        )
+    }
+
+    pub(super) fn dispatch_call_into_temporary_frame(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        values: Vec<Value>,
+        destination: usize,
+    ) -> Result<(), JsError> {
+        self.dispatch_call_with_handoff(callee, receiver, values, |interpreter, result| {
+            interpreter.frame_values_mut(destination).push(result?);
+            Ok(())
+        })
+    }
+
+    pub(super) fn dispatch_call_in_frame(&mut self, index: usize) -> Result<Value, JsError> {
+        let call = self.pending_call(index);
+        let callee = call.callee.clone();
+        let receiver = call.receiver.clone();
+        let values = call.arguments.clone();
+
+        self.dispatch_call_inner(callee, receiver, values)
+    }
+
+    fn dispatch_call_inner(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        values: Vec<Value>,
+    ) -> Result<Value, JsError> {
+        match callee {
+            Value::ArrayMethod {
+                receiver,
+                method: ArrayMethodKind::Push,
+            } => {
+                self.ensure_array_prototype_is_not_mutated(&receiver)?;
+                Self::array_push(receiver, values)
+            }
+
+            Value::ArrayMethod {
+                receiver,
+                method: ArrayMethodKind::Pop,
+            } => {
+                self.ensure_array_prototype_is_not_mutated(&receiver)?;
+                Self::array_pop(receiver, values)
+            }
+
+            Value::ArrayMethod {
+                receiver,
+                method: ArrayMethodKind::Join,
+            } => self.array_join(receiver, values),
+
+            Value::NativeFunction(NativeFunction::FunctionCall) => {
+                self.function_call(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::FunctionApply) => {
+                self.function_apply(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::FunctionBind) => {
+                self.function_bind(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::AssertEquals) => self.assert_equals(values),
+
+            Value::NativeFunction(NativeFunction::Test) => self.run_test(values),
+
+            Value::NativeFunction(NativeFunction::AssertTrue) => self.assert_true(values),
+
+            Value::NativeFunction(NativeFunction::AssertFalse) => self.assert_false(values),
+
+            Value::NativeFunction(NativeFunction::AssertNotEquals) => {
+                self.assert_not_equals(values)
+            }
+
+            Value::NativeFunction(NativeFunction::ObjectKeys) => self.object_keys(values),
+
+            Value::NativeFunction(NativeFunction::ObjectEntries) => self.object_entries(values),
+
+            Value::NativeFunction(NativeFunction::ObjectCreate) => self.object_create(values),
+
+            Value::NativeFunction(NativeFunction::ObjectHasOwnProperty) => {
+                self.object_has_own_property(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::ObjectToString) => {
+                Self::object_to_string(receiver)
+            }
+
+            Value::NativeFunction(NativeFunction::ObjectValueOf) => Self::object_value_of(receiver),
+
+            Value::NativeFunction(NativeFunction::ArrayToString) => self.array_to_string(receiver),
+
+            Value::NativeFunction(NativeFunction::QueueMicrotask) => self.queue_microtask(values),
+
+            Value::NativeFunction(NativeFunction::PromiseConstructor) => {
+                Err(JsError::type_error("Promise constructor requires new"))
+            }
+
+            Value::NativeFunction(NativeFunction::PromiseResolve) => {
+                self.promise_resolve(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::PromiseReject) => {
+                self.promise_reject(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::PromiseThen) => {
+                self.promise_then(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::StringSplit) => {
+                self.string_split(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::StringReplace) => {
+                self.string_replace(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::StringConstructor) => {
+                Self::string_constructor(values)
+            }
+
+            Value::NativeFunction(NativeFunction::StringFromCharCode) => {
+                self.string_from_char_code(values)
+            }
+
+            Value::NativeFunction(NativeFunction::ArrayConstructor) => {
+                Self::array_constructor(values)
+            }
+
+            Value::NativeFunction(NativeFunction::ArrayMap) => self.array_map(receiver, values),
+
+            Value::NativeFunction(NativeFunction::ArraySome) => self.array_some(receiver, values),
+
+            Value::NativeFunction(NativeFunction::ArraySlice) => self.array_slice(receiver, values),
+
+            Value::NativeFunction(NativeFunction::ErrorConstructor) => self.construct_error(values),
+
+            Value::NativeFunction(NativeFunction::ErrorToString) => self.error_to_string(receiver),
+
+            Value::NativeFunction(NativeFunction::TypeErrorConstructor) => {
+                self.construct_error_with_prototype(values, self.type_error_prototype.clone())
+            }
+
+            Value::NativeFunction(NativeFunction::ReferenceErrorConstructor) => {
+                self.construct_error_with_prototype(values, self.reference_error_prototype.clone())
+            }
+
+            Value::NativeFunction(NativeFunction::HtmlCollectionItem) => {
+                self.html_collection_item(receiver, values)
+            }
+
+            Value::NativeFunction(NativeFunction::HtmlCollectionNamedItem) => {
+                self.html_collection_named_item(receiver, values)
+            }
+
+            Value::DocumentMethod(DocumentMethod::GetElementById) => {
+                let Some(Value::Document(document)) = receiver else {
+                    return Err(JsError::type_error("getElementById: invalid receiver"));
+                };
+
+                self.get_element_by_id(document, values)
+            }
+
+            Value::DocumentMethod(DocumentMethod::CreateElement) => {
+                self.create_document_element(values)
+            }
+
+            Value::DocumentMethod(DocumentMethod::GetElementsByTagName) => {
+                self.get_elements_by_tag_name(values)
+            }
+
+            Value::DocumentMethod(DocumentMethod::QuerySelector) => self.query_selector(values),
+
+            Value::DocumentMethod(DocumentMethod::QuerySelectorAll) => {
+                self.query_selector_all(values)
+            }
+
+            Value::ElementMethod(ElementMethod::GetAttribute(node_id)) => {
+                self.get_document_element_attribute(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::SetAttribute(node_id)) => {
+                self.set_document_element_attribute(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::RemoveAttribute(node_id)) => {
+                self.remove_document_element_attribute(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::AppendChild(parent_node_id)) => {
+                self.append_document_child(parent_node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::InsertBefore(parent_node_id)) => {
+                self.insert_document_child_before(parent_node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::RemoveChild(parent_node_id)) => {
+                self.remove_document_child(parent_node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::QuerySelector(node_id)) => {
+                self.query_selector_within(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::QuerySelectorAll(node_id)) => {
+                self.query_selector_all_within(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::ClassListContains(node_id)) => {
+                self.class_list_contains(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::ClassListAdd(node_id)) => {
+                self.class_list_add(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::ClassListRemove(node_id)) => {
+                self.class_list_remove(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::ClassListToggle(node_id)) => {
+                self.class_list_toggle(node_id, values)
+            }
+
+            Value::ElementMethod(ElementMethod::GetContext(node_id)) => {
+                self.get_canvas_context(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasFillRect(node_id)) => {
+                self.canvas_fill_rect(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasClearRect(node_id)) => {
+                self.canvas_clear_rect(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasBeginPath(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Begin)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasMoveTo(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::MoveTo)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasLineTo(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::LineTo)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasQuadraticCurveTo(node_id)) => self
+                .canvas_path_operation(
+                    node_id,
+                    receiver,
+                    values,
+                    canvas::PathOperation::QuadraticCurveTo,
+                ),
+
+            Value::ElementMethod(ElementMethod::CanvasBezierCurveTo(node_id)) => self
+                .canvas_path_operation(
+                    node_id,
+                    receiver,
+                    values,
+                    canvas::PathOperation::BezierCurveTo,
+                ),
+
+            Value::ElementMethod(ElementMethod::CanvasClosePath(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Close)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasFill(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Fill)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasStroke(node_id)) => {
+                self.canvas_path_operation(node_id, receiver, values, canvas::PathOperation::Stroke)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasSetLineDash(node_id)) => {
+                self.canvas_set_line_dash(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasGetLineDash(node_id)) => {
+                self.canvas_get_line_dash(node_id, receiver)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasSave(node_id)) => {
+                self.canvas_save(node_id, receiver)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasRestore(node_id)) => {
+                self.canvas_restore(node_id, receiver)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasTranslate(node_id)) => {
+                self.canvas_translate(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasRotate(node_id)) => {
+                self.canvas_rotate(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasScale(node_id)) => {
+                self.canvas_scale(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasTransform(node_id)) => {
+                self.canvas_transform(node_id, receiver, values)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasResetTransform(node_id)) => {
+                self.canvas_reset_transform(node_id, receiver)
+            }
+
+            Value::ElementMethod(ElementMethod::CanvasSetTransform(node_id)) => {
+                self.canvas_set_transform(node_id, receiver, values)
+            }
+
+            Value::TestContextMethod(TestContextMethod::AddCleanup) => self.add_cleanup(values),
+
+            Value::Function(function) => {
+                if function.is_bound() {
+                    self.call_bound_function(&function, values)
+                } else {
+                    self.call_function_value_with_receiver(&function, values, receiver)
+                }
+            }
+
+            Value::RegExpTest(regexp) => {
+                let input = values
+                    .first()
+                    .unwrap_or(&Value::Undefined)
+                    .to_js_string(&self.host_roots);
+
+                let units: Vec<u16> = input.encode_utf16().collect();
+
+                let matched = Self::run_regexp(&regexp, &units)?.is_some();
+
+                Ok(Value::Boolean(matched))
+            }
+
+            Value::RegExpExec(regexp) => {
+                let input = values
+                    .first()
+                    .unwrap_or(&Value::Undefined)
+                    .to_js_string(&self.host_roots);
+
+                let units: Vec<u16> = input.encode_utf16().collect();
+
+                let has_indices = regexp.inner.borrow().regexp.has_indices();
+
+                match Self::run_regexp(&regexp, &units)? {
+                    None => Ok(Value::Null),
+
+                    Some(result) => self.regexp_exec_value(input, &units, result, has_indices),
+                }
+            }
+
+            _ => Err(JsError::type_error("this value is not callable")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Value, evaluate};
+
+    #[test]
+    fn dispatches_array_methods() {
+        let result = evaluate("let items = [1]; items.push(2); items.join(',');").unwrap();
+
+        assert_eq!(result, Value::String("1,2".to_owned()));
+    }
+
+    #[test]
+    fn dispatches_regexp_test() {
+        let result = evaluate("const r = new RegExp('b'); r.test('abc');").unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn dispatches_wpt_shim_and_callback() {
+        let result = evaluate("test(function() { assert_equals(2, 2); }, 'dispatch');").unwrap();
+
+        assert_eq!(result, Value::Undefined);
+    }
+
+    #[test]
+    fn reports_non_callable_value() {
+        let error = evaluate("let n = 1; n();").unwrap_err();
+
+        assert_eq!(error.message, "TypeError: this value is not callable");
+    }
+
+    #[test]
+    fn passes_receiver_to_dot_and_index_method_calls() {
+        let result = evaluate(
+            r#"
+                let object = {
+                    value: 7,
+                    read: function() { return this.value; }
+                };
+
+                object.read() === 7 && object['read']() === 7;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn evaluates_receiver_and_key_once_before_arguments() {
+        let result = evaluate(
+            r#"
+                let calls = 0;
+                let object = {
+                    value: 3,
+                    read: function(n) { return this.value + n; }
+                };
+
+                function receiver() {
+                    calls = calls + 1;
+                    return object;
+                }
+
+                function key() {
+                    calls = calls + 10;
+                    return 'read';
+                }
+
+                function argument() {
+                    object = { value: 100 };
+                    return 4;
+                }
+
+                let result = receiver()[key()](argument());
+
+                result === 7 && calls === 11;
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn keeps_callers_this_during_argument_evaluation_and_after_nested_call() {
+        let result = evaluate(
+            r#"
+                let outer = {
+                    value: 100,
+                    run: function() {
+                        let inner = {
+                            value: 1,
+                            add: function(n) { return this.value + n; }
+                        };
+
+                        let result = inner.add(this.value);
+
+                        return result === 101 && this.value === 100;
+                    }
+                };
+
+                outer.run();
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Boolean(true));
+    }
+
+    #[test]
+    fn restores_callers_this_after_thrown_error() {
+        let result = evaluate(
+            r#"
+                let outer = {
+                    value: 7,
+                    run: function() {
+                        let inner = {
+                            fail: function() { throw 'failure'; }
+                        };
+
+                        try {
+                            inner.fail();
+                        } catch (error) {}
+
+                        return this.value;
+                    }
+                };
+
+                outer.run();
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(7.0));
+    }
+
+    #[test]
+    fn passes_receiver_to_inherited_method() {
+        let result = evaluate(
+            r#"
+                function Test() {}
+
+                Test.prototype.read = function() {
+                    return this.value;
+                };
+
+                let instance = Object.create(Test.prototype);
+                instance.value = 42;
+
+                instance.read();
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Number(42.0));
+    }
+}

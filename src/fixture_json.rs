@@ -6,7 +6,7 @@
 //! is not yet equivalent to JSON, so it must not be treated as a JSON validator.
 
 use crate::fixture_cursor::TokenCursor;
-use crate::javascript::{Token, TokenKind, tokenize};
+use freedom_js::{Token, TokenKind, tokenize};
 use std::{collections::HashMap, error::Error, fmt};
 
 /// Syntax error from the partial fixture reader, with a byte offset.

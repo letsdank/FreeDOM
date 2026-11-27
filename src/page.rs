@@ -1,14 +1,12 @@
 use crate::{
     fetch::Fetcher,
     graphics::{
-        MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES,
         canvas::{Canvas2D, parse_canvas_dimension},
         font::normalize_font_container,
         image::{decode_jpeg, decode_png_for_display},
         raster::Surface as RasterSurface,
         svg::{SvgDocument, parse_svg_at, parse_svg_element, parse_svg_element_at},
     },
-    javascript::{DocumentScriptSession, DocumentState},
     styled_tree::{SourcePath, StyledTree},
 };
 use anyhow::Result;
@@ -17,6 +15,7 @@ use freedom_css::{
     build_author_rules, compute_style_with_ancestors, parse_font_faces,
 };
 use freedom_html::{Document as HtmlDocument, Element as HtmlElement, Node as HtmlNode};
+use freedom_js::{DocumentScriptSession, DocumentState, MAX_PAGE_CANVAS_PIXELS, MAX_PAGE_CANVASES};
 use freedom_url::Url;
 
 pub(crate) enum BlockContent {
@@ -256,10 +255,7 @@ impl Page {
         }
 
         if let BlockContent::Canvas(canvas) = &block.content {
-            let connected = self
-                .document
-                .element(canvas.node_id)
-                .is_some_and(|node| node.connected);
+            let connected = self.document.is_element_connected(canvas.node_id);
 
             let _ = writeln!(
                 output,

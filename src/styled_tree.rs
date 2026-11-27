@@ -7,12 +7,10 @@
 
 use std::fmt::Write;
 
-use crate::{
-    javascript::DocumentState,
-    page::{ElementInfo, element_info},
-};
+use crate::page::{ElementInfo, element_info};
 use freedom_css::{CssRule, Display, TextStyle, compute_style_with_ancestors};
 use freedom_html::{Document, Node};
+use freedom_js::DocumentState;
 
 /// Child indexes from the document root, valid only for this source snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]

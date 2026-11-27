@@ -8,8 +8,8 @@ repository.workspace = true
 publish = false
 
 [workspace]
-members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg", "crates/freedom-canvas", "crates/freedom-fetch"]
-default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg", "crates/freedom-canvas", "crates/freedom-fetch"]
+members = ["crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg", "crates/freedom-canvas", "crates/freedom-fetch", "crates/freedom-js"]
+default-members = [".", "crates/freedom-wasm", "crates/freedom-url", "crates/freedom-css", "crates/freedom-html", "crates/freedom-graphics-core", "crates/freedom-font", "crates/freedom-image", "crates/freedom-svg", "crates/freedom-canvas", "crates/freedom-fetch", "crates/freedom-js"]
 resolver = "3"
 
 [workspace.package]
@@ -27,6 +27,7 @@ freedom-font = { path = "crates/freedom-font" }
 freedom-graphics-core = { path = "crates/freedom-graphics-core" }
 freedom-html = { path = "crates/freedom-html" }
 freedom-image = { path = "crates/freedom-image" }
+freedom-js = { path = "crates/freedom-js" }
 freedom-svg = { path = "crates/freedom-svg" }
 freedom-url = { path = "crates/freedom-url" }
 freedom-wasm = { path = "crates/freedom-wasm" }
@@ -54,6 +55,7 @@ freedom-font.workspace = true
 freedom-graphics-core.workspace = true
 freedom-html.workspace = true
 freedom-image.workspace = true
+freedom-js.workspace = true
 freedom-svg.workspace = true
 freedom-url.workspace = true
 font8x8.workspace = true
